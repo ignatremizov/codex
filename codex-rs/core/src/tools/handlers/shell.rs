@@ -94,10 +94,13 @@ impl ShellHandler {
         turn_context: &TurnContext,
         thread_id: ThreadId,
     ) -> ExecParams {
+        let timeout_ms = params
+            .timeout_ms
+            .unwrap_or(turn_context.exec_command_timeout_ms);
         ExecParams {
             command: params.command.clone(),
             cwd: turn_context.resolve_path(params.workdir.clone()),
-            expiration: params.timeout_ms.into(),
+            expiration: timeout_ms.into(),
             capture_policy: ExecCapturePolicy::ShellTool,
             env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
             network: turn_context.network.clone(),
@@ -148,11 +151,14 @@ impl ShellCommandHandler {
         let shell = session.user_shell();
         let use_login_shell = Self::resolve_use_login_shell(params.login, allow_login_shell)?;
         let command = Self::base_command(shell.as_ref(), &params.command, use_login_shell);
+        let timeout_ms = params
+            .timeout_ms
+            .unwrap_or(turn_context.exec_command_timeout_ms);
 
         Ok(ExecParams {
             command,
             cwd: turn_context.resolve_path(params.workdir.clone()),
-            expiration: params.timeout_ms.into(),
+            expiration: timeout_ms.into(),
             capture_policy: ExecCapturePolicy::ShellTool,
             env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
             network: turn_context.network.clone(),
