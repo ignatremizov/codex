@@ -1066,6 +1066,65 @@ async fn runtime_config_defaults_model_availability_nux() {
 }
 
 #[test]
+fn config_toml_deserializes_exec_command_timeout_ms() {
+    let cfg: ConfigToml = toml::from_str("exec_command_timeout_ms = 30000")
+        .expect("TOML deserialization should succeed for exec_command_timeout_ms");
+
+    assert_eq!(cfg.exec_command_timeout_ms, Some(30_000));
+}
+
+#[tokio::test]
+async fn runtime_config_defaults_exec_command_timeout_ms() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(
+        cfg.exec_command_timeout_ms,
+        crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS
+    );
+}
+
+#[tokio::test]
+async fn runtime_config_uses_configured_exec_command_timeout_ms() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            exec_command_timeout_ms: Some(30_000),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(cfg.exec_command_timeout_ms, 30_000);
+}
+
+#[tokio::test]
+async fn runtime_config_ignores_zero_exec_command_timeout_ms() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            exec_command_timeout_ms: Some(0),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(
+        cfg.exec_command_timeout_ms,
+        crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS
+    );
+}
+
+#[test]
 fn test_tui_vim_mode_default_defaults_to_false() {
     let toml = r#"
         [tui]
