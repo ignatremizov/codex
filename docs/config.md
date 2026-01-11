@@ -28,6 +28,16 @@ Codex can run a notification hook when the agent finishes a turn. See the config
 
 The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.
 
+## Shell command timeout
+
+Set a default timeout (in milliseconds) for shell commands when `timeout_ms` is not provided:
+
+```toml
+exec_command_timeout_ms = 30000
+```
+
+If unset, Codex uses the built-in default (10,000 ms).
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.
