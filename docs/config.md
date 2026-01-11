@@ -142,6 +142,16 @@ remote compaction handoff text for display. When unset, Codex uses
 `gpt-5.3-codex-spark` if that model is available in the catalog, otherwise it
 falls back to the current turn model.
 
+## Shell command timeout
+
+Set a default timeout (in milliseconds) for shell commands when `timeout_ms` is not provided:
+
+```toml
+exec_command_timeout_ms = 30000
+```
+
+If unset, Codex uses the built-in default (10,000 ms).
+
 ## SQLite State DB
 
 Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the
