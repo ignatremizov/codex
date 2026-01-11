@@ -219,6 +219,8 @@ pub struct Config {
     /// using backend-specific headers or URLs to enforce this.
     pub enforce_residency: Constrained<Option<ResidencyRequirement>>,
 
+    /// Default timeout for shell commands when no per-call timeout is provided.
+    pub exec_command_timeout_ms: u64,
     /// When `true`, `AgentReasoning` events emitted by the backend will be
     /// suppressed from the frontend output. This can reduce visual noise when
     /// users are only interested in the final agent responses.
@@ -1038,6 +1040,9 @@ pub struct ConfigToml {
     /// shell.
     pub allow_login_shell: Option<bool>,
 
+    /// Default timeout for shell commands in milliseconds when no per-call timeout is provided.
+    pub exec_command_timeout_ms: Option<u64>,
+
     /// Sandbox mode to use.
     pub sandbox_mode: Option<SandboxMode>,
 
@@ -1835,7 +1840,6 @@ impl Config {
         }
         let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features)
             .unwrap_or(WebSearchMode::Cached);
-
         let mut model_providers = built_in_model_providers();
         // Merge user-defined providers into the built-in list.
         for (key, provider) in cfg.model_providers.into_iter() {
@@ -1860,6 +1864,10 @@ impl Config {
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
+        let exec_command_timeout_ms = cfg
+            .exec_command_timeout_ms
+            .filter(|timeout_ms| *timeout_ms > 0)
+            .unwrap_or(crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS);
 
         let history = cfg.history.unwrap_or_default();
 
@@ -2139,6 +2147,7 @@ impl Config {
                 macos_seatbelt_profile_extensions: None,
             },
             enforce_residency: enforce_residency.value,
+            exec_command_timeout_ms,
             notify: cfg.notify,
             user_instructions,
             base_instructions,
@@ -5175,6 +5184,7 @@ model_verbosity = "high"
                     macos_seatbelt_profile_extensions: None,
                 },
                 enforce_residency: Constrained::allow_any(None),
+                exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
                 user_instructions: None,
                 notify: None,
                 cwd: fixture.cwd(),
@@ -5304,6 +5314,7 @@ model_verbosity = "high"
                 macos_seatbelt_profile_extensions: None,
             },
             enforce_residency: Constrained::allow_any(None),
+            exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -5431,6 +5442,7 @@ model_verbosity = "high"
                 macos_seatbelt_profile_extensions: None,
             },
             enforce_residency: Constrained::allow_any(None),
+            exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -5544,6 +5556,7 @@ model_verbosity = "high"
                 macos_seatbelt_profile_extensions: None,
             },
             enforce_residency: Constrained::allow_any(None),
+            exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
