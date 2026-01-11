@@ -8166,7 +8166,7 @@ mod tests {
             std::iter::once(&user1),
             reconstruction_turn.truncation_policy,
         );
-        rollout_items.push(RolloutItem::ResponseItem(user1.clone()));
+        rollout_items.push(RolloutItem::ResponseItem(user1));
 
         let assistant1 = ResponseItem::Message {
             id: None,
@@ -8181,7 +8181,7 @@ mod tests {
             std::iter::once(&assistant1),
             reconstruction_turn.truncation_policy,
         );
-        rollout_items.push(RolloutItem::ResponseItem(assistant1.clone()));
+        rollout_items.push(RolloutItem::ResponseItem(assistant1));
 
         let summary1 = "summary one";
         let snapshot1 = live_history
@@ -8209,7 +8209,7 @@ mod tests {
             std::iter::once(&user2),
             reconstruction_turn.truncation_policy,
         );
-        rollout_items.push(RolloutItem::ResponseItem(user2.clone()));
+        rollout_items.push(RolloutItem::ResponseItem(user2));
 
         let assistant2 = ResponseItem::Message {
             id: None,
@@ -8224,7 +8224,7 @@ mod tests {
             std::iter::once(&assistant2),
             reconstruction_turn.truncation_policy,
         );
-        rollout_items.push(RolloutItem::ResponseItem(assistant2.clone()));
+        rollout_items.push(RolloutItem::ResponseItem(assistant2));
 
         let summary2 = "summary two";
         let snapshot2 = live_history
