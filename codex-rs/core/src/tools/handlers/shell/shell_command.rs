@@ -99,6 +99,9 @@ impl ShellCommandHandler {
             .unwrap_or(session_shell.as_ref());
         let use_login_shell = Self::resolve_use_login_shell(params.login, allow_login_shell)?;
         let command = Self::base_command(shell, &params.command, use_login_shell);
+        let timeout_ms = params
+            .timeout_ms
+            .unwrap_or(turn_context.exec_command_timeout_ms);
 
         let mut env = create_env(
             &turn_context.config.permissions.shell_environment_policy,
@@ -110,7 +113,7 @@ impl ShellCommandHandler {
         Ok(ExecParams {
             command,
             cwd,
-            expiration: params.timeout_ms.into(),
+            expiration: timeout_ms.into(),
             capture_policy: ExecCapturePolicy::ShellTool,
             env,
             network: turn_context.network.clone(),

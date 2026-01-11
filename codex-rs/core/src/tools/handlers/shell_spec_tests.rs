@@ -241,7 +241,7 @@ Examples of valid command strings:
         (
             "timeout_ms".to_string(),
             JsonSchema::number(Some(
-                "Maximum command runtime. Defaults to 10000 ms.".to_string(),
+                "Maximum command runtime. Defaults to configured exec_command_timeout_ms (10000 ms when unset).".to_string(),
             )),
         ),
         (
