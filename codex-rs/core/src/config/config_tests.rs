@@ -221,6 +221,62 @@ fn runtime_config_defaults_model_availability_nux() {
 }
 
 #[test]
+fn config_toml_deserializes_exec_command_timeout_ms() {
+    let cfg: ConfigToml = toml::from_str("exec_command_timeout_ms = 30000")
+        .expect("TOML deserialization should succeed for exec_command_timeout_ms");
+
+    assert_eq!(cfg.exec_command_timeout_ms, Some(30_000));
+}
+
+#[test]
+fn runtime_config_defaults_exec_command_timeout_ms() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").path().to_path_buf(),
+    )
+    .expect("load config");
+
+    assert_eq!(
+        cfg.exec_command_timeout_ms,
+        crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS
+    );
+}
+
+#[test]
+fn runtime_config_uses_configured_exec_command_timeout_ms() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            exec_command_timeout_ms: Some(30_000),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").path().to_path_buf(),
+    )
+    .expect("load config");
+
+    assert_eq!(cfg.exec_command_timeout_ms, 30_000);
+}
+
+#[test]
+fn runtime_config_ignores_zero_exec_command_timeout_ms() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            exec_command_timeout_ms: Some(0),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").path().to_path_buf(),
+    )
+    .expect("load config");
+
+    assert_eq!(
+        cfg.exec_command_timeout_ms,
+        crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS
+    );
+}
+
+#[test]
 fn config_toml_deserializes_permission_profiles() {
     let toml = r#"
 default_permissions = "workspace"
@@ -3924,6 +3980,7 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
                 macos_seatbelt_profile_extensions: None,
             },
             enforce_residency: Constrained::allow_any(None),
+            exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -4060,6 +4117,7 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
             macos_seatbelt_profile_extensions: None,
         },
         enforce_residency: Constrained::allow_any(None),
+        exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
         user_instructions: None,
         notify: None,
         cwd: fixture.cwd(),
@@ -4194,6 +4252,7 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
             macos_seatbelt_profile_extensions: None,
         },
         enforce_residency: Constrained::allow_any(None),
+        exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
         user_instructions: None,
         notify: None,
         cwd: fixture.cwd(),
@@ -4314,6 +4373,7 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
             macos_seatbelt_profile_extensions: None,
         },
         enforce_residency: Constrained::allow_any(None),
+        exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
         user_instructions: None,
         notify: None,
         cwd: fixture.cwd(),
