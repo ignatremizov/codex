@@ -107,6 +107,9 @@ pub struct ConfigToml {
     /// shell.
     pub allow_login_shell: Option<bool>,
 
+    /// Default timeout for shell commands in milliseconds when no per-call timeout is provided.
+    pub exec_command_timeout_ms: Option<u64>,
+
     /// Sandbox mode to use.
     pub sandbox_mode: Option<SandboxMode>,
 
