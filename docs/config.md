@@ -97,6 +97,16 @@ output. The setting governs newly emitted messages; resumed and forked history r
 persisted agent message's encrypted or plaintext representation. Config-lock exports include the
 resolved setting.
 
+## Shell command timeout
+
+Set a default timeout (in milliseconds) for shell commands when `timeout_ms` is not provided:
+
+```toml
+exec_command_timeout_ms = 30000
+```
+
+If unset, Codex uses the built-in default (10,000 ms).
+
 ## SQLite State DB
 
 Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the
