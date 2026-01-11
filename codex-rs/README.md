@@ -50,7 +50,7 @@ You can enable notifications by configuring a script that is run whenever the ag
 
 ### `codex exec` to run Codex programmatically/non-interactively
 
-To run Codex non-interactively, run `codex exec PROMPT` (you can also pass the prompt via `stdin`) and Codex will work on your task until it decides that it is done and exits. Output is printed to the terminal directly. You can set the `RUST_LOG` environment variable to see more about what's going on.
+To run Codex non-interactively, run `codex exec PROMPT` (you can also pass the prompt via `stdin`) and Codex will work on your task until it decides that it is done and exits. Output is printed to the terminal directly. Use `--output-session-id path` to capture the session UUID for later `codex exec resume`, and `--output-last-message path` to write just the final response. You can set the `RUST_LOG` environment variable to see more about what's going on.
 
 ### Experimenting with the Codex Sandbox
 

@@ -93,6 +93,10 @@ pub struct Cli {
     #[arg(long = "output-last-message", short = 'o', value_name = "FILE")]
     pub last_message_file: Option<PathBuf>,
 
+    /// Specifies file where the session id should be written.
+    #[arg(long = "output-session-id", value_name = "FILE")]
+    pub session_id_file: Option<PathBuf>,
+
     /// Initial instructions for the agent. If not provided as an argument (or
     /// if `-` is used), instructions are read from stdin.
     #[arg(value_name = "PROMPT", value_hint = clap::ValueHint::Other)]

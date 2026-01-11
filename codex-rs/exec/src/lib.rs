@@ -86,6 +86,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         add_dir,
         color,
         last_message_file,
+        session_id_file,
         json: json_mode,
         sandbox_mode: sandbox_mode_cli_arg,
         prompt,
@@ -246,11 +247,15 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         .try_init();
 
     let mut event_processor: Box<dyn EventProcessor> = match json_mode {
-        true => Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone())),
+        true => Box::new(EventProcessorWithJsonOutput::new(
+            last_message_file.clone(),
+            session_id_file.clone(),
+        )),
         _ => Box::new(EventProcessorWithHumanOutput::create_with_ansi(
             stdout_with_ansi,
             &config,
             last_message_file.clone(),
+            session_id_file.clone(),
         )),
     };
 

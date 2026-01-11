@@ -36,10 +36,22 @@ pub(crate) fn handle_last_message(last_agent_message: Option<&str>, output_file:
     }
 }
 
+pub(crate) fn handle_session_id(session_id: &str, output_file: &Path) {
+    write_session_id_file(session_id, Some(output_file));
+}
+
 fn write_last_message_file(contents: &str, last_message_path: Option<&Path>) {
     if let Some(path) = last_message_path
         && let Err(e) = std::fs::write(path, contents)
     {
         eprintln!("Failed to write last message file {path:?}: {e}");
+    }
+}
+
+fn write_session_id_file(contents: &str, session_id_path: Option<&Path>) {
+    if let Some(path) = session_id_path
+        && let Err(e) = std::fs::write(path, contents)
+    {
+        eprintln!("Failed to write session id file {path:?}: {e}");
     }
 }

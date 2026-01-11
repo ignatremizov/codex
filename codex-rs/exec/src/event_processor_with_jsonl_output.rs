@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicU64;
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
+use crate::event_processor::handle_session_id;
 use crate::exec_events::AgentMessageItem;
 use crate::exec_events::CommandExecutionItem;
 use crate::exec_events::CommandExecutionStatus;
@@ -43,6 +44,7 @@ use tracing::warn;
 
 pub struct EventProcessorWithJsonOutput {
     last_message_path: Option<PathBuf>,
+    session_id_path: Option<PathBuf>,
     next_event_id: AtomicU64,
     // Tracks running commands by call_id, including the associated item id.
     running_commands: HashMap<String, RunningCommand>,
@@ -76,9 +78,10 @@ struct RunningMcpToolCall {
 }
 
 impl EventProcessorWithJsonOutput {
-    pub fn new(last_message_path: Option<PathBuf>) -> Self {
+    pub fn new(last_message_path: Option<PathBuf>, session_id_path: Option<PathBuf>) -> Self {
         Self {
             last_message_path,
+            session_id_path,
             next_event_id: AtomicU64::new(0),
             running_commands: HashMap::new(),
             running_patch_applies: HashMap::new(),
@@ -514,6 +517,10 @@ impl EventProcessorWithJsonOutput {
 
 impl EventProcessor for EventProcessorWithJsonOutput {
     fn print_config_summary(&mut self, _: &Config, _: &str, ev: &protocol::SessionConfiguredEvent) {
+        if let Some(output_file) = self.session_id_path.as_deref() {
+            let session_id = ev.session_id.to_string();
+            handle_session_id(&session_id, output_file);
+        }
         self.process_event(protocol::Event {
             id: "".to_string(),
             msg: protocol::EventMsg::SessionConfigured(ev.clone()),

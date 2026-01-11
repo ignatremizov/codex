@@ -34,6 +34,7 @@ use std::time::Instant;
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
+use crate::event_processor::handle_session_id;
 use codex_common::create_config_summary_entries;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
@@ -61,6 +62,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     show_agent_reasoning: bool,
     show_raw_agent_reasoning: bool,
     last_message_path: Option<PathBuf>,
+    session_id_path: Option<PathBuf>,
     last_total_token_usage: Option<codex_core::protocol::TokenUsageInfo>,
     final_message: Option<String>,
 }
@@ -70,6 +72,7 @@ impl EventProcessorWithHumanOutput {
         with_ansi: bool,
         config: &Config,
         last_message_path: Option<PathBuf>,
+        session_id_path: Option<PathBuf>,
     ) -> Self {
         let call_id_to_patch = HashMap::new();
 
@@ -87,6 +90,7 @@ impl EventProcessorWithHumanOutput {
                 show_agent_reasoning: !config.hide_agent_reasoning,
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 last_message_path,
+                session_id_path,
                 last_total_token_usage: None,
                 final_message: None,
             }
@@ -104,6 +108,7 @@ impl EventProcessorWithHumanOutput {
                 show_agent_reasoning: !config.hide_agent_reasoning,
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 last_message_path,
+                session_id_path,
                 last_total_token_usage: None,
                 final_message: None,
             }
@@ -146,6 +151,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             "session id",
             session_configured_event.session_id.to_string(),
         ));
+
+        if let Some(output_file) = self.session_id_path.as_deref() {
+            let session_id = session_configured_event.session_id.to_string();
+            handle_session_id(&session_id, output_file);
+        }
 
         for (key, value) in entries {
             eprintln!("{} {}", format!("{key}:").style(self.bold), value);
