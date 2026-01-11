@@ -149,6 +149,9 @@ pub struct Config {
 
     pub shell_environment_policy: ShellEnvironmentPolicy,
 
+    /// Default timeout for shell commands when no per-call timeout is provided.
+    pub exec_command_timeout_ms: u64,
+
     /// When `true`, `AgentReasoning` events emitted by the backend will be
     /// suppressed from the frontend output. This can reduce visual noise when
     /// users are only interested in the final agent responses.
@@ -778,6 +781,9 @@ pub struct ConfigToml {
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,
 
+    /// Default timeout for shell commands in milliseconds when no per-call timeout is provided.
+    pub exec_command_timeout_ms: Option<u64>,
+
     /// Sandbox mode to use.
     pub sandbox_mode: Option<SandboxMode>,
 
@@ -1394,6 +1400,10 @@ impl Config {
             .clone();
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
+        let exec_command_timeout_ms = cfg
+            .exec_command_timeout_ms
+            .filter(|timeout_ms| *timeout_ms > 0)
+            .unwrap_or(crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS);
 
         let history = cfg.history.unwrap_or_default();
 
@@ -1520,6 +1530,7 @@ impl Config {
             did_user_set_custom_approval_policy_or_sandbox_mode,
             forced_auto_mode_downgraded_on_windows,
             shell_environment_policy,
+            exec_command_timeout_ms,
             notify: cfg.notify,
             user_instructions,
             base_instructions,
@@ -3744,6 +3755,7 @@ model_verbosity = "high"
                 did_user_set_custom_approval_policy_or_sandbox_mode: true,
                 forced_auto_mode_downgraded_on_windows: false,
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
+                exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
                 user_instructions: None,
                 notify: None,
                 cwd: fixture.cwd(),
@@ -3827,6 +3839,7 @@ model_verbosity = "high"
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
             forced_auto_mode_downgraded_on_windows: false,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
+            exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -3925,6 +3938,7 @@ model_verbosity = "high"
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
             forced_auto_mode_downgraded_on_windows: false,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
+            exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -4009,6 +4023,7 @@ model_verbosity = "high"
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
             forced_auto_mode_downgraded_on_windows: false,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
+            exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
