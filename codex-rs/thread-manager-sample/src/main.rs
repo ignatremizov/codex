@@ -200,6 +200,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         remote_compaction_handoff_model: None,
         remote_compaction_handoff_enabled: true,
         enforce_residency: Constrained::allow_any(/*initial_value*/ None),
+        exec_command_timeout_ms: 10_000,
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
         base_instructions: None,
