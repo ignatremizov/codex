@@ -94,11 +94,14 @@ impl ShellCommandHandler {
         let command = Self::base_command(shell.as_ref(), &params.command, use_login_shell);
         #[allow(deprecated)]
         let cwd = turn_context.resolve_path(params.workdir.clone());
+        let timeout_ms = params
+            .timeout_ms
+            .unwrap_or(turn_context.exec_command_timeout_ms);
 
         Ok(ExecParams {
             command,
             cwd,
-            expiration: params.timeout_ms.into(),
+            expiration: timeout_ms.into(),
             capture_policy: ExecCapturePolicy::ShellTool,
             env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
             network: turn_context.network.clone(),
