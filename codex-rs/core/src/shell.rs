@@ -392,9 +392,9 @@ mod tests {
         let shell_path = bash_shell.shell_path;
 
         assert!(
-            shell_path == Path::new("/bin/bash")
-                || shell_path == Path::new("/usr/bin/bash")
-                || shell_path == Path::new("/usr/local/bin/bash"),
+            shell_path.as_path() == Path::new("/bin/bash")
+                || shell_path.as_path() == Path::new("/usr/bin/bash")
+                || shell_path.as_path() == Path::new("/usr/local/bin/bash"),
             "shell path: {shell_path:?}",
         );
     }
@@ -404,7 +404,8 @@ mod tests {
         let sh_shell = get_shell(ShellType::Sh, None).unwrap();
         let shell_path = sh_shell.shell_path;
         assert!(
-            shell_path == Path::new("/bin/sh") || shell_path == Path::new("/usr/bin/sh"),
+            shell_path.as_path() == Path::new("/bin/sh")
+                || shell_path.as_path() == Path::new("/usr/bin/sh"),
             "shell path: {shell_path:?}",
         );
     }
