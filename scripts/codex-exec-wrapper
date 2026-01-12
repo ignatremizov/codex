@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+import json
+import subprocess
+import sys
+import threading
+
+
+MAX_OUTPUT_LINES = 20
+
+
+def write_stderr(line: str = "") -> None:
+    sys.stderr.write(f"{line}\n")
+    sys.stderr.flush()
+
+
+def forward_stream(src, dst) -> None:
+    for line in src:
+        dst.write(line)
+        dst.flush()
+
+
+def format_patch_kind(kind: str) -> str:
+    return {
+        "add": "A",
+        "delete": "D",
+        "update": "M",
+    }.get(kind, "?")
+
+
+def format_command_output(output: str) -> None:
+    if not output:
+        return
+    for line in output.splitlines()[:MAX_OUTPUT_LINES]:
+        write_stderr(line)
+
+
+def print_plan(items) -> None:
+    write_stderr("plan update")
+    for item in items:
+        marker = "x" if item.get("completed") else "-"
+        text = item.get("text", "")
+        write_stderr(f"  {marker} {text}")
+
+
+def main() -> int:
+    args = [arg for arg in sys.argv[1:] if arg not in ("--json", "--experimental-json")]
+    cmd = ["codex", "exec", "--json", *args]
+    proc = subprocess.Popen(
+        cmd,
+        stdin=None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    stderr_thread = threading.Thread(
+        target=forward_stream, args=(proc.stderr, sys.stderr), daemon=True
+    )
+    stderr_thread.start()
+
+    session_id = None
+    last_message = None
+    final_printed = False
+
+    if proc.stdout is None:
+        write_stderr("error: failed to read codex exec output")
+        return 1
+
+    for raw_line in proc.stdout:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            write_stderr(line)
+            continue
+
+        event_type = event.get("type")
+        if event_type == "thread.started":
+            session_id = event.get("thread_id", session_id)
+            continue
+
+        if event_type == "turn.completed":
+            if last_message and not final_printed:
+                if last_message.endswith("\n"):
+                    sys.stdout.write(last_message)
+                else:
+                    sys.stdout.write(f"{last_message}\n")
+                sys.stdout.flush()
+                final_printed = True
+            continue
+
+        if event_type == "turn.failed":
+            error = event.get("error", {}).get("message", "")
+            if error:
+                write_stderr(f"ERROR: {error}")
+            continue
+
+        if event_type == "error":
+            message = event.get("message", "")
+            if message:
+                write_stderr(f"ERROR: {message}")
+            continue
+
+        if event_type == "item.started":
+            item = event.get("item", {})
+            item_type = item.get("type")
+            if item_type == "command_execution":
+                command = item.get("command", "")
+                write_stderr(f"exec {command}".rstrip())
+            elif item_type == "mcp_tool_call":
+                server = item.get("server", "")
+                tool = item.get("tool", "")
+                write_stderr(f"mcp {server}.{tool}".rstrip("."))
+            elif item_type == "todo_list":
+                items = item.get("items", [])
+                print_plan(items)
+            continue
+
+        if event_type == "item.updated":
+            item = event.get("item", {})
+            if item.get("type") == "todo_list":
+                items = item.get("items", [])
+                print_plan(items)
+            continue
+
+        if event_type == "item.completed":
+            item = event.get("item", {})
+            item_type = item.get("type")
+            if item_type == "agent_message":
+                message = item.get("text", "")
+                if message:
+                    last_message = message
+            elif item_type == "command_execution":
+                exit_code = item.get("exit_code")
+                if exit_code == 0:
+                    write_stderr("exec succeeded:")
+                elif exit_code is not None:
+                    write_stderr(f"exec exited {exit_code}:")
+                else:
+                    write_stderr("exec finished:")
+                format_command_output(item.get("aggregated_output", ""))
+            elif item_type == "file_change":
+                status = item.get("status", "")
+                label = "file update"
+                if status:
+                    write_stderr(f"{label} {status}:")
+                else:
+                    write_stderr(f"{label}:")
+                for change in item.get("changes", []):
+                    kind = format_patch_kind(change.get("kind", ""))
+                    path = change.get("path", "")
+                    write_stderr(f"{kind} {path}".rstrip())
+            elif item_type == "mcp_tool_call":
+                server = item.get("server", "")
+                tool = item.get("tool", "")
+                status = item.get("status", "")
+                if status == "failed":
+                    error = (item.get("error") or {}).get("message", "")
+                    if error:
+                        write_stderr(f"mcp {server}.{tool} failed: {error}")
+                    else:
+                        write_stderr(f"mcp {server}.{tool} failed")
+                elif status == "completed":
+                    write_stderr(f"mcp {server}.{tool} completed")
+                else:
+                    write_stderr(f"mcp {server}.{tool} {status}".rstrip())
+            elif item_type == "web_search":
+                query = item.get("query", "")
+                write_stderr(f"web search: {query}")
+            elif item_type == "todo_list":
+                items = item.get("items", [])
+                print_plan(items)
+            elif item_type == "error":
+                message = item.get("message", "")
+                if message:
+                    write_stderr(f"warning: {message}")
+
+    proc.wait()
+
+    if last_message and not final_printed:
+        if last_message.endswith("\n"):
+            sys.stdout.write(last_message)
+        else:
+            sys.stdout.write(f"{last_message}\n")
+        sys.stdout.flush()
+
+    if session_id:
+        write_stderr(f"session id: {session_id}")
+
+    return proc.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())
