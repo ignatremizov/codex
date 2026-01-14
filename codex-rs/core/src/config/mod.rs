@@ -240,6 +240,9 @@ pub struct Config {
     /// Show startup tooltips in the TUI welcome screen.
     pub show_tooltips: bool,
 
+    /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
+    pub show_compact_summary: bool,
+
     /// Start the TUI in the specified collaboration mode (plan/default).
     pub experimental_mode: Option<ModeKind>,
 
@@ -1868,6 +1871,11 @@ impl Config {
                 .unwrap_or_default(),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
             show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
+            show_compact_summary: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.show_compact_summary)
+                .unwrap_or(true),
             experimental_mode: cfg.tui.as_ref().and_then(|t| t.experimental_mode),
             tui_alternate_screen: cfg
                 .tui
@@ -2119,6 +2127,33 @@ persistence = "none"
                 notification_method: NotificationMethod::Auto,
                 animations: true,
                 show_tooltips: true,
+                show_compact_summary: true,
+                experimental_mode: None,
+                alternate_screen: AltScreenMode::Auto,
+                status_line: None,
+            }
+        );
+    }
+
+    #[test]
+    fn tui_config_can_disable_compact_summary() {
+        let cfg = r#"
+[tui]
+show_compact_summary = false
+"#;
+
+        let parsed = toml::from_str::<ConfigToml>(cfg)
+            .expect("TUI config with show_compact_summary should succeed");
+        let tui = parsed.tui.expect("config should include tui section");
+
+        assert_eq!(
+            tui,
+            Tui {
+                notifications: Notifications::Enabled(true),
+                notification_method: NotificationMethod::Auto,
+                animations: true,
+                show_tooltips: true,
+                show_compact_summary: false,
                 experimental_mode: None,
                 alternate_screen: AltScreenMode::Auto,
                 status_line: None,
@@ -4121,6 +4156,7 @@ model_verbosity = "high"
                 tui_notification_method: Default::default(),
                 animations: true,
                 show_tooltips: true,
+                show_compact_summary: true,
                 experimental_mode: None,
                 analytics_enabled: Some(true),
                 feedback_enabled: true,
@@ -4234,6 +4270,7 @@ model_verbosity = "high"
             tui_notification_method: Default::default(),
             animations: true,
             show_tooltips: true,
+            show_compact_summary: true,
             experimental_mode: None,
             analytics_enabled: Some(true),
             feedback_enabled: true,
@@ -4345,6 +4382,7 @@ model_verbosity = "high"
             tui_notification_method: Default::default(),
             animations: true,
             show_tooltips: true,
+            show_compact_summary: true,
             experimental_mode: None,
             analytics_enabled: Some(false),
             feedback_enabled: true,
@@ -4442,6 +4480,7 @@ model_verbosity = "high"
             tui_notification_method: Default::default(),
             animations: true,
             show_tooltips: true,
+            show_compact_summary: true,
             experimental_mode: None,
             analytics_enabled: Some(true),
             feedback_enabled: true,

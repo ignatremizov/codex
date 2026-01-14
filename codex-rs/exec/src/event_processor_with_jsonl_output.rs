@@ -13,6 +13,7 @@ use crate::exec_events::CollabToolCallItem;
 use crate::exec_events::CollabToolCallStatus;
 use crate::exec_events::CommandExecutionItem;
 use crate::exec_events::CommandExecutionStatus;
+use crate::exec_events::ContextCompactedEvent;
 use crate::exec_events::ErrorItem;
 use crate::exec_events::FileChangeItem;
 use crate::exec_events::FileUpdateChange;
@@ -187,6 +188,12 @@ impl EventProcessorWithJsonOutput {
                 vec![ThreadEvent::Error(ThreadErrorEvent { message })]
             }
             protocol::EventMsg::PlanUpdate(ev) => self.handle_plan_update(ev),
+            protocol::EventMsg::ContextCompacted(ev) => {
+                vec![ThreadEvent::ContextCompacted(ContextCompactedEvent {
+                    summary: ev.summary.clone(),
+                    message: ev.message.clone(),
+                })]
+            }
             _ => Vec::new(),
         }
     }

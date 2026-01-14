@@ -101,6 +101,8 @@ pub enum Feature {
     WindowsSandbox,
     /// Use the elevated Windows sandbox pipeline (setup + runner).
     WindowsSandboxElevated,
+    /// Remote compaction enabled for OpenAI providers.
+    RemoteCompaction,
     /// Refresh remote models and emit AppReady once the list is available.
     RemoteModels,
     /// Experimental shell snapshotting.
@@ -523,6 +525,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "elevated_windows_sandbox",
         stage: Stage::Removed,
         default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::RemoteCompaction,
+        key: "remote_compaction",
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::RemoteModels,
