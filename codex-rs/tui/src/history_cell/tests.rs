@@ -1028,6 +1028,67 @@ fn prefixed_wrapped_history_cell_does_not_split_url_like_token() {
 }
 
 #[test]
+fn compaction_summary_cell_wraps_and_preserves_blank_lines() {
+    let cell = new_compaction_summary("First line\n\nSecond line that is long".to_string());
+    let rendered = render_lines(&cell.display_lines(24));
+
+    assert_eq!(
+        rendered,
+        vec![
+            "• Compacted summary".to_string(),
+            "  First line".to_string(),
+            "  ".to_string(),
+            "  Second line that is".to_string(),
+            "  long".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn compaction_summary_cell_handles_empty_summary() {
+    let cell = new_compaction_summary("   ".to_string());
+    let rendered = render_lines(&cell.display_lines(40));
+
+    assert_eq!(
+        rendered,
+        vec![
+            "• Compacted summary".to_string(),
+            "  (summary was empty)".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn compaction_prompt_cell_wraps_and_preserves_blank_lines() {
+    let cell = new_compaction_prompt("Prompt line\n\nMore detail".to_string());
+    let rendered = render_lines(&cell.display_lines(24));
+
+    assert_eq!(
+        rendered,
+        vec![
+            "• Compacted prompt".to_string(),
+            "  Prompt line".to_string(),
+            "  ".to_string(),
+            "  More detail".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn compaction_prompt_cell_handles_empty_prompt() {
+    let cell = new_compaction_prompt("   ".to_string());
+    let rendered = render_lines(&cell.display_lines(40));
+
+    assert_eq!(
+        rendered,
+        vec![
+            "• Compacted prompt".to_string(),
+            "  (prompt was empty)".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn unified_exec_interaction_cell_does_not_split_url_like_stdin_token() {
     let url_like = "example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890";
     let cell = UnifiedExecInteractionCell::new(Some("true".to_string()), url_like.to_string());
