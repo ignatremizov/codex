@@ -2239,6 +2239,11 @@
           "default": true,
           "description": "Enable desktop notifications from the TUI. Defaults to `true`."
         },
+        "show_compact_summary": {
+          "default": true,
+          "description": "Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`. Defaults to `true`.",
+          "type": "boolean"
+        },
         "show_tooltips": {
           "default": true,
           "description": "Show startup tooltips in the TUI welcome screen. Defaults to `true`.",

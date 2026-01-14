@@ -2607,6 +2607,46 @@ impl ChatWidget {
         self.finalize_completed_assistant_message(Some(&message));
     }
 
+    fn on_context_compacted(&mut self, summary: Option<String>, message: Option<String>) {
+        self.flush_answer_stream_with_separator();
+        self.handle_stream_finished();
+
+        if !self.config.show_compact_summary {
+            self.add_to_history(history_cell::new_info_event(
+                "Context compacted.".to_owned(),
+                /*hint*/ None,
+            ));
+            self.request_redraw();
+            return;
+        }
+
+        let summary = summary.and_then(|text| {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        });
+        let message = message.and_then(|text| {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        });
+
+        if let Some(message) = message {
+            self.add_boxed_history(Box::new(history_cell::new_compaction_prompt(message)));
+        } else if let Some(summary) = summary {
+            self.add_boxed_history(Box::new(history_cell::new_compaction_summary(summary)));
+        } else {
+            self.add_to_history(history_cell::new_info_event(
+                "Context compacted.".to_owned(),
+                /*hint*/ None,
+            ));
+        }
+        self.request_redraw();
+    }
     fn on_agent_message_delta(&mut self, delta: String) {
         self.handle_streaming_delta(delta);
     }
@@ -6837,9 +6877,7 @@ impl ChatWidget {
             ThreadItem::ExitedReviewMode { .. } => {
                 self.exit_review_mode_after_item();
             }
-            ThreadItem::ContextCompaction { .. } => {
-                self.add_info_message("Context compacted".to_string(), /*hint*/ None);
-            }
+            ThreadItem::ContextCompaction { .. } => {}
             ThreadItem::HookPrompt { .. } => {}
             ThreadItem::CollabAgentToolCall {
                 id,
@@ -7185,7 +7223,17 @@ impl ChatWidget {
             | ServerNotification::WindowsWorldWritableWarning(_)
             | ServerNotification::WindowsSandboxSetupCompleted(_)
             | ServerNotification::AccountLoginCompleted(_) => {}
-            ServerNotification::ContextCompacted(_) => {}
+            ServerNotification::ContextCompacted(notification) => {
+                if notification.message.is_some() {
+                    self.on_context_compacted(notification.summary, notification.message);
+                } else {
+                    self.add_to_history(history_cell::new_info_event(
+                        "Context compacted.".to_owned(),
+                        /*hint*/ None,
+                    ));
+                    self.request_redraw();
+                }
+            }
         }
     }
 
@@ -7725,7 +7773,7 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request, from_replay)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => {}
+            EventMsg::ContextCompacted(ev) => self.on_context_compacted(ev.summary, ev.message),
             EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
                 call_id,
                 model,

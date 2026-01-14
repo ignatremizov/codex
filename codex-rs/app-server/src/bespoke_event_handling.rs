@@ -1394,15 +1394,15 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .send_server_notification(ServerNotification::PlanDelta(notification))
                 .await;
         }
-        EventMsg::ContextCompacted(..) => {
-            // Core still fans out this deprecated event for legacy clients;
-            // v2 clients receive the canonical ContextCompaction item instead.
-            if matches!(api_version, ApiVersion::V2) {
-                return;
-            }
+        EventMsg::ContextCompacted(event) => {
+            // TODO: If we migrate summary rendering onto canonical
+            // `ThreadItem::ContextCompaction { summary, message }`, align with
+            // upstream and suppress deprecated `thread/compacted` for v2 here.
             let notification = ContextCompactedNotification {
                 thread_id: conversation_id.to_string(),
                 turn_id: event_turn_id.clone(),
+                summary: event.summary,
+                message: event.message,
             };
             outgoing
                 .send_server_notification(ServerNotification::ContextCompacted(notification))

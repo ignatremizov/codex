@@ -148,6 +148,7 @@ pub(super) use codex_protocol::protocol::BackgroundEventEvent;
 pub(super) use codex_protocol::protocol::CodexErrorInfo;
 pub(super) use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
 pub(super) use codex_protocol::protocol::CollabAgentSpawnEndEvent;
+pub(super) use codex_protocol::protocol::ContextCompactedEvent;
 pub(super) use codex_protocol::protocol::CreditsSnapshot;
 pub(super) use codex_protocol::protocol::ErrorEvent;
 pub(super) use codex_protocol::protocol::Event;
