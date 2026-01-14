@@ -1825,7 +1825,14 @@ pub struct ModelVerificationEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-pub struct ContextCompactedEvent;
+pub struct ContextCompactedEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message: Option<String>,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnCompleteEvent {
@@ -5267,6 +5274,50 @@ mod tests {
 
         let event: SessionConfiguredEvent = serde_json::from_value(value)?;
         assert_eq!(event.permission_profile, PermissionProfile::read_only());
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_context_compacted_event_with_summary() -> Result<()> {
+        let event = Event {
+            id: "compact-1".to_string(),
+            msg: EventMsg::ContextCompacted(ContextCompactedEvent {
+                summary: Some("summary text".to_string()),
+                message: Some("full prompt text".to_string()),
+            }),
+        };
+
+        let expected = json!({
+            "id": "compact-1",
+            "msg": {
+                "type": "context_compacted",
+                "summary": "summary text",
+                "message": "full prompt text",
+            }
+        });
+
+        assert_eq!(expected, serde_json::to_value(&event)?);
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_context_compacted_event_without_summary() -> Result<()> {
+        let event = Event {
+            id: "compact-2".to_string(),
+            msg: EventMsg::ContextCompacted(ContextCompactedEvent {
+                summary: None,
+                message: None,
+            }),
+        };
+
+        let expected = json!({
+            "id": "compact-2",
+            "msg": {
+                "type": "context_compacted",
+            }
+        });
+
+        assert_eq!(expected, serde_json::to_value(&event)?);
         Ok(())
     }
 

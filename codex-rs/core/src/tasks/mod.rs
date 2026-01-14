@@ -523,6 +523,8 @@ impl Session {
         if let Some(active_turn) = active_turn_to_clear {
             // Let interrupted tasks observe cancellation before dropping pending approvals, or an
             // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+            self.record_active_turn_mcp_server_use_context_before_abort(&active_turn)
+                .await;
             self.input_queue.clear_pending(&active_turn).await;
         }
         if reason == TurnAbortReason::Interrupted && aborted_turn {
@@ -569,6 +571,8 @@ impl Session {
         }
         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
         // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+        self.record_active_turn_mcp_server_use_context_before_abort(&active_turn)
+            .await;
         self.input_queue.clear_pending(&active_turn).await;
 
         if reason == TurnAbortReason::Interrupted {
@@ -620,6 +624,48 @@ impl Session {
             turn_tool_calls = ts.tool_calls;
             token_usage_at_turn_start = Some(ts.token_usage_at_turn_start.clone());
         }
+        let mut pending_input_after_mcp_use = Vec::new();
+        let mcp_use_boundary_recorded = if let Some(mcp_index) =
+            pending_input.iter().position(|item| {
+                let ResponseInputItem::Message { role, content, .. } = item else {
+                    return false;
+                };
+                role == "developer"
+                    && content.iter().any(|content_item| match content_item {
+                        ContentItem::InputText { text } => {
+                            crate::context::McpServerUseInstructions::parse_server_name(text)
+                                .is_some()
+                        }
+                        ContentItem::InputImage { .. } | ContentItem::OutputText { .. } => false,
+                    })
+            }) {
+            if let Some(first_non_mcp_after_boundary) = pending_input
+                .iter()
+                .enumerate()
+                .skip(mcp_index)
+                .find_map(|(index, item)| {
+                    let ResponseInputItem::Message { role, content, .. } = item else {
+                        return Some(index);
+                    };
+                    let is_mcp_use = role == "developer"
+                        && content.iter().any(|content_item| match content_item {
+                            ContentItem::InputText { text } => {
+                                crate::context::McpServerUseInstructions::parse_server_name(text)
+                                    .is_some()
+                            }
+                            ContentItem::InputImage { .. } | ContentItem::OutputText { .. } => {
+                                false
+                            }
+                        });
+                    (!is_mcp_use).then_some(index)
+                })
+            {
+                pending_input_after_mcp_use = pending_input.split_off(first_non_mcp_after_boundary);
+            }
+            true
+        } else {
+            false
+        };
         if !pending_input.is_empty() {
             for pending_input_item in pending_input {
                 match inspect_pending_input(self, &turn_context, pending_input_item).await {
@@ -634,6 +680,9 @@ impl Session {
                 }
             }
         }
+        let queued_pending_input_after_mcp_use = !pending_input_after_mcp_use.is_empty();
+        self.queue_response_items_for_next_turn(pending_input_after_mcp_use)
+            .await;
         // Emit token usage metrics.
         if let Some(token_usage_at_turn_start) = token_usage_at_turn_start {
             // TODO(jif): drop this
@@ -806,6 +855,12 @@ impl Session {
             if !cleared_active_turn {
                 return;
             }
+            if queued_pending_input_after_mcp_use
+                || (mcp_use_boundary_recorded && self.has_trigger_turn_mailbox_items().await)
+            {
+                tokio::spawn(start_pending_work_later(Arc::clone(self)));
+                return;
+            }
             if let Err(err) = self
                 .goal_runtime_apply(GoalRuntimeEvent::MaybeContinueIfIdle)
                 .await
@@ -892,6 +947,12 @@ impl Session {
             .await
             .clear_turn(&task.turn_context.sub_id);
     }
+}
+
+fn start_pending_work_later(sess: Arc<Session>) -> BoxFuture<'static, ()> {
+    Box::pin(async move {
+        sess.maybe_start_turn_for_pending_work().await;
+    })
 }
 
 #[cfg(test)]

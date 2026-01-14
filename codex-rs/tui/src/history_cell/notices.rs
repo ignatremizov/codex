@@ -167,6 +167,104 @@ impl HistoryCell for DeprecationNoticeCell {
         lines
     }
 }
+
+fn wrap_plain_text(source: &str, width: usize) -> Vec<String> {
+    let mut wrapped = Vec::new();
+    for line in source.lines() {
+        if line.trim().is_empty() {
+            wrapped.push(String::new());
+            continue;
+        }
+
+        for chunk in textwrap::wrap(line, width) {
+            wrapped.push(chunk.into_owned());
+        }
+    }
+    wrapped
+}
+
+#[derive(Debug)]
+pub(crate) struct CompactionSummaryCell {
+    summary: String,
+}
+
+pub(crate) fn new_compaction_summary(summary: String) -> CompactionSummaryCell {
+    CompactionSummaryCell { summary }
+}
+
+impl HistoryCell for CompactionSummaryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let mut lines = Vec::new();
+        lines.push(vec!["• ".dim(), "Compacted summary".bold()].into());
+
+        let summary = self.summary.trim();
+        if summary.is_empty() {
+            lines.push(vec!["  ".into(), "(summary was empty)".dim()].into());
+            return lines;
+        }
+
+        let wrap_width = width.saturating_sub(2).max(1) as usize;
+        let wrapped_lines = wrap_plain_text(summary, wrap_width)
+            .into_iter()
+            .map(Line::from)
+            .collect();
+        lines.extend(prefix_lines(wrapped_lines, "  ".into(), "  ".into()));
+
+        lines
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::from("Compacted summary")];
+        lines.extend(raw_lines_from_source(self.summary.trim()));
+        lines
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CompactionPromptCell {
+    message: String,
+}
+
+pub(crate) fn new_compaction_prompt(message: String) -> CompactionPromptCell {
+    CompactionPromptCell { message }
+}
+
+impl HistoryCell for CompactionPromptCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let mut lines = Vec::new();
+        lines.push(vec!["• ".dim(), "Compacted prompt".bold()].into());
+
+        let message = self.message.trim();
+        if message.is_empty() {
+            lines.push(vec!["  ".into(), "(prompt was empty)".dim()].into());
+            return lines;
+        }
+
+        let wrap_width = width.saturating_sub(2).max(1) as usize;
+        let wrapped_lines = wrap_plain_text(message, wrap_width)
+            .into_iter()
+            .map(Line::from)
+            .collect();
+        lines.extend(prefix_lines(wrapped_lines, "  ".into(), "  ".into()));
+
+        lines
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::from("Compacted prompt")];
+        lines.extend(raw_lines_from_source(self.message.trim()));
+        lines
+    }
+}
+
 pub(crate) fn new_info_event(message: String, hint: Option<String>) -> PlainHistoryCell {
     let mut line = vec!["• ".dim(), message.into()];
     if let Some(hint) = hint {
