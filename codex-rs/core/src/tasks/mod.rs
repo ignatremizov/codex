@@ -512,6 +512,8 @@ impl Session {
         if let Some(active_turn) = active_turn_to_clear {
             // Let interrupted tasks observe cancellation before dropping pending approvals, or an
             // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+            self.record_active_turn_mcp_server_use_context_before_abort(&active_turn)
+                .await;
             self.input_queue.clear_pending(&active_turn).await;
         }
         if reason == TurnAbortReason::Interrupted && aborted_turn {
@@ -551,6 +553,8 @@ impl Session {
         }
         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
         // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+        self.record_active_turn_mcp_server_use_context_before_abort(&active_turn)
+            .await;
         self.input_queue.clear_pending(&active_turn).await;
 
         if reason == TurnAbortReason::Interrupted {
@@ -588,7 +592,7 @@ impl Session {
         let Some(turn_state) = turn_state else {
             return;
         };
-        let pending_input = self
+        let mut pending_input = self
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
             .await;
@@ -599,6 +603,23 @@ impl Session {
                 ts.tool_calls,
                 ts.token_usage_at_turn_start.clone(),
             )
+        };
+        let mut pending_input_after_mcp_use = Vec::new();
+        let mcp_use_boundary_recorded = if let Some(mcp_index) = pending_input
+            .iter()
+            .position(is_mcp_server_use_context_input)
+        {
+            if let Some(first_non_mcp_after_boundary) = pending_input
+                .iter()
+                .enumerate()
+                .skip(mcp_index)
+                .find_map(|(index, item)| (!is_mcp_server_use_context_input(item)).then_some(index))
+            {
+                pending_input_after_mcp_use = pending_input.split_off(first_non_mcp_after_boundary);
+            }
+            true
+        } else {
+            false
         };
         if !pending_input.is_empty() {
             for pending_input_item in pending_input {
@@ -622,6 +643,19 @@ impl Session {
                 }
             }
         }
+        let queued_pending_input_after_mcp_use = !pending_input_after_mcp_use.is_empty();
+        let pending_response_items_after_mcp_use = pending_input_after_mcp_use
+            .into_iter()
+            .map(|item| match item {
+                TurnInput::ResponseInputItem(item) => item,
+                TurnInput::UserInput(items) => {
+                    codex_protocol::models::ResponseInputItem::from(items)
+                }
+            })
+            .collect();
+        self.input_queue
+            .queue_response_items_for_next_turn(pending_response_items_after_mcp_use)
+            .await;
         // Emit token usage metrics.
         {
             // TODO(jif): drop this
@@ -798,14 +832,22 @@ impl Session {
                 false
             }
         };
-        if cleared_active_turn {
-            self.emit_thread_idle_lifecycle_if_idle().await;
-        }
         // Regular items were flushed before this terminal event was appended; buffering
         // thread writers may not flush it without another explicit barrier.
         if let Err(err) = self.flush_rollout().await {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
+        if !cleared_active_turn {
+            return;
+        }
+        if queued_pending_input_after_mcp_use
+            || (mcp_use_boundary_recorded
+                && self.input_queue.has_trigger_turn_mailbox_items().await)
+        {
+            tokio::spawn(start_pending_work_later(Arc::clone(self)));
+            return;
+        }
+        self.emit_thread_idle_lifecycle_if_idle().await;
     }
 
     async fn take_active_turn(&self) -> Option<ActiveTurn> {
@@ -917,6 +959,30 @@ impl Session {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
     }
+}
+
+fn is_mcp_server_use_context_input(item: &TurnInput) -> bool {
+    let TurnInput::ResponseInputItem(codex_protocol::models::ResponseInputItem::Message {
+        role,
+        content,
+        ..
+    }) = item
+    else {
+        return false;
+    };
+    role == "developer"
+        && content.iter().any(|content_item| match content_item {
+            ContentItem::InputText { text } => {
+                crate::context::McpServerUseInstructions::parse_server_name(text).is_some()
+            }
+            ContentItem::InputImage { .. } | ContentItem::OutputText { .. } => false,
+        })
+}
+
+fn start_pending_work_later(sess: Arc<Session>) -> BoxFuture<'static, ()> {
+    Box::pin(async move {
+        sess.maybe_start_turn_for_pending_work().await;
+    })
 }
 
 #[cfg(test)]
