@@ -192,6 +192,7 @@ fn config_toml_deserializes_model_availability_nux() {
             notification_method: NotificationMethod::default(),
             animations: true,
             show_tooltips: true,
+            show_compact_summary: true,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
             theme: None,
@@ -987,6 +988,34 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             notification_method: NotificationMethod::Auto,
             animations: true,
             show_tooltips: true,
+            show_compact_summary: true,
+            alternate_screen: AltScreenMode::Auto,
+            status_line: None,
+            theme: None,
+            model_availability_nux: ModelAvailabilityNuxConfig::default(),
+        }
+    );
+}
+
+#[test]
+fn tui_config_can_disable_compact_summary() {
+    let cfg = r#"
+[tui]
+show_compact_summary = false
+"#;
+
+    let parsed = toml::from_str::<ConfigToml>(cfg)
+        .expect("TUI config with show_compact_summary should succeed");
+    let tui = parsed.tui.expect("config should include tui section");
+
+    assert_eq!(
+        tui,
+        Tui {
+            notifications: Notifications::Enabled(true),
+            notification_method: NotificationMethod::Auto,
+            animations: true,
+            show_tooltips: true,
+            show_compact_summary: false,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
             theme: None,
@@ -4110,6 +4139,7 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             animations: true,
             show_tooltips: true,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
+            show_compact_summary: true,
             analytics_enabled: Some(true),
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
@@ -4250,6 +4280,7 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         animations: true,
         show_tooltips: true,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
+        show_compact_summary: true,
         analytics_enabled: Some(true),
         feedback_enabled: true,
         tui_alternate_screen: AltScreenMode::Auto,
@@ -4388,6 +4419,7 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         animations: true,
         show_tooltips: true,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
+        show_compact_summary: true,
         analytics_enabled: Some(false),
         feedback_enabled: true,
         tui_alternate_screen: AltScreenMode::Auto,
@@ -4512,6 +4544,7 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         animations: true,
         show_tooltips: true,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
+        show_compact_summary: true,
         analytics_enabled: Some(true),
         feedback_enabled: true,
         tui_alternate_screen: AltScreenMode::Auto,

@@ -81,6 +81,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     /// Whether to include `AgentReasoning` events in the output.
     show_agent_reasoning: bool,
     show_raw_agent_reasoning: bool,
+    show_compact_summary: bool,
     last_message_path: Option<PathBuf>,
     last_total_token_usage: Option<codex_protocol::protocol::TokenUsageInfo>,
     final_message: Option<String>,
@@ -114,6 +115,7 @@ impl EventProcessorWithHumanOutput {
                 yellow: Style::new().yellow(),
                 show_agent_reasoning: !config.hide_agent_reasoning,
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+                show_compact_summary: config.show_compact_summary,
                 last_message_path,
                 last_total_token_usage: None,
                 final_message: None,
@@ -137,6 +139,7 @@ impl EventProcessorWithHumanOutput {
                 yellow: Style::new(),
                 show_agent_reasoning: !config.hide_agent_reasoning,
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+                show_compact_summary: config.show_compact_summary,
                 last_message_path,
                 last_total_token_usage: None,
                 final_message: None,
@@ -148,6 +151,35 @@ impl EventProcessorWithHumanOutput {
                 progress_done: false,
             }
         }
+    }
+
+    fn print_compaction_section(
+        &self,
+        title: &str,
+        content: Option<&str>,
+        empty_label: &str,
+    ) -> bool {
+        let Some(content) = content else {
+            return false;
+        };
+
+        eprintln!("{}", title.style(self.bold));
+
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            eprintln!("  {}", empty_label.style(self.dimmed));
+            return true;
+        }
+
+        for line in content.split('\n') {
+            if line.trim().is_empty() {
+                eprintln!("  ");
+            } else {
+                eprintln!("  {line}");
+            }
+        }
+
+        true
     }
 }
 
@@ -691,8 +723,33 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
                 return CodexStatus::InitiateShutdown;
             }
-            EventMsg::ContextCompacted(_) => {
-                ts_msg!(self, "context compacted");
+            EventMsg::ContextCompacted(ev) => {
+                if !self.show_compact_summary {
+                    ts_msg!(self, "context compacted");
+                } else {
+                    let summary = ev.summary.as_deref().filter(|text| !text.trim().is_empty());
+                    let message = ev.message.as_deref().filter(|text| !text.trim().is_empty());
+
+                    let rendered = if let Some(message) = message {
+                        self.print_compaction_section(
+                            "Compacted prompt",
+                            Some(message),
+                            "(prompt was empty)",
+                        )
+                    } else if let Some(summary) = summary {
+                        self.print_compaction_section(
+                            "Compacted summary",
+                            Some(summary),
+                            "(summary was empty)",
+                        )
+                    } else {
+                        false
+                    };
+
+                    if !rendered {
+                        ts_msg!(self, "context compacted");
+                    }
+                }
             }
             EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
                 call_id,
