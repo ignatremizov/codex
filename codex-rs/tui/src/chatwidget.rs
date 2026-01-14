@@ -4011,6 +4011,42 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    fn on_context_compacted(&mut self, summary: Option<String>, message: Option<String>) {
+        self.flush_answer_stream_with_separator();
+        self.flush_interrupt_queue();
+        self.flush_active_cell();
+
+        if !self.config.show_compact_summary {
+            self.add_info_message("Context compacted.".to_string(), None);
+            return;
+        }
+
+        let summary = summary.and_then(|text| {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        });
+        let message = message.and_then(|text| {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        });
+
+        if let Some(message) = message {
+            self.add_boxed_history(Box::new(history_cell::new_compaction_prompt(message)));
+            return;
+        }
+        if let Some(summary) = summary {
+            self.add_boxed_history(Box::new(history_cell::new_compaction_summary(summary)));
+            return;
+        }
+        self.add_info_message("Context compacted.".to_string(), None);
+    }
+
     #[cfg(test)]
     fn on_background_event(&mut self, message: String) {
         debug!("BackgroundEvent: {message}");
@@ -6501,6 +6537,9 @@ impl ChatWidget {
                     details: notification.details,
                 })
             }
+            ServerNotification::ContextCompacted(notification) => {
+                self.on_context_compacted(notification.summary, notification.message)
+            }
             ServerNotification::ConfigWarning(notification) => self.on_warning(
                 notification
                     .details
@@ -6596,7 +6635,6 @@ impl ChatWidget {
             | ServerNotification::McpServerOauthLoginCompleted(_)
             | ServerNotification::AppListUpdated(_)
             | ServerNotification::FsChanged(_)
-            | ServerNotification::ContextCompacted(_)
             | ServerNotification::FuzzyFileSearchSessionUpdated(_)
             | ServerNotification::FuzzyFileSearchSessionCompleted(_)
             | ServerNotification::ThreadRealtimeTranscriptUpdated(_)
@@ -7045,7 +7083,7 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request, from_replay)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
+            EventMsg::ContextCompacted(ev) => self.on_context_compacted(ev.summary, ev.message),
             EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
                 call_id,
                 model,

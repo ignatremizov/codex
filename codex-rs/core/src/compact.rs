@@ -11,11 +11,14 @@ use crate::codex::TurnContext;
 use crate::codex::get_last_assistant_message_from_turn;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
+use crate::event_mapping::parse_turn_item;
 use crate::protocol::CompactedItem;
+use crate::protocol::ContextCompactedEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::TurnStartedEvent;
 use crate::protocol::WarningEvent;
 use crate::util::backoff;
+use codex_features::Feature;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
@@ -47,8 +50,11 @@ pub(crate) enum InitialContextInjection {
     DoNotInject,
 }
 
-pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {
-    provider.is_openai()
+pub(crate) fn should_use_remote_compact_task(
+    session: &Session,
+    provider: &ModelProviderInfo,
+) -> bool {
+    provider.is_openai() && session.enabled(Feature::RemoteCompaction)
 }
 
 pub(crate) async fn run_inline_auto_compact_task(
@@ -93,8 +99,9 @@ async fn run_compact_task_inner(
     input: Vec<UserInput>,
     initial_context_injection: InitialContextInjection,
 ) -> CodexResult<()> {
-    let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
-    sess.emit_turn_item_started(&turn_context, &compaction_item)
+    let compaction_item = ContextCompactionItem::new();
+    let started_compaction_item = TurnItem::ContextCompaction(compaction_item.clone());
+    sess.emit_turn_item_started(&turn_context, &started_compaction_item)
         .await;
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
 
@@ -113,7 +120,7 @@ async fn run_compact_task_inner(
     // request tracking)
     // survives retries within this compact turn.
 
-    loop {
+    let summary_suffix = loop {
         // Clone is required because of the loop
         let turn_input = history
             .clone()
@@ -136,7 +143,7 @@ async fn run_compact_task_inner(
         .await;
 
         match attempt_result {
-            Ok(()) => {
+            Ok(summary_suffix) => {
                 if truncated_count > 0 {
                     sess.notify_background_event(
                         turn_context.as_ref(),
@@ -146,7 +153,7 @@ async fn run_compact_task_inner(
                     )
                     .await;
                 }
-                break;
+                break summary_suffix;
             }
             Err(CodexErr::Interrupted) => {
                 return Err(CodexErr::Interrupted);
@@ -186,12 +193,12 @@ async fn run_compact_task_inner(
                 }
             }
         }
-    }
+    };
 
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.raw_items();
-    let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+    let summary_for_event_text = summary_for_event(&summary_text);
     let user_messages = collect_user_messages(history_items);
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
@@ -222,8 +229,20 @@ async fn run_compact_task_inner(
         .await;
     sess.recompute_token_usage(&turn_context).await;
 
-    sess.emit_turn_item_completed(&turn_context, compaction_item)
-        .await;
+    let mut completed_compaction_item = compaction_item;
+    completed_compaction_item.summary = summary_for_event_text.clone();
+    completed_compaction_item.message = Some(summary_text.clone());
+
+    sess.emit_turn_item_completed(
+        &turn_context,
+        TurnItem::ContextCompaction(completed_compaction_item),
+    )
+    .await;
+    let event = EventMsg::ContextCompacted(ContextCompactedEvent {
+        summary: summary_for_event_text,
+        message: Some(summary_text),
+    });
+    sess.send_event(&turn_context, event).await;
     let warning = EventMsg::Warning(WarningEvent {
         message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.".to_string(),
     });
@@ -266,6 +285,58 @@ pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn extract_compacted_summary_text(items: &[ResponseItem]) -> Option<String> {
+    let mut fallback_user_message = None;
+    for item in items.iter().rev() {
+        let Some(TurnItem::UserMessage(user)) = parse_turn_item(item) else {
+            continue;
+        };
+        let message = user.message();
+        if message.trim().is_empty() || is_environment_context_message(&message) {
+            continue;
+        }
+        if is_summary_message(&message) {
+            return Some(message);
+        }
+        if fallback_user_message.is_none() {
+            fallback_user_message = Some(message);
+        }
+    }
+    if fallback_user_message.is_some() {
+        return fallback_user_message;
+    }
+
+    items.iter().rev().find_map(|item| match item {
+        ResponseItem::Message { role, content, .. } if role == "assistant" => {
+            content_items_to_text(content).and_then(|text| {
+                if text.trim().is_empty() || is_environment_context_message(&text) {
+                    None
+                } else {
+                    Some(text)
+                }
+            })
+        }
+        _ => None,
+    })
+}
+
+pub(crate) fn summary_for_event(summary_text: &str) -> Option<String> {
+    let summary_text = summary_text
+        .strip_prefix(SUMMARY_PREFIX)
+        .and_then(|text| text.strip_prefix('\n'))
+        .unwrap_or(summary_text);
+    let summary_text = summary_text
+        .split_once("\n\n[SESSION_METADATA]\n")
+        .map(|(text, _)| text)
+        .unwrap_or(summary_text)
+        .trim();
+
+    if summary_text.is_empty() {
+        None
+    } else {
+        Some(summary_text.to_string())
+    }
+}
 pub(crate) fn is_summary_message(message: &str) -> bool {
     message.starts_with(format!("{SUMMARY_PREFIX}\n").as_str())
 }
@@ -321,6 +392,12 @@ pub(crate) fn insert_initial_context_before_last_real_user_or_summary(
     compacted_history
 }
 
+fn is_environment_context_message(message: &str) -> bool {
+    let trimmed = message.trim_start();
+    trimmed
+        .to_ascii_lowercase()
+        .starts_with("<environment_context>")
+}
 pub(crate) fn build_compacted_history(
     initial_context: Vec<ResponseItem>,
     user_messages: &[String],
@@ -395,7 +472,7 @@ async fn drain_to_completed(
     client_session: &mut ModelClientSession,
     turn_metadata_header: Option<&str>,
     prompt: &Prompt,
-) -> CodexResult<()> {
+) -> CodexResult<String> {
     let mut stream = client_session
         .stream(
             prompt,
@@ -407,6 +484,8 @@ async fn drain_to_completed(
             turn_metadata_header,
         )
         .await?;
+    let mut assistant_text = String::new();
+    let mut last_assistant_message = String::new();
     loop {
         let maybe_event = stream.next().await;
         let Some(event) = maybe_event else {
@@ -417,8 +496,16 @@ async fn drain_to_completed(
         };
         match event {
             Ok(ResponseEvent::OutputItemDone(item)) => {
+                if let Some(message) =
+                    get_last_assistant_message_from_turn(std::slice::from_ref(&item))
+                {
+                    last_assistant_message = message;
+                }
                 sess.record_into_history(std::slice::from_ref(&item), turn_context)
                     .await;
+            }
+            Ok(ResponseEvent::OutputTextDelta(delta)) => {
+                assistant_text.push_str(&delta);
             }
             Ok(ResponseEvent::ServerReasoningIncluded(included)) => {
                 sess.set_server_reasoning_included(included).await;
@@ -429,7 +516,10 @@ async fn drain_to_completed(
             Ok(ResponseEvent::Completed { token_usage, .. }) => {
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
                     .await;
-                return Ok(());
+                if assistant_text.trim().is_empty() {
+                    return Ok(last_assistant_message);
+                }
+                return Ok(assistant_text);
             }
             Ok(_) => continue,
             Err(e) => return Err(e),

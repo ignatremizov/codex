@@ -122,6 +122,134 @@ do things
 }
 
 #[test]
+fn summary_for_event_strips_prefix_and_trims() {
+    let summary_text = format!("{SUMMARY_PREFIX}\n  summary line  ");
+
+    let summary = summary_for_event(&summary_text);
+
+    assert_eq!(summary, Some("summary line".to_string()));
+}
+
+#[test]
+fn summary_for_event_returns_none_for_empty_summary() {
+    let summary_text = format!("{SUMMARY_PREFIX}\n   ");
+
+    let summary = summary_for_event(&summary_text);
+
+    assert_eq!(summary, None);
+}
+
+#[test]
+fn summary_for_event_accepts_unprefixed_text() {
+    let summary = summary_for_event("summary line");
+
+    assert_eq!(summary, Some("summary line".to_string()));
+}
+
+#[test]
+fn extract_compacted_summary_text_skips_environment_context() {
+    let items = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "old reply".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "summary text".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "<environment_context>ctx</environment_context>".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+    ];
+
+    let summary = extract_compacted_summary_text(&items);
+
+    assert_eq!(summary, Some("summary text".to_string()));
+}
+
+#[test]
+fn extract_compacted_summary_text_falls_back_to_assistant_message() {
+    let items = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "<environment_context>ctx</environment_context>".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "assistant summary".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+    ];
+
+    let summary = extract_compacted_summary_text(&items);
+
+    assert_eq!(summary, Some("assistant summary".to_string()));
+}
+
+#[test]
+fn extract_compacted_summary_text_prefers_summary_prompt() {
+    let summary_prompt = format!("{SUMMARY_PREFIX}\ncompacted summary");
+    let items = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "recent user message".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: summary_prompt.clone(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "<environment_context>ctx</environment_context>".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+    ];
+
+    let summary = extract_compacted_summary_text(&items);
+
+    assert_eq!(summary, Some(summary_prompt));
+}
+
+#[test]
 fn build_token_limited_compacted_history_truncates_overlong_user_messages() {
     // Use a small truncation limit so the test remains fast while still validating
     // that oversized user content is truncated.
