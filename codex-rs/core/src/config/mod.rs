@@ -293,7 +293,8 @@ pub struct Config {
     /// Persisted startup availability NUX state for model tooltips.
     pub model_availability_nux: ModelAvailabilityNuxConfig,
 
-    /// Start the TUI in the specified collaboration mode (plan/default).
+    /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
+    pub show_compact_summary: bool,
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///
@@ -2294,6 +2295,11 @@ impl Config {
                 .as_ref()
                 .map(|t| t.model_availability_nux.clone())
                 .unwrap_or_default(),
+            show_compact_summary: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.show_compact_summary)
+                .unwrap_or(true),
             tui_alternate_screen: cfg
                 .tui
                 .as_ref()
@@ -2693,6 +2699,7 @@ consolidation_model = "gpt-5"
                 notification_method: NotificationMethod::default(),
                 animations: true,
                 show_tooltips: true,
+                show_compact_summary: true,
                 alternate_screen: AltScreenMode::default(),
                 status_line: None,
                 theme: None,
@@ -2850,6 +2857,34 @@ theme = "dracula"
                 notification_method: NotificationMethod::Auto,
                 animations: true,
                 show_tooltips: true,
+                show_compact_summary: true,
+                alternate_screen: AltScreenMode::Auto,
+                status_line: None,
+                theme: None,
+                model_availability_nux: ModelAvailabilityNuxConfig::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn tui_config_can_disable_compact_summary() {
+        let cfg = r#"
+[tui]
+show_compact_summary = false
+"#;
+
+        let parsed = toml::from_str::<ConfigToml>(cfg)
+            .expect("TUI config with show_compact_summary should succeed");
+        let tui = parsed.tui.expect("config should include tui section");
+
+        assert_eq!(
+            tui,
+            Tui {
+                notifications: Notifications::Enabled(true),
+                notification_method: NotificationMethod::Auto,
+                animations: true,
+                show_tooltips: true,
+                show_compact_summary: false,
                 alternate_screen: AltScreenMode::Auto,
                 status_line: None,
                 theme: None,
@@ -5278,6 +5313,7 @@ model_verbosity = "high"
                 animations: true,
                 show_tooltips: true,
                 model_availability_nux: ModelAvailabilityNuxConfig::default(),
+                show_compact_summary: true,
                 analytics_enabled: Some(true),
                 feedback_enabled: true,
                 tui_alternate_screen: AltScreenMode::Auto,
@@ -5411,6 +5447,7 @@ model_verbosity = "high"
             animations: true,
             show_tooltips: true,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
+            show_compact_summary: true,
             analytics_enabled: Some(true),
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
@@ -5542,6 +5579,7 @@ model_verbosity = "high"
             animations: true,
             show_tooltips: true,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
+            show_compact_summary: true,
             analytics_enabled: Some(false),
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
@@ -5659,6 +5697,7 @@ model_verbosity = "high"
             animations: true,
             show_tooltips: true,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
+            show_compact_summary: true,
             analytics_enabled: Some(true),
             feedback_enabled: true,
             tui_alternate_screen: AltScreenMode::Auto,
