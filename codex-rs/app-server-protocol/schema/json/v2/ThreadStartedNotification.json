@@ -1729,6 +1729,18 @@
             "id": {
               "type": "string"
             },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "contextCompaction"
