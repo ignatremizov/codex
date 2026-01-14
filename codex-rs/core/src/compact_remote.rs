@@ -32,9 +32,11 @@ use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
+use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -174,7 +176,7 @@ async fn run_remote_compact_task_inner_impl(
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
 ) -> CodexResult<()> {
-    let context_compaction_item = ContextCompactionItem::new();
+    let mut context_compaction_item = ContextCompactionItem::new();
     // Use the UI compaction item ID as the trace compaction ID so protocol lifecycle events,
     // endpoint attempts, and the installed history checkpoint all have one join key.
     let compaction_trace = sess.services.rollout_thread_trace.compaction_trace_context(
@@ -183,7 +185,7 @@ async fn run_remote_compact_task_inner_impl(
         turn_context.model_info.slug.as_str(),
         turn_context.provider.info().name.as_str(),
     );
-    let compaction_item = TurnItem::ContextCompaction(context_compaction_item);
+    let compaction_item = TurnItem::ContextCompaction(context_compaction_item.clone());
     sess.emit_turn_item_started(turn_context, &compaction_item)
         .await;
     let mut history = sess.clone_history().await;
@@ -268,6 +270,10 @@ async fn run_remote_compact_task_inner_impl(
     )
     .await;
 
+    let summary_text = crate::compact::extract_compacted_summary_text(&new_history);
+    let summary = summary_text
+        .as_deref()
+        .and_then(crate::compact::summary_for_event);
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage => Some(turn_context.to_turn_context_item()),
@@ -288,8 +294,22 @@ async fn run_remote_compact_task_inner_impl(
         .await;
     sess.recompute_token_usage(turn_context).await;
 
-    sess.emit_turn_item_completed(turn_context, compaction_item)
-        .await;
+    context_compaction_item.summary = summary.clone();
+    context_compaction_item.message = None;
+
+    sess.emit_turn_item_completed(
+        turn_context,
+        TurnItem::ContextCompaction(context_compaction_item),
+    )
+    .await;
+    sess.send_event(
+        turn_context,
+        EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary,
+            message: None,
+        }),
+    )
+    .await;
     Ok(())
 }
 

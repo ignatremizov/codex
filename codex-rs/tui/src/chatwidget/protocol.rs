@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(test)]
+use codex_protocol::protocol::Event;
+#[cfg(test)]
+use codex_protocol::protocol::EventMsg;
+
 impl ChatWidget {
     pub(crate) fn handle_server_notification(
         &mut self,
@@ -245,7 +250,16 @@ impl ChatWidget {
             | ServerNotification::WindowsWorldWritableWarning(_)
             | ServerNotification::WindowsSandboxSetupCompleted(_)
             | ServerNotification::AccountLoginCompleted(_) => {}
-            ServerNotification::ContextCompacted(_) => {}
+            ServerNotification::ContextCompacted(notification) => {
+                self.on_context_compacted(notification.summary, notification.message);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_codex_event(&mut self, event: Event) {
+        if let EventMsg::ContextCompacted(ev) = event.msg {
+            self.on_context_compacted(ev.summary, ev.message);
         }
     }
 
