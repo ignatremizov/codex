@@ -1,4 +1,6 @@
 use super::*;
+use crate::context::ContextualUserFragment;
+use crate::context::McpServerUseInstructions;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
@@ -152,6 +154,154 @@ fn collect_user_messages_filters_legacy_warnings() {
 }
 
 #[test]
+fn collect_user_messages_filters_turn_aborted_marker() {
+    let items = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text:
+                    "<turn_aborted>\n  <turn_id>turn-1</turn_id>\n  <reason>interrupted</reason>\n</turn_aborted>"
+                        .to_string(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "real user message".to_string(),
+            }],
+            phase: None,
+        },
+    ];
+
+    let collected = collect_user_messages(&items);
+
+    assert_eq!(vec!["real user message".to_string()], collected);
+}
+
+#[test]
+fn summary_for_event_strips_prefix_and_trims() {
+    let summary_text = format!("{SUMMARY_PREFIX}\n  summary line  ");
+
+    let summary = summary_for_event(&summary_text);
+
+    assert_eq!(summary, Some("summary line".to_string()));
+}
+
+#[test]
+fn summary_for_event_returns_none_for_empty_summary() {
+    let summary_text = format!("{SUMMARY_PREFIX}\n   ");
+
+    let summary = summary_for_event(&summary_text);
+
+    assert_eq!(summary, None);
+}
+
+#[test]
+fn summary_for_event_accepts_unprefixed_text() {
+    let summary = summary_for_event("summary line");
+
+    assert_eq!(summary, Some("summary line".to_string()));
+}
+
+#[test]
+fn extract_compacted_summary_text_skips_environment_context() {
+    let items = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "old reply".to_string(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "summary text".to_string(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "<environment_context>ctx</environment_context>".to_string(),
+            }],
+            phase: None,
+        },
+    ];
+
+    let summary = extract_compacted_summary_text(&items);
+
+    assert_eq!(summary, Some("summary text".to_string()));
+}
+
+#[test]
+fn extract_compacted_summary_text_falls_back_to_assistant_message() {
+    let items = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "<environment_context>ctx</environment_context>".to_string(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "assistant summary".to_string(),
+            }],
+            phase: None,
+        },
+    ];
+
+    let summary = extract_compacted_summary_text(&items);
+
+    assert_eq!(summary, Some("assistant summary".to_string()));
+}
+
+#[test]
+fn extract_compacted_summary_text_prefers_summary_prompt() {
+    let summary_prompt = format!("{SUMMARY_PREFIX}\ncompacted summary");
+    let items = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "recent user message".to_string(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: summary_prompt.clone(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "<environment_context>ctx</environment_context>".to_string(),
+            }],
+            phase: None,
+        },
+    ];
+
+    let summary = extract_compacted_summary_text(&items);
+
+    assert_eq!(summary, Some(summary_prompt));
+}
+
+#[test]
 fn build_token_limited_compacted_history_truncates_overlong_user_messages() {
     // Use a small truncation limit so the test remains fast while still validating
     // that oversized user content is truncated.
@@ -216,7 +366,225 @@ fn build_token_limited_compacted_history_appends_summary_message() {
 }
 
 #[test]
-fn should_use_remote_compact_task_for_azure_provider() {
+fn collect_mcp_server_use_context_items_preserves_every_explicit_inventory_in_history_order() {
+    let old_linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["old"]"#.to_string()).render();
+    let github =
+        McpServerUseInstructions::new("github".to_string(), r#"["gh"]"#.to_string()).render();
+    let new_linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["new"]"#.to_string()).render();
+    let history = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: old_linear.clone(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: github.clone(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: new_linear.clone(),
+            }],
+            phase: None,
+        },
+    ];
+
+    let collected = collect_mcp_server_use_context_items(&history);
+
+    assert_eq!(
+        collected,
+        vec![
+            ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText { text: old_linear }],
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText { text: github }],
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText { text: new_linear }],
+                phase: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn preserve_mcp_server_use_context_items_does_not_rewrite_existing_replacement_history() {
+    let linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();
+    let github =
+        McpServerUseInstructions::new("github".to_string(), r#"["github"]"#.to_string()).render();
+    let replacement = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "retained prompt".to_string(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText { text: linear }],
+            phase: None,
+        },
+    ];
+    let additional = vec![ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText { text: github }],
+        phase: None,
+    }];
+
+    let merged = preserve_mcp_server_use_context_items(replacement.clone(), &additional);
+
+    assert_eq!(merged, replacement);
+}
+
+#[test]
+fn build_compacted_history_preserving_mcp_context_keeps_invocation_order_in_retained_tail() {
+    let linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();
+    let history = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "first prompt".to_string(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: linear.clone(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "second prompt".to_string(),
+            }],
+            phase: None,
+        },
+    ];
+
+    let compacted = build_compacted_history_preserving_mcp_context(&history, "summary text");
+
+    assert_eq!(
+        compacted,
+        vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "first prompt".to_string(),
+                }],
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText { text: linear }],
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "second prompt".to_string(),
+                }],
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "summary text".to_string(),
+                }],
+                phase: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn insert_mcp_server_use_context_items_at_compaction_boundary_does_not_prepend() {
+    let linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();
+    let summary = format!("{SUMMARY_PREFIX}\nsummary text");
+    let history = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "retained prompt".to_string(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: summary.clone(),
+            }],
+            phase: None,
+        },
+    ];
+    let mcp_context = vec![ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: linear.clone(),
+        }],
+        phase: None,
+    }];
+
+    let merged = insert_mcp_server_use_context_items_at_compaction_boundary(history, mcp_context);
+
+    assert_eq!(
+        merged
+            .iter()
+            .filter_map(|item| match item {
+                ResponseItem::Message { role, content, .. } => {
+                    Some(format!("{role}:{}", content_items_to_text(content)?))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            "user:retained prompt".to_string(),
+            format!("developer:{linear}"),
+            format!("user:{summary}"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn should_use_remote_compact_task_for_azure_provider() {
     let provider = ModelProviderInfo {
         name: "Azure".into(),
         base_url: Some("https://example.com/openai".into()),
@@ -236,8 +604,12 @@ fn should_use_remote_compact_task_for_azure_provider() {
         requires_openai_auth: false,
         supports_websockets: false,
     };
+    let (session, _turn_context) = crate::session::tests::make_session_and_context().await;
 
-    assert!(should_use_remote_compact_task(&provider));
+    assert_eq!(
+        should_use_remote_compact_task(&session, &provider),
+        provider.is_openai() && session.enabled(codex_features::Feature::RemoteCompaction)
+    );
 }
 #[tokio::test]
 async fn process_compacted_history_replaces_developer_messages() {
@@ -619,4 +991,65 @@ fn insert_initial_context_before_last_real_user_or_summary_keeps_compaction_last
         },
     ];
     assert_eq!(refreshed, expected);
+}
+
+#[test]
+fn compaction_output_token_limit_is_half_context_window() {
+    assert_eq!(1, compaction_output_token_limit_for_window(1));
+    assert_eq!(1, compaction_output_token_limit_for_window(2));
+    assert_eq!(16, compaction_output_token_limit_for_window(32));
+    assert_eq!(128, compaction_output_token_limit_for_window(256));
+}
+
+#[test]
+fn compaction_output_token_limit_uses_default_context_window_when_missing() {
+    let limit = compaction_output_token_limit_for_context_window(None);
+    assert_eq!(DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS / 2, limit);
+}
+
+#[test]
+fn assistant_output_tokens_for_items_sums_assistant_message_tokens() {
+    let assistant_text = "word ".repeat(100);
+    let user_text = "word ".repeat(500);
+    let items = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: assistant_text.clone(),
+            }],
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText { text: user_text }],
+            phase: None,
+        },
+    ];
+
+    let expected = approx_token_count(&assistant_text);
+    assert_eq!(expected, assistant_output_tokens_for_items(&items));
+}
+
+#[test]
+fn session_metadata_skips_small_turn_sizes() {
+    let session_id = codex_protocol::ThreadId::new();
+    let user_messages = vec!["short".to_string(), "also short".to_string()];
+    let metadata = build_session_metadata_block(&session_id, None, &user_messages);
+
+    assert!(!metadata.contains("large_user_turn_char_counts"));
+    assert!(metadata.contains(&session_id.to_string()));
+    assert!(metadata.contains("rollout_path: (unavailable)"));
+}
+
+#[test]
+fn session_metadata_includes_large_turn_sizes() {
+    let session_id = codex_protocol::ThreadId::new();
+    let large_message = "x".repeat(COMPACT_LARGE_TURN_CHAR_THRESHOLD + 5);
+    let user_messages = vec!["small".to_string(), large_message];
+    let metadata = build_session_metadata_block(&session_id, None, &user_messages);
+
+    assert!(metadata.contains("large_user_turn_char_counts"));
+    assert!(metadata.contains("turn_index_from_end: 0"));
 }
