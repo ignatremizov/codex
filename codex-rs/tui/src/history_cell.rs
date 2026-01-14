@@ -1670,6 +1670,91 @@ impl HistoryCell for DeprecationNoticeCell {
     }
 }
 
+fn wrap_plain_text(text: &str, width: usize) -> Vec<String> {
+    let mut wrapped = Vec::new();
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            wrapped.push(String::new());
+            continue;
+        }
+
+        for chunk in textwrap::wrap(line, width) {
+            wrapped.push(chunk.into_owned());
+        }
+    }
+    wrapped
+}
+
+#[derive(Debug)]
+pub(crate) struct CompactionSummaryCell {
+    summary: String,
+}
+
+pub(crate) fn new_compaction_summary(summary: String) -> CompactionSummaryCell {
+    CompactionSummaryCell { summary }
+}
+
+impl HistoryCell for CompactionSummaryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let mut lines = Vec::new();
+        lines.push(vec!["• ".dim(), "Compacted summary".bold()].into());
+
+        let summary = self.summary.trim();
+        if summary.is_empty() {
+            lines.push(vec!["  ".into(), "(summary was empty)".dim()].into());
+            return lines;
+        }
+
+        let wrap_width = width.saturating_sub(2).max(1) as usize;
+        let wrapped_lines = wrap_plain_text(summary, wrap_width)
+            .into_iter()
+            .map(Line::from)
+            .collect();
+        lines.extend(prefix_lines(wrapped_lines, "  ".into(), "  ".into()));
+
+        lines
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CompactionPromptCell {
+    message: String,
+}
+
+pub(crate) fn new_compaction_prompt(message: String) -> CompactionPromptCell {
+    CompactionPromptCell { message }
+}
+
+impl HistoryCell for CompactionPromptCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let mut lines = Vec::new();
+        lines.push(vec!["• ".dim(), "Compacted prompt".bold()].into());
+
+        let message = self.message.trim();
+        if message.is_empty() {
+            lines.push(vec!["  ".into(), "(prompt was empty)".dim()].into());
+            return lines;
+        }
+
+        let wrap_width = width.saturating_sub(2).max(1) as usize;
+        let wrapped_lines = wrap_plain_text(message, wrap_width)
+            .into_iter()
+            .map(Line::from)
+            .collect();
+        lines.extend(prefix_lines(wrapped_lines, "  ".into(), "  ".into()));
+
+        lines
+    }
+}
+
 /// Render a summary of configured MCP servers from the current `Config`.
 pub(crate) fn empty_mcp_output() -> PlainHistoryCell {
     let lines: Vec<Line<'static>> = vec![
@@ -2752,6 +2837,37 @@ mod tests {
     }
 
     #[test]
+    fn compaction_summary_cell_wraps_and_preserves_blank_lines() {
+        let cell = new_compaction_summary("First line\n\nSecond line that is long".to_string());
+        let rendered = render_lines(&cell.display_lines(24));
+
+        assert_eq!(
+            rendered,
+            vec![
+                "• Compacted summary".to_string(),
+                "  First line".to_string(),
+                "  ".to_string(),
+                "  Second line that is".to_string(),
+                "  long".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn compaction_summary_cell_handles_empty_summary() {
+        let cell = new_compaction_summary("   ".to_string());
+        let rendered = render_lines(&cell.display_lines(40));
+
+        assert_eq!(
+            rendered,
+            vec![
+                "• Compacted summary".to_string(),
+                "  (summary was empty)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn unified_exec_interaction_cell_does_not_split_url_like_stdin_token() {
         let url_like =
             "example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890";
@@ -2765,6 +2881,22 @@ mod tests {
                 .count(),
             1,
             "expected full URL-like token in one rendered line, got: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn compaction_prompt_cell_wraps_and_preserves_blank_lines() {
+        let cell = new_compaction_prompt("Prompt line\n\nMore detail".to_string());
+        let rendered = render_lines(&cell.display_lines(24));
+
+        assert_eq!(
+            rendered,
+            vec![
+                "• Compacted prompt".to_string(),
+                "  Prompt line".to_string(),
+                "  ".to_string(),
+                "  More detail".to_string(),
+            ]
         );
     }
 
@@ -2838,6 +2970,20 @@ mod tests {
         assert!(
             first_row.contains("Interacted with"),
             "expected first rendered row to keep the header visible, got: {first_row:?}"
+        );
+    }
+
+    #[test]
+    fn compaction_prompt_cell_handles_empty_prompt() {
+        let cell = new_compaction_prompt("   ".to_string());
+        let rendered = render_lines(&cell.display_lines(40));
+
+        assert_eq!(
+            rendered,
+            vec![
+                "• Compacted prompt".to_string(),
+                "  (prompt was empty)".to_string(),
+            ]
         );
     }
 

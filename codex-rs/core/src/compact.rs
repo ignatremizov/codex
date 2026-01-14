@@ -9,7 +9,10 @@ use crate::codex::TurnContext;
 use crate::codex::get_last_assistant_message_from_turn;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
+use crate::event_mapping::parse_turn_item;
+use crate::features::Feature;
 use crate::protocol::CompactedItem;
+use crate::protocol::ContextCompactedEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::TurnStartedEvent;
 use crate::protocol::WarningEvent;
@@ -46,8 +49,11 @@ pub(crate) enum InitialContextInjection {
     DoNotInject,
 }
 
-pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {
-    provider.is_openai()
+pub(crate) fn should_use_remote_compact_task(
+    session: &Session,
+    provider: &ModelProviderInfo,
+) -> bool {
+    provider.is_openai() && session.enabled(Feature::RemoteCompaction)
 }
 
 pub(crate) async fn run_inline_auto_compact_task(
@@ -200,6 +206,7 @@ async fn run_compact_task_inner(
     let history_items = history_snapshot.raw_items();
     let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+    let summary_for_event_text = summary_for_event(&summary_text);
     let user_messages = collect_user_messages(history_items);
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
@@ -236,6 +243,11 @@ async fn run_compact_task_inner(
 
     sess.emit_turn_item_completed(&turn_context, compaction_item)
         .await;
+    let event = EventMsg::ContextCompacted(ContextCompactedEvent {
+        summary: summary_for_event_text,
+        message: Some(summary_text),
+    });
+    sess.send_event(&turn_context, event).await;
     let warning = EventMsg::Warning(WarningEvent {
         message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.".to_string(),
     });
@@ -278,6 +290,54 @@ pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn extract_compacted_summary_text(items: &[ResponseItem]) -> Option<String> {
+    let mut fallback_user_message = None;
+    for item in items.iter().rev() {
+        let Some(TurnItem::UserMessage(user)) = parse_turn_item(item) else {
+            continue;
+        };
+        let message = user.message();
+        if message.trim().is_empty() || is_environment_context_message(&message) {
+            continue;
+        }
+        if is_summary_message(&message) {
+            return Some(message);
+        }
+        if fallback_user_message.is_none() {
+            fallback_user_message = Some(message);
+        }
+    }
+    if fallback_user_message.is_some() {
+        return fallback_user_message;
+    }
+
+    items.iter().rev().find_map(|item| match item {
+        ResponseItem::Message { role, content, .. } if role == "assistant" => {
+            content_items_to_text(content).and_then(|text| {
+                if text.trim().is_empty() || is_environment_context_message(&text) {
+                    None
+                } else {
+                    Some(text)
+                }
+            })
+        }
+        _ => None,
+    })
+}
+
+pub(crate) fn summary_for_event(summary_text: &str) -> Option<String> {
+    let summary_text = summary_text
+        .strip_prefix(SUMMARY_PREFIX)
+        .and_then(|text| text.strip_prefix('\n'))
+        .unwrap_or(summary_text)
+        .trim();
+
+    if summary_text.is_empty() {
+        None
+    } else {
+        Some(summary_text.to_string())
+    }
+}
 pub(crate) fn is_summary_message(message: &str) -> bool {
     message.starts_with(format!("{SUMMARY_PREFIX}\n").as_str())
 }
@@ -333,6 +393,12 @@ pub(crate) fn insert_initial_context_before_last_real_user_or_summary(
     compacted_history
 }
 
+fn is_environment_context_message(message: &str) -> bool {
+    let trimmed = message.trim_start();
+    trimmed
+        .to_ascii_lowercase()
+        .starts_with("<environment_context>")
+}
 pub(crate) fn build_compacted_history(
     initial_context: Vec<ResponseItem>,
     user_messages: &[String],
@@ -572,6 +638,134 @@ do things
         let collected = collect_user_messages(&items);
 
         assert_eq!(vec!["real user message".to_string()], collected);
+    }
+
+    #[test]
+    fn summary_for_event_strips_prefix_and_trims() {
+        let summary_text = format!("{SUMMARY_PREFIX}\n  summary line  ");
+
+        let summary = summary_for_event(&summary_text);
+
+        assert_eq!(summary, Some("summary line".to_string()));
+    }
+
+    #[test]
+    fn summary_for_event_returns_none_for_empty_summary() {
+        let summary_text = format!("{SUMMARY_PREFIX}\n   ");
+
+        let summary = summary_for_event(&summary_text);
+
+        assert_eq!(summary, None);
+    }
+
+    #[test]
+    fn summary_for_event_accepts_unprefixed_text() {
+        let summary = summary_for_event("summary line");
+
+        assert_eq!(summary, Some("summary line".to_string()));
+    }
+
+    #[test]
+    fn extract_compacted_summary_text_skips_environment_context() {
+        let items = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "old reply".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "summary text".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "<environment_context>ctx</environment_context>".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+        ];
+
+        let summary = extract_compacted_summary_text(&items);
+
+        assert_eq!(summary, Some("summary text".to_string()));
+    }
+
+    #[test]
+    fn extract_compacted_summary_text_falls_back_to_assistant_message() {
+        let items = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "<environment_context>ctx</environment_context>".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "assistant summary".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+        ];
+
+        let summary = extract_compacted_summary_text(&items);
+
+        assert_eq!(summary, Some("assistant summary".to_string()));
+    }
+
+    #[test]
+    fn extract_compacted_summary_text_prefers_summary_prompt() {
+        let summary_prompt = format!("{SUMMARY_PREFIX}\ncompacted summary");
+        let items = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "recent user message".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: summary_prompt.clone(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "<environment_context>ctx</environment_context>".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+        ];
+
+        let summary = extract_compacted_summary_text(&items);
+
+        assert_eq!(summary, Some(summary_prompt));
     }
 
     #[test]

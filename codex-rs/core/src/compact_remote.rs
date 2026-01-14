@@ -12,6 +12,7 @@ use crate::context_manager::is_codex_generated_item;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::protocol::CompactedItem;
+use crate::protocol::ContextCompactedEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
 use crate::protocol::TurnStartedEvent;
@@ -164,6 +165,11 @@ async fn run_remote_compact_task_inner_impl(
         .await;
     sess.recompute_token_usage(turn_context).await;
 
+    let message = crate::compact::extract_compacted_summary_text(&new_history);
+    let summary = message
+        .as_deref()
+        .and_then(crate::compact::summary_for_event);
+
     let compacted_item = CompactedItem {
         message: String::new(),
         replacement_history: Some(new_history),
@@ -173,6 +179,8 @@ async fn run_remote_compact_task_inner_impl(
 
     sess.emit_turn_item_completed(turn_context, compaction_item)
         .await;
+    let event = EventMsg::ContextCompacted(ContextCompactedEvent { summary, message });
+    sess.send_event(turn_context, event).await;
     Ok(())
 }
 

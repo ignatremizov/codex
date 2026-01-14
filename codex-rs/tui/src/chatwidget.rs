@@ -2235,6 +2235,42 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    fn on_context_compacted(&mut self, summary: Option<String>, message: Option<String>) {
+        self.flush_answer_stream_with_separator();
+        self.flush_interrupt_queue();
+        self.flush_active_cell();
+
+        if !self.config.show_compact_summary {
+            self.add_info_message("Context compacted.".to_string(), None);
+            return;
+        }
+
+        let summary = summary.and_then(|text| {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        });
+        let message = message.and_then(|text| {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        });
+
+        if let Some(message) = message {
+            self.add_boxed_history(Box::new(history_cell::new_compaction_prompt(message)));
+            return;
+        }
+        if let Some(summary) = summary {
+            self.add_boxed_history(Box::new(history_cell::new_compaction_summary(summary)));
+            return;
+        }
+        self.add_info_message("Context compacted.".to_string(), None);
+    }
+
     fn on_background_event(&mut self, message: String) {
         debug!("BackgroundEvent: {message}");
         self.bottom_pane.ensure_status_indicator();
@@ -4423,7 +4459,7 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request, from_replay)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
+            EventMsg::ContextCompacted(ev) => self.on_context_compacted(ev.summary, ev.message),
             EventMsg::CollabAgentSpawnBegin(_) => {}
             EventMsg::CollabAgentSpawnEnd(ev) => self.on_collab_event(multi_agents::spawn_end(ev)),
             EventMsg::CollabAgentInteractionBegin(_) => {}

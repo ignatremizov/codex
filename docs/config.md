@@ -56,6 +56,17 @@ Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the
 `CODEX_SQLITE_HOME` environment variable. When unset, WorkspaceWrite sandbox
 sessions default to a temp directory; other modes default to `CODEX_HOME`.
 
+## TUI
+
+Hide the compacted prompt output after `/compact`:
+
+```toml
+[tui]
+show_compact_summary = false
+```
+
+When unset, the transcript includes the compacted prompt when available (otherwise just the summary).
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.

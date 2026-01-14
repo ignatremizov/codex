@@ -646,7 +646,7 @@ Today both notifications carry an empty `items` array even when item events were
 - `enteredReviewMode` — `{id, review}` sent when the reviewer starts; `review` is a short user-facing label such as `"current changes"` or the requested target description.
 - `exitedReviewMode` — `{id, review}` emitted when the reviewer finishes; `review` is the full plain-text review (usually, overall notes plus bullet point findings).
 - `contextCompaction` — `{id}` emitted when codex compacts the conversation history. This can happen automatically.
-- `compacted` - `{threadId, turnId}` when codex compacts the conversation history. This can happen automatically. **Deprecated:** Use `contextCompaction` instead.
+- `compacted` - `{threadId, turnId, summary?, message?}` when codex compacts the conversation history. `summary` contains the compacted text when available, and `message` contains the full compacted prompt stored in history. This can happen automatically. **Deprecated:** Use `contextCompaction` instead.
 
 All items emit two shared lifecycle events:
 

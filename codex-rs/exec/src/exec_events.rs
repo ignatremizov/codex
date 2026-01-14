@@ -34,6 +34,9 @@ pub enum ThreadEvent {
     /// Represents an unrecoverable error emitted directly by the event stream.
     #[serde(rename = "error")]
     Error(ThreadErrorEvent),
+    /// Emitted when the conversation context has been compacted.
+    #[serde(rename = "context.compacted")]
+    ContextCompacted(ContextCompactedEvent),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -86,6 +89,13 @@ pub struct ItemUpdatedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct ThreadErrorEvent {
     pub message: String,
+}
+
+/// Indicates that the conversation context was compacted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct ContextCompactedEvent {
+    pub summary: Option<String>,
+    pub message: Option<String>,
 }
 
 /// Canonical representation of a thread item and its domain-specific payload.

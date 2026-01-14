@@ -5223,7 +5223,7 @@ async fn run_auto_compact(
     initial_context_injection: InitialContextInjection,
     previous_user_turn_model: Option<&str>,
 ) -> CodexResult<()> {
-    if should_use_remote_compact_task(&turn_context.provider) {
+    if should_use_remote_compact_task(sess.as_ref(), &turn_context.provider) {
         run_inline_remote_auto_compact_task(
             Arc::clone(sess),
             Arc::clone(turn_context),
