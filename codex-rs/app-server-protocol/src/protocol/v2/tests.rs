@@ -258,6 +258,8 @@ fn thread_items_list_round_trips() {
     let response = ThreadItemsListResponse {
         data: vec![ThreadItem::ContextCompaction {
             id: "item_1".to_string(),
+            summary: Some("compact summary".to_string()),
+            message: Some("full compacted prompt".to_string()),
         }],
         next_cursor: None,
         backwards_cursor: Some("cursor_0".to_string()),
@@ -266,7 +268,12 @@ fn thread_items_list_round_trips() {
     assert_eq!(
         serde_json::to_value(&response).expect("serialize response"),
         json!({
-            "data": [{"type": "contextCompaction", "id": "item_1"}],
+            "data": [{
+                "type": "contextCompaction",
+                "id": "item_1",
+                "summary": "compact summary",
+                "message": "full compacted prompt",
+            }],
             "nextCursor": null,
             "backwardsCursor": "cursor_0",
         })

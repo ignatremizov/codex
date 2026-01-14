@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CompactTask;
 
+#[async_trait]
 impl SessionTask for CompactTask {
     fn kind(&self) -> TaskKind {
         TaskKind::Compact
@@ -37,7 +38,10 @@ impl SessionTask for CompactTask {
             return Ok(None);
         }
 
-        let result = if crate::compact::should_use_remote_compact_task(ctx.provider.info()) {
+        let result = if crate::compact::should_use_remote_compact_task(
+            session.as_ref(),
+            &ctx.provider,
+        ) {
             if ctx
                 .config
                 .features
