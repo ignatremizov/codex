@@ -31,6 +31,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     yellow: Style,
     show_agent_reasoning: bool,
     show_raw_agent_reasoning: bool,
+    show_compact_summary: bool,
     last_message_path: Option<PathBuf>,
     final_message: Option<String>,
     final_message_rendered: bool,
@@ -56,6 +57,7 @@ impl EventProcessorWithHumanOutput {
             yellow: style(Style::new().yellow(), Style::new()),
             show_agent_reasoning: !config.hide_agent_reasoning,
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+            show_compact_summary: config.show_compact_summary,
             last_message_path,
             final_message: None,
             final_message_rendered: false,
@@ -200,11 +202,68 @@ impl EventProcessorWithHumanOutput {
             ThreadItem::WebSearch { query, .. } => {
                 eprintln!("{} {}", "web search:".style(self.bold), query);
             }
-            ThreadItem::ContextCompaction { .. } => {
-                eprintln!("{}", "context compacted".style(self.dimmed));
+            ThreadItem::ContextCompaction {
+                summary, message, ..
+            } => {
+                if !self.show_compact_summary {
+                    eprintln!("{}", "context compacted".style(self.dimmed));
+                } else {
+                    let rendered = if let Some(message) =
+                        message.as_deref().filter(|text| !text.trim().is_empty())
+                    {
+                        self.print_compaction_section(
+                            "Compacted prompt",
+                            Some(message),
+                            "(prompt was empty)",
+                        )
+                    } else if let Some(summary) =
+                        summary.as_deref().filter(|text| !text.trim().is_empty())
+                    {
+                        self.print_compaction_section(
+                            "Compacted summary",
+                            Some(summary),
+                            "(summary was empty)",
+                        )
+                    } else {
+                        false
+                    };
+
+                    if !rendered {
+                        eprintln!("{}", "context compacted".style(self.dimmed));
+                    }
+                }
             }
             _ => {}
         }
+    }
+
+    fn print_compaction_section(
+        &self,
+        title: &str,
+        content: Option<&str>,
+        empty_label: &str,
+    ) -> bool {
+        let Some(content) = content else {
+            return false;
+        };
+
+        eprintln!("{}", title.style(self.bold));
+
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            eprintln!("  {}", empty_label.style(self.dimmed));
+            return true;
+        }
+
+        for line in content.split('\n') {
+            if line.trim().is_empty() {
+                eprintln!("  ");
+            } else {
+                eprintln!("  {line}");
+            }
+        }
+
+        true
     }
 }
 
@@ -359,6 +418,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
                 CodexStatus::Running
             }
+            ServerNotification::ContextCompacted(_) => CodexStatus::Running,
             ServerNotification::TurnStarted(_) => CodexStatus::Running,
             _ => CodexStatus::Running,
         }
@@ -713,6 +773,7 @@ mod tests {
             yellow: Style::new(),
             show_agent_reasoning: true,
             show_raw_agent_reasoning: false,
+            show_compact_summary: false,
             last_message_path: None,
             final_message: None,
             final_message_rendered: false,
@@ -757,6 +818,7 @@ mod tests {
             yellow: Style::new(),
             show_agent_reasoning: true,
             show_raw_agent_reasoning: false,
+            show_compact_summary: false,
             last_message_path: None,
             final_message: Some("stale answer".to_string()),
             final_message_rendered: true,
@@ -802,6 +864,7 @@ mod tests {
             yellow: Style::new(),
             show_agent_reasoning: true,
             show_raw_agent_reasoning: false,
+            show_compact_summary: false,
             last_message_path: None,
             final_message: Some("streamed answer".to_string()),
             final_message_rendered: false,
@@ -842,6 +905,7 @@ mod tests {
             yellow: Style::new(),
             show_agent_reasoning: true,
             show_raw_agent_reasoning: false,
+            show_compact_summary: false,
             last_message_path: None,
             final_message: Some("partial answer".to_string()),
             final_message_rendered: true,
@@ -883,6 +947,7 @@ mod tests {
             yellow: Style::new(),
             show_agent_reasoning: true,
             show_raw_agent_reasoning: false,
+            show_compact_summary: false,
             last_message_path: None,
             final_message: Some("partial answer".to_string()),
             final_message_rendered: true,

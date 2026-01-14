@@ -4372,7 +4372,15 @@ pub enum ThreadItem {
     ExitedReviewMode { id: String, review: String },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
-    ContextCompaction { id: String },
+    ContextCompaction {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        message: Option<String>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -4541,9 +4549,11 @@ impl From<CoreTurnItem> for ThreadItem {
                 result: image.result,
                 saved_path: image.saved_path,
             },
-            CoreTurnItem::ContextCompaction(compaction) => {
-                ThreadItem::ContextCompaction { id: compaction.id }
-            }
+            CoreTurnItem::ContextCompaction(compaction) => ThreadItem::ContextCompaction {
+                id: compaction.id,
+                summary: compaction.summary,
+                message: compaction.message,
+            },
         }
     }
 }
@@ -5178,6 +5188,12 @@ pub struct WindowsSandboxSetupCompletedNotification {
 pub struct ContextCompactedNotification {
     pub thread_id: String,
     pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
@@ -6758,6 +6774,46 @@ mod tests {
         let decoded = serde_json::from_value::<CommandExecutionOutputDeltaNotification>(value)
             .expect("deserialize round-trip");
         assert_eq!(decoded, notification);
+    }
+
+    #[test]
+    fn context_compacted_notification_serializes_summary() -> Result<(), serde_json::Error> {
+        let notification = ContextCompactedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            summary: Some("compact summary".to_string()),
+            message: Some("full compacted prompt".to_string()),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&notification)?,
+            json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "summary": "compact summary",
+                "message": "full compacted prompt",
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn context_compacted_notification_omits_empty_summary() -> Result<(), serde_json::Error> {
+        let notification = ContextCompactedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            summary: None,
+            message: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&notification)?,
+            json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+            })
+        );
+        Ok(())
     }
 
     #[test]

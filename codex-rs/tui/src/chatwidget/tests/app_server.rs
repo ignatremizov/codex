@@ -142,6 +142,44 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
 }
 
 #[tokio::test]
+async fn context_compacted_summary_respects_tui_toggle() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    chat.config.show_compact_summary = false;
+
+    chat.handle_codex_event(Event {
+        id: "compact".into(),
+        msg: EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: Some("Trimmed summary text.".to_string()),
+            message: Some("Full compacted prompt.".to_string()),
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
+    assert_eq!(rendered, "• Context compacted.\n");
+}
+
+#[tokio::test]
+async fn context_compacted_prefers_prompt_over_summary() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "compact".into(),
+        msg: EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: Some("Short summary".to_string()),
+            message: Some("Prompt line 1\nPrompt line 2".to_string()),
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
+    assert!(rendered.contains("Compacted prompt"));
+    assert!(rendered.contains("Prompt line 1"));
+    assert!(rendered.contains("Prompt line 2"));
+    assert!(!rendered.contains("Short summary"));
+}
+
+#[tokio::test]
 async fn live_app_server_file_change_item_started_preserves_changes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
