@@ -1,3 +1,5 @@
+use codex_app_server_protocol::ContextCompactedNotification;
+use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::Turn;
@@ -26,7 +28,72 @@ use super::final_message_from_turn_items;
 use super::reasoning_text;
 use super::should_print_final_message_to_stdout;
 use super::should_print_final_message_to_tty;
+use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
+
+#[test]
+fn compaction_preserves_complete_output_without_replacing_the_final_answer() {
+    for show_compact_summary in [true, false] {
+        let mut processor = EventProcessorWithHumanOutput {
+            bold: Style::new(),
+            cyan: Style::new(),
+            dimmed: Style::new(),
+            green: Style::new(),
+            italic: Style::new(),
+            magenta: Style::new(),
+            red: Style::new(),
+            yellow: Style::new(),
+            show_agent_reasoning: true,
+            show_raw_agent_reasoning: false,
+            show_compact_summary,
+            last_message_path: None,
+            final_message: Some("final answer".to_string()),
+            final_message_rendered: true,
+            emit_final_message_on_shutdown: false,
+            last_total_token_usage: None,
+        };
+        let message = "  leading spaces\n\nUnicode 界\ntrailing spaces  \n";
+        assert_eq!(
+            processor.compaction_section("Compacted prompt", message),
+            "Compacted prompt\n    leading spaces\n  \n  Unicode 界\n  trailing spaces  \n  "
+        );
+        assert_eq!(
+            processor.compaction_section("Compacted summary", "summary"),
+            "Compacted summary\n  summary"
+        );
+        let completed = ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: ThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+                summary: Some("summary".to_string()),
+                message: Some(message.to_string()),
+            },
+        });
+        let compatibility = ServerNotification::ContextCompacted(ContextCompactedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            summary: Some("summary".to_string()),
+            message: Some(message.to_string()),
+        });
+        assert_eq!(
+            [
+                processor.process_server_notification(completed),
+                processor.process_server_notification(compatibility),
+            ],
+            [CodexStatus::Running, CodexStatus::Running]
+        );
+        assert_eq!(
+            (
+                processor.final_message.as_deref(),
+                processor.final_message_rendered,
+                processor.emit_final_message_on_shutdown,
+            ),
+            (Some("final answer"), true, false)
+        );
+    }
+}
 
 #[test]
 fn suppresses_final_stdout_message_when_both_streams_are_terminals() {
@@ -309,6 +376,7 @@ fn turn_completed_recovers_final_message_from_turn_items() {
         yellow: Style::new(),
         show_agent_reasoning: true,
         show_raw_agent_reasoning: false,
+        show_compact_summary: true,
         last_message_path: None,
         final_message: None,
         final_message_rendered: false,
@@ -359,6 +427,7 @@ fn turn_completed_overwrites_stale_final_message_from_turn_items() {
         yellow: Style::new(),
         show_agent_reasoning: true,
         show_raw_agent_reasoning: false,
+        show_compact_summary: true,
         last_message_path: None,
         final_message: Some("stale answer".to_string()),
         final_message_rendered: true,
@@ -410,6 +479,7 @@ fn turn_completed_preserves_streamed_final_message_when_turn_items_are_empty() {
         yellow: Style::new(),
         show_agent_reasoning: true,
         show_raw_agent_reasoning: false,
+        show_compact_summary: true,
         last_message_path: None,
         final_message: Some("streamed answer".to_string()),
         final_message_rendered: false,
@@ -454,6 +524,7 @@ fn turn_failed_clears_stale_final_message() {
         yellow: Style::new(),
         show_agent_reasoning: true,
         show_raw_agent_reasoning: false,
+        show_compact_summary: true,
         last_message_path: None,
         final_message: Some("partial answer".to_string()),
         final_message_rendered: true,
@@ -499,6 +570,7 @@ fn turn_interrupted_clears_stale_final_message() {
         yellow: Style::new(),
         show_agent_reasoning: true,
         show_raw_agent_reasoning: false,
+        show_compact_summary: true,
         last_message_path: None,
         final_message: Some("partial answer".to_string()),
         final_message_rendered: true,

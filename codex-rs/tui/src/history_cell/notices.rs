@@ -314,6 +314,55 @@ impl HistoryCell for DeprecationNoticeCell {
         lines
     }
 }
+
+#[derive(Debug)]
+pub(crate) struct CompactionCell {
+    header: String,
+    detail: Option<String>,
+}
+
+pub(crate) fn new_compaction(
+    header: String,
+    summary: Option<String>,
+    message: Option<String>,
+    show_compact_summary: bool,
+) -> CompactionCell {
+    let detail = if show_compact_summary {
+        message
+            .filter(|text| !text.trim().is_empty())
+            .or_else(|| summary.filter(|text| !text.trim().is_empty()))
+    } else {
+        None
+    };
+    CompactionCell { header, detail }
+}
+
+impl HistoryCell for CompactionCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+
+        let mut lines = vec![vec!["• ".dim(), self.header.clone().into()].into()];
+        if let Some(detail) = &self.detail {
+            let wrapped = crate::wrapping::word_wrap_lines(
+                raw_lines_from_source(detail),
+                width.saturating_sub(2).max(1) as usize,
+            );
+            lines.extend(prefix_lines(wrapped, "  ".into(), "  ".into()));
+        }
+        lines
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::from(format!("• {}", self.header))];
+        if let Some(detail) = &self.detail {
+            lines.extend(raw_lines_from_source(detail));
+        }
+        lines
+    }
+}
+
 pub(crate) fn new_info_event(message: String, hint: Option<String>) -> PlainHistoryCell {
     let mut line = vec!["• ".dim(), message.into()];
     if let Some(hint) = hint {

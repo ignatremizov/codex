@@ -803,6 +803,11 @@ pub struct Tui {
     #[serde(default)]
     pub fullscreen_transcript: bool,
 
+    /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub show_compact_summary: bool,
+
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///
     /// - `auto` (default): Use alternate screen.

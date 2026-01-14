@@ -79,7 +79,10 @@ fn requires_a_strict_nonempty_model_prefix() {
     assert!(plan_append(&source_with_security_risk, &metadata_changed).is_none());
 
     for event in [
-        EventMsg::ContextCompacted(ContextCompactedEvent),
+        EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: None,
+            message: None,
+        }),
         EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
     ] {
         let mut rewritten = history.clone();

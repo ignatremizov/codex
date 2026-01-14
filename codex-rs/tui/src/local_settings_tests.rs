@@ -6,6 +6,34 @@ use codex_config::types::SessionPickerViewMode;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn compaction_detail_preference_tracks_local_reload() -> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let mut local: Option<LocalSettings> = None;
+    for (config_text, expected) in [
+        ("", true),
+        ("[tui]\nshow_compact_summary = false\n", false),
+        ("[tui]\nshow_compact_summary = true\n", true),
+    ] {
+        std::fs::write(home.path().join("config.toml"), config_text)?;
+        let config = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .loader_overrides(LoaderOverrides {
+                ignore_project_config: true,
+                ..LoaderOverrides::without_managed_config_for_tests()
+            })
+            .build()
+            .await?;
+        let reloaded = local.as_ref().map_or_else(
+            || LocalSettings::from(&config),
+            |local| local.reloaded(&config),
+        );
+        assert_eq!(reloaded.tui.show_compact_summary, expected);
+        local = Some(reloaded);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn launch_screen_mode_survives_configuration_reload() -> anyhow::Result<()> {
     use crate::transcript_mode::TranscriptMode;
     use codex_config::types::AltScreenMode;

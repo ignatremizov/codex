@@ -153,6 +153,17 @@ fn summary_with_prefix(summary: &str) -> String {
     format!("{SUMMARY_PREFIX}\n{summary}")
 }
 
+fn normalize_summary_message(text: &str) -> String {
+    text.split_once("\n\n[SESSION_METADATA]\n")
+        .map(|(summary, _)| summary)
+        .unwrap_or(text)
+        .to_string()
+}
+
+fn summary_message_matches(text: &str, summary: &str) -> bool {
+    normalize_summary_message(text) == summary_with_prefix(summary)
+}
+
 fn set_test_compact_prompt(config: &mut Config) {
     config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
 }
@@ -686,7 +697,7 @@ async fn summarize_context_three_requests_and_instructions(
     assert!(
         messages
             .iter()
-            .any(|(r, t)| r == "user" && t == &expected_summary_message),
+            .any(|(r, t)| r == "user" && normalize_summary_message(t) == expected_summary_message),
         "third request should include the summary message"
     );
     assert!(
@@ -739,7 +750,9 @@ async fn summarize_context_three_requests_and_instructions(
             RolloutItem::TurnContext(_) => {
                 regular_turn_context_count += 1;
             }
-            RolloutItem::Compacted(ci) if ci.message == expected_summary_message => {
+            RolloutItem::Compacted(ci)
+                if normalize_summary_message(&ci.message) == expected_summary_message =>
+            {
                 let summary_item = ci
                     .replacement_history
                     .as_ref()
@@ -758,7 +771,7 @@ async fn summarize_context_three_requests_and_instructions(
                         "role": "user",
                         "content": [{
                             "type": "input_text",
-                            "text": expected_summary_message,
+                            "text": ci.message,
                         }],
                         "content_item_kinds": ["compaction.summary"],
                     })
@@ -1231,8 +1244,10 @@ async fn manual_compact_records_durable_and_local_token_usage() {
     );
 }
 
+#[test_case::test_case(false; "unsupported provider")]
+#[test_case::test_case(true; "remote provider explicitly disabled")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn manual_compact_emits_context_compaction_items() {
+async fn manual_compact_emits_context_compaction_items(disable_remote: bool) {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
@@ -1245,14 +1260,21 @@ async fn manual_compact_emits_context_compaction_items() {
         ev_assistant_message("m2", SUMMARY_TEXT),
         ev_completed("r2"),
     ]);
-    mount_sse_sequence(&server, vec![sse1, sse2]).await;
+    let requests = mount_sse_sequence(&server, vec![sse1, sse2]).await;
 
     let model_provider = non_openai_model_provider(&server);
-    let mut builder = test_codex().with_config(move |config| {
-        config.model_provider = model_provider;
-        set_test_compact_prompt(config);
-    });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let mut builder = test_codex()
+        .with_history_mode(codex_protocol::protocol::ThreadHistoryMode::Paginated)
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+            if disable_remote {
+                config.model_provider.name = "OpenAI".to_string();
+                config.features.disable(Feature::RemoteCompaction).unwrap();
+            }
+            set_test_compact_prompt(config);
+        });
+    let test = builder.build_with_auto_env(&server).await.unwrap();
+    let codex = test.codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -1299,7 +1321,156 @@ async fn manual_compact_emits_context_compaction_items() {
     let started_item = started_item.expect("context compaction item started");
     let completed_item = completed_item.expect("context compaction item completed");
     assert_eq!(started_item.id, completed_item.id);
+    assert_eq!((started_item.summary, started_item.message), (None, None));
+    assert_eq!(completed_item.summary.as_deref(), Some(SUMMARY_TEXT));
+    let message = completed_item
+        .message
+        .as_deref()
+        .expect("full compacted prompt");
+    assert!(message.starts_with(&format!(
+        "{SUMMARY_PREFIX}\n{SUMMARY_TEXT}\n\n[SESSION_METADATA]\n"
+    )));
+    let requests = requests.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].inputs_of_type("compaction_trigger").is_empty());
+    assert!(body_contains_text(
+        &requests[1].body_json().to_string(),
+        SUMMARIZATION_PROMPT
+    ));
+    codex.flush_rollout().await.unwrap();
+    let rollout = fs::read_to_string(codex.rollout_path().expect("rollout path")).unwrap();
+    let checkpoint = rollout
+        .lines()
+        .map(codex_rollout::parse_rollout_line)
+        .collect::<serde_json::Result<Vec<_>>>()
+        .unwrap()
+        .into_iter()
+        .find_map(|line| match line.item {
+            RolloutItem::Compacted(item) => Some(item),
+            _ => None,
+        })
+        .expect("durable checkpoint");
+    assert_eq!(checkpoint.message, message);
+    assert_eq!(checkpoint.compaction_response_id.as_deref(), Some("r2"));
+    assert!(rollout.lines().any(|line| {
+        matches!(codex_rollout::parse_rollout_line(line).unwrap().item,
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::ContextCompaction(item), ..
+            })) if item.summary == completed_item.summary && item.message == completed_item.message)
+    }));
     assert!(legacy_event);
+}
+
+#[test_case::test_case(false; "manual output limit")]
+#[test_case::test_case(true; "post-turn output limit preserves completed history")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_compaction_output_limit_does_not_install_failed_summary(
+    post_turn: bool,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let oversized = "COMPACT_OUTPUT_LIMIT_SENTINEL ".repeat(20_000);
+    let requests = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("answer", "SURVIVING_ANSWER"),
+                ev_completed_with_tokens("answer-response", /*total_tokens*/ 60_000),
+            ]),
+            sse(vec![
+                // Post-turn output below the limit must also remain buffered on later failure.
+                ev_assistant_message("partial", "UNCOMMITTED_PARTIAL_SUMMARY"),
+                ev_assistant_message("oversized", &oversized),
+                ev_completed("failed-compaction"),
+            ]),
+            sse(vec![
+                ev_assistant_message("followup", "FOLLOWUP_ANSWER"),
+                ev_completed_with_tokens("followup-response", /*total_tokens*/ 100),
+            ]),
+        ],
+    )
+    .await;
+    let mut provider = non_openai_model_provider(&server);
+    provider.name = "OpenAI".to_string();
+    let test = test_codex()
+        .with_config(move |config| {
+            config.model_provider = provider;
+            config.features.disable(Feature::RemoteCompaction).unwrap();
+            config.model_context_window = Some(100_000);
+            config.model_auto_compact_token_limit = Some(90_000);
+            config.model_post_turn_compact_threshold_percent = if post_turn { 50 } else { 0 };
+            set_test_compact_prompt(config);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "SURVIVING_USER".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    if !post_turn {
+        test.codex.submit(Op::Compact).await?;
+        let error = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::Error(error) => Some(error.clone()),
+            _ => None,
+        })
+        .await;
+        assert!(error.message.contains("compaction output exceeded"));
+        assert!(!error.message.contains("remote compact"));
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
+    test.codex.flush_rollout().await?;
+    let rollout = fs::read_to_string(test.codex.rollout_path().expect("rollout path"))?;
+    let items = rollout
+        .lines()
+        .map(codex_rollout::parse_rollout_line)
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    assert!(
+        !items
+            .iter()
+            .any(|line| matches!(line.item, RolloutItem::Compacted(_)))
+    );
+    assert!(!rollout.contains("COMPACT_OUTPUT_LIMIT_SENTINEL"));
+    if post_turn {
+        assert!(!rollout.contains("UNCOMMITTED_PARTIAL_SUMMARY"));
+    }
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "continue".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let requests = requests.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "the output limit must not retry compaction"
+    );
+    assert!(requests[1].inputs_of_type("compaction_trigger").is_empty());
+    assert!(body_contains_text(
+        &requests[1].body_json().to_string(),
+        SUMMARIZATION_PROMPT
+    ));
+    let followup = requests[2].body_json().to_string();
+    assert!(followup.contains("SURVIVING_USER"));
+    assert!(followup.contains("SURVIVING_ANSWER"));
+    assert!(!followup.contains("COMPACT_OUTPUT_LIMIT_SENTINEL"));
+    if post_turn {
+        assert!(!followup.contains("UNCOMMITTED_PARTIAL_SUMMARY"));
+    }
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1484,7 +1655,26 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
                     return None;
                 }
                 if role == Some("user") {
-                    return strip_agents_parts_from_user_message(&value);
+                    let mut value = strip_agents_parts_from_user_message(&value)?;
+                    if value
+                        .get("content")
+                        .and_then(|content| content.as_array())
+                        .and_then(|content| content.first())
+                        .and_then(|item| item.get("text"))
+                        .and_then(|text| text.as_str())
+                        .is_some_and(|text| text.starts_with(SUMMARY_PREFIX))
+                        && let Some(content) = value
+                            .get_mut("content")
+                            .and_then(|content| content.as_array_mut())
+                        && let Some(text) = content
+                            .first_mut()
+                            .and_then(|item| item.get_mut("text"))
+                            .and_then(|text| text.as_str())
+                    {
+                        content[0]["text"] =
+                            serde_json::Value::String(normalize_summary_message(text));
+                    }
+                    return Some(value);
                 }
                 Some(value)
             })
@@ -2029,10 +2219,12 @@ async fn auto_compact_runs_after_token_limit_hit() {
     );
 }
 
+#[test_case::test_case(false; "unsupported provider")]
+#[test_case::test_case(true; "remote provider explicitly disabled")]
 // Windows CI only: bump to 4 workers to prevent SSE/event starvation and test timeouts.
 #[cfg_attr(windows, tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[cfg_attr(not(windows), tokio::test(flavor = "multi_thread", worker_threads = 2))]
-async fn auto_compact_emits_context_compaction_items() {
+async fn auto_compact_emits_context_compaction_items(disable_remote: bool) {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
@@ -2054,15 +2246,20 @@ async fn auto_compact_emits_context_compaction_items() {
         ev_completed_with_tokens("r4", /*total_tokens*/ 120),
     ]);
 
-    mount_sse_sequence(&server, vec![sse1, sse2, sse3, sse4]).await;
+    let requests = mount_sse_sequence(&server, vec![sse1, sse2, sse3, sse4]).await;
 
     let model_provider = non_openai_model_provider(&server);
     let mut builder = test_codex().with_config(move |config| {
         config.model_provider = model_provider;
+        if disable_remote {
+            config.model_provider.name = "OpenAI".to_string();
+            config.features.disable(Feature::RemoteCompaction).unwrap();
+        }
         set_test_compact_prompt(config);
         config.model_auto_compact_token_limit = Some(200_000);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let test = builder.build_with_auto_env(&server).await.unwrap();
+    let codex = test.codex;
 
     let mut started_item = None;
     let mut completed_item = None;
@@ -2106,6 +2303,23 @@ async fn auto_compact_emits_context_compaction_items() {
     let started_item = started_item.expect("context compaction item started");
     let completed_item = completed_item.expect("context compaction item completed");
     assert_eq!(started_item.id, completed_item.id);
+    assert_eq!((started_item.summary, started_item.message), (None, None));
+    assert_eq!(completed_item.summary.as_deref(), Some(AUTO_SUMMARY_TEXT));
+    assert!(
+        completed_item
+            .message
+            .as_deref()
+            .is_some_and(|text| text.starts_with(&format!(
+                "{SUMMARY_PREFIX}\n{AUTO_SUMMARY_TEXT}\n\n[SESSION_METADATA]\n"
+            )))
+    );
+    let requests = requests.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[2].inputs_of_type("compaction_trigger").is_empty());
+    assert!(body_contains_text(
+        &requests[2].body_json().to_string(),
+        SUMMARIZATION_PROMPT
+    ));
     assert!(legacy_event);
 }
 
@@ -3917,9 +4131,18 @@ async fn manual_compact_retries_after_context_window_error() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     codex.submit(Op::Compact).await.unwrap();
-    let warning_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
-    let EventMsg::Warning(WarningEvent { message }) = warning_event else {
-        panic!("expected warning event after compact retry");
+    let trim_warning_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
+    let EventMsg::Warning(WarningEvent { message }) = trim_warning_event else {
+        panic!("expected trim warning event after compact retry");
+    };
+    assert_eq!(
+        message,
+        "Trimmed 1 older thread item(s) before compacting so the prompt fits the model context window."
+    );
+    let compact_warning_event =
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
+    let EventMsg::Warning(WarningEvent { message }) = compact_warning_event else {
+        panic!("expected compact warning event after compact retry");
     };
     assert_eq!(message, COMPACT_WARNING_MESSAGE);
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -4047,7 +4270,6 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
     let final_user_message = "post compact follow-up";
     let first_summary = "FIRST_MANUAL_SUMMARY";
     let second_summary = "SECOND_MANUAL_SUMMARY";
-    let expected_second_summary = summary_with_prefix(second_summary);
 
     let server = start_mock_server().await;
 
@@ -4260,13 +4482,22 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
     );
     let history_before_seeded_prefix = final_request_before_last_user
         .strip_suffix(initial_seeded_user_prefix)
-        .expect("final request should end with the seeded user prefix from the first request");
-    let expected_history = vec![
-        first_user_message.to_string(),
-        second_user_message.to_string(),
-        expected_second_summary,
-    ];
-    assert_eq!(history_before_seeded_prefix, expected_history.as_slice());
+        .unwrap_or_else(|| {
+            panic!(
+                "final request should end with the seeded user prefix from the first request: {initial_seeded_user_prefix:?}"
+            )
+        });
+    assert_eq!(
+        history_before_seeded_prefix.len(),
+        3,
+        "final request should preserve two user turns plus the latest compacted summary"
+    );
+    assert_eq!(history_before_seeded_prefix[0], first_user_message);
+    assert_eq!(history_before_seeded_prefix[1], second_user_message);
+    assert!(
+        summary_message_matches(&history_before_seeded_prefix[2], second_summary),
+        "final request should preserve the latest compacted summary before the seeded prefix"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

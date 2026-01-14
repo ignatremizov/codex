@@ -1263,6 +1263,7 @@ fn config_toml_deserializes_model_availability_nux() {
             question_esc_back: true,
             raw_output_mode: false,
             fullscreen_transcript: false,
+            show_compact_summary: true,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
             status_line_use_colors: true,
@@ -1364,6 +1365,26 @@ async fn runtime_config_uses_tui_raw_output_mode() {
     .expect("load config");
 
     assert!(cfg.tui_raw_output_mode);
+}
+
+#[tokio::test]
+async fn runtime_config_uses_compact_summary_default_and_explicit_override() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    for (toml, expected) in [
+        ("", true),
+        ("[tui]", true),
+        ("[tui]\nshow_compact_summary = true", true),
+        ("[tui]\nshow_compact_summary = false", false),
+    ] {
+        let config = Config::load_from_base_config_with_overrides(
+            toml::from_str(toml)?,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+        assert_eq!(config.show_compact_summary, expected);
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -4392,6 +4413,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             question_esc_back: true,
             raw_output_mode: false,
             fullscreen_transcript: false,
+            show_compact_summary: true,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
             status_line_use_colors: true,

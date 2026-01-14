@@ -874,6 +874,126 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
 }
 
 #[tokio::test]
+async fn context_compacted_summary_respects_tui_toggle() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.local_settings.tui.show_compact_summary = false;
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".into(),
+            turn_id: "turn-1".into(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact".into(),
+                summary: Some("Trimmed summary text.".into()),
+                message: Some("Full compacted prompt.".into()),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
+    insta::assert_snapshot!(rendered, @"• Context compacted");
+}
+
+#[tokio::test]
+async fn live_app_server_context_compaction_item_completed_prefers_prompt_over_summary() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+                summary: Some("Short summary".to_string()),
+                message: Some("Prompt line 1\nPrompt line 2".to_string()),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
+    insta::assert_snapshot!(rendered, @"
+    • Context compacted
+      Prompt line 1
+      Prompt line 2
+    ");
+}
+
+#[tokio::test]
+async fn live_app_server_context_compacted_fanout_renders_once() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+                summary: Some("Short summary".to_string()),
+                message: Some("Prompt line 1\nPrompt line 2".to_string()),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ContextCompacted(
+            codex_app_server_protocol::ContextCompactedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                summary: Some("Short summary".to_string()),
+                message: Some("Prompt line 1\nPrompt line 2".to_string()),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered_cells = cells
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rendered_cells,
+        vec!["• Context compacted\n  Prompt line 1\n  Prompt line 2\n"]
+    );
+}
+
+#[tokio::test]
+async fn live_app_server_context_compaction_item_renders_summary() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+                summary: Some("Remote compact summary".to_string()),
+                message: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
+    insta::assert_snapshot!(rendered, @"
+    • Context compacted
+      Remote compact summary
+    ");
+}
+
+#[tokio::test]
 async fn live_app_server_turn_started_sets_feedback_turn_id() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

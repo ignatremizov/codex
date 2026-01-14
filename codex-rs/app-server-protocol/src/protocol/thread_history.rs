@@ -250,6 +250,9 @@ pub struct ThreadHistoryBuilder {
     current_rollout_index: usize,
     next_rollout_index: usize,
     active_change_set: Option<ThreadHistoryChangeSet>,
+    // Canonical completion precedes its id-less compatibility event, but unrelated
+    // producers can emit events between the two sends.
+    pending_compaction_legacy_event: Option<ContextCompactedEvent>,
 }
 
 impl Default for ThreadHistoryBuilder {
@@ -267,6 +270,7 @@ impl ThreadHistoryBuilder {
             current_rollout_index: 0,
             next_rollout_index: 0,
             active_change_set: None,
+            pending_compaction_legacy_event: None,
         }
     }
 
@@ -358,6 +362,31 @@ impl ThreadHistoryBuilder {
     /// This function should handle all EventMsg variants that can be persisted in a rollout file.
     /// See `should_persist_event_msg` in `codex-rs/core/rollout/policy.rs`.
     pub fn handle_event(&mut self, event: &EventMsg) {
+        match event {
+            EventMsg::ContextCompacted(legacy) => {
+                if let Some(completed) = self.pending_compaction_legacy_event.take()
+                    && completed.summary == legacy.summary
+                    && completed.message == legacy.message
+                {
+                    return;
+                }
+            }
+            EventMsg::ItemStarted(payload)
+                if matches!(
+                    payload.item,
+                    codex_protocol::items::TurnItem::ContextCompaction(_)
+                ) =>
+            {
+                self.pending_compaction_legacy_event = None;
+            }
+            EventMsg::TurnStarted(_)
+            | EventMsg::TurnComplete(_)
+            | EventMsg::TurnAborted(_)
+            | EventMsg::ThreadRolledBack(_) => {
+                self.pending_compaction_legacy_event = None;
+            }
+            _ => {}
+        }
         match event {
             EventMsg::UserMessage(payload) => self.handle_user_message(payload),
             EventMsg::AgentMessage(payload) => self.handle_agent_message(payload),
@@ -620,6 +649,24 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_item_completed(&mut self, payload: &ItemCompletedEvent) {
+        if let codex_protocol::items::TurnItem::ContextCompaction(item) = &payload.item {
+            self.upsert_item_in_turn_id(&payload.turn_id, ThreadItem::from(payload.item.clone()));
+            if let Some(change) = self
+                .active_change_set
+                .as_mut()
+                .and_then(|changes| changes.changed_items.last_mut())
+                .filter(|change| change.turn_id == payload.turn_id && change.item.id() == item.id)
+            {
+                change.started_at_ms = payload.started_at_ms;
+                change.completed_at_ms =
+                    (payload.completed_at_ms != 0).then_some(payload.completed_at_ms);
+            }
+            self.pending_compaction_legacy_event = Some(ContextCompactedEvent {
+                summary: item.summary.clone(),
+                message: item.message.clone(),
+            });
+            return;
+        }
         self.handle_materialized_item_lifecycle(&payload.turn_id, &payload.item);
     }
 
@@ -1173,9 +1220,13 @@ impl ThreadHistoryBuilder {
         });
     }
 
-    fn handle_context_compacted(&mut self, _payload: &ContextCompactedEvent) {
+    fn handle_context_compacted(&mut self, payload: &ContextCompactedEvent) {
         let id = self.next_item_id();
-        self.push_item_in_current_turn(ThreadItem::ContextCompaction { id });
+        self.push_item_in_current_turn(ThreadItem::ContextCompaction {
+            id,
+            summary: payload.summary.clone(),
+            message: payload.message.clone(),
+        });
     }
 
     fn handle_entered_review_mode(
@@ -1767,6 +1818,7 @@ mod tests {
     use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
     use codex_protocol::items::CommandExecutionItem as CoreCommandExecutionItem;
     use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
+    use codex_protocol::items::ContextCompactionItem;
     use codex_protocol::items::EnteredReviewModeItem as CoreEnteredReviewModeItem;
     use codex_protocol::items::ExitedReviewModeItem as CoreExitedReviewModeItem;
     use codex_protocol::items::HookPromptFragment as CoreHookPromptFragment;
@@ -4539,6 +4591,57 @@ mod tests {
     }
 
     #[test]
+    fn preserves_context_compaction_payload_in_thread_history() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-compact".into(),
+                root_turn_id: None,
+                started_at: None,
+                trace_id: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::EventMsg(EventMsg::ContextCompacted(ContextCompactedEvent {
+                summary: Some("Compact summary".into()),
+                message: Some("Full compacted prompt".into()),
+            })),
+            RolloutItem::Compacted(CompactedItem {
+                message: String::new(),
+                replacement_history: None,
+                retained_context: None,
+                guardian_history: None,
+                mcp_resource_origins: None,
+                window_number: None,
+                first_window_id: None,
+                previous_window_id: None,
+                window_id: None,
+                compaction_response_id: None,
+                latest_token_usage_record: None,
+            }),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-compact".into(),
+                started_at: None,
+                last_agent_message: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![ThreadItem::ContextCompaction {
+                id: "item-1".into(),
+                summary: Some("Compact summary".into()),
+                message: Some("Full compacted prompt".into()),
+            }]
+        );
+    }
+
+    #[test]
     fn reconstructs_collab_resume_end_item() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
@@ -5442,6 +5545,78 @@ mod tests {
                 changed_items: Vec::new(),
                 changed_turns: Vec::new(),
                 removed_turn_ids: vec!["turn-a".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn compaction_completion_preserves_payload_without_start_or_legacy_duplicates() {
+        let thread_id = ThreadId::new();
+        let mut builder = ThreadHistoryBuilder::new();
+        let item = ContextCompactionItem {
+            id: "compact-1".to_string(),
+            summary: Some("summary".to_string()),
+            message: Some("complete compacted prompt".to_string()),
+        };
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            root_turn_id: None,
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        }));
+        builder.handle_event(&EventMsg::ItemStarted(ItemStartedEvent {
+            thread_id,
+            turn_id: "turn-1".to_string(),
+            item: CoreTurnItem::ContextCompaction(ContextCompactionItem {
+                id: item.id.clone(),
+                summary: None,
+                message: None,
+            }),
+            started_at_ms: 100,
+        }));
+        assert!(builder.active_turn_snapshot().unwrap().items.is_empty());
+        let changes =
+            builder.handle_event_with_changes(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id,
+                turn_id: "turn-1".to_string(),
+                item: CoreTurnItem::ContextCompaction(item.clone()),
+                started_at_ms: Some(100),
+                completed_at_ms: 123,
+            }));
+        assert_eq!(
+            changes.changed_items,
+            vec![ThreadHistoryItemChange {
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::from(CoreTurnItem::ContextCompaction(item.clone())),
+                started_at_ms: Some(100),
+                completed_at_ms: Some(123),
+            }]
+        );
+        // The canonical and compatibility sends are not one atomic operation.
+        builder.handle_event(&EventMsg::Warning(codex_protocol::protocol::WarningEvent {
+            message: "unrelated producer".to_string(),
+        }));
+        let legacy = EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: item.summary.clone(),
+            message: item.message.clone(),
+        });
+        builder.handle_event(&legacy);
+        assert_eq!(
+            builder.active_turn_snapshot().unwrap().items,
+            vec![ThreadItem::from(CoreTurnItem::ContextCompaction(item))]
+        );
+        // A second legacy-only completion with identical text is a distinct compaction.
+        builder.handle_event(&legacy);
+        let items = builder.finish().remove(0).items;
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[1],
+            ThreadItem::ContextCompaction {
+                id: items[1].id().to_string(),
+                summary: Some("summary".to_string()),
+                message: Some("complete compacted prompt".to_string()),
             }
         );
     }

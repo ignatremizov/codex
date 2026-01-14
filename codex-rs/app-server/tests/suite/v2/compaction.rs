@@ -117,16 +117,39 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
     let started = wait_for_context_compaction_started(&mut mcp).await?;
     let completed = wait_for_context_compaction_completed(&mut mcp).await?;
 
-    let ThreadItem::ContextCompaction { id: started_id } = started.item else {
+    let ThreadItem::ContextCompaction {
+        id: started_id,
+        summary: started_summary,
+        message: started_message,
+    } = started.item
+    else {
         unreachable!("started item should be context compaction");
     };
-    let ThreadItem::ContextCompaction { id: completed_id } = completed.item else {
+    let ThreadItem::ContextCompaction {
+        id: completed_id,
+        summary: completed_summary,
+        message: completed_message,
+    } = completed.item
+    else {
         unreachable!("completed item should be context compaction");
     };
 
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
+    assert_eq!(started_summary, None);
+    assert_eq!(started_message, None);
+    match route {
+        CompactionRoute::Local => {
+            assert_eq!(completed_summary, Some("LOCAL_SUMMARY".to_string()));
+            let message = completed_message.expect("local compacted prompt");
+            assert!(message.starts_with(codex_core::compact::SUMMARY_PREFIX));
+            assert!(message.contains("\nLOCAL_SUMMARY\n\n[SESSION_METADATA]\n"));
+        }
+        CompactionRoute::Remote => {
+            assert_eq!((completed_summary, completed_message), (None, None));
+        }
+    }
 
     let requests = requests.requests();
     assert_eq!(requests.len(), 4);
@@ -238,16 +261,33 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     let completed = wait_for_context_compaction_completed(&mut mcp).await?;
     wait_for_turn_completed(&mut mcp, &started.turn_id).await?;
 
-    let ThreadItem::ContextCompaction { id: started_id } = started.item else {
+    let ThreadItem::ContextCompaction {
+        id: started_id,
+        summary: started_summary,
+        message: started_message,
+    } = started.item
+    else {
         unreachable!("started item should be context compaction");
     };
-    let ThreadItem::ContextCompaction { id: completed_id } = completed.item else {
+    let ThreadItem::ContextCompaction {
+        id: completed_id,
+        summary: completed_summary,
+        message: completed_message,
+    } = completed.item
+    else {
         unreachable!("completed item should be context compaction");
     };
 
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
+    assert_eq!(started_summary, None);
+    assert_eq!(started_message, None);
+    assert_eq!(
+        completed_summary,
+        Some("MANUAL_COMPACT_SUMMARY".to_string())
+    );
+    assert!(completed_message.is_some());
     assert_eq!(
         raw_completed,
         RawResponseCompletedNotification {
