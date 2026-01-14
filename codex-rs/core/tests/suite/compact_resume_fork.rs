@@ -16,6 +16,7 @@ use codex_core::TurnInputRequest;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::config::Config;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
+use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::RolloutItem;
 use codex_history::RolloutLine;
@@ -914,6 +915,7 @@ async fn start_test_conversation(
         config.update_plan_enabled = true;
         config.model_provider.name = "Non-OpenAI Model provider".to_string();
         config.model_provider.base_url = Some(base_url);
+        let _ = config.features.disable(Feature::RemoteCompaction);
         config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
         if let Some(model) = model {
             config.model = Some(model);

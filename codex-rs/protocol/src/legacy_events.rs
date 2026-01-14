@@ -70,7 +70,10 @@ pub trait HasLegacyEvent {
 
 impl ContextCompactionItem {
     pub fn as_legacy_event(&self) -> EventMsg {
-        EventMsg::ContextCompacted(ContextCompactedEvent {})
+        EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: self.summary.clone(),
+            message: self.message.clone(),
+        })
     }
 }
 

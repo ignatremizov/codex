@@ -64,6 +64,28 @@ fn user_message(text: &str) -> ResponseItem {
     }
 }
 
+fn developer_message(text: String) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText { text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+fn assistant_message(text: &str) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: text.to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
 fn compacted_user_message(text: &str) -> CompactedUserMessage {
     CompactedUserMessage {
         message: text.to_string(),
@@ -214,6 +236,84 @@ fn collect_user_messages_filters_legacy_warnings() {
     let collected = collect_user_messages(&items);
 
     assert_eq!(vec![compacted_user_message("real user message")], collected);
+}
+
+#[test]
+fn collect_user_messages_filters_turn_aborted_marker() {
+    let items = vec![
+        user_message(
+            "<turn_aborted>\n  <turn_id>turn-1</turn_id>\n  <reason>interrupted</reason>\n</turn_aborted>",
+        ),
+        user_message("real user message"),
+    ];
+
+    let collected = collect_user_messages(&items);
+
+    assert_eq!(vec![compacted_user_message("real user message")], collected);
+}
+
+#[test]
+fn summary_for_event_strips_prefix_and_trims() {
+    let summary_text = format!("{SUMMARY_PREFIX}\n  summary line  ");
+
+    let summary = summary_for_event(&summary_text);
+
+    assert_eq!(summary, Some("summary line".to_string()));
+}
+
+#[test]
+fn summary_for_event_returns_none_for_empty_summary() {
+    let summary_text = format!("{SUMMARY_PREFIX}\n   ");
+
+    let summary = summary_for_event(&summary_text);
+
+    assert_eq!(summary, None);
+}
+
+#[test]
+fn summary_for_event_accepts_unprefixed_text() {
+    let summary = summary_for_event("summary line");
+
+    assert_eq!(summary, Some("summary line".to_string()));
+}
+
+#[test]
+fn extract_compacted_summary_text_skips_environment_context() {
+    let items = vec![
+        assistant_message("old reply"),
+        user_message("summary text"),
+        user_message("<environment_context>ctx</environment_context>"),
+    ];
+
+    let summary = extract_compacted_summary_text(&items);
+
+    assert_eq!(summary, Some("summary text".to_string()));
+}
+
+#[test]
+fn extract_compacted_summary_text_falls_back_to_assistant_message() {
+    let items = vec![
+        user_message("<environment_context>ctx</environment_context>"),
+        assistant_message("assistant summary"),
+    ];
+
+    let summary = extract_compacted_summary_text(&items);
+
+    assert_eq!(summary, Some("assistant summary".to_string()));
+}
+
+#[test]
+fn extract_compacted_summary_text_prefers_summary_prompt() {
+    let summary_prompt = format!("{SUMMARY_PREFIX}\ncompacted summary");
+    let items = vec![
+        user_message("recent user message"),
+        user_message(&summary_prompt),
+        user_message("<environment_context>ctx</environment_context>"),
+    ];
+
+    let summary = extract_compacted_summary_text(&items);
+
+    assert_eq!(summary, Some(summary_prompt));
 }
 
 #[test]
@@ -780,4 +880,60 @@ fn insert_initial_context_before_last_real_user_or_summary_keeps_compaction_last
         },
     ];
     assert_eq!(refreshed, expected);
+}
+
+#[test]
+fn compaction_output_token_limit_is_half_context_window() {
+    assert_eq!(1, compaction_output_token_limit_for_window(1));
+    assert_eq!(1, compaction_output_token_limit_for_window(2));
+    assert_eq!(16, compaction_output_token_limit_for_window(32));
+    assert_eq!(128, compaction_output_token_limit_for_window(256));
+}
+
+#[test]
+fn compaction_output_token_limit_uses_default_context_window_when_missing() {
+    let limit = compaction_output_token_limit_for_context_window(None);
+    assert_eq!(DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS / 2, limit);
+}
+
+#[test]
+fn assistant_output_tokens_for_items_sums_assistant_message_tokens() {
+    let assistant_text = "word ".repeat(100);
+    let user_text = "word ".repeat(500);
+    let items = vec![assistant_message(&assistant_text), user_message(&user_text)];
+
+    let expected = approx_token_count(&assistant_text);
+    assert_eq!(expected, assistant_output_tokens_for_items(&items));
+}
+
+#[test]
+fn session_metadata_skips_small_turn_sizes() {
+    let session_id = codex_protocol::ThreadId::new();
+    let user_messages = vec![
+        compacted_user_message("short"),
+        compacted_user_message("also short"),
+    ];
+    let metadata = build_session_metadata_block(&session_id, None, &user_messages, 2);
+
+    assert!(!metadata.contains("large_user_turn_char_counts"));
+    assert!(metadata.contains(&session_id.to_string()));
+    assert!(metadata.contains("rollout_path: (unavailable)"));
+    assert!(metadata.contains("user_turn_count: 2"));
+    assert!(metadata.contains("recent_turns_in_prompt: 2"));
+}
+
+#[test]
+fn session_metadata_includes_large_turn_sizes() {
+    let session_id = codex_protocol::ThreadId::new();
+    let large_message = "x".repeat(COMPACT_LARGE_TURN_CHAR_THRESHOLD + 5);
+    let user_messages = vec![
+        compacted_user_message("small"),
+        compacted_user_message(&large_message),
+    ];
+    let metadata = build_session_metadata_block(&session_id, None, &user_messages, 1);
+
+    assert!(metadata.contains("large_user_turn_char_counts"));
+    assert!(metadata.contains("turn_index_from_end: 0"));
+    assert!(metadata.contains("user_turn_count: 2"));
+    assert!(metadata.contains("recent_turns_in_prompt: 1"));
 }

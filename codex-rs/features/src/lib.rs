@@ -158,6 +158,8 @@ pub enum Feature {
     /// Use the legacy Landlock Linux sandbox fallback instead of the default
     /// bubblewrap pipeline.
     UseLegacyLandlock,
+    /// Remote compaction enabled for OpenAI providers.
+    RemoteCompaction,
     /// Experimental shell snapshotting.
     ShellSnapshot,
     /// Expose the selected PowerShell execution host's bounded major/minor version.
@@ -1190,6 +1192,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "elevated_windows_sandbox",
         stage: Stage::Removed,
         default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::RemoteCompaction,
+        key: "remote_compaction",
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::RemoteModels,

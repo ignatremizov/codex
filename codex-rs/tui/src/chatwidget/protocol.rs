@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(test)]
+use codex_protocol::protocol::Event;
+#[cfg(test)]
+use codex_protocol::protocol::EventMsg;
+
 impl ChatWidget {
     pub(crate) fn handle_server_notification(
         &mut self,
@@ -260,9 +265,18 @@ impl ChatWidget {
             | ServerNotification::AccountLoginCompleted(_)
             | ServerNotification::ProjectChanged(_)
             | ServerNotification::ThreadProjectUpdated(_) => {}
-            ServerNotification::ContextCompacted(_) => {}
+            ServerNotification::ContextCompacted(notification) => {
+                self.on_context_compacted(notification.summary, notification.message);
+            }
         }
         self.thread_usage.replaying_turn_completion = was_replaying_turn_completion;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_codex_event(&mut self, event: Event) {
+        if let EventMsg::ContextCompacted(ev) = event.msg {
+            self.on_context_compacted(ev.summary, ev.message);
+        }
     }
 
     pub(super) fn handle_turn_completed_notification(
