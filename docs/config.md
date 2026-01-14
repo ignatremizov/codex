@@ -161,6 +161,15 @@ Set either value to `0` to show all retained output for that category in the mai
 previews apply to rendered rows from subagent spawn/input prompts, and agent response previews apply
 to rendered rows from subagent output shown after a multi-agent wait completes.
 
+Hide the compacted prompt output after `/compact`:
+
+```toml
+[tui]
+show_compact_summary = false
+```
+
+When unset, the transcript includes the compacted prompt when available (otherwise just the summary).
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.

@@ -761,6 +761,9 @@ pub struct Config {
     /// Maximum number of rendered subagent response rows shown after a multi-agent wait completes.
     pub tui_agent_response_preview_lines: usize,
 
+    /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
+    pub show_compact_summary: bool,
+
     /// Start the TUI in the specified collaboration mode (plan/default).
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
@@ -4146,6 +4149,11 @@ impl Config {
                 .as_ref()
                 .map(|t| t.agent_response_preview_lines)
                 .unwrap_or(codex_config::types::DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES),
+            show_compact_summary: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.show_compact_summary)
+                .unwrap_or(true),
             tui_alternate_screen: cfg
                 .tui
                 .as_ref()
