@@ -137,6 +137,17 @@ fn summary_with_prefix(summary: &str) -> String {
     format!("{SUMMARY_PREFIX}\n{summary}")
 }
 
+fn normalize_summary_message(text: &str) -> String {
+    text.split_once("\n\n[SESSION_METADATA]\n")
+        .map(|(summary, _)| summary)
+        .unwrap_or(text)
+        .to_string()
+}
+
+fn summary_message_matches(text: &str, summary: &str) -> bool {
+    normalize_summary_message(text) == summary_with_prefix(summary)
+}
+
 fn set_test_compact_prompt(config: &mut Config) {
     config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
 }
@@ -620,7 +631,7 @@ async fn summarize_context_three_requests_and_instructions() {
     assert!(
         messages
             .iter()
-            .any(|(r, t)| r == "user" && t == &expected_summary_message),
+            .any(|(r, t)| r == "user" && normalize_summary_message(t) == expected_summary_message),
         "third request should include the summary message"
     );
     assert!(
@@ -651,7 +662,9 @@ async fn summarize_context_three_requests_and_instructions() {
             RolloutItem::TurnContext(_) => {
                 regular_turn_context_count += 1;
             }
-            RolloutItem::Compacted(ci) if ci.message == expected_summary_message => {
+            RolloutItem::Compacted(ci)
+                if normalize_summary_message(&ci.message) == expected_summary_message =>
+            {
                 saw_compacted_summary = true;
             }
             _ => {}
@@ -1222,7 +1235,26 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
                     return None;
                 }
                 if role == Some("user") {
-                    return strip_agents_parts_from_user_message(value);
+                    let mut value = strip_agents_parts_from_user_message(value)?;
+                    if value
+                        .get("content")
+                        .and_then(|content| content.as_array())
+                        .and_then(|content| content.first())
+                        .and_then(|item| item.get("text"))
+                        .and_then(|text| text.as_str())
+                        .is_some_and(|text| text.starts_with(SUMMARY_PREFIX))
+                        && let Some(content) = value
+                            .get_mut("content")
+                            .and_then(|content| content.as_array_mut())
+                        && let Some(text) = content
+                            .first_mut()
+                            .and_then(|item| item.get_mut("text"))
+                            .and_then(|text| text.as_str())
+                    {
+                        content[0]["text"] =
+                            serde_json::Value::String(normalize_summary_message(text));
+                    }
+                    return Some(value);
                 }
                 Some(value.clone())
             })
@@ -3056,9 +3088,18 @@ async fn manual_compact_retries_after_context_window_error() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     codex.submit(Op::Compact).await.unwrap();
-    let warning_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
-    let EventMsg::Warning(WarningEvent { message }) = warning_event else {
-        panic!("expected warning event after compact retry");
+    let trim_warning_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
+    let EventMsg::Warning(WarningEvent { message }) = trim_warning_event else {
+        panic!("expected trim warning event after compact retry");
+    };
+    assert_eq!(
+        message,
+        "Trimmed 1 older thread item(s) before compacting so the prompt fits the model context window."
+    );
+    let compact_warning_event =
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
+    let EventMsg::Warning(WarningEvent { message }) = compact_warning_event else {
+        panic!("expected compact warning event after compact retry");
     };
     assert_eq!(message, COMPACT_WARNING_MESSAGE);
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -3192,7 +3233,6 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
     let final_user_message = "post compact follow-up";
     let first_summary = "FIRST_MANUAL_SUMMARY";
     let second_summary = "SECOND_MANUAL_SUMMARY";
-    let expected_second_summary = summary_with_prefix(second_summary);
 
     let server = start_mock_server().await;
 
@@ -3425,13 +3465,22 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
     );
     let history_before_seeded_prefix = final_request_before_last_user
         .strip_suffix(initial_seeded_user_prefix)
-        .expect("final request should end with the seeded user prefix from the first request");
-    let expected_history = vec![
-        first_user_message.to_string(),
-        second_user_message.to_string(),
-        expected_second_summary,
-    ];
-    assert_eq!(history_before_seeded_prefix, expected_history.as_slice());
+        .unwrap_or_else(|| {
+            panic!(
+                "final request should end with the seeded user prefix from the first request: {initial_seeded_user_prefix:?}"
+            )
+        });
+    assert_eq!(
+        history_before_seeded_prefix.len(),
+        3,
+        "final request should preserve two user turns plus the latest compacted summary"
+    );
+    assert_eq!(history_before_seeded_prefix[0], first_user_message);
+    assert_eq!(history_before_seeded_prefix[1], second_user_message);
+    assert!(
+        summary_message_matches(&history_before_seeded_prefix[2], second_summary),
+        "final request should preserve the latest compacted summary before the seeded prefix"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

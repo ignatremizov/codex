@@ -586,6 +586,9 @@
             "realtime_conversation": {
               "type": "boolean"
             },
+            "remote_compaction": {
+              "type": "boolean"
+            },
             "remote_compaction_v2": {
               "type": "boolean"
             },
@@ -3240,6 +3243,11 @@
           "default": null,
           "description": "Preferred layout for resume/fork session picker results."
         },
+        "show_compact_summary": {
+          "default": true,
+          "description": "Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`. Defaults to `true`.",
+          "type": "boolean"
+        },
         "show_tooltips": {
           "default": true,
           "description": "Show startup tooltips in the TUI welcome screen. Defaults to `true`.",
@@ -4956,6 +4964,9 @@
           "type": "boolean"
         },
         "realtime_conversation": {
+          "type": "boolean"
+        },
+        "remote_compaction": {
           "type": "boolean"
         },
         "remote_compaction_v2": {
