@@ -941,6 +941,7 @@ fn config_toml_deserializes_model_availability_nux() {
             agent_prompt_preview_lines: codex_config::types::DEFAULT_TUI_AGENT_PROMPT_PREVIEW_LINES,
             agent_response_preview_lines:
                 codex_config::types::DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES,
+            show_compact_summary: true,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
             status_line_use_colors: true,
@@ -3804,6 +3805,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             agent_prompt_preview_lines: codex_config::types::DEFAULT_TUI_AGENT_PROMPT_PREVIEW_LINES,
             agent_response_preview_lines:
                 codex_config::types::DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES,
+            show_compact_summary: true,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
             status_line_use_colors: true,
