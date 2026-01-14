@@ -447,6 +447,11 @@ pub struct Tui {
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
 
+    /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub show_compact_summary: bool,
+
     /// Start the TUI in the specified collaboration mode (plan/execute/etc.).
     /// Defaults to unset.
     #[serde(default)]
