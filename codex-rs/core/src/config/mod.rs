@@ -353,7 +353,8 @@ pub struct Config {
     /// Persisted startup availability NUX state for model tooltips.
     pub model_availability_nux: ModelAvailabilityNuxConfig,
 
-    /// Start the TUI in the specified collaboration mode (plan/default).
+    /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
+    pub show_compact_summary: bool,
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///
@@ -2743,6 +2744,11 @@ impl Config {
                 .as_ref()
                 .map(|t| t.model_availability_nux.clone())
                 .unwrap_or_default(),
+            show_compact_summary: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.show_compact_summary)
+                .unwrap_or(true),
             tui_alternate_screen: cfg
                 .tui
                 .as_ref()

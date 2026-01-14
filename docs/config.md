@@ -80,6 +80,17 @@ same bundle. If the file is empty, unreadable, or malformed, the affected Codex
 HTTP or secure websocket connection reports a user-facing error that points
 back to these environment variables.
 
+## TUI
+
+Hide the compacted prompt output after `/compact`:
+
+```toml
+[tui]
+show_compact_summary = false
+```
+
+When unset, the transcript includes the compacted prompt when available (otherwise just the summary).
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.

@@ -4279,6 +4279,54 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
 }
 
 #[tokio::test]
+async fn context_compacted_summary_respects_tui_toggle_for_app_server_item() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.show_compact_summary = false;
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+                summary: Some("Trimmed summary text.".to_string()),
+                message: Some("Full compacted prompt.".to_string()),
+            },
+        }),
+        None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
+    assert_eq!(rendered, "• Context compacted.\n");
+}
+
+#[tokio::test]
+async fn context_compacted_prefers_prompt_over_summary_for_app_server_item() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+                summary: Some("Short summary".to_string()),
+                message: Some("Prompt line 1\nPrompt line 2".to_string()),
+            },
+        }),
+        None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert_eq!(
+        lines_to_single_string(&cells[0]),
+        "• Compacted prompt\n  Prompt line 1\n  Prompt line 2\n"
+    );
+}
+
+#[tokio::test]
 async fn live_app_server_turn_completed_clears_working_status_after_answer_item() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
 

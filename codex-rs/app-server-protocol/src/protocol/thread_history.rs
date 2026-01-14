@@ -823,11 +823,15 @@ impl ThreadHistoryBuilder {
         });
     }
 
-    fn handle_context_compacted(&mut self, _payload: &ContextCompactedEvent) {
+    fn handle_context_compacted(&mut self, payload: &ContextCompactedEvent) {
         let id = self.next_item_id();
         self.ensure_turn()
             .items
-            .push(ThreadItem::ContextCompaction { id });
+            .push(ThreadItem::ContextCompaction {
+                id,
+                summary: payload.summary.clone(),
+                message: payload.message.clone(),
+            });
     }
 
     fn handle_entered_review_mode(&mut self, payload: &codex_protocol::protocol::ReviewRequest) {
@@ -2427,6 +2431,40 @@ mod tests {
                 status: TurnStatus::Completed,
                 error: None,
                 items: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn preserves_context_compaction_payload_in_thread_history() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-compact".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::EventMsg(EventMsg::ContextCompacted(ContextCompactedEvent {
+                summary: Some("Compact summary".into()),
+                message: Some("Full compacted prompt".into()),
+            })),
+            RolloutItem::Compacted(CompactedItem {
+                message: String::new(),
+                replacement_history: None,
+            }),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-compact".into(),
+                last_agent_message: None,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![ThreadItem::ContextCompaction {
+                id: "item-1".into(),
+                summary: Some("Compact summary".into()),
+                message: Some("Full compacted prompt".into()),
             }]
         );
     }
