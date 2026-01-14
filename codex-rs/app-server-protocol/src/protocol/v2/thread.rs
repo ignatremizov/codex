@@ -1672,4 +1672,6 @@ pub struct ThreadGoalClearedNotification {
 pub struct ContextCompactedNotification {
     pub thread_id: String,
     pub turn_id: String,
+    pub summary: Option<String>,
+    pub message: Option<String>,
 }

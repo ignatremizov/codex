@@ -106,6 +106,15 @@ pub enum CodexErrorDetails {
     Timeout,
     #[error("request timed out")]
     RequestTimeout,
+    #[error("compaction timed out after {limit:?}")]
+    CompactionTimedOut { limit: Duration },
+    #[error(
+        "compaction output exceeded the {max_tokens}-token limit ({actual_tokens} tokens received)"
+    )]
+    CompactionOutputLimit {
+        max_tokens: usize,
+        actual_tokens: usize,
+    },
     /// Returned by run_command_stream when the child could not be spawned (its stdout/stderr pipes
     /// could not be captured). Analogous to the previous `CodexError::Spawn` variant.
     #[error("spawn failed: child stdout/stderr not captured")]
@@ -373,6 +382,8 @@ impl CodexErr {
             | CodexErrorDetails::LandlockSandboxExecutableNotProvided
             | CodexErrorDetails::RetryLimit(_)
             | CodexErrorDetails::ContextWindowExceeded
+            | CodexErrorDetails::CompactionTimedOut { .. }
+            | CodexErrorDetails::CompactionOutputLimit { .. }
             | CodexErrorDetails::ThreadNotFound(_)
             | CodexErrorDetails::AgentLimitReached { .. }
             | CodexErrorDetails::Spawn
