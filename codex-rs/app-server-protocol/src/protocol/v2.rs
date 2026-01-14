@@ -2876,6 +2876,12 @@ pub struct WindowsWorldWritableWarningNotification {
 pub struct ContextCompactedNotification {
     pub thread_id: String,
     pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3168,6 +3174,46 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::path::PathBuf;
+
+    #[test]
+    fn context_compacted_notification_serializes_summary() -> Result<(), serde_json::Error> {
+        let notification = ContextCompactedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            summary: Some("compact summary".to_string()),
+            message: Some("full compacted prompt".to_string()),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&notification)?,
+            json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "summary": "compact summary",
+                "message": "full compacted prompt",
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn context_compacted_notification_omits_empty_summary() -> Result<(), serde_json::Error> {
+        let notification = ContextCompactedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            summary: None,
+            message: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&notification)?,
+            json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+            })
+        );
+        Ok(())
+    }
 
     #[test]
     fn sandbox_policy_round_trips_external_sandbox_network_access() {

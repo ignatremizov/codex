@@ -31,6 +31,7 @@ use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
+use codex_core::protocol::ContextCompactedEvent;
 use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
@@ -831,6 +832,44 @@ async fn entered_review_mode_defaults_to_current_changes_banner() {
     let banner = lines_to_single_string(cells.last().expect("review banner"));
     assert_eq!(banner, ">> Code review started: current changes <<\n");
     assert!(chat.is_review_mode);
+}
+
+#[tokio::test]
+async fn context_compacted_summary_respects_tui_toggle() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    chat.config.show_compact_summary = false;
+
+    chat.handle_codex_event(Event {
+        id: "compact".into(),
+        msg: EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: Some("Trimmed summary text.".to_string()),
+            message: Some("Full compacted prompt.".to_string()),
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
+    assert_eq!(rendered, "• Context compacted.\n");
+}
+
+#[tokio::test]
+async fn context_compacted_prefers_prompt_over_summary() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "compact".into(),
+        msg: EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: Some("Short summary".to_string()),
+            message: Some("Prompt line 1\nPrompt line 2".to_string()),
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert_eq!(
+        lines_to_single_string(&cells[0]),
+        "• Compacted prompt\n  Prompt line 1\n  Prompt line 2\n"
+    );
 }
 
 /// Exiting review restores the pre-review context window indicator.

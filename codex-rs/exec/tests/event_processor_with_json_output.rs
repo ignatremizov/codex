@@ -5,6 +5,7 @@ use codex_core::protocol::AskForApproval;
 use codex_core::protocol::CollabAgentSpawnBeginEvent;
 use codex_core::protocol::CollabAgentSpawnEndEvent;
 use codex_core::protocol::CollabWaitingEndEvent;
+use codex_core::protocol::ContextCompactedEvent as CoreContextCompactedEvent;
 use codex_core::protocol::ErrorEvent;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
@@ -31,6 +32,7 @@ use codex_exec::exec_events::CollabToolCallItem;
 use codex_exec::exec_events::CollabToolCallStatus;
 use codex_exec::exec_events::CommandExecutionItem;
 use codex_exec::exec_events::CommandExecutionStatus;
+use codex_exec::exec_events::ContextCompactedEvent as ExecContextCompactedEvent;
 use codex_exec::exec_events::ErrorItem;
 use codex_exec::exec_events::ItemCompletedEvent;
 use codex_exec::exec_events::ItemStartedEvent;
@@ -122,6 +124,26 @@ fn task_started_produces_turn_started_event() {
     ));
 
     assert_eq!(out, vec![ThreadEvent::TurnStarted(TurnStartedEvent {})]);
+}
+
+#[test]
+fn context_compacted_emits_context_compacted_event() {
+    let mut ep = EventProcessorWithJsonOutput::new(None);
+    let out = ep.collect_thread_events(&event(
+        "c1",
+        EventMsg::ContextCompacted(CoreContextCompactedEvent {
+            summary: Some("short summary".to_string()),
+            message: Some("compacted prompt".to_string()),
+        }),
+    ));
+
+    assert_eq!(
+        out,
+        vec![ThreadEvent::ContextCompacted(ExecContextCompactedEvent {
+            summary: Some("short summary".to_string()),
+            message: Some("compacted prompt".to_string()),
+        })]
+    );
 }
 
 #[test]

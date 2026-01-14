@@ -50,6 +50,17 @@ unified_exec_write_stdin_yield_time_ms = 250 # write_stdin polling window
 If unset, Codex uses the built-in defaults (10,000 ms initial snapshot window for `exec_command`,
 250 ms polling window for `write_stdin`).
 
+## TUI
+
+Hide the compacted prompt output after `/compact`:
+
+```toml
+[tui]
+show_compact_summary = false
+```
+
+When unset, the transcript includes the compacted prompt when available (otherwise just the summary).
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.
