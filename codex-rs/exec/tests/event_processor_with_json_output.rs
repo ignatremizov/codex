@@ -48,6 +48,7 @@ use codex_exec::exec_events::CollabToolCallItem;
 use codex_exec::exec_events::CollabToolCallStatus;
 use codex_exec::exec_events::CommandExecutionItem;
 use codex_exec::exec_events::CommandExecutionStatus;
+use codex_exec::exec_events::ContextCompactedEvent as ExecContextCompactedEvent;
 use codex_exec::exec_events::ErrorItem;
 use codex_exec::exec_events::FileChangeItem;
 use codex_exec::exec_events::FileUpdateChange as ExecFileUpdateChange;
@@ -151,6 +152,34 @@ fn turn_started_emits_turn_started_event() {
         collected,
         CollectedThreadEvents {
             events: vec![ThreadEvent::TurnStarted(TurnStartedEvent {})],
+            status: CodexStatus::Running,
+        }
+    );
+}
+
+#[test]
+fn context_compaction_item_emits_context_compacted_event() {
+    let mut processor = EventProcessorWithJsonOutput::new(None);
+
+    let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
+        ItemCompletedNotification {
+            item: ThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+                summary: Some("short summary".to_string()),
+                message: Some("compacted prompt".to_string()),
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+        },
+    ));
+
+    assert_eq!(
+        collected,
+        CollectedThreadEvents {
+            events: vec![ThreadEvent::ContextCompacted(ExecContextCompactedEvent {
+                summary: Some("short summary".to_string()),
+                message: Some("compacted prompt".to_string()),
+            })],
             status: CodexStatus::Running,
         }
     );

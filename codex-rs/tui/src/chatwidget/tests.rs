@@ -124,6 +124,7 @@ use codex_protocol::protocol::BackgroundEventEvent;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
+use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -1772,6 +1773,44 @@ async fn steer_rejection_queues_review_follow_up_before_existing_queued_messages
         ),
         other => panic!("expected queued draft submit after rejected steers, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn context_compacted_summary_respects_tui_toggle() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    chat.config.show_compact_summary = false;
+
+    chat.handle_codex_event(Event {
+        id: "compact".into(),
+        msg: EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: Some("Trimmed summary text.".to_string()),
+            message: Some("Full compacted prompt.".to_string()),
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
+    assert_eq!(rendered, "• Context compacted.\n");
+}
+
+#[tokio::test]
+async fn context_compacted_prefers_prompt_over_summary() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "compact".into(),
+        msg: EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: Some("Short summary".to_string()),
+            message: Some("Prompt line 1\nPrompt line 2".to_string()),
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert_eq!(
+        lines_to_single_string(&cells[0]),
+        "• Compacted prompt\n  Prompt line 1\n  Prompt line 2\n"
+    );
 }
 
 #[tokio::test]

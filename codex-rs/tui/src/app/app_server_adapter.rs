@@ -828,11 +828,15 @@ fn thread_item_to_core(item: &ThreadItem) -> Option<TurnItem> {
             result: result.clone(),
             saved_path: saved_path.clone(),
         })),
-        ThreadItem::ContextCompaction { id } => {
-            Some(TurnItem::ContextCompaction(ContextCompactionItem {
-                id: id.clone(),
-            }))
-        }
+        ThreadItem::ContextCompaction {
+            id,
+            summary,
+            message,
+        } => Some(TurnItem::ContextCompaction(ContextCompactionItem {
+            id: id.clone(),
+            summary: summary.clone(),
+            message: message.clone(),
+        })),
         ThreadItem::CommandExecution { .. }
         | ThreadItem::FileChange { .. }
         | ThreadItem::McpToolCall { .. }
@@ -1504,6 +1508,8 @@ mod tests {
                     },
                     ThreadItem::ContextCompaction {
                         id: "compact-1".to_string(),
+                        summary: Some("Compact summary".to_string()),
+                        message: Some("Full compacted prompt".to_string()),
                     },
                 ],
                 status: TurnStatus::Completed,
@@ -1534,7 +1540,11 @@ mod tests {
         assert_eq!(image_generation.status, "completed");
         assert_eq!(image_generation.revised_prompt.as_deref(), Some("diagram"));
         assert_eq!(image_generation.result, "image.png");
-        assert!(matches!(events[4].msg, EventMsg::ContextCompacted(_)));
+        let EventMsg::ContextCompacted(compacted) = &events[4].msg else {
+            panic!("expected context compacted replay");
+        };
+        assert_eq!(compacted.summary.as_deref(), Some("Compact summary"));
+        assert_eq!(compacted.message.as_deref(), Some("Full compacted prompt"));
         assert!(matches!(events[5].msg, EventMsg::TurnComplete(_)));
     }
 

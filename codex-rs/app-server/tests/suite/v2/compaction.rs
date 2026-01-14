@@ -46,6 +46,7 @@ const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_compaction_local_emits_started_and_completed_items() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    const LOCAL_AUTO_COMPACT_LIMIT: i64 = 200_000;
 
     let server = responses::start_mock_server().await;
     let sse1 = responses::sse(vec![
@@ -71,7 +72,7 @@ async fn auto_compaction_local_emits_started_and_completed_items() -> Result<()>
         codex_home.path(),
         &server.uri(),
         &BTreeMap::default(),
-        AUTO_COMPACT_LIMIT,
+        LOCAL_AUTO_COMPACT_LIMIT,
         /*requires_openai_auth*/ None,
         "mock_provider",
         COMPACT_PROMPT,
@@ -88,16 +89,30 @@ async fn auto_compaction_local_emits_started_and_completed_items() -> Result<()>
     let started = wait_for_context_compaction_started(&mut mcp).await?;
     let completed = wait_for_context_compaction_completed(&mut mcp).await?;
 
-    let ThreadItem::ContextCompaction { id: started_id } = started.item else {
+    let ThreadItem::ContextCompaction {
+        id: started_id,
+        summary: started_summary,
+        message: started_message,
+    } = started.item
+    else {
         unreachable!("started item should be context compaction");
     };
-    let ThreadItem::ContextCompaction { id: completed_id } = completed.item else {
+    let ThreadItem::ContextCompaction {
+        id: completed_id,
+        summary: completed_summary,
+        message: completed_message,
+    } = completed.item
+    else {
         unreachable!("completed item should be context compaction");
     };
 
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
+    assert_eq!(started_summary, None);
+    assert_eq!(started_message, None);
+    assert_eq!(completed_summary, Some("LOCAL_SUMMARY".to_string()));
+    assert!(completed_message.is_some());
 
     Ok(())
 }
@@ -169,16 +184,33 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
     let started = wait_for_context_compaction_started(&mut mcp).await?;
     let completed = wait_for_context_compaction_completed(&mut mcp).await?;
 
-    let ThreadItem::ContextCompaction { id: started_id } = started.item else {
+    let ThreadItem::ContextCompaction {
+        id: started_id,
+        summary: started_summary,
+        message: started_message,
+    } = started.item
+    else {
         unreachable!("started item should be context compaction");
     };
-    let ThreadItem::ContextCompaction { id: completed_id } = completed.item else {
+    let ThreadItem::ContextCompaction {
+        id: completed_id,
+        summary: completed_summary,
+        message: completed_message,
+    } = completed.item
+    else {
         unreachable!("completed item should be context compaction");
     };
 
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
+    assert_eq!(started_summary, None);
+    assert_eq!(started_message, None);
+    assert_eq!(
+        completed_summary,
+        Some("REMOTE_COMPACT_SUMMARY".to_string())
+    );
+    assert_eq!(completed_message, None);
 
     let compact_requests = compact_mock.requests();
     assert_eq!(compact_requests.len(), 1);
@@ -232,16 +264,33 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     let started = wait_for_context_compaction_started(&mut mcp).await?;
     let completed = wait_for_context_compaction_completed(&mut mcp).await?;
 
-    let ThreadItem::ContextCompaction { id: started_id } = started.item else {
+    let ThreadItem::ContextCompaction {
+        id: started_id,
+        summary: started_summary,
+        message: started_message,
+    } = started.item
+    else {
         unreachable!("started item should be context compaction");
     };
-    let ThreadItem::ContextCompaction { id: completed_id } = completed.item else {
+    let ThreadItem::ContextCompaction {
+        id: completed_id,
+        summary: completed_summary,
+        message: completed_message,
+    } = completed.item
+    else {
         unreachable!("completed item should be context compaction");
     };
 
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
+    assert_eq!(started_summary, None);
+    assert_eq!(started_message, None);
+    assert_eq!(
+        completed_summary,
+        Some("MANUAL_COMPACT_SUMMARY".to_string())
+    );
+    assert!(completed_message.is_some());
 
     Ok(())
 }
