@@ -165,6 +165,19 @@ Failures use the normal JSON-RPC error envelope with closed `{type, reason}` dat
 `invalidRequest`, `unavailable`, `cancelled`, or `failed`. UI clients branch on
 these values rather than message text. Native diagnostic payloads stay private.
 
+## Completed context compaction
+
+Completed `contextCompaction` items include nullable `summary` and `message` fields.
+The summary is the compacted text when available; the message is the complete
+compacted prompt installed in history. Started items and older saved history can
+have null payloads. Render the canonical `item/completed` item once; the deprecated
+`thread/compacted` notification is not a second completion.
+
+Local compaction uses a 15-minute response deadline, an output limit of half the
+model context window when known, and bounded session metadata appended to its
+summary. These local safeguards do not change the remote V2 compaction service's
+limits.
+
 ## Local rollout compression
 
 The experimental `rollout/compress` method takes no parameters and immediately

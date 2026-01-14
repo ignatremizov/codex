@@ -540,7 +540,7 @@ impl ChatWidget {
                     self.on_reasoning_item_started(id);
                 }
             }
-            ThreadItem::ContextCompaction { id }
+            ThreadItem::ContextCompaction { id, .. }
                 if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages)) =>
             {
                 // Buffered starts reconstruct an in-flight compaction when switching tasks.

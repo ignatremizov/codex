@@ -1240,6 +1240,90 @@ fn prefixed_wrapped_history_cell_does_not_split_url_like_token() {
 }
 
 #[test]
+fn compaction_summary_cell_wraps_and_preserves_blank_lines() {
+    let cell = new_compaction(
+        "Context compacted".into(),
+        Some("First line\n\nSecond line that is long".into()),
+        /*message*/ None,
+        /*show_compact_summary*/ true,
+    );
+    let rendered = render_lines(&cell.display_lines(/*width*/ 24));
+
+    assert_eq!(
+        rendered,
+        vec![
+            "• Context compacted".to_string(),
+            "  First line".to_string(),
+            "  ".to_string(),
+            "  Second line that is".to_string(),
+            "  long".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn compaction_summary_cell_handles_empty_summary() {
+    let cell = new_compaction(
+        "Context compacted".into(),
+        Some("   ".into()),
+        /*message*/ None,
+        /*show_compact_summary*/ true,
+    );
+    let rendered = render_lines(&cell.display_lines(/*width*/ 40));
+
+    assert_eq!(rendered, vec!["• Context compacted".to_string(),]);
+}
+
+#[test]
+fn compaction_prompt_cell_wraps_and_preserves_blank_lines() {
+    let cell = new_compaction(
+        "Context compacted".into(),
+        /*summary*/ None,
+        Some("Prompt line\n\nMore detail".into()),
+        /*show_compact_summary*/ true,
+    );
+    let rendered = render_lines(&cell.display_lines(/*width*/ 24));
+
+    assert_eq!(
+        rendered,
+        vec![
+            "• Context compacted".to_string(),
+            "  Prompt line".to_string(),
+            "  ".to_string(),
+            "  More detail".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn compaction_prompt_cell_handles_empty_prompt() {
+    let cell = new_compaction(
+        "Context compacted".into(),
+        /*summary*/ None,
+        Some("   ".into()),
+        /*show_compact_summary*/ true,
+    );
+    let rendered = render_lines(&cell.display_lines(/*width*/ 40));
+
+    assert_eq!(rendered, vec!["• Context compacted".to_string(),]);
+}
+
+#[test]
+fn compaction_raw_output_preserves_untrimmed_full_text() {
+    let message = "\n  Indented prompt\n\nLast line  \n\n";
+    let cell = new_compaction(
+        "Context compacted".into(),
+        Some("Short summary".into()),
+        Some(message.into()),
+        /*show_compact_summary*/ true,
+    );
+    let mut expected = vec![Line::from("• Context compacted")];
+    expected.extend(raw_lines_from_source(message));
+    assert_eq!(cell.raw_lines(), expected);
+    assert!(cell.display_lines(/*width*/ 0).is_empty());
+}
+
+#[test]
 fn unified_exec_interaction_details_do_not_split_url_like_stdin_token() {
     let url_like = "example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890";
     let cell = UnifiedExecInteractionCell::new(Some("true".to_string()), url_like.to_string());

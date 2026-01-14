@@ -776,6 +776,9 @@ pub struct Config {
     /// Own the fullscreen transcript when the alternate screen is enabled.
     pub tui_fullscreen_transcript: bool,
 
+    /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
+    pub show_compact_summary: bool,
+
     /// Start the TUI in the specified collaboration mode (plan/default).
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
@@ -4421,6 +4424,11 @@ impl Config {
                 .tui
                 .as_ref()
                 .is_some_and(|tui| tui.fullscreen_transcript),
+            show_compact_summary: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.show_compact_summary)
+                .unwrap_or(true),
             tui_alternate_screen: cfg
                 .tui
                 .as_ref()

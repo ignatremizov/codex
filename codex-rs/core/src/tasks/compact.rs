@@ -38,7 +38,12 @@ impl SessionTask for CompactTask {
             return Ok(None);
         }
 
-        let result = match ctx.provider.capabilities().remote_compaction {
+        let remote_compaction = if ctx.config.features.enabled(Feature::RemoteCompaction) {
+            ctx.provider.capabilities().remote_compaction
+        } else {
+            RemoteCompactionSupport::Unsupported
+        };
+        let result = match remote_compaction {
             RemoteCompactionSupport::V2 => {
                 emit_compact_metric(
                     &session.services.session_telemetry,

@@ -208,10 +208,14 @@ pub(crate) async fn run_turn(
             .await;
         // Publish the failure only after prompt hooks finish, so clients cannot react to
         // an error by steering follow-up input into a turn still preserving its prompt.
-        let message_prefix = match turn_context.provider.capabilities().remote_compaction {
-            RemoteCompactionSupport::V2 => Some("Error running remote compact task".to_string()),
-            RemoteCompactionSupport::Unsupported => None,
-        };
+        let message_prefix = (turn_context
+            .config
+            .features
+            .enabled(Feature::RemoteCompaction)
+            && !turn_context.config.features.enabled(Feature::TokenBudget)
+            && turn_context.provider.capabilities().remote_compaction
+                == RemoteCompactionSupport::V2)
+            .then(|| "Error running remote compact task".to_string());
         sess.send_event(
             turn_context.as_ref(),
             EventMsg::Error(err.to_error_event(message_prefix)),
@@ -1466,7 +1470,16 @@ async fn run_auto_compact(
         return Ok(());
     }
 
-    match turn_context.provider.capabilities().remote_compaction {
+    let remote_compaction = if turn_context
+        .config
+        .features
+        .enabled(Feature::RemoteCompaction)
+    {
+        turn_context.provider.capabilities().remote_compaction
+    } else {
+        RemoteCompactionSupport::Unsupported
+    };
+    match remote_compaction {
         RemoteCompactionSupport::V2 => {
             emit_compact_metric(
                 &sess.services.session_telemetry,

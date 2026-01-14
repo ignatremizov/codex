@@ -226,9 +226,11 @@ pub(super) fn completed_item(
             })),
             None,
         )),
-        EventMsg::ContextCompacted(_) => Some((
+        EventMsg::ContextCompacted(event) => Some((
             TurnItem::ContextCompaction(ContextCompactionItem {
                 id: next_item_id()?,
+                summary: event.summary.clone(),
+                message: event.message.clone(),
             }),
             None,
         )),
@@ -311,3 +313,7 @@ pub(super) fn completed_item(
     };
     Ok(result)
 }
+
+#[cfg(test)]
+#[path = "legacy_event_tests.rs"]
+mod tests;

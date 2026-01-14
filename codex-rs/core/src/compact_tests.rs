@@ -17,6 +17,7 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_tools::ToolName;
+use codex_utils_output_truncation::approx_token_count;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
@@ -190,11 +191,11 @@ async fn local_compaction_respects_tool_metadata_state(
         );
     }
     let compacted_history = session.clone_history().await;
-    let expected_summary = format!("{SUMMARY_PREFIX}\nThe prior calls finished.");
     assert!(compacted_history.raw_items().any(|item| {
         matches!(item, ResponseItem::Message { role, content, .. }
             if role == "user"
-                && content_items_to_text(content).as_deref() == Some(expected_summary.as_str()))
+                && content_items_to_text(content).as_deref()
+                    .and_then(summary_for_event).as_deref() == Some("The prior calls finished."))
     }));
     Ok(())
 }
@@ -375,6 +376,20 @@ fn collect_user_messages_filters_legacy_warnings() {
         ),
         user_message(
             "Warning: Your account was flagged for potentially high-risk cyber activity and this request was routed to gpt-5.2 as a fallback. To regain access to gpt-5.3-codex, apply for trusted access: https://chatgpt.com/cyber or learn more: https://developers.openai.com/codex/concepts/cyber-safety",
+        ),
+        user_message("real user message"),
+    ];
+
+    let collected = collect_user_messages(&items);
+
+    assert_eq!(vec![compacted_user_message("real user message")], collected);
+}
+
+#[test]
+fn collect_user_messages_filters_turn_aborted_marker() {
+    let items = vec![
+        user_message(
+            "<turn_aborted>\n  <turn_id>turn-1</turn_id>\n  <reason>interrupted</reason>\n</turn_aborted>",
         ),
         user_message("real user message"),
     ];
