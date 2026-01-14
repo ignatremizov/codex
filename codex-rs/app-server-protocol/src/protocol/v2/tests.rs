@@ -270,6 +270,8 @@ fn thread_items_list_round_trips() {
             turn_id: "turn_456".to_string(),
             item: ThreadItem::ContextCompaction {
                 id: "item_1".to_string(),
+                summary: Some("compact summary".to_string()),
+                message: Some("full compacted prompt".to_string()),
             },
         }],
         next_cursor: None,
@@ -281,7 +283,12 @@ fn thread_items_list_round_trips() {
         json!({
             "data": [{
                 "turnId": "turn_456",
-                "item": {"type": "contextCompaction", "id": "item_1"},
+                "item": {
+                    "type": "contextCompaction",
+                    "id": "item_1",
+                    "summary": "compact summary",
+                    "message": "full compacted prompt",
+                },
             }],
             "nextCursor": null,
             "backwardsCursor": "cursor_0",
