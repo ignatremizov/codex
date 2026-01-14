@@ -108,6 +108,51 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(super) fn on_context_compacted(
+        &mut self,
+        summary: Option<String>,
+        message: Option<String>,
+    ) {
+        self.flush_answer_stream_with_separator();
+        self.handle_stream_finished();
+
+        if !self.config.show_compact_summary {
+            self.add_to_history(history_cell::new_info_event(
+                "Context compacted.".to_owned(),
+                /*hint*/ None,
+            ));
+            self.request_redraw();
+            return;
+        }
+
+        let summary = summary.and_then(|text| {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        });
+        let message = message.and_then(|text| {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        });
+
+        if let Some(message) = message {
+            self.add_boxed_history(Box::new(history_cell::new_compaction_prompt(message)));
+        } else if let Some(summary) = summary {
+            self.add_boxed_history(Box::new(history_cell::new_compaction_summary(summary)));
+        } else {
+            self.add_to_history(history_cell::new_info_event(
+                "Context compacted.".to_owned(),
+                /*hint*/ None,
+            ));
+        }
+        self.request_redraw();
+    }
+
     pub(super) fn on_agent_message_delta(&mut self, delta: String) {
         self.handle_streaming_delta(delta);
     }
