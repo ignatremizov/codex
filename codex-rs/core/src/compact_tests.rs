@@ -122,6 +122,36 @@ do things
 }
 
 #[test]
+fn collect_user_messages_filters_turn_aborted_marker() {
+    let items = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text:
+                    "<turn_aborted>\n  <turn_id>turn-1</turn_id>\n  <reason>interrupted</reason>\n</turn_aborted>"
+                        .to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "real user message".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+    ];
+
+    let collected = collect_user_messages(&items);
+
+    assert_eq!(vec!["real user message".to_string()], collected);
+}
+
+#[test]
 fn summary_for_event_strips_prefix_and_trims() {
     let summary_text = format!("{SUMMARY_PREFIX}\n  summary line  ");
 
@@ -686,4 +716,67 @@ fn insert_initial_context_before_last_real_user_or_summary_keeps_compaction_last
         },
     ];
     assert_eq!(refreshed, expected);
+}
+
+#[test]
+fn compaction_output_token_limit_is_half_context_window() {
+    assert_eq!(1, compaction_output_token_limit_for_window(1));
+    assert_eq!(1, compaction_output_token_limit_for_window(2));
+    assert_eq!(16, compaction_output_token_limit_for_window(32));
+    assert_eq!(128, compaction_output_token_limit_for_window(256));
+}
+
+#[test]
+fn compaction_output_token_limit_uses_default_context_window_when_missing() {
+    let limit = compaction_output_token_limit_for_context_window(None);
+    assert_eq!(DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS / 2, limit);
+}
+
+#[test]
+fn assistant_output_tokens_for_items_sums_assistant_message_tokens() {
+    let assistant_text = "word ".repeat(100);
+    let user_text = "word ".repeat(500);
+    let items = vec![
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: assistant_text.clone(),
+            }],
+            end_turn: None,
+            phase: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText { text: user_text }],
+            end_turn: None,
+            phase: None,
+        },
+    ];
+
+    let expected = approx_token_count(&assistant_text);
+    assert_eq!(expected, assistant_output_tokens_for_items(&items));
+}
+
+#[test]
+fn session_metadata_skips_small_turn_sizes() {
+    let session_id = codex_protocol::ThreadId::new();
+    let user_messages = vec!["short".to_string(), "also short".to_string()];
+    let metadata = build_session_metadata_block(&session_id, None, &user_messages);
+
+    assert!(!metadata.contains("large_user_turn_char_counts"));
+    assert!(metadata.contains(&session_id.to_string()));
+    assert!(metadata.contains("rollout_path: (unavailable)"));
+}
+
+#[test]
+fn session_metadata_includes_large_turn_sizes() {
+    let session_id = codex_protocol::ThreadId::new();
+    let large_message = "x".repeat(COMPACT_LARGE_TURN_CHAR_THRESHOLD + 5);
+    let user_messages = vec!["small".to_string(), large_message];
+    let metadata = build_session_metadata_block(&session_id, None, &user_messages);
+
+    assert!(metadata.contains("large_user_turn_char_counts"));
+    assert!(metadata.contains("turn_index_from_end: 0"));
 }
