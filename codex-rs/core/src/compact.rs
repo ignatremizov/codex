@@ -1,4 +1,6 @@
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
 use crate::Prompt;
@@ -37,6 +39,7 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::prelude::*;
+use tokio::time::timeout;
 use tracing::error;
 
 use codex_model_provider_info::ModelProviderInfo;
@@ -44,6 +47,10 @@ use codex_model_provider_info::ModelProviderInfo;
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../templates/compact/prompt.md");
 pub const SUMMARY_PREFIX: &str = include_str!("../templates/compact/summary_prefix.md");
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+pub(crate) const COMPACT_TURN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const COMPACT_LARGE_TURN_CHAR_THRESHOLD: usize = 2_000;
+const COMPACT_LARGE_TURN_MAX: usize = 8;
+const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS: usize = 272_000;
 
 /// Controls whether compaction replacement history must include initial context.
 ///
@@ -118,6 +125,22 @@ pub(crate) async fn run_compact_task(
     .await
 }
 
+pub(crate) fn compaction_output_token_limit(turn_context: &TurnContext) -> usize {
+    compaction_output_token_limit_for_context_window(turn_context.model_context_window())
+}
+
+fn compaction_output_token_limit_for_context_window(model_context_window: Option<i64>) -> usize {
+    let model_context_window = model_context_window
+        .and_then(|window| usize::try_from(window).ok())
+        .unwrap_or(DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS);
+    compaction_output_token_limit_for_window(model_context_window)
+}
+
+fn compaction_output_token_limit_for_window(model_context_window: usize) -> usize {
+    let cap = model_context_window / 2;
+    cap.max(1)
+}
+
 async fn run_compact_task_inner(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
@@ -180,7 +203,7 @@ async fn run_compact_task_inner_impl(
     // request tracking)
     // survives retries within this compact turn.
 
-    loop {
+    let summary_suffix = loop {
         // Clone is required because of the loop
         let turn_input = history
             .clone()
@@ -193,17 +216,19 @@ async fn run_compact_task_inner_impl(
             ..Default::default()
         };
         let turn_metadata_header = turn_context.turn_metadata_state.current_header_value();
+        let output_token_limit = compaction_output_token_limit(turn_context.as_ref());
         let attempt_result = drain_to_completed(
             &sess,
             turn_context.as_ref(),
             &mut client_session,
             turn_metadata_header.as_deref(),
             &prompt,
+            output_token_limit,
         )
         .await;
 
         match attempt_result {
-            Ok(()) => {
+            Ok(summary_suffix) => {
                 if truncated_count > 0 {
                     sess.notify_background_event(
                         turn_context.as_ref(),
@@ -213,10 +238,17 @@ async fn run_compact_task_inner_impl(
                     )
                     .await;
                 }
-                break;
+                break summary_suffix;
             }
             Err(CodexErr::Interrupted) => {
                 return Err(CodexErr::Interrupted);
+            }
+            Err(
+                e @ (CodexErr::CompactionTimedOut { .. } | CodexErr::CompactionOutputLimit { .. }),
+            ) => {
+                let event = EventMsg::Error(e.to_error_event(None));
+                sess.send_event(&turn_context, event).await;
+                return Err(e);
             }
             Err(e @ CodexErr::ContextWindowExceeded) => {
                 if turn_input_len > 1 {
@@ -253,14 +285,19 @@ async fn run_compact_task_inner_impl(
                 }
             }
         }
-    }
+    };
 
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.raw_items();
-    let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
-    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
-    let summary_for_event_text = summary_for_event(&summary_text);
     let user_messages = collect_user_messages(history_items);
+    let rollout_path = sess.current_rollout_path().await.ok().flatten();
+    let session_metadata = build_session_metadata_block(
+        &sess.conversation_id,
+        rollout_path.as_deref(),
+        &user_messages,
+    );
+    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}\n\n{session_metadata}");
+    let summary_for_event_text = summary_for_event(&summary_text);
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
 
@@ -467,8 +504,11 @@ pub(crate) fn extract_compacted_summary_text(items: &[ResponseItem]) -> Option<S
 pub(crate) fn summary_for_event(summary_text: &str) -> Option<String> {
     let summary_text = summary_text
         .strip_prefix(SUMMARY_PREFIX)
-        .and_then(|text| text.strip_prefix('
-'))
+        .and_then(|text| text.strip_prefix('\n'))
+        .unwrap_or(summary_text);
+    let summary_text = summary_text
+        .split_once("\n\n[SESSION_METADATA]\n")
+        .map(|(text, _)| text)
         .unwrap_or(summary_text)
         .trim();
 
@@ -479,15 +519,15 @@ pub(crate) fn summary_for_event(summary_text: &str) -> Option<String> {
     }
 }
 
+pub(crate) fn is_summary_message(message: &str) -> bool {
+    message.starts_with(format!("{SUMMARY_PREFIX}\n").as_str())
+}
+
 fn is_environment_context_message(message: &str) -> bool {
     let trimmed = message.trim_start();
     trimmed
         .to_ascii_lowercase()
         .starts_with("<environment_context>")
-}
-
-pub(crate) fn is_summary_message(message: &str) -> bool {
-    message.starts_with(format!("{SUMMARY_PREFIX}\n").as_str())
 }
 
 /// Inserts canonical initial context into compacted replacement history at the
@@ -609,13 +649,61 @@ fn build_compacted_history_with_limit(
     history
 }
 
+fn build_session_metadata_block(
+    session_id: &codex_protocol::ThreadId,
+    rollout_path: Option<&Path>,
+    user_messages: &[String],
+) -> String {
+    let rollout_path = rollout_path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "(unavailable)".to_string());
+    let turn_count = user_messages.len();
+    let mut lines = vec![
+        "[SESSION_METADATA]".to_string(),
+        format!("session_id: {session_id}"),
+        format!("rollout_path: {rollout_path}"),
+        format!("user_turn_count: {turn_count}"),
+        format!("recent_turns_in_prompt: {turn_count}"),
+    ];
+
+    let large_turns: Vec<(usize, usize)> = user_messages
+        .iter()
+        .rev()
+        .enumerate()
+        .filter_map(|(index_from_end, message)| {
+            let char_count = message.chars().count();
+            if char_count >= COMPACT_LARGE_TURN_CHAR_THRESHOLD {
+                Some((index_from_end, char_count))
+            } else {
+                None
+            }
+        })
+        .take(COMPACT_LARGE_TURN_MAX)
+        .collect();
+
+    if !large_turns.is_empty() {
+        lines.push(format!(
+            "large_user_turn_char_counts (threshold {COMPACT_LARGE_TURN_CHAR_THRESHOLD}, newest first):"
+        ));
+        for (index_from_end, char_count) in large_turns {
+            lines.push(format!(
+                "turn_index_from_end: {index_from_end}, chars: {char_count}"
+            ));
+        }
+    }
+
+    lines.push("[/SESSION_METADATA]".to_string());
+    lines.join("\n")
+}
+
 async fn drain_to_completed(
     sess: &Session,
     turn_context: &TurnContext,
     client_session: &mut ModelClientSession,
     turn_metadata_header: Option<&str>,
     prompt: &Prompt,
-) -> CodexResult<()> {
+    output_token_limit: usize,
+) -> CodexResult<String> {
     let mut stream = client_session
         .stream(
             prompt,
@@ -630,8 +718,27 @@ async fn drain_to_completed(
             &InferenceTraceContext::disabled(),
         )
         .await?;
+    let mut output_tokens = 0usize;
+    let mut assistant_text = String::new();
+    let mut last_assistant_message = String::new();
+    let start = Instant::now();
     loop {
-        let maybe_event = stream.next().await;
+        let elapsed = start.elapsed();
+        if elapsed >= COMPACT_TURN_TIMEOUT {
+            return Err(CodexErr::CompactionTimedOut {
+                limit: COMPACT_TURN_TIMEOUT,
+            });
+        }
+        let remaining = COMPACT_TURN_TIMEOUT.saturating_sub(elapsed);
+        let maybe_event = timeout(remaining, stream.next()).await;
+        let maybe_event = match maybe_event {
+            Ok(event) => event,
+            Err(_) => {
+                return Err(CodexErr::CompactionTimedOut {
+                    limit: COMPACT_TURN_TIMEOUT,
+                });
+            }
+        };
         let Some(event) = maybe_event else {
             return Err(CodexErr::Stream(
                 "stream closed before response.completed".into(),
@@ -640,8 +747,23 @@ async fn drain_to_completed(
         };
         match event {
             Ok(ResponseEvent::OutputItemDone(item)) => {
+                if let Some(message) =
+                    get_last_assistant_message_from_turn(std::slice::from_ref(&item))
+                {
+                    last_assistant_message = message;
+                }
+                output_tokens = output_tokens.saturating_add(output_tokens_for_item(&item));
+                if output_tokens > output_token_limit {
+                    return Err(CodexErr::CompactionOutputLimit {
+                        max_tokens: output_token_limit,
+                        actual_tokens: output_tokens,
+                    });
+                }
                 sess.record_into_history(std::slice::from_ref(&item), turn_context)
                     .await;
+            }
+            Ok(ResponseEvent::OutputTextDelta(delta)) => {
+                assistant_text.push_str(&delta);
             }
             Ok(ResponseEvent::ServerReasoningIncluded(included)) => {
                 sess.set_server_reasoning_included(included).await;
@@ -652,12 +774,31 @@ async fn drain_to_completed(
             Ok(ResponseEvent::Completed { token_usage, .. }) => {
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
                     .await;
-                return Ok(());
+                if assistant_text.trim().is_empty() {
+                    return Ok(last_assistant_message);
+                }
+                return Ok(assistant_text);
             }
             Ok(_) => continue,
             Err(e) => return Err(e),
         }
     }
+}
+
+fn output_tokens_for_item(item: &ResponseItem) -> usize {
+    match item {
+        ResponseItem::Message { role, content, .. } if role == "assistant" => {
+            content_items_to_text(content)
+                .as_deref()
+                .map(approx_token_count)
+                .unwrap_or_default()
+        }
+        _ => 0,
+    }
+}
+
+pub(crate) fn assistant_output_tokens_for_items(items: &[ResponseItem]) -> usize {
+    items.iter().map(output_tokens_for_item).sum()
 }
 
 #[cfg(test)]

@@ -100,6 +100,14 @@ pub enum CodexErr {
     /// Unexpected HTTP status code.
     #[error("{0}")]
     UnexpectedStatus(UnexpectedResponseError),
+    #[error("compaction timed out after {limit:?}")]
+    CompactionTimedOut { limit: Duration },
+
+    #[error("compaction exceeded output token limit: {actual_tokens}/{max_tokens}")]
+    CompactionOutputLimit {
+        max_tokens: usize,
+        actual_tokens: usize,
+    },
     /// Invalid request.
     #[error("{0}")]
     InvalidRequest(String),
@@ -189,6 +197,8 @@ impl CodexErr {
             | CodexErr::SessionConfiguredNotFirstEvent
             | CodexErr::UsageLimitReached(_)
             | CodexErr::ServerOverloaded
+            | CodexErr::CompactionTimedOut { .. }
+            | CodexErr::CompactionOutputLimit { .. }
             | CodexErr::CyberPolicy { .. } => false,
             CodexErr::Stream(..)
             | CodexErr::Timeout
