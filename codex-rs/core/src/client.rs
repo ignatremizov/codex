@@ -1307,7 +1307,7 @@ impl ModelClientSession {
         Arc::clone(&self.turn_state)
     }
 
-    fn reset_websocket_session(&mut self) {
+    pub(crate) fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
         self.websocket_session.endpoint = None;
         self.websocket_session.last_request = None;

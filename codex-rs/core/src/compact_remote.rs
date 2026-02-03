@@ -36,7 +36,6 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -273,10 +272,6 @@ async fn run_remote_compact_task_inner_impl(
     let (new_history, world_state_baseline) =
         process_compacted_history(sess.as_ref(), new_history, &initial_context_injection).await;
 
-    let summary_text = crate::compact::extract_compacted_summary_text(&new_history);
-    let summary = summary_text
-        .as_deref()
-        .and_then(crate::compact::summary_for_event);
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage { .. } => {
