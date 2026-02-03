@@ -6,14 +6,12 @@ use super::emit_compact_metric;
 use crate::session::TurnInput;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
-use async_trait::async_trait;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CompactTask;
 
-#[async_trait]
 impl SessionTask for CompactTask {
     fn kind(&self) -> TaskKind {
         TaskKind::Compact
@@ -31,7 +29,10 @@ impl SessionTask for CompactTask {
         _cancellation_token: CancellationToken,
     ) -> Option<String> {
         let session = session.clone_session();
-        let _ = if crate::compact::should_use_remote_compact_task(session.as_ref(), &ctx.provider) {
+        let _ = if crate::compact::should_use_remote_compact_task(
+            session.as_ref(),
+            ctx.provider.info(),
+        ) {
             if ctx
                 .features
                 .enabled(codex_features::Feature::RemoteCompactionV2)

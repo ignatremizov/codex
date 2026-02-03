@@ -233,10 +233,9 @@ async fn run_remote_compact_task_inner_impl(
         window_id,
         CodexResponsesRequestKind::Compaction(compaction_metadata),
     );
-    let mut new_history = sess
-        .services
-        .model_client
-        .compact_conversation_history(
+    let timeout_result = timeout(
+        crate::compact::COMPACT_TURN_TIMEOUT,
+        sess.services.model_client.compact_conversation_history(
             &prompt,
             &turn_context.model_info,
             CompactConversationRequestSettings {
@@ -251,8 +250,26 @@ async fn run_remote_compact_task_inner_impl(
             &turn_context.session_telemetry,
             &compaction_trace,
             &responses_metadata,
-        )
-        .await?;
+        ),
+    )
+    .await;
+    let mut new_history = match timeout_result {
+        Ok(Ok(history)) => history,
+        Ok(Err(err)) => return Err(err),
+        Err(_) => {
+            return Err(CodexErr::CompactionTimedOut {
+                limit: crate::compact::COMPACT_TURN_TIMEOUT,
+            });
+        }
+    };
+    let output_token_limit = crate::compact::compaction_output_token_limit(turn_context.as_ref());
+    let output_tokens = crate::compact::assistant_output_tokens_for_items(&new_history);
+    if output_tokens > output_token_limit {
+        return Err(CodexErr::CompactionOutputLimit {
+            max_tokens: output_token_limit,
+            actual_tokens: output_tokens,
+        });
+    }
     let new_window_id = sess.advance_auto_compact_window_id().await;
     new_history = process_compacted_history(
         sess.as_ref(),
@@ -262,14 +279,14 @@ async fn run_remote_compact_task_inner_impl(
     )
     .await;
 
-    let summary_text = crate::compact::extract_compacted_summary_text(&new_history);
-    let summary = summary_text
-        .as_deref()
-        .and_then(crate::compact::summary_for_event);
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage => Some(turn_context.to_turn_context_item()),
     };
+    let summary_text = crate::compact::extract_compacted_summary_text(&new_history);
+    let summary = summary_text
+        .as_deref()
+        .and_then(crate::compact::summary_for_event);
     let compacted_item = CompactedItem {
         message: String::new(),
         replacement_history: Some(new_history.clone()),
