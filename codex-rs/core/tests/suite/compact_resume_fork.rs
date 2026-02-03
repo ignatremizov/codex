@@ -564,40 +564,23 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
     const PRETURN_CONTEXT_DIFF_CWD: &str = "PRETURN_CONTEXT_DIFF_CWD";
 
     let server = MockServer::start().await;
-    let turn_one = mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| {
-            let body = std::str::from_utf8(&req.body).unwrap_or("");
-            body.contains(&format!("\"text\":\"{TURN_ONE_USER}\""))
-        },
-        sse(vec![
-            ev_assistant_message("m1", "turn 1 assistant"),
-            ev_completed("r1"),
-        ]),
-    )
-    .await;
-    let turn_two = mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| {
-            let body = std::str::from_utf8(&req.body).unwrap_or("");
-            body.contains(&format!("\"text\":\"{TURN_TWO_USER}\""))
-        },
-        sse(vec![
-            ev_assistant_message("m2", "turn 2 assistant"),
-            ev_completed("r2"),
-        ]),
-    )
-    .await;
-    let followup = mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| {
-            let body = std::str::from_utf8(&req.body).unwrap_or("");
-            body.contains(&format!("\"text\":\"{FOLLOWUP_USER}\""))
-        },
-        sse(vec![ev_response_created("r3"), ev_completed("r3")]),
-    )
-    .await;
-    let request_log = vec![turn_one, turn_two, followup];
+    let request_log = vec![
+        mount_sse_sequence(
+            &server,
+            vec![
+                sse(vec![
+                    ev_assistant_message("m1", "turn 1 assistant"),
+                    ev_completed("r1"),
+                ]),
+                sse(vec![
+                    ev_assistant_message("m2", "turn 2 assistant"),
+                    ev_completed("r2"),
+                ]),
+                sse(vec![ev_response_created("r3"), ev_completed("r3")]),
+            ],
+        )
+        .await,
+    ];
 
     let (_home, config, _manager, conversation) =
         start_test_conversation(&server, Some(MODEL)).await;
