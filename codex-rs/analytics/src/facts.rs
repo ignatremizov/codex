@@ -148,6 +148,8 @@ pub enum CodexErrKind {
     ThreadNotFound,
     AgentLimitReached,
     SessionConfiguredNotFirstEvent,
+    CompactionTimedOut,
+    CompactionOutputLimit,
     Timeout,
     RequestTimeout,
     Spawn,
@@ -207,6 +209,8 @@ impl From<&CodexErr> for CodexErrKind {
             CodexErr::SessionConfiguredNotFirstEvent => {
                 CodexErrKind::SessionConfiguredNotFirstEvent
             }
+            CodexErr::CompactionTimedOut { .. } => CodexErrKind::CompactionTimedOut,
+            CodexErr::CompactionOutputLimit { .. } => CodexErrKind::CompactionOutputLimit,
             CodexErr::Timeout => CodexErrKind::Timeout,
             CodexErr::RequestTimeout => CodexErrKind::RequestTimeout,
             CodexErr::Spawn => CodexErrKind::Spawn,
