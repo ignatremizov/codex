@@ -20,7 +20,7 @@ use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
-use futures::TryFutureExt;
+use tokio::time::timeout;
 use tracing::error;
 use tracing::info;
 
@@ -124,15 +124,18 @@ async fn run_remote_compact_task_inner_impl(
         output_schema: None,
     };
 
-    let mut new_history = sess
-        .services
-        .model_client
-        .compact_conversation_history(
+    let timeout_result = timeout(
+        crate::compact::COMPACT_TURN_TIMEOUT,
+        sess.services.model_client.compact_conversation_history(
             &prompt,
             &turn_context.model_info,
             &turn_context.otel_manager,
-        )
-        .or_else(|err| async {
+        ),
+    )
+    .await;
+    let mut new_history = match timeout_result {
+        Ok(Ok(history)) => history,
+        Ok(Err(err)) => {
             let total_usage_breakdown = sess.get_total_token_usage_breakdown().await;
             let compact_request_log_data =
                 build_compact_request_log_data(&prompt.input, &prompt.base_instructions.text);
@@ -142,9 +145,22 @@ async fn run_remote_compact_task_inner_impl(
                 total_usage_breakdown,
                 &err,
             );
-            Err(err)
-        })
-        .await?;
+            return Err(err);
+        }
+        Err(_) => {
+            return Err(CodexErr::CompactionTimedOut {
+                limit: crate::compact::COMPACT_TURN_TIMEOUT,
+            });
+        }
+    };
+    let output_token_limit = crate::compact::compaction_output_token_limit(turn_context.as_ref());
+    let output_tokens = crate::compact::assistant_output_tokens_for_items(&new_history);
+    if output_tokens > output_token_limit {
+        return Err(CodexErr::CompactionOutputLimit {
+            max_tokens: output_token_limit,
+            actual_tokens: output_tokens,
+        });
+    }
     new_history = process_compacted_history(
         sess.as_ref(),
         turn_context.as_ref(),
@@ -152,7 +168,7 @@ async fn run_remote_compact_task_inner_impl(
         initial_context_injection,
         previous_user_turn_model,
     )
-    .await;
+        .await;
 
     if !ghost_snapshots.is_empty() {
         new_history.extend(ghost_snapshots);
