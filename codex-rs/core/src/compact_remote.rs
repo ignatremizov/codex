@@ -266,16 +266,16 @@ async fn run_remote_compact_task_inner_impl(
     )
     .await;
 
-    let summary_text = crate::compact::extract_compacted_summary_text(&new_history);
-    let summary = summary_text
-        .as_deref()
-        .and_then(crate::compact::summary_for_event);
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage(_) => {
             Some(compaction_turn_context.to_turn_context_item())
         }
     };
+    let summary_text = crate::compact::extract_compacted_summary_text(&new_history);
+    let summary = summary_text
+        .as_deref()
+        .and_then(crate::compact::summary_for_event);
     let compacted_item = CompactedItem {
         message: String::new(),
         replacement_history: Some(new_history.clone()),
