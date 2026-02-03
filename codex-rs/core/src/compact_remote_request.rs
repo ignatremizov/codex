@@ -13,6 +13,7 @@ use codex_protocol::auth::AuthMode;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_rollout_trace::CompactionTraceContext;
+use tokio::time::timeout;
 use tracing::info;
 
 pub(super) struct RemoteCompactAttempt {
@@ -75,10 +76,9 @@ pub(super) async fn run_remote_compact_attempt(
             CodexResponsesRequestKind::Compaction(compaction_metadata),
         )
         .await;
-    let new_history = sess
-        .services
-        .model_client
-        .compact_conversation_history(
+    let timeout_result = timeout(
+        crate::compact::COMPACT_TURN_TIMEOUT,
+        sess.services.model_client.compact_conversation_history(
             &prompt,
             turn_context.model_info(),
             turn_state,
@@ -94,8 +94,28 @@ pub(super) async fn run_remote_compact_attempt(
             &turn_context.session_telemetry,
             compaction_trace,
             &responses_metadata,
-        )
-        .await?;
+        ),
+    )
+    .await;
+    let new_history = match timeout_result {
+        Ok(Ok(history)) => history,
+        Ok(Err(err)) => return Err(err),
+        Err(_) => {
+            return Err(codex_protocol::error::CodexErrorDetails::CompactionTimedOut {
+                limit: crate::compact::COMPACT_TURN_TIMEOUT,
+            }
+            .into());
+        }
+    };
+    let output_token_limit = crate::compact::compaction_output_token_limit(turn_context.as_ref());
+    let output_tokens = crate::compact::assistant_output_tokens_for_items(&new_history);
+    if output_tokens > output_token_limit {
+        return Err(codex_protocol::error::CodexErrorDetails::CompactionOutputLimit {
+            max_tokens: output_token_limit,
+            actual_tokens: output_tokens,
+        }
+        .into());
+    }
     Ok(RemoteCompactAttempt {
         new_history,
         trace_input_history,
