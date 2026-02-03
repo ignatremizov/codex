@@ -1,4 +1,7 @@
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::ModelProviderInfo;
 use crate::Prompt;
@@ -29,11 +32,15 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::user_input::UserInput;
 use futures::prelude::*;
+use tokio::time::timeout;
 use tracing::error;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../templates/compact/prompt.md");
 pub const SUMMARY_PREFIX: &str = include_str!("../templates/compact/summary_prefix.md");
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+pub(crate) const COMPACT_TURN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const COMPACT_LARGE_TURN_CHAR_THRESHOLD: usize = 2_000;
+const COMPACT_LARGE_TURN_MAX: usize = 8;
 
 pub(crate) fn should_use_remote_compact_task(
     session: &Session,
@@ -55,6 +62,19 @@ pub(crate) async fn run_inline_auto_compact_task(
 
     run_compact_task_inner(sess, turn_context, input).await?;
     Ok(())
+}
+
+pub(crate) fn compaction_output_token_limit(turn_context: &TurnContext) -> usize {
+    let model_context_window = turn_context
+        .model_context_window()
+        .unwrap_or_default()
+        .max(0) as usize;
+    compaction_output_token_limit_for_window(model_context_window)
+}
+
+fn compaction_output_token_limit_for_window(model_context_window: usize) -> usize {
+    let cap = model_context_window / 2;
+    cap.max(1)
 }
 
 pub(crate) async fn run_compact_task(
@@ -126,12 +146,14 @@ async fn run_compact_task_inner(
             personality: turn_context.personality,
             ..Default::default()
         };
+        let output_token_limit = compaction_output_token_limit(turn_context.as_ref());
         let attempt_result = drain_to_completed(
             &sess,
             turn_context.as_ref(),
             &mut client_session,
             turn_metadata_header.as_deref(),
             &prompt,
+            output_token_limit,
         )
         .await;
 
@@ -150,6 +172,13 @@ async fn run_compact_task_inner(
             }
             Err(CodexErr::Interrupted) => {
                 return Err(CodexErr::Interrupted);
+            }
+            Err(
+                e @ (CodexErr::CompactionTimedOut { .. } | CodexErr::CompactionOutputLimit { .. }),
+            ) => {
+                let event = EventMsg::Error(e.to_error_event(None));
+                sess.send_event(&turn_context, event).await;
+                return Err(e);
             }
             Err(e @ CodexErr::ContextWindowExceeded) => {
                 if turn_input_len > 1 {
@@ -191,9 +220,20 @@ async fn run_compact_task_inner(
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.raw_items();
     let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
-    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
-    let summary_for_event_text = summary_for_event(&summary_text);
     let user_messages = collect_user_messages(history_items);
+    let rollout_path = {
+        let rollout_guard = sess.services.rollout.lock().await;
+        rollout_guard
+            .as_ref()
+            .map(|recorder| recorder.rollout_path.clone())
+    };
+    let session_metadata = build_session_metadata_block(
+        &sess.conversation_id,
+        rollout_path.as_deref(),
+        &user_messages,
+    );
+    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}\n\n{session_metadata}");
+    let summary_for_event_text = summary_for_event(&summary_text);
 
     let initial_context = sess.build_initial_context(turn_context.as_ref()).await;
     let mut new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
@@ -437,12 +477,60 @@ fn build_compacted_history_with_limit(
     history
 }
 
+fn build_session_metadata_block(
+    session_id: &codex_protocol::ThreadId,
+    rollout_path: Option<&Path>,
+    user_messages: &[String],
+) -> String {
+    let rollout_path = rollout_path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "(unavailable)".to_string());
+    let turn_count = user_messages.len();
+    let mut lines = vec![
+        "[SESSION_METADATA]".to_string(),
+        format!("session_id: {session_id}"),
+        format!("rollout_path: {rollout_path}"),
+        format!("user_turn_count: {turn_count}"),
+        format!("recent_turns_in_prompt: {turn_count}"),
+    ];
+
+    let large_turns: Vec<(usize, usize)> = user_messages
+        .iter()
+        .rev()
+        .enumerate()
+        .filter_map(|(index_from_end, message)| {
+            let char_count = message.chars().count();
+            if char_count >= COMPACT_LARGE_TURN_CHAR_THRESHOLD {
+                Some((index_from_end, char_count))
+            } else {
+                None
+            }
+        })
+        .take(COMPACT_LARGE_TURN_MAX)
+        .collect();
+
+    if !large_turns.is_empty() {
+        lines.push(format!(
+            "large_user_turn_char_counts (threshold {COMPACT_LARGE_TURN_CHAR_THRESHOLD}, newest first):"
+        ));
+        for (index_from_end, char_count) in large_turns {
+            lines.push(format!(
+                "turn_index_from_end: {index_from_end}, chars: {char_count}"
+            ));
+        }
+    }
+
+    lines.push("[/SESSION_METADATA]".to_string());
+    lines.join("\n")
+}
+
 async fn drain_to_completed(
     sess: &Session,
     turn_context: &TurnContext,
     client_session: &mut ModelClientSession,
     turn_metadata_header: Option<&str>,
     prompt: &Prompt,
+    output_token_limit: usize,
 ) -> CodexResult<()> {
     let mut stream = client_session
         .stream(
@@ -454,8 +542,25 @@ async fn drain_to_completed(
             turn_metadata_header,
         )
         .await?;
+    let mut output_tokens = 0usize;
+    let start = Instant::now();
     loop {
-        let maybe_event = stream.next().await;
+        let elapsed = start.elapsed();
+        if elapsed >= COMPACT_TURN_TIMEOUT {
+            return Err(CodexErr::CompactionTimedOut {
+                limit: COMPACT_TURN_TIMEOUT,
+            });
+        }
+        let remaining = COMPACT_TURN_TIMEOUT.saturating_sub(elapsed);
+        let maybe_event = timeout(remaining, stream.next()).await;
+        let maybe_event = match maybe_event {
+            Ok(event) => event,
+            Err(_) => {
+                return Err(CodexErr::CompactionTimedOut {
+                    limit: COMPACT_TURN_TIMEOUT,
+                });
+            }
+        };
         let Some(event) = maybe_event else {
             return Err(CodexErr::Stream(
                 "stream closed before response.completed".into(),
@@ -464,6 +569,13 @@ async fn drain_to_completed(
         };
         match event {
             Ok(ResponseEvent::OutputItemDone(item)) => {
+                output_tokens = output_tokens.saturating_add(output_tokens_for_item(&item));
+                if output_tokens > output_token_limit {
+                    return Err(CodexErr::CompactionOutputLimit {
+                        max_tokens: output_token_limit,
+                        actual_tokens: output_tokens,
+                    });
+                }
                 sess.record_into_history(std::slice::from_ref(&item), turn_context)
                     .await;
             }
@@ -481,6 +593,18 @@ async fn drain_to_completed(
             Ok(_) => continue,
             Err(e) => return Err(e),
         }
+    }
+}
+
+fn output_tokens_for_item(item: &ResponseItem) -> usize {
+    match item {
+        ResponseItem::Message { role, content, .. } if role == "assistant" => {
+            content_items_to_text(content)
+                .as_deref()
+                .map(approx_token_count)
+                .unwrap_or_default()
+        }
+        _ => 0,
     }
 }
 
@@ -579,6 +703,34 @@ mod tests {
                 }],
                 end_turn: None,
             phase: None,
+            },
+        ];
+
+        let collected = collect_user_messages(&items);
+
+        assert_eq!(vec!["real user message".to_string()], collected);
+    }
+
+    #[test]
+    fn collect_user_messages_filters_turn_aborted_marker() {
+        let items = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "<turn_aborted>\n  <turn_id>turn-1</turn_id>\n  <reason>interrupted</reason>\n</turn_aborted>".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "real user message".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
             },
         ];
 
@@ -1148,5 +1300,35 @@ mod tests {
             },
         ];
         assert_eq!(refreshed, expected);
+    }
+
+    #[test]
+    fn compaction_output_token_limit_is_half_context_window() {
+        assert_eq!(1, compaction_output_token_limit_for_window(1));
+        assert_eq!(1, compaction_output_token_limit_for_window(2));
+        assert_eq!(16, compaction_output_token_limit_for_window(32));
+        assert_eq!(128, compaction_output_token_limit_for_window(256));
+    }
+
+    #[test]
+    fn session_metadata_skips_small_turn_sizes() {
+        let session_id = codex_protocol::ThreadId::new();
+        let user_messages = vec!["short".to_string(), "also short".to_string()];
+        let metadata = build_session_metadata_block(&session_id, None, &user_messages);
+
+        assert!(!metadata.contains("large_user_turn_char_counts"));
+        assert!(metadata.contains(&session_id.to_string()));
+        assert!(metadata.contains("rollout_path: (unavailable)"));
+    }
+
+    #[test]
+    fn session_metadata_includes_large_turn_sizes() {
+        let session_id = codex_protocol::ThreadId::new();
+        let large_message = "x".repeat(COMPACT_LARGE_TURN_CHAR_THRESHOLD + 5);
+        let user_messages = vec!["small".to_string(), large_message];
+        let metadata = build_session_metadata_block(&session_id, None, &user_messages);
+
+        assert!(metadata.contains("large_user_turn_char_counts"));
+        assert!(metadata.contains("turn_index_from_end: 0"));
     }
 }

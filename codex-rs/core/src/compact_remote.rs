@@ -5,16 +5,19 @@ use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::context_manager::ContextManager;
 use crate::context_manager::is_codex_generated_item;
+use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::protocol::CompactedItem;
 use crate::protocol::ContextCompactedEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
 use crate::protocol::TurnStartedEvent;
+use crate::truncate::approx_token_count;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
+use tokio::time::timeout;
 use tracing::info;
 
 pub(crate) async fn run_inline_remote_auto_compact_task(
@@ -91,15 +94,23 @@ async fn run_remote_compact_task_inner_impl(
         output_schema: None,
     };
 
-    let mut new_history = sess
-        .services
-        .model_client
-        .compact_conversation_history(
+    let timeout_result = timeout(
+        crate::compact::COMPACT_TURN_TIMEOUT,
+        sess.services.model_client.compact_conversation_history(
             &prompt,
             &turn_context.model_info,
             &turn_context.otel_manager,
-        )
-        .await?;
+        ),
+    )
+    .await;
+    let mut new_history = match timeout_result {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(CodexErr::CompactionTimedOut {
+                limit: crate::compact::COMPACT_TURN_TIMEOUT,
+            });
+        }
+    };
     new_history = sess
         .process_compacted_history(turn_context, new_history)
         .await;
@@ -111,6 +122,16 @@ async fn run_remote_compact_task_inner_impl(
     sess.recompute_token_usage(turn_context).await;
 
     let message = crate::compact::extract_compacted_summary_text(&new_history);
+    let output_token_limit = crate::compact::compaction_output_token_limit(turn_context.as_ref());
+    if let Some(text) = message.as_deref() {
+        let token_count = approx_token_count(text);
+        if token_count > output_token_limit {
+            return Err(CodexErr::CompactionOutputLimit {
+                max_tokens: output_token_limit,
+                actual_tokens: token_count,
+            });
+        }
+    }
     let summary = message
         .as_deref()
         .and_then(crate::compact::summary_for_event);
