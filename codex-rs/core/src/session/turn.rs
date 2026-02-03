@@ -155,15 +155,22 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    if let Err(err) = run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
-        if matches!(err, CodexErr::TurnAborted) {
-            return Err(err);
-        }
-        let error = err.to_codex_protocol_error();
-        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-            .await;
-        error!("Failed to run pre-sampling compact");
-        return Ok(None);
+    let pre_sampling_compact =
+        match run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
+            Ok(pre_sampling_compact) => pre_sampling_compact,
+            Err(err) => {
+                if matches!(err, CodexErr::TurnAborted) {
+                    return Err(err);
+                }
+                let error = err.to_codex_protocol_error();
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                    .await;
+                error!("Failed to run pre-sampling compact");
+                return Ok(None);
+            }
+        };
+    if pre_sampling_compact.reset_client_session {
+        client_session.reset_websocket_session();
     }
 
     // run_turn owns the step used to seed context and make the first sampling request.
@@ -352,7 +359,7 @@ pub(crate) async fn run_turn(
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if should_roll_over {
-                    if let Err(err) = run_auto_compact(
+                    let reset_client_session = match run_auto_compact(
                         &sess,
                         Arc::clone(&step_context),
                         /*fallback_step_context*/ None,
@@ -363,13 +370,19 @@ pub(crate) async fn run_turn(
                     )
                     .await
                     {
-                        if matches!(err, CodexErr::TurnAborted) {
-                            return Err(err);
+                        Ok(reset_client_session) => reset_client_session,
+                        Err(err) => {
+                            if matches!(err, CodexErr::TurnAborted) {
+                                return Err(err);
+                            }
+                            let error = err.to_codex_protocol_error();
+                            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                                .await;
+                            return Ok(None);
                         }
-                        let error = err.to_codex_protocol_error();
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                            .await;
-                        return Ok(None);
+                    };
+                    if reset_client_session {
+                        client_session.reset_websocket_session();
                     }
                     can_drain_pending_input = !model_needs_follow_up;
                     continue;
@@ -805,13 +818,18 @@ async fn track_turn_resolved_config_analytics(
         });
 }
 
+struct PreSamplingCompactResult {
+    reset_client_session: bool,
+}
+
 #[instrument(level = "trace", skip_all)]
 async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
-) -> CodexResult<()> {
-    maybe_run_previous_model_inline_compact(sess, turn_context, client_session).await?;
+) -> CodexResult<PreSamplingCompactResult> {
+    let mut reset_client_session =
+        maybe_run_previous_model_inline_compact(sess, turn_context, client_session).await?;
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;
@@ -819,7 +837,7 @@ async fn run_pre_sampling_compact(
     if token_status.token_limit_reached {
         // Pre-turn compaction runs before run_turn creates the normal sampling step.
         let step_context = sess.capture_step_context(Arc::clone(turn_context)).await;
-        run_auto_compact(
+        reset_client_session |= run_auto_compact(
             sess,
             step_context,
             /*fallback_step_context*/ None,
@@ -830,7 +848,9 @@ async fn run_pre_sampling_compact(
         )
         .await?;
     }
-    Ok(())
+    Ok(PreSamplingCompactResult {
+        reset_client_session,
+    })
 }
 
 /// Returns true only when both turns declare compaction compatibility hashes and they differ.
@@ -866,14 +886,16 @@ async fn capture_current_model_fallback_step_context(
 /// Runs pre-sampling compaction against the previous model when its compaction compatibility
 /// hash changed or when switching to a smaller context-window model.
 ///
-/// Returns `Err(_)` only when compaction was attempted and failed.
+/// Returns `Ok(true)` when compaction ran and the current client session should be reset,
+/// `Ok(false)` when compaction was skipped or did not require a reset, and `Err(_)` only when
+/// compaction was attempted and failed.
 async fn maybe_run_previous_model_inline_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
-) -> CodexResult<()> {
+) -> CodexResult<bool> {
     let Some(previous_turn_settings) = sess.previous_turn_settings().await else {
-        return Ok(());
+        return Ok(false);
     };
     let should_compact_for_comp_hash_change = comp_hash_changed(
         previous_turn_settings.comp_hash.as_deref(),
@@ -896,7 +918,7 @@ async fn maybe_run_previous_model_inline_compact(
             previous_model.as_str(),
         )
         .await;
-        run_auto_compact(
+        return run_auto_compact(
             sess,
             step_context,
             fallback_step_context,
@@ -905,15 +927,14 @@ async fn maybe_run_previous_model_inline_compact(
             CompactionReason::CompHashChanged,
             CompactionPhase::PreTurn,
         )
-        .await?;
-        return Ok(());
+        .await;
     }
 
     let Some(old_context_window) = previous_model_turn_context.model_context_window() else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(new_context_window) = turn_context.model_context_window() else {
-        return Ok(());
+        return Ok(false);
     };
     let active_context_tokens = sess.get_total_token_usage().await;
     let previous_model_limit_reached = match turn_context
@@ -943,7 +964,7 @@ async fn maybe_run_previous_model_inline_compact(
             previous_model.as_str(),
         )
         .await;
-        run_auto_compact(
+        return run_auto_compact(
             sess,
             step_context,
             fallback_step_context,
@@ -952,9 +973,9 @@ async fn maybe_run_previous_model_inline_compact(
             CompactionReason::ModelDownshift,
             CompactionPhase::PreTurn,
         )
-        .await?;
+        .await;
     }
-    Ok(())
+    Ok(false)
 }
 
 #[instrument(
@@ -970,7 +991,7 @@ async fn run_auto_compact(
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
-) -> CodexResult<()> {
+) -> CodexResult<bool> {
     let turn_context = &step_context.turn;
     if turn_context.config.features.enabled(Feature::TokenBudget) {
         // Compaction is the reset request, so force a new context window
@@ -981,7 +1002,7 @@ async fn run_auto_compact(
             initial_context_injection,
         )
         .await?;
-        return Ok(());
+        return Ok(true);
     }
 
     if should_use_remote_compact_task(sess.as_ref(), &turn_context.provider) {
@@ -1005,7 +1026,7 @@ async fn run_auto_compact(
                 phase,
             )
             .await?;
-            return Ok(());
+            return Ok(false);
         }
         emit_compact_metric(
             &sess.services.session_telemetry,
@@ -1037,7 +1058,7 @@ async fn run_auto_compact(
         )
         .await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(super) fn collect_explicit_app_ids_from_skill_items(
