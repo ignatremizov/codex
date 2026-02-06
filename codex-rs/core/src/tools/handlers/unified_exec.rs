@@ -43,8 +43,8 @@ pub(crate) struct ExecCommandArgs {
     login: Option<bool>,
     #[serde(default = "default_tty")]
     tty: bool,
-    #[serde(default = "default_exec_yield_time_ms")]
-    yield_time_ms: u64,
+    #[serde(default)]
+    yield_time_ms: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<usize>,
     #[serde(default)]
@@ -63,18 +63,10 @@ struct WriteStdinArgs {
     session_id: i32,
     #[serde(default)]
     chars: String,
-    #[serde(default = "default_write_stdin_yield_time_ms")]
-    yield_time_ms: u64,
+    #[serde(default)]
+    yield_time_ms: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<usize>,
-}
-
-fn default_exec_yield_time_ms() -> u64 {
-    10_000
-}
-
-fn default_write_stdin_yield_time_ms() -> u64 {
-    250
 }
 
 fn default_tty() -> bool {
@@ -209,6 +201,8 @@ impl ToolHandler for UnifiedExecHandler {
 
                 let workdir = workdir.map(|dir| context.turn.resolve_path(Some(dir)));
                 let cwd = workdir.clone().unwrap_or(cwd);
+                let yield_time_ms =
+                    yield_time_ms.unwrap_or(context.turn.unified_exec_yield_time_ms);
                 let normalized_additional_permissions = match implicit_granted_permissions(
                     sandbox_permissions,
                     requested_additional_permissions.as_ref(),
@@ -293,7 +287,9 @@ impl ToolHandler for UnifiedExecHandler {
                     .write_stdin(WriteStdinRequest {
                         process_id: args.session_id,
                         input: &args.chars,
-                        yield_time_ms: args.yield_time_ms,
+                        yield_time_ms: args
+                            .yield_time_ms
+                            .unwrap_or(context.turn.unified_exec_write_stdin_yield_time_ms),
                         max_output_tokens: args.max_output_tokens,
                     })
                     .await
