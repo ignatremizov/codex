@@ -178,6 +178,12 @@ pub struct Config {
 
     /// Default timeout for shell commands when no per-call timeout is provided.
     pub exec_command_timeout_ms: u64,
+
+    /// Default initial yield window for unified exec exec_command output snapshots when no per-call value is provided.
+    pub unified_exec_yield_time_ms: u64,
+
+    /// Default polling window for unified exec write_stdin output when no per-call value is provided.
+    pub unified_exec_write_stdin_yield_time_ms: u64,
     /// When `true`, `AgentReasoning` events emitted by the backend will be
     /// suppressed from the frontend output. This can reduce visual noise when
     /// users are only interested in the final agent responses.
@@ -881,6 +887,12 @@ pub struct ConfigToml {
     /// Default timeout for shell commands in milliseconds when no per-call timeout is provided.
     pub exec_command_timeout_ms: Option<u64>,
 
+    /// Default initial yield window for unified exec exec_command output snapshots in milliseconds.
+    pub unified_exec_yield_time_ms: Option<u64>,
+
+    /// Default polling window for unified exec write_stdin output in milliseconds.
+    pub unified_exec_write_stdin_yield_time_ms: Option<u64>,
+
     /// Sandbox mode to use.
     pub sandbox_mode: Option<SandboxMode>,
 
@@ -1570,6 +1582,14 @@ impl Config {
             .exec_command_timeout_ms
             .filter(|timeout_ms| *timeout_ms > 0)
             .unwrap_or(crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS);
+        let unified_exec_yield_time_ms = cfg
+            .unified_exec_yield_time_ms
+            .filter(|timeout_ms| *timeout_ms > 0)
+            .unwrap_or(crate::unified_exec::DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS);
+        let unified_exec_write_stdin_yield_time_ms = cfg
+            .unified_exec_write_stdin_yield_time_ms
+            .filter(|timeout_ms| *timeout_ms > 0)
+            .unwrap_or(crate::unified_exec::DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS);
 
         let history = cfg.history.unwrap_or_default();
 
@@ -1750,6 +1770,8 @@ impl Config {
             enforce_residency: enforce_residency.value,
             did_user_set_custom_approval_policy_or_sandbox_mode,
             exec_command_timeout_ms,
+            unified_exec_yield_time_ms,
+            unified_exec_write_stdin_yield_time_ms,
             notify: cfg.notify,
             user_instructions,
             base_instructions,
@@ -4046,6 +4068,9 @@ model_verbosity = "high"
                 enforce_residency: Constrained::allow_any(None),
                 did_user_set_custom_approval_policy_or_sandbox_mode: true,
                 exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
+                unified_exec_yield_time_ms: crate::unified_exec::DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS,
+                unified_exec_write_stdin_yield_time_ms:
+                    crate::unified_exec::DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS,
                 user_instructions: None,
                 notify: None,
                 cwd: fixture.cwd(),
@@ -4156,6 +4181,9 @@ model_verbosity = "high"
             enforce_residency: Constrained::allow_any(None),
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
             exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
+            unified_exec_yield_time_ms: crate::unified_exec::DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS,
+            unified_exec_write_stdin_yield_time_ms:
+                crate::unified_exec::DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -4264,6 +4292,9 @@ model_verbosity = "high"
             enforce_residency: Constrained::allow_any(None),
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
             exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
+            unified_exec_yield_time_ms: crate::unified_exec::DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS,
+            unified_exec_write_stdin_yield_time_ms:
+                crate::unified_exec::DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -4358,6 +4389,9 @@ model_verbosity = "high"
             enforce_residency: Constrained::allow_any(None),
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
             exec_command_timeout_ms: crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
+            unified_exec_yield_time_ms: crate::unified_exec::DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS,
+            unified_exec_write_stdin_yield_time_ms:
+                crate::unified_exec::DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -4888,6 +4922,18 @@ trust_level = "untrusted"
     }
 
     #[test]
+    fn config_toml_deserializes_unified_exec_yield_times() {
+        let toml = r#"
+unified_exec_yield_time_ms = 1250
+unified_exec_write_stdin_yield_time_ms = 600
+"#;
+        let cfg: ConfigToml =
+            toml::from_str(toml).expect("TOML deserialization should succeed for yield times");
+        assert_eq!(cfg.unified_exec_yield_time_ms, Some(1250));
+        assert_eq!(cfg.unified_exec_write_stdin_yield_time_ms, Some(600));
+    }
+
+    #[test]
     fn config_loads_mcp_oauth_callback_port_from_toml() -> std::io::Result<()> {
         let codex_home = TempDir::new()?;
         let toml = r#"
@@ -4904,6 +4950,48 @@ mcp_oauth_callback_port = 5678
         )?;
 
         assert_eq!(config.mcp_oauth_callback_port, Some(5678));
+        Ok(())
+    }
+
+    #[test]
+    fn config_loads_unified_exec_yield_times_from_toml() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let toml = r#"
+model = "gpt-5.1"
+unified_exec_yield_time_ms = 2250
+unified_exec_write_stdin_yield_time_ms = 750
+"#;
+        let cfg: ConfigToml =
+            toml::from_str(toml).expect("TOML deserialization should succeed for yield times");
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.unified_exec_yield_time_ms, 2250);
+        assert_eq!(config.unified_exec_write_stdin_yield_time_ms, 750);
+        Ok(())
+    }
+
+    #[test]
+    fn config_defaults_unified_exec_yield_times_when_missing() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(
+            config.unified_exec_yield_time_ms,
+            crate::unified_exec::DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS
+        );
+        assert_eq!(
+            config.unified_exec_write_stdin_yield_time_ms,
+            crate::unified_exec::DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS
+        );
         Ok(())
     }
 
