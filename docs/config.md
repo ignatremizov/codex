@@ -38,6 +38,18 @@ exec_command_timeout_ms = 30000
 
 If unset, Codex uses the built-in default (10,000 ms).
 
+## Unified exec yield windows
+
+Set defaults (in milliseconds) for unified exec output capture when `yield_time_ms` is not provided:
+
+```toml
+unified_exec_yield_time_ms = 10000 # exec_command initial snapshot window
+unified_exec_write_stdin_yield_time_ms = 250 # write_stdin polling window
+```
+
+If unset, Codex uses the built-in defaults (10,000 ms initial snapshot window for `exec_command`,
+250 ms polling window for `write_stdin`).
+
 ## SQLite State DB
 
 Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the

@@ -52,6 +52,8 @@ pub(crate) use errors::UnifiedExecError;
 pub(crate) use process::UnifiedExecProcess;
 
 pub(crate) const MIN_YIELD_TIME_MS: u64 = 250;
+pub(crate) const DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS: u64 = 10_000;
+pub(crate) const DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS: u64 = 250;
 // Minimum yield time for an empty `write_stdin`.
 pub(crate) const MIN_EMPTY_YIELD_TIME_MS: u64 = 5_000;
 pub(crate) const MAX_YIELD_TIME_MS: u64 = 30_000;

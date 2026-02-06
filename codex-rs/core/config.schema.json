@@ -2086,6 +2086,18 @@
       ],
       "description": "Collection of settings that are specific to the TUI."
     },
+    "unified_exec_write_stdin_yield_time_ms": {
+      "description": "Default polling window for unified exec write_stdin output in milliseconds.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "unified_exec_yield_time_ms": {
+      "description": "Default initial yield window for unified exec exec_command output snapshots in milliseconds.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "web_search": {
       "allOf": [
         {
