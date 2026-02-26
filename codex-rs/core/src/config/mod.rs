@@ -36,6 +36,7 @@ use codex_config::sandbox_mode_requirement_for_permission_profile;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AuthKeyringBackendKind;
+use codex_config::types::DiffBackgroundMode;
 use codex_config::types::History;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerDisabledReason;
@@ -759,6 +760,15 @@ pub struct Config {
 
     /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
     pub show_compact_summary: bool,
+
+    /// Controls how diff add/remove backgrounds are rendered in the TUI.
+    pub tui_diff_background: DiffBackgroundMode,
+
+    /// Custom insert-line background color (`#RRGGBB`) for TUI diffs.
+    pub tui_diff_add_bg: Option<String>,
+
+    /// Custom delete-line background color (`#RRGGBB`) for TUI diffs.
+    pub tui_diff_del_bg: Option<String>,
 
     /// Start the TUI in the specified collaboration mode (plan/default).
 
@@ -3988,6 +3998,13 @@ impl Config {
                 .as_ref()
                 .map(|t| t.show_compact_summary)
                 .unwrap_or(true),
+            tui_diff_background: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.diff_background)
+                .unwrap_or_default(),
+            tui_diff_add_bg: cfg.tui.as_ref().and_then(|t| t.diff_add_bg.clone()),
+            tui_diff_del_bg: cfg.tui.as_ref().and_then(|t| t.diff_del_bg.clone()),
             tui_alternate_screen: cfg
                 .tui
                 .as_ref()
