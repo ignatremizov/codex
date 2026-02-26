@@ -262,8 +262,8 @@ pub(crate) fn current_syntax_theme() -> Theme {
 /// emit truecolor or quantized ANSI-256.
 ///
 /// Both fields are `None` when the active theme defines no relevant scope
-/// backgrounds, in which case the diff renderer falls back to its hardcoded
-/// palette.
+/// backgrounds, in which case the diff renderer falls back to its configured
+/// settings or fallback default.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DiffScopeBackgroundRgbs {
     pub inserted: Option<(u8, u8, u8)>,
@@ -294,8 +294,8 @@ fn diff_scope_background_rgbs_for_theme(theme: &Theme) -> DiffScopeBackgroundRgb
 /// Extract the background color for a single TextMate scope, if defined.
 fn scope_background_rgb(highlighter: &Highlighter<'_>, scope_name: &str) -> Option<(u8, u8, u8)> {
     let scope = Scope::new(scope_name).ok()?;
-    let bg = highlighter.style_mod_for_stack(&[scope]).background?;
-    Some((bg.r, bg.g, bg.b))
+    let background = highlighter.style_mod_for_stack(&[scope]).background?;
+    Some((background.r, background.g, background.b))
 }
 
 /// Return the configured kebab-case theme name when it resolves; otherwise
