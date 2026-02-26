@@ -3,6 +3,7 @@ use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::config::types::AppsConfigToml;
 use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
+use crate::config::types::DiffBackgroundMode;
 use crate::config::types::History;
 use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerDisabledReason;
@@ -297,6 +298,15 @@ pub struct Config {
 
     /// Syntax highlighting theme override (kebab-case name).
     pub tui_theme: Option<String>,
+
+    /// Controls how diff add/remove backgrounds are rendered in the TUI.
+    pub tui_diff_background: DiffBackgroundMode,
+
+    /// Custom insert-line background color (`#RRGGBB`).
+    pub tui_diff_add_bg: Option<String>,
+
+    /// Custom delete-line background color (`#RRGGBB`).
+    pub tui_diff_del_bg: Option<String>,
 
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
@@ -2197,6 +2207,13 @@ impl Config {
                 .unwrap_or_default(),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
             tui_theme: cfg.tui.as_ref().and_then(|t| t.theme.clone()),
+            tui_diff_background: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.diff_background)
+                .unwrap_or_default(),
+            tui_diff_add_bg: cfg.tui.as_ref().and_then(|t| t.diff_add_bg.clone()),
+            tui_diff_del_bg: cfg.tui.as_ref().and_then(|t| t.diff_del_bg.clone()),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -2623,6 +2640,22 @@ theme = "dracula"
     }
 
     #[test]
+    fn tui_diff_background_deserializes_from_toml() {
+        let cfg = r##"
+[tui]
+diff_background = "custom"
+diff_add_bg = "#213A2B"
+diff_del_bg = "#4A221D"
+"##;
+        let parsed =
+            toml::from_str::<ConfigToml>(cfg).expect("TOML deserialization should succeed");
+        let tui = parsed.tui.expect("config should include tui section");
+        assert_eq!(tui.diff_background, DiffBackgroundMode::Custom);
+        assert_eq!(tui.diff_add_bg.as_deref(), Some("#213A2B"));
+        assert_eq!(tui.diff_del_bg.as_deref(), Some("#4A221D"));
+    }
+
+    #[test]
     fn tui_config_missing_notifications_field_defaults_to_enabled() {
         let cfg = r#"
 [tui]
@@ -2639,9 +2672,42 @@ theme = "dracula"
                 notification_method: NotificationMethod::Auto,
                 animations: true,
                 show_tooltips: true,
+                show_compact_summary: true,
                 alternate_screen: AltScreenMode::Auto,
                 status_line: None,
                 theme: None,
+                diff_background: DiffBackgroundMode::Auto,
+                diff_add_bg: None,
+                diff_del_bg: None,
+            }
+        );
+    }
+
+    #[test]
+    fn tui_config_can_disable_compact_summary() {
+        let cfg = r#"
+[tui]
+show_compact_summary = false
+"#;
+
+        let parsed = toml::from_str::<ConfigToml>(cfg)
+            .expect("TUI config with show_compact_summary should succeed");
+        let tui = parsed.tui.expect("config should include tui section");
+
+        assert_eq!(
+            tui,
+            Tui {
+                notifications: Notifications::Enabled(true),
+                notification_method: NotificationMethod::Auto,
+                animations: true,
+                show_tooltips: true,
+                show_compact_summary: false,
+                alternate_screen: AltScreenMode::Auto,
+                status_line: None,
+                theme: None,
+                diff_background: DiffBackgroundMode::Auto,
+                diff_add_bg: None,
+                diff_del_bg: None,
             }
         );
     }
@@ -4799,6 +4865,9 @@ model_verbosity = "high"
                 tui_alternate_screen: AltScreenMode::Auto,
                 tui_status_line: None,
                 tui_theme: None,
+                tui_diff_background: DiffBackgroundMode::Auto,
+                tui_diff_add_bg: None,
+                tui_diff_del_bg: None,
                 otel: OtelConfig::default(),
             },
             o3_profile_config
@@ -4925,6 +4994,9 @@ model_verbosity = "high"
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
             tui_theme: None,
+            tui_diff_background: DiffBackgroundMode::Auto,
+            tui_diff_add_bg: None,
+            tui_diff_del_bg: None,
             otel: OtelConfig::default(),
         };
 
@@ -5049,6 +5121,9 @@ model_verbosity = "high"
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
             tui_theme: None,
+            tui_diff_background: DiffBackgroundMode::Auto,
+            tui_diff_add_bg: None,
+            tui_diff_del_bg: None,
             otel: OtelConfig::default(),
         };
 
@@ -5159,6 +5234,9 @@ model_verbosity = "high"
             tui_alternate_screen: AltScreenMode::Auto,
             tui_status_line: None,
             tui_theme: None,
+            tui_diff_background: DiffBackgroundMode::Auto,
+            tui_diff_add_bg: None,
+            tui_diff_del_bg: None,
             otel: OtelConfig::default(),
         };
 

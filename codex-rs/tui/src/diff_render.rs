@@ -73,17 +73,23 @@ use crate::exec_command::relativize_to_home;
 use crate::render::Insets;
 use crate::render::highlight::exceeds_highlight_limits;
 use crate::render::highlight::highlight_code_to_styled_spans;
+use crate::render::highlight::scope_background_rgb;
 use crate::render::line_utils::prefix_lines;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::InsetRenderable;
 use crate::render::renderable::Renderable;
 use crate::terminal_palette::StdoutColorLevel;
+use crate::terminal_palette::best_color;
 use crate::terminal_palette::default_bg;
 use crate::terminal_palette::indexed_color;
 use crate::terminal_palette::rgb_color;
 use crate::terminal_palette::stdout_color_level;
+use codex_core::config::Config;
+use codex_core::config::types::DiffBackgroundMode;
 use codex_core::git_info::get_git_repo_root;
 use codex_protocol::protocol::FileChange;
+use std::sync::OnceLock;
+use std::sync::RwLock;
 
 /// Classifies a diff line for gutter sign rendering and style selection.
 ///
@@ -115,6 +121,61 @@ enum DiffColorLevel {
     TrueColor,
     Ansi256,
     Ansi16,
+}
+
+#[derive(Clone, Debug)]
+struct DiffBackgroundSettings {
+    mode: DiffBackgroundMode,
+    add_bg: Option<(u8, u8, u8)>,
+    del_bg: Option<(u8, u8, u8)>,
+}
+
+impl Default for DiffBackgroundSettings {
+    fn default() -> Self {
+        Self {
+            mode: DiffBackgroundMode::Auto,
+            add_bg: None,
+            del_bg: None,
+        }
+    }
+}
+
+impl DiffBackgroundSettings {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            mode: config.tui_diff_background,
+            add_bg: parse_hex_rgb(config.tui_diff_add_bg.as_deref()),
+            del_bg: parse_hex_rgb(config.tui_diff_del_bg.as_deref()),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct LineBackgrounds {
+    add: Option<Color>,
+    del: Option<Color>,
+}
+
+static DIFF_BACKGROUND_SETTINGS: OnceLock<RwLock<DiffBackgroundSettings>> = OnceLock::new();
+
+fn diff_background_settings_lock() -> &'static RwLock<DiffBackgroundSettings> {
+    DIFF_BACKGROUND_SETTINGS.get_or_init(|| RwLock::new(DiffBackgroundSettings::default()))
+}
+
+pub(crate) fn set_diff_background_settings(config: &Config) {
+    let parsed = DiffBackgroundSettings::from_config(config);
+    let mut guard = match diff_background_settings_lock().write() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *guard = parsed;
+}
+
+fn current_diff_background_settings() -> DiffBackgroundSettings {
+    match diff_background_settings_lock().read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
 }
 
 pub struct DiffSummary {
@@ -884,6 +945,62 @@ fn diff_color_level() -> DiffColorLevel {
     }
 }
 
+fn parse_hex_rgb(input: Option<&str>) -> Option<(u8, u8, u8)> {
+    let raw = input?.trim();
+    let hex = raw.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+fn resolve_theme_scope_rgb(scope: &str, fallback_scope: &str) -> Option<(u8, u8, u8)> {
+    scope_background_rgb(scope).or_else(|| scope_background_rgb(fallback_scope))
+}
+
+fn quantize_rgb(rgb: (u8, u8, u8), color_level: DiffColorLevel, ansi16_fallback: Color) -> Color {
+    match color_level {
+        DiffColorLevel::TrueColor => rgb_color(rgb),
+        DiffColorLevel::Ansi256 => best_color(rgb),
+        DiffColorLevel::Ansi16 => ansi16_fallback,
+    }
+}
+
+fn resolve_line_backgrounds(theme: DiffTheme, color_level: DiffColorLevel) -> LineBackgrounds {
+    let settings = current_diff_background_settings();
+    match settings.mode {
+        DiffBackgroundMode::Off => LineBackgrounds {
+            add: None,
+            del: None,
+        },
+        DiffBackgroundMode::Theme | DiffBackgroundMode::Custom => {
+            let (add_rgb, del_rgb) = match settings.mode {
+                DiffBackgroundMode::Theme => (
+                    resolve_theme_scope_rgb("markup.inserted", "diff.inserted"),
+                    resolve_theme_scope_rgb("markup.deleted", "diff.deleted"),
+                ),
+                DiffBackgroundMode::Custom => (settings.add_bg, settings.del_bg),
+                DiffBackgroundMode::Off | DiffBackgroundMode::Auto => unreachable!(),
+            };
+            LineBackgrounds {
+                add: add_rgb
+                    .map(|rgb| quantize_rgb(rgb, color_level, Color::Green))
+                    .or_else(|| default_add_line_bg(theme, color_level)),
+                del: del_rgb
+                    .map(|rgb| quantize_rgb(rgb, color_level, Color::Red))
+                    .or_else(|| default_del_line_bg(theme, color_level)),
+            }
+        }
+        DiffBackgroundMode::Auto => LineBackgrounds {
+            add: default_add_line_bg(theme, color_level),
+            del: default_del_line_bg(theme, color_level),
+        },
+    }
+}
+
 // -- Style helpers ------------------------------------------------------------
 //
 // Each diff line is composed of three visual regions, styled independently:
@@ -908,9 +1025,14 @@ fn diff_color_level() -> DiffColorLevel {
 /// Context lines intentionally leave the background unset so the terminal
 /// default shows through.
 fn style_line_bg_for(kind: DiffLineType, theme: DiffTheme, color_level: DiffColorLevel) -> Style {
+    let line_backgrounds = resolve_line_backgrounds(theme, color_level);
     match kind {
-        DiffLineType::Insert => Style::default().bg(add_line_bg(theme, color_level)),
-        DiffLineType::Delete => Style::default().bg(del_line_bg(theme, color_level)),
+        DiffLineType::Insert => line_backgrounds
+            .add
+            .map_or_else(Style::default, |bg| Style::default().bg(bg)),
+        DiffLineType::Delete => line_backgrounds
+            .del
+            .map_or_else(Style::default, |bg| Style::default().bg(bg)),
         DiffLineType::Context => Style::default(),
     }
 }
@@ -919,25 +1041,29 @@ fn style_context() -> Style {
     Style::default()
 }
 
-fn add_line_bg(theme: DiffTheme, color_level: DiffColorLevel) -> Color {
+fn default_add_line_bg(theme: DiffTheme, color_level: DiffColorLevel) -> Option<Color> {
     match (theme, color_level) {
-        (DiffTheme::Dark, DiffColorLevel::TrueColor) => rgb_color(DARK_TC_ADD_LINE_BG_RGB),
-        (DiffTheme::Dark, DiffColorLevel::Ansi256) => indexed_color(DARK_256_ADD_LINE_BG_IDX),
-        (DiffTheme::Dark, DiffColorLevel::Ansi16) => Color::Green,
-        (DiffTheme::Light, DiffColorLevel::TrueColor) => rgb_color(LIGHT_TC_ADD_LINE_BG_RGB),
-        (DiffTheme::Light, DiffColorLevel::Ansi256) => indexed_color(LIGHT_256_ADD_LINE_BG_IDX),
-        (DiffTheme::Light, DiffColorLevel::Ansi16) => Color::LightGreen,
+        (DiffTheme::Dark, DiffColorLevel::TrueColor) => Some(rgb_color(DARK_TC_ADD_LINE_BG_RGB)),
+        (DiffTheme::Dark, DiffColorLevel::Ansi256) => Some(indexed_color(DARK_256_ADD_LINE_BG_IDX)),
+        (DiffTheme::Dark, DiffColorLevel::Ansi16) => Some(Color::Green),
+        (DiffTheme::Light, DiffColorLevel::TrueColor) => Some(rgb_color(LIGHT_TC_ADD_LINE_BG_RGB)),
+        (DiffTheme::Light, DiffColorLevel::Ansi256) => {
+            Some(indexed_color(LIGHT_256_ADD_LINE_BG_IDX))
+        }
+        (DiffTheme::Light, DiffColorLevel::Ansi16) => Some(Color::LightGreen),
     }
 }
 
-fn del_line_bg(theme: DiffTheme, color_level: DiffColorLevel) -> Color {
+fn default_del_line_bg(theme: DiffTheme, color_level: DiffColorLevel) -> Option<Color> {
     match (theme, color_level) {
-        (DiffTheme::Dark, DiffColorLevel::TrueColor) => rgb_color(DARK_TC_DEL_LINE_BG_RGB),
-        (DiffTheme::Dark, DiffColorLevel::Ansi256) => indexed_color(DARK_256_DEL_LINE_BG_IDX),
-        (DiffTheme::Dark, DiffColorLevel::Ansi16) => Color::Red,
-        (DiffTheme::Light, DiffColorLevel::TrueColor) => rgb_color(LIGHT_TC_DEL_LINE_BG_RGB),
-        (DiffTheme::Light, DiffColorLevel::Ansi256) => indexed_color(LIGHT_256_DEL_LINE_BG_IDX),
-        (DiffTheme::Light, DiffColorLevel::Ansi16) => Color::LightRed,
+        (DiffTheme::Dark, DiffColorLevel::TrueColor) => Some(rgb_color(DARK_TC_DEL_LINE_BG_RGB)),
+        (DiffTheme::Dark, DiffColorLevel::Ansi256) => Some(indexed_color(DARK_256_DEL_LINE_BG_IDX)),
+        (DiffTheme::Dark, DiffColorLevel::Ansi16) => Some(Color::Red),
+        (DiffTheme::Light, DiffColorLevel::TrueColor) => Some(rgb_color(LIGHT_TC_DEL_LINE_BG_RGB)),
+        (DiffTheme::Light, DiffColorLevel::Ansi256) => {
+            Some(indexed_color(LIGHT_256_DEL_LINE_BG_IDX))
+        }
+        (DiffTheme::Light, DiffColorLevel::Ansi16) => Some(Color::LightRed),
     }
 }
 
@@ -1000,27 +1126,27 @@ fn style_sign_del(theme: DiffTheme, color_level: DiffColorLevel) -> Style {
 
 /// Content style for insert lines (plain, non-syntax-highlighted text).
 fn style_add(theme: DiffTheme, color_level: DiffColorLevel) -> Style {
-    match (theme, color_level) {
-        (DiffTheme::Dark, DiffColorLevel::Ansi16) => Style::default()
-            .fg(Color::Black)
-            .bg(add_line_bg(theme, color_level)),
-        (DiffTheme::Light, _) => Style::default().bg(add_line_bg(theme, color_level)),
-        (DiffTheme::Dark, _) => Style::default()
-            .fg(Color::Green)
-            .bg(add_line_bg(theme, color_level)),
+    let line_backgrounds = resolve_line_backgrounds(theme, color_level);
+    match (theme, color_level, line_backgrounds.add) {
+        (DiffTheme::Dark, DiffColorLevel::Ansi16, Some(bg)) => {
+            Style::default().fg(Color::Black).bg(bg)
+        }
+        (DiffTheme::Light, _, Some(bg)) => Style::default().bg(bg),
+        (DiffTheme::Dark, _, Some(bg)) => Style::default().fg(Color::Green).bg(bg),
+        (_, _, None) => Style::default().fg(Color::Green),
     }
 }
 
 /// Content style for delete lines (plain, non-syntax-highlighted text).
 fn style_del(theme: DiffTheme, color_level: DiffColorLevel) -> Style {
-    match (theme, color_level) {
-        (DiffTheme::Dark, DiffColorLevel::Ansi16) => Style::default()
-            .fg(Color::Black)
-            .bg(del_line_bg(theme, color_level)),
-        (DiffTheme::Light, _) => Style::default().bg(del_line_bg(theme, color_level)),
-        (DiffTheme::Dark, _) => Style::default()
-            .fg(Color::Red)
-            .bg(del_line_bg(theme, color_level)),
+    let line_backgrounds = resolve_line_backgrounds(theme, color_level);
+    match (theme, color_level, line_backgrounds.del) {
+        (DiffTheme::Dark, DiffColorLevel::Ansi16, Some(bg)) => {
+            Style::default().fg(Color::Black).bg(bg)
+        }
+        (DiffTheme::Light, _, Some(bg)) => Style::default().bg(bg),
+        (DiffTheme::Dark, _, Some(bg)) => Style::default().fg(Color::Red).bg(bg),
+        (_, _, None) => Style::default().fg(Color::Red),
     }
 }
 
