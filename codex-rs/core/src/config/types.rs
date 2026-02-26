@@ -790,9 +790,42 @@ pub struct Tui {
     #[serde(default)]
     pub theme: Option<String>,
 
+    /// Controls how diff add/remove backgrounds are rendered in the TUI.
+    ///
+    /// - `auto` (default): Use built-in adaptive add/remove backgrounds.
+    /// - `off`: Disable add/remove line backgrounds.
+    /// - `theme`: Derive add/remove backgrounds from the active syntax theme
+    ///   (`markup.inserted`/`markup.deleted` with diff fallbacks).
+    /// - `custom`: Use user-provided custom colors from `diff_add_bg` /
+    ///   `diff_del_bg`.
+    #[serde(default)]
+    pub diff_background: DiffBackgroundMode,
+
+    /// Custom insert-line background color (`#RRGGBB`).
+    ///
+    /// Used when `diff_background = "custom"`.
+    #[serde(default)]
+    pub diff_add_bg: Option<String>,
+
+    /// Custom delete-line background color (`#RRGGBB`).
+    ///
+    /// Used when `diff_background = "custom"`.
+    #[serde(default)]
+    pub diff_del_bg: Option<String>,
+
     /// Startup tooltip availability NUX state persisted by the TUI.
     #[serde(default)]
     pub model_availability_nux: ModelAvailabilityNuxConfig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffBackgroundMode {
+    #[default]
+    Auto,
+    Off,
+    Theme,
+    Custom,
 }
 
 const fn default_true() -> bool {

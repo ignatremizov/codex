@@ -92,10 +92,14 @@ use crate::terminal_palette::default_bg;
 use crate::terminal_palette::indexed_color;
 use crate::terminal_palette::rgb_color;
 use crate::terminal_palette::stdout_color_level;
+use codex_core::config::Config;
+use codex_core::config::types::DiffBackgroundMode;
 use codex_git_utils::get_git_repo_root;
 use codex_protocol::protocol::FileChange;
 use codex_terminal_detection::TerminalName;
 use codex_terminal_detection::terminal_info;
+use std::sync::OnceLock;
+use std::sync::RwLock;
 
 /// Classifies a diff line for gutter sign rendering and style selection.
 ///
@@ -165,6 +169,33 @@ impl RichDiffColorLevel {
     }
 }
 
+#[derive(Clone, Debug)]
+struct DiffBackgroundSettings {
+    mode: DiffBackgroundMode,
+    add_bg: Option<(u8, u8, u8)>,
+    del_bg: Option<(u8, u8, u8)>,
+}
+
+impl Default for DiffBackgroundSettings {
+    fn default() -> Self {
+        Self {
+            mode: DiffBackgroundMode::Auto,
+            add_bg: None,
+            del_bg: None,
+        }
+    }
+}
+
+impl DiffBackgroundSettings {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            mode: config.tui_diff_background,
+            add_bg: parse_hex_rgb(config.tui_diff_add_bg.as_deref()),
+            del_bg: parse_hex_rgb(config.tui_diff_del_bg.as_deref()),
+        }
+    }
+}
+
 /// Pre-resolved background colors for insert and delete diff lines.
 ///
 /// Computed once per `render_change` call from the active syntax theme's
@@ -178,7 +209,6 @@ struct ResolvedDiffBackgrounds {
     add: Option<Color>,
     del: Option<Color>,
 }
-
 /// Precomputed render state for diff line styling.
 ///
 /// This bundles the terminal-derived theme and color depth plus theme-resolved
@@ -195,6 +225,28 @@ pub(crate) struct DiffRenderStyleContext {
 ///
 /// Queries the active syntax theme for `markup.inserted` / `markup.deleted`
 /// (and `diff.*` fallbacks), then delegates to [`resolve_diff_backgrounds_for`].
+static DIFF_BACKGROUND_SETTINGS: OnceLock<RwLock<DiffBackgroundSettings>> = OnceLock::new();
+
+fn diff_background_settings_lock() -> &'static RwLock<DiffBackgroundSettings> {
+    DIFF_BACKGROUND_SETTINGS.get_or_init(|| RwLock::new(DiffBackgroundSettings::default()))
+}
+
+pub(crate) fn set_diff_background_settings(config: &Config) {
+    let parsed = DiffBackgroundSettings::from_config(config);
+    let mut guard = match diff_background_settings_lock().write() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *guard = parsed;
+}
+
+fn current_diff_background_settings() -> DiffBackgroundSettings {
+    match diff_background_settings_lock().read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
 fn resolve_diff_backgrounds(
     theme: DiffTheme,
     color_level: DiffColorLevel,
@@ -233,17 +285,37 @@ fn resolve_diff_backgrounds_for(
     color_level: DiffColorLevel,
     scope_backgrounds: DiffScopeBackgroundRgbs,
 ) -> ResolvedDiffBackgrounds {
-    let mut resolved = fallback_diff_backgrounds(theme, color_level);
+    let settings = current_diff_background_settings();
+    let mut resolved = match settings.mode {
+        DiffBackgroundMode::Off => ResolvedDiffBackgrounds::default(),
+        DiffBackgroundMode::Auto | DiffBackgroundMode::Theme | DiffBackgroundMode::Custom => {
+            fallback_diff_backgrounds(theme, color_level)
+        }
+    };
     let Some(level) = RichDiffColorLevel::from_diff_color_level(color_level) else {
         return resolved;
     };
 
-    if let Some(rgb) = scope_backgrounds.inserted {
-        resolved.add = Some(color_from_rgb_for_level(rgb, level));
+    match settings.mode {
+        DiffBackgroundMode::Auto | DiffBackgroundMode::Theme => {
+            if let Some(rgb) = scope_backgrounds.inserted {
+                resolved.add = Some(color_from_rgb_for_level(rgb, level));
+            }
+            if let Some(rgb) = scope_backgrounds.deleted {
+                resolved.del = Some(color_from_rgb_for_level(rgb, level));
+            }
+        }
+        DiffBackgroundMode::Custom => {
+            if let Some(rgb) = settings.add_bg {
+                resolved.add = Some(color_from_rgb_for_level(rgb, level));
+            }
+            if let Some(rgb) = settings.del_bg {
+                resolved.del = Some(color_from_rgb_for_level(rgb, level));
+            }
+        }
+        DiffBackgroundMode::Off => {}
     }
-    if let Some(rgb) = scope_backgrounds.deleted {
-        resolved.del = Some(color_from_rgb_for_level(rgb, level));
-    }
+
     resolved
 }
 
@@ -1112,6 +1184,18 @@ fn diff_color_level_for_terminal(
     } else {
         base
     }
+}
+
+fn parse_hex_rgb(input: Option<&str>) -> Option<(u8, u8, u8)> {
+    let raw = input?.trim();
+    let hex = raw.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
 }
 
 // -- Style helpers ------------------------------------------------------------
