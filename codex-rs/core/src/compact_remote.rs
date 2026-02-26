@@ -168,7 +168,7 @@ async fn run_remote_compact_task_inner_impl(
         initial_context_injection,
         previous_user_turn_model,
     )
-        .await;
+    .await;
 
     if !ghost_snapshots.is_empty() {
         new_history.extend(ghost_snapshots);
