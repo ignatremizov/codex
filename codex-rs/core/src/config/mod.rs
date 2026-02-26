@@ -3,6 +3,7 @@ use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::config::types::AppsConfigToml;
 use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
+use crate::config::types::DiffBackgroundMode;
 use crate::config::types::History;
 use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerDisabledReason;
@@ -355,6 +356,15 @@ pub struct Config {
 
     /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
     pub show_compact_summary: bool,
+
+    /// Controls how diff add/remove backgrounds are rendered in the TUI.
+    pub tui_diff_background: DiffBackgroundMode,
+
+    /// Custom insert-line background color (`#RRGGBB`) for TUI diffs.
+    pub tui_diff_add_bg: Option<String>,
+
+    /// Custom delete-line background color (`#RRGGBB`) for TUI diffs.
+    pub tui_diff_del_bg: Option<String>,
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///
@@ -2878,6 +2888,13 @@ impl Config {
                 .as_ref()
                 .map(|t| t.show_compact_summary)
                 .unwrap_or(true),
+            tui_diff_background: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.diff_background)
+                .unwrap_or_default(),
+            tui_diff_add_bg: cfg.tui.as_ref().and_then(|t| t.diff_add_bg.clone()),
+            tui_diff_del_bg: cfg.tui.as_ref().and_then(|t| t.diff_del_bg.clone()),
             tui_alternate_screen: cfg
                 .tui
                 .as_ref()
