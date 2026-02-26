@@ -32,9 +32,11 @@ use std::sync::OnceLock;
 use std::sync::RwLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::FontStyle;
+use syntect::highlighting::Highlighter;
 use syntect::highlighting::Style as SyntectStyle;
 use syntect::highlighting::Theme;
 use syntect::highlighting::ThemeSet;
+use syntect::parsing::Scope;
 use syntect::parsing::SyntaxReference;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
@@ -239,6 +241,21 @@ pub(crate) fn current_syntax_theme() -> Theme {
         Ok(theme) => theme.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     }
+}
+
+/// Resolve a scope's explicit theme background color from the active syntax
+/// theme.
+///
+/// Returns `None` when the scope is invalid or no matching scope rule sets a
+/// background color.
+pub(crate) fn scope_background_rgb(scope_name: &str) -> Option<(u8, u8, u8)> {
+    let scope = Scope::new(scope_name).ok()?;
+    let style_mod = match theme_lock().read() {
+        Ok(theme) => Highlighter::new(&theme).style_mod_for_stack(&[scope]),
+        Err(poisoned) => Highlighter::new(&poisoned.into_inner()).style_mod_for_stack(&[scope]),
+    };
+    let background = style_mod.background?;
+    Some((background.r, background.g, background.b))
 }
 
 /// Return the configured kebab-case theme name when it resolves; otherwise

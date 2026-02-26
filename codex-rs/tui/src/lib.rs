@@ -810,6 +810,7 @@ async fn run_ratatui_app(
     ) {
         config.startup_warnings.push(w);
     }
+    crate::diff_render::set_diff_background_settings(&config);
 
     set_default_client_residency_requirement(config.enforce_residency.value());
     let active_profile = config.active_profile.clone();
