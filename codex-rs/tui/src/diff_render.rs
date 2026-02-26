@@ -976,9 +976,15 @@ fn resolve_line_backgrounds(theme: DiffTheme, color_level: DiffColorLevel) -> Li
             add: None,
             del: None,
         },
-        DiffBackgroundMode::Theme => {
-            let add_rgb = resolve_theme_scope_rgb("markup.inserted", "diff.inserted");
-            let del_rgb = resolve_theme_scope_rgb("markup.deleted", "diff.deleted");
+        DiffBackgroundMode::Theme | DiffBackgroundMode::Custom => {
+            let (add_rgb, del_rgb) = match settings.mode {
+                DiffBackgroundMode::Theme => (
+                    resolve_theme_scope_rgb("markup.inserted", "diff.inserted"),
+                    resolve_theme_scope_rgb("markup.deleted", "diff.deleted"),
+                ),
+                DiffBackgroundMode::Custom => (settings.add_bg, settings.del_bg),
+                DiffBackgroundMode::Off | DiffBackgroundMode::Auto => unreachable!(),
+            };
             LineBackgrounds {
                 add: add_rgb
                     .map(|rgb| quantize_rgb(rgb, color_level, Color::Green))
@@ -988,16 +994,6 @@ fn resolve_line_backgrounds(theme: DiffTheme, color_level: DiffColorLevel) -> Li
                     .or_else(|| default_del_line_bg(theme, color_level)),
             }
         }
-        DiffBackgroundMode::Custom => LineBackgrounds {
-            add: settings
-                .add_bg
-                .map(|rgb| quantize_rgb(rgb, color_level, Color::Green))
-                .or_else(|| default_add_line_bg(theme, color_level)),
-            del: settings
-                .del_bg
-                .map(|rgb| quantize_rgb(rgb, color_level, Color::Red))
-                .or_else(|| default_del_line_bg(theme, color_level)),
-        },
         DiffBackgroundMode::Auto => LineBackgrounds {
             add: default_add_line_bg(theme, color_level),
             del: default_del_line_bg(theme, color_level),
