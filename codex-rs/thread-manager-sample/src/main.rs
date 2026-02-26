@@ -19,6 +19,7 @@ use codex_core_api::CodexThread;
 use codex_core_api::Config;
 use codex_core_api::ConfigLayerStack;
 use codex_core_api::Constrained;
+use codex_core_api::DiffBackgroundMode;
 use codex_core_api::EnvironmentManager;
 use codex_core_api::EventMsg;
 use codex_core_api::ExecServerRuntimePaths;
@@ -208,6 +209,9 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         tui_pet: None,
         tui_pet_anchor: TuiPetAnchor::Composer,
         show_compact_summary: true,
+        tui_diff_background: DiffBackgroundMode::Auto,
+        tui_diff_add_bg: None,
+        tui_diff_del_bg: None,
         terminal_resize_reflow: TerminalResizeReflowConfig::default(),
         tui_keymap: TuiKeymap::default(),
         tui_session_picker_view: SessionPickerViewMode::Dense,
