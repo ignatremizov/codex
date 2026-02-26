@@ -241,6 +241,9 @@ fn config_toml_deserializes_model_availability_nux() {
             status_line: None,
             terminal_title: None,
             theme: None,
+            diff_background: DiffBackgroundMode::Auto,
+            diff_add_bg: None,
+            diff_del_bg: None,
             model_availability_nux: ModelAvailabilityNuxConfig {
                 shown_count: HashMap::from([
                     ("gpt-bar".to_string(), 4),
@@ -1037,9 +1040,30 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
             theme: None,
+            diff_background: DiffBackgroundMode::Auto,
+            diff_add_bg: None,
+            diff_del_bg: None,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
         }
     );
+}
+
+#[test]
+fn tui_diff_background_deserializes_from_toml() {
+    let cfg = r##"
+[tui]
+diff_background = "custom"
+diff_add_bg = "#213A2B"
+diff_del_bg = "#4A221D"
+"##;
+
+    let parsed = toml::from_str::<ConfigToml>(cfg)
+        .expect("TUI config with diff background settings should succeed");
+    let tui = parsed.tui.expect("config should include tui section");
+
+    assert_eq!(tui.diff_background, DiffBackgroundMode::Custom);
+    assert_eq!(tui.diff_add_bg.as_deref(), Some("#213A2B"));
+    assert_eq!(tui.diff_del_bg.as_deref(), Some("#4A221D"));
 }
 
 #[test]
@@ -1065,6 +1089,9 @@ show_compact_summary = false
             status_line: None,
             terminal_title: None,
             theme: None,
+            diff_background: DiffBackgroundMode::Auto,
+            diff_add_bg: None,
+            diff_del_bg: None,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
         }
     );
@@ -4492,6 +4519,9 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             show_tooltips: true,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
             show_compact_summary: true,
+            tui_diff_background: DiffBackgroundMode::Auto,
+            tui_diff_add_bg: None,
+            tui_diff_del_bg: None,
             analytics_enabled: Some(true),
             feedback_enabled: true,
             tool_suggest: ToolSuggestConfig::default(),
@@ -4640,6 +4670,9 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         show_tooltips: true,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         show_compact_summary: true,
+        tui_diff_background: DiffBackgroundMode::Auto,
+        tui_diff_add_bg: None,
+        tui_diff_del_bg: None,
         analytics_enabled: Some(true),
         feedback_enabled: true,
         tool_suggest: ToolSuggestConfig::default(),
@@ -4786,6 +4819,9 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         show_tooltips: true,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         show_compact_summary: true,
+        tui_diff_background: DiffBackgroundMode::Auto,
+        tui_diff_add_bg: None,
+        tui_diff_del_bg: None,
         analytics_enabled: Some(false),
         feedback_enabled: true,
         tool_suggest: ToolSuggestConfig::default(),
@@ -4918,6 +4954,9 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         show_tooltips: true,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         show_compact_summary: true,
+        tui_diff_background: DiffBackgroundMode::Auto,
+        tui_diff_add_bg: None,
+        tui_diff_del_bg: None,
         analytics_enabled: Some(true),
         feedback_enabled: true,
         tool_suggest: ToolSuggestConfig::default(),
