@@ -250,10 +250,11 @@ pub(crate) fn current_syntax_theme() -> Theme {
 /// background color.
 pub(crate) fn scope_background_rgb(scope_name: &str) -> Option<(u8, u8, u8)> {
     let scope = Scope::new(scope_name).ok()?;
-    let style_mod = match theme_lock().read() {
-        Ok(theme) => Highlighter::new(&theme).style_mod_for_stack(&[scope]),
-        Err(poisoned) => Highlighter::new(&poisoned.into_inner()).style_mod_for_stack(&[scope]),
+    let theme_guard = match theme_lock().read() {
+        Ok(theme) => theme,
+        Err(poisoned) => poisoned.into_inner(),
     };
+    let style_mod = Highlighter::new(&theme_guard).style_mod_for_stack(&[scope]);
     let background = style_mod.background?;
     Some((background.r, background.g, background.b))
 }
