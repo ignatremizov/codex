@@ -12429,14 +12429,14 @@ async fn sample_rollout(
         std::iter::once(&user1),
         reconstruction_turn.model_info().truncation_policy.into(),
     );
-    rollout_items.push(RolloutItem::ResponseItem(user1.clone().into()));
+    rollout_items.push(RolloutItem::ResponseItem(user1.into()));
 
     let assistant1 = assistant_message("assistant reply one");
     live_history.record_items(
         std::iter::once(&assistant1),
         reconstruction_turn.model_info().truncation_policy.into(),
     );
-    rollout_items.push(RolloutItem::ResponseItem(assistant1.clone().into()));
+    rollout_items.push(RolloutItem::ResponseItem(assistant1.into()));
 
     let summary1 = "summary one";
     let snapshot1 = raw_history_items(&live_history);
@@ -12462,14 +12462,14 @@ async fn sample_rollout(
         std::iter::once(&user2),
         reconstruction_turn.model_info().truncation_policy.into(),
     );
-    rollout_items.push(RolloutItem::ResponseItem(user2.clone().into()));
+    rollout_items.push(RolloutItem::ResponseItem(user2.into()));
 
     let assistant2 = assistant_message("assistant reply two");
     live_history.record_items(
         std::iter::once(&assistant2),
         reconstruction_turn.model_info().truncation_policy.into(),
     );
-    rollout_items.push(RolloutItem::ResponseItem(assistant2.clone().into()));
+    rollout_items.push(RolloutItem::ResponseItem(assistant2.into()));
 
     let summary2 = "summary two";
     let snapshot2 = raw_history_items(&live_history);
