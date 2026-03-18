@@ -38,6 +38,8 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::trace::SpanData;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -216,6 +218,14 @@ async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config
         Some(false),
         "mock_provider",
         "compact",
+    )?;
+
+    let mut config_file = OpenOptions::new()
+        .append(true)
+        .open(codex_home.join("config.toml"))?;
+    writeln!(
+        config_file,
+        "\ncli_auth_credentials_store = \"file\"\nmcp_oauth_credentials_store = \"file\""
     )?;
 
     Ok(ConfigBuilder::default()

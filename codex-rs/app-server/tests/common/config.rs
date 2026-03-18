@@ -69,6 +69,8 @@ compact_prompt = "{compact_prompt}"
 model_auto_compact_token_limit = {auto_compact_limit}
 
 model_provider = "{model_provider_id}"
+cli_auth_credentials_store = "file"
+mcp_oauth_credentials_store = "file"
 {openai_base_url_line}
 
 [features]
