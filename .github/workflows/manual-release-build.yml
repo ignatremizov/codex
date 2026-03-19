@@ -1,0 +1,515 @@
+name: manual-release-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_linux:
+        description: Build x86_64 Linux artifact on ubuntu-24.04
+        required: true
+        default: true
+        type: boolean
+      build_macos_intel:
+        description: Build x86_64 macOS artifact on macos-15-intel
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CODEX_ZSH_RELEASE_REPOSITORY: openai/codex
+  CODEX_ZSH_RELEASE_TAG: codex-zsh-v0.1.0
+
+jobs:
+  linux:
+    name: Release build — x86_64-unknown-linux-gnu
+    if: ${{ inputs.build_linux }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 10G
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: ./.github/actions/setup-ci
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - name: Compute lockfile hash
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-release-linux-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-release-linux-cargo-home-${{ steps.lockhash.outputs.hash }}-
+            manual-release-linux-cargo-home-
+
+      - name: Restore sccache cache
+        id: cache_sccache_restore
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cache/sccache
+          key: manual-release-linux-sccache-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-release-linux-sccache-${{ steps.lockhash.outputs.hash }}-
+            manual-release-linux-sccache-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: sccache
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.cargo"
+          cat > "$HOME/.cargo/config.toml" <<'EOF'
+          [net]
+          git-fetch-with-cli = true
+          EOF
+
+      - name: cargo build --release
+        run: |
+          cargo build \
+            -p codex-cli --bin codex \
+            -p codex-code-mode-host --bin codex-code-mode-host \
+            -p codex-app-server --bin codex-app-server \
+            -p codex-responses-api-proxy --bin codex-responses-api-proxy \
+            --release \
+            --timings
+
+      - name: Validate Linux binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${CARGO_TARGET_DIR}/release/codex" --help > "${RUNNER_TEMP}/codex-help.txt" 2>&1
+          if [[ ! -s "${RUNNER_TEMP}/codex-help.txt" ]]; then
+            echo "codex --help produced no output" >&2
+            exit 1
+          fi
+          "${CARGO_TARGET_DIR}/release/codex-app-server" --help > "${RUNNER_TEMP}/codex-app-server-help.txt" 2>&1
+          "${CARGO_TARGET_DIR}/release/codex-responses-api-proxy" --help > "${RUNNER_TEMP}/codex-responses-api-proxy-help.txt" 2>&1
+          for binary in codex codex-code-mode-host codex-app-server codex-responses-api-proxy; do
+            binary_path="${CARGO_TARGET_DIR}/release/${binary}"
+            if [[ "$(wc -c < "${binary_path}")" -le 1000000 ]]; then
+              echo "${binary} binary is unexpectedly small" >&2
+              ls -lh "${binary_path}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Package Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="codex-x86_64-unknown-linux-gnu"
+          mkdir -p dist/"${artifact}"
+          cp "${CARGO_TARGET_DIR}/release/codex" dist/"${artifact}"/codex
+          cp "${CARGO_TARGET_DIR}/release/codex-code-mode-host" dist/"${artifact}"/codex-code-mode-host
+          cp "${CARGO_TARGET_DIR}/release/codex-app-server" dist/"${artifact}"/codex-app-server
+          cp "${CARGO_TARGET_DIR}/release/codex-responses-api-proxy" dist/"${artifact}"/codex-responses-api-proxy
+          tar -C dist -czf "${artifact}.tar.gz" "${artifact}"
+          sha256sum "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256"
+
+      - name: Download packaged zsh manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/${CODEX_ZSH_RELEASE_REPOSITORY}/releases/download/${CODEX_ZSH_RELEASE_TAG}/codex-zsh" \
+            -o "${RUNNER_TEMP}/codex-zsh"
+
+      - name: Build Codex package archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="x86_64-unknown-linux-gnu"
+          archive_dir="dist/${target}"
+          for bundle in primary app-server; do
+            bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
+              --target "${target}" \
+              --bundle "${bundle}" \
+              --entrypoint-dir "${CARGO_TARGET_DIR}/release" \
+              --archive-dir "${archive_dir}" \
+              --zsh-manifest "${RUNNER_TEMP}/codex-zsh"
+          done
+          find "${archive_dir}" -maxdepth 1 -type f \
+            \( -name 'codex-package-*.tar.gz' -o -name 'codex-app-server-package-*.tar.gz' \) \
+            -print0 |
+            while IFS= read -r -d '' archive; do
+              sha256sum "${archive}" > "${archive}.sha256"
+            done
+
+      - name: Upload Linux binaries archive
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-x86_64-unknown-linux-gnu-binaries-${{ github.run_id }}
+          path: |
+            codex-rs/codex-x86_64-unknown-linux-gnu.tar.gz
+            codex-rs/codex-x86_64-unknown-linux-gnu.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload Linux Codex package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-package-x86_64-unknown-linux-gnu-${{ github.run_id }}
+          path: |
+            codex-rs/dist/x86_64-unknown-linux-gnu/codex-package-x86_64-unknown-linux-gnu.tar.gz
+            codex-rs/dist/x86_64-unknown-linux-gnu/codex-package-x86_64-unknown-linux-gnu.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload Linux app-server package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-app-server-package-x86_64-unknown-linux-gnu-${{ github.run_id }}
+          path: |
+            codex-rs/dist/x86_64-unknown-linux-gnu/codex-app-server-package-x86_64-unknown-linux-gnu.tar.gz
+            codex-rs/dist/x86_64-unknown-linux-gnu/codex-app-server-package-x86_64-unknown-linux-gnu.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload Cargo timings
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cargo-timings-manual-release-x86_64-unknown-linux-gnu
+          path: ${{ env.CARGO_TARGET_DIR }}/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Save cargo home cache
+        if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-release-linux-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Save sccache cache
+        if: always() && !cancelled() && steps.cache_sccache_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cache/sccache
+          key: manual-release-linux-sccache-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+  macos_intel_build:
+    name: Release build — x86_64-apple-darwin (${{ matrix.bundle }})
+    if: ${{ inputs.build_macos_intel }}
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    env:
+      CARGO_INCREMENTAL: "0"
+      RELEASE_TARGET: x86_64-apple-darwin
+      SCCACHE_CACHE_SIZE: 10G
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bundle: primary
+            binaries: codex codex-code-mode-host codex-responses-api-proxy
+            cargo_args: -p codex-cli --bin codex -p codex-code-mode-host --bin codex-code-mode-host -p codex-responses-api-proxy --bin codex-responses-api-proxy
+            runtime_binaries: codex codex-responses-api-proxy
+          - bundle: app-server
+            binaries: codex-app-server
+            cargo_args: -p codex-app-server --bin codex-app-server
+            runtime_binaries: codex-app-server
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Compute lockfile hash
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(shasum -a 256 Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(shasum -a 256 rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-release-macos-intel-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-release-macos-intel-cargo-home-${{ steps.lockhash.outputs.hash }}-
+            manual-release-macos-intel-cargo-home-
+
+      - name: Restore sccache cache
+        id: cache_sccache_restore
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cache/sccache
+          key: manual-release-macos-intel-sccache-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-release-macos-intel-sccache-${{ steps.lockhash.outputs.hash }}-
+            manual-release-macos-intel-sccache-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: sccache
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.cargo"
+          cat > "$HOME/.cargo/config.toml" <<'EOF'
+          [net]
+          git-fetch-with-cli = true
+          EOF
+          echo "RELEASE_DIR=${CARGO_TARGET_DIR}/${RELEASE_TARGET}/release" >> "$GITHUB_ENV"
+
+      - name: cargo build --release
+        run: |
+          cargo_args=(
+            ${{ matrix.cargo_args }}
+          )
+          cargo build \
+            --target "${RELEASE_TARGET}" \
+            "${cargo_args[@]}" \
+            --release \
+            --timings
+
+      - name: Validate macOS Intel binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(uname -m)" == "x86_64" ]]; then
+            for binary in ${{ matrix.runtime_binaries }}; do
+              "${RELEASE_DIR}/${binary}" --help > "${RUNNER_TEMP}/${binary}-help.txt" 2>&1
+              if [[ ! -s "${RUNNER_TEMP}/${binary}-help.txt" ]]; then
+                echo "${binary} --help produced no output" >&2
+                exit 1
+              fi
+            done
+          else
+            echo "Skipping runtime validation for x86_64 binaries on $(uname -m) host"
+          fi
+          for binary in ${{ matrix.binaries }}; do
+            binary_path="${RELEASE_DIR}/${binary}"
+            if [[ "$(wc -c < "${binary_path}")" -le 1000000 ]]; then
+              echo "${binary} binary is unexpectedly small" >&2
+              ls -lh "${binary_path}" >&2
+              exit 1
+            fi
+            lipo "${binary_path}" -verify_arch x86_64
+          done
+
+      - name: Stage macOS Intel binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage_dir="dist/macos-binaries/${{ matrix.bundle }}"
+          mkdir -p "${stage_dir}"
+          for binary in ${{ matrix.binaries }}; do
+            cp "${RELEASE_DIR}/${binary}" "${stage_dir}/${binary}"
+            chmod 0755 "${stage_dir}/${binary}"
+          done
+
+      - name: Upload macOS Intel binaries
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-x86_64-apple-darwin-${{ matrix.bundle }}-binaries-${{ github.run_id }}
+          path: codex-rs/dist/macos-binaries/${{ matrix.bundle }}/*
+          retention-days: 14
+
+      - name: Upload Cargo timings
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cargo-timings-manual-release-x86_64-apple-darwin-${{ matrix.bundle }}
+          path: ${{ env.CARGO_TARGET_DIR }}/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Save cargo home cache
+        if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-release-macos-intel-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Save sccache cache
+        if: always() && !cancelled() && steps.cache_sccache_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cache/sccache
+          key: manual-release-macos-intel-sccache-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+  macos_intel_package:
+    name: Package release — x86_64-apple-darwin
+    if: ${{ inputs.build_macos_intel }}
+    needs: macos_intel_build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download primary macOS binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-x86_64-apple-darwin-primary-binaries-${{ github.run_id }}
+          path: ${{ runner.temp }}/macos-binaries/primary
+
+      - name: Download app-server macOS binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-x86_64-apple-darwin-app-server-binaries-${{ github.run_id }}
+          path: ${{ runner.temp }}/macos-binaries/app-server
+
+      - name: Assemble macOS release directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/macos-release"
+          mkdir -p "${release_dir}"
+          cp "${RUNNER_TEMP}/macos-binaries/primary/"* "${release_dir}/"
+          cp "${RUNNER_TEMP}/macos-binaries/app-server/"* "${release_dir}/"
+          chmod 0755 "${release_dir}"/*
+          echo "RELEASE_DIR=${release_dir}" >> "$GITHUB_ENV"
+          for binary in codex codex-code-mode-host codex-app-server codex-responses-api-proxy; do
+            binary_path="${release_dir}/${binary}"
+            if [[ "$(wc -c < "${binary_path}")" -le 1000000 ]]; then
+              echo "${binary} binary is unexpectedly small" >&2
+              ls -lh "${binary_path}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Package macOS Intel artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="codex-x86_64-apple-darwin"
+          mkdir -p dist/"${artifact}"
+          cp "${RELEASE_DIR}/codex" dist/"${artifact}"/codex
+          cp "${RELEASE_DIR}/codex-code-mode-host" dist/"${artifact}"/codex-code-mode-host
+          cp "${RELEASE_DIR}/codex-app-server" dist/"${artifact}"/codex-app-server
+          cp "${RELEASE_DIR}/codex-responses-api-proxy" dist/"${artifact}"/codex-responses-api-proxy
+          tar -C dist -czf "${artifact}.tar.gz" "${artifact}"
+          sha256sum "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256"
+
+      - name: Download packaged zsh manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/${CODEX_ZSH_RELEASE_REPOSITORY}/releases/download/${CODEX_ZSH_RELEASE_TAG}/codex-zsh" \
+            -o "${RUNNER_TEMP}/codex-zsh"
+
+      - name: Build Codex package archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="x86_64-apple-darwin"
+          archive_dir="dist/${target}"
+          for bundle in primary app-server; do
+            bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
+              --target "${target}" \
+              --bundle "${bundle}" \
+              --entrypoint-dir "${RELEASE_DIR}" \
+              --archive-dir "${archive_dir}" \
+              --zsh-manifest "${RUNNER_TEMP}/codex-zsh"
+          done
+          find "${archive_dir}" -maxdepth 1 -type f \
+            \( -name 'codex-package-*.tar.gz' -o -name 'codex-app-server-package-*.tar.gz' \) \
+            -print0 |
+            while IFS= read -r -d '' archive; do
+              sha256sum "${archive}" > "${archive}.sha256"
+            done
+
+      - name: Upload macOS Intel binaries archive
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-x86_64-apple-darwin-binaries-${{ github.run_id }}
+          path: |
+            codex-rs/codex-x86_64-apple-darwin.tar.gz
+            codex-rs/codex-x86_64-apple-darwin.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload macOS Intel Codex package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-package-x86_64-apple-darwin-${{ github.run_id }}
+          path: |
+            codex-rs/dist/x86_64-apple-darwin/codex-package-x86_64-apple-darwin.tar.gz
+            codex-rs/dist/x86_64-apple-darwin/codex-package-x86_64-apple-darwin.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload macOS Intel app-server package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-app-server-package-x86_64-apple-darwin-${{ github.run_id }}
+          path: |
+            codex-rs/dist/x86_64-apple-darwin/codex-app-server-package-x86_64-apple-darwin.tar.gz
+            codex-rs/dist/x86_64-apple-darwin/codex-app-server-package-x86_64-apple-darwin.tar.gz.sha256
+          retention-days: 14
