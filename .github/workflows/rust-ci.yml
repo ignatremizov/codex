@@ -11,6 +11,7 @@ on:
 jobs:
   # --- Detect what changed to detect which tests to run (always runs) -------------------------------------
   changed:
+    if: ${{ github.repository == 'openai/codex' }}
     name: Detect changed areas
     runs-on: ubuntu-24.04
     outputs:
