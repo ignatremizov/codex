@@ -42,6 +42,7 @@ jobs:
             '
 
   sdks:
+    if: ${{ github.repository == 'openai/codex' }}
     runs-on:
       group: ${{ github.event.repository.name }}-runners
       labels: ${{ github.event.repository.name }}-linux-x64
