@@ -8,6 +8,7 @@ Usage: build-codex-package-archive.sh \
   --bundle <primary|app-server> \
   --entrypoint-dir <dir> \
   --archive-dir <dir> \
+  [--archive-format <tar.gz|tar.zst|both>] \
   [--bwrap-bin <path>] \
   [--zsh-manifest <path>] \
   [--codex-command-runner-bin <path>] \
@@ -20,6 +21,7 @@ target=""
 bundle=""
 entrypoint_dir=""
 archive_dir=""
+archive_format="tar.gz"
 target_suffixed_entrypoint="false"
 resource_args=()
 bwrap_bin_provided="false"
@@ -42,6 +44,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --archive-dir)
       archive_dir="${2:?--archive-dir requires a value}"
+      shift 2
+      ;;
+    --archive-format)
+      archive_format="${2:?--archive-format requires a value}"
       shift 2
       ;;
     --bwrap-bin)
@@ -159,6 +165,27 @@ gzip_archive_path="${archive_dir}/${archive_stem}-${target}.tar.gz"
 zstd_archive_path="${archive_dir}/${archive_stem}-${target}.tar.zst"
 rm -rf "$package_dir"
 
+archive_outputs=()
+case "$archive_format" in
+  both)
+    archive_outputs+=(
+      --archive-output "$gzip_archive_path"
+      --archive-output "$zstd_archive_path"
+    )
+    ;;
+  tar.gz)
+    archive_outputs+=(--archive-output "$gzip_archive_path")
+    ;;
+  tar.zst)
+    archive_outputs+=(--archive-output "$zstd_archive_path")
+    ;;
+  *)
+    echo "Unexpected archive format: $archive_format" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
 python_args=(
   "${repo_root}/scripts/build_codex_package.py"
   --target "$target"
@@ -166,8 +193,7 @@ python_args=(
   --entrypoint-bin "${entrypoint_dir%/}/${entrypoint_name}${exe_suffix}"
   --cargo-profile release
   --package-dir "$package_dir"
-  --archive-output "$gzip_archive_path"
-  --archive-output "$zstd_archive_path"
+  "${archive_outputs[@]}"
 )
 if ((${#resource_args[@]} > 0)); then
   python_args+=("${resource_args[@]}")
