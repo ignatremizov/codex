@@ -58,8 +58,11 @@ setup_remote_env() {
     --name "${container_name}" \
     --privileged \
     --security-opt seccomp=unconfined \
+    -p 127.0.0.1:31987:31987 \
+    -v "${REPO_ROOT}:${REPO_ROOT}:ro" \
+    -v /tmp:/tmp \
     ubuntu:24.04 sleep infinity >/dev/null
-  if ! docker exec "${container_name}" sh -lc "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 zsh bubblewrap"; then
+  if ! docker exec "${container_name}" sh -lc "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash python3 zsh bubblewrap"; then
     docker rm -f "${container_name}" >/dev/null 2>&1 || true
     return 1
   fi
@@ -75,17 +78,10 @@ setup_remote_env() {
       docker exec "${container_name}" sh -lc \
         "rm -f ${remote_exec_server_stdout_path}; nohup ${remote_codex_path} exec-server --listen ws://0.0.0.0:${remote_exec_server_port} > ${remote_exec_server_stdout_path} 2>&1 & echo \$!"
     )"
-    wait_for_remote_exec_server_port "${container_name}" "${remote_exec_server_port}" "${remote_exec_server_stdout_path}"
-    container_ip="$(
-      docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${container_name}"
-    )"
-    if [[ -z "${container_ip}" ]]; then
-      echo "container ${container_name} has no IP address" >&2
-      docker rm -f "${container_name}" >/dev/null 2>&1 || true
-      return 1
-    fi
+    wait_for_remote_exec_server "${container_name}" "${remote_exec_server_pid}" "${remote_exec_server_stdout_path}"
     export CODEX_TEST_REMOTE_EXEC_SERVER_PID="${remote_exec_server_pid}"
-    export CODEX_TEST_REMOTE_EXEC_SERVER_URL="ws://${container_ip}:${remote_exec_server_port}"
+    export CODEX_TEST_REMOTE_EXEC_SERVER_URL="ws://127.0.0.1:${remote_exec_server_port}"
+    export CODEX_TEST_REMOTE_CODEX_PATH="${remote_codex_path}"
   fi
 
   export CODEX_TEST_REMOTE_ENV="${container_name}"
@@ -93,20 +89,25 @@ setup_remote_env() {
   export CODEX_TEST_ENVIRONMENT="docker"
 }
 
-wait_for_remote_exec_server_port() {
+wait_for_remote_exec_server() {
   local container_name="$1"
-  local port="$2"
+  local pid="$2"
   local stdout_path="$3"
   local deadline=$((SECONDS + 5))
 
   while (( SECONDS < deadline )); do
-    if docker exec "${container_name}" python3 -c "import socket; socket.create_connection(('127.0.0.1', ${port}), timeout=0.2).close()" >/dev/null 2>&1; then
+    if docker exec "${container_name}" sh -lc "grep -q '^ws://' ${stdout_path}"; then
       return 0
+    fi
+    if ! docker exec "${container_name}" sh -lc "kill -0 ${pid}" >/dev/null 2>&1; then
+      echo "remote exec-server exited while starting on ${container_name}" >&2
+      docker exec "${container_name}" sh -lc "cat ${stdout_path} 2>/dev/null || true" >&2 || true
+      return 1
     fi
     sleep 0.025
   done
 
-  echo "timed out waiting for remote exec-server on ${container_name}:${port}" >&2
+  echo "timed out waiting for remote exec-server on ${container_name}" >&2
   docker exec "${container_name}" sh -lc "cat ${stdout_path} 2>/dev/null || true" >&2 || true
   return 1
 }
@@ -120,6 +121,7 @@ codex_remote_env_cleanup() {
   unset CODEX_TEST_REMOTE_EXEC_SERVER_PID
   unset CODEX_TEST_REMOTE_EXEC_SERVER_URL
   unset CODEX_TEST_ENVIRONMENT
+  unset CODEX_TEST_REMOTE_CODEX_PATH
 }
 
 if ! is_sourced; then
