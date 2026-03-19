@@ -8,6 +8,7 @@ Usage: build-codex-package-archive.sh \
   --bundle <primary|app-server> \
   --entrypoint-dir <dir> \
   --archive-dir <dir> \
+  [--archive-format <tar.gz|tar.zst|both>] \
   [--bwrap-bin <path>] \
   [--code-mode-host-bin <path>] \
   [--rg-bin <path>] \
@@ -16,6 +17,7 @@ Usage: build-codex-package-archive.sh \
   [--codex-command-runner-bin <path>] \
   [--codex-windows-sandbox-setup-bin <path>] \
   [--voice-release-dir <path> --release-version <release-version>] \
+  [--voice-runtime-dir <path>] \
   [--target-suffixed-entrypoint]
 EOF
 }
@@ -24,6 +26,7 @@ target=""
 bundle=""
 entrypoint_dir=""
 archive_dir=""
+archive_format="both"
 target_suffixed_entrypoint="false"
 resource_args=()
 bwrap_bin_provided="false"
@@ -31,6 +34,7 @@ code_mode_host_bin_provided="false"
 command_runner_bin_provided="false"
 sandbox_setup_bin_provided="false"
 voice_release_dir=""
+voice_runtime_dir=""
 release_version=""
 
 while [[ $# -gt 0 ]]; do
@@ -49,6 +53,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --archive-dir)
       archive_dir="${2:?--archive-dir requires a value}"
+      shift 2
+      ;;
+    --archive-format)
+      archive_format="${2:?--archive-format requires a value}"
       shift 2
       ;;
     --bwrap-bin)
@@ -101,6 +109,10 @@ while [[ $# -gt 0 ]]; do
       release_version="${2:?--release-version requires a value}"
       shift 2
       ;;
+    --voice-runtime-dir)
+      voice_runtime_dir="${2:?--voice-runtime-dir requires a value}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -117,8 +129,12 @@ if [[ -z "$target" || -z "$bundle" || -z "$entrypoint_dir" || -z "$archive_dir" 
   usage >&2
   exit 1
 fi
-if [[ ( -n "$voice_release_dir" || -n "$release_version" ) && ( -z "$voice_release_dir" || -z "$release_version" || "$bundle" != "primary" || ( "$target" != *-apple-darwin && "$target" != *-unknown-linux-musl && "$target" != *-pc-windows-msvc ) ) ]]; then
+if [[ ( -n "$voice_release_dir" || -n "$release_version" ) && ( -z "$voice_release_dir" || -z "$release_version" || -n "$voice_runtime_dir" || "$bundle" != "primary" || ( "$target" != *-apple-darwin && "$target" != *-unknown-linux-musl && "$target" != *-pc-windows-msvc ) ) ]]; then
   echo "Voice resources require a primary supported release package version" >&2
+  exit 1
+fi
+if [[ -n "$voice_runtime_dir" && ( "$bundle" != "primary" || ( "$target" != *-apple-darwin && "$target" != *-unknown-linux-gnu ) ) ]]; then
+  echo "Development voice resources require a primary macOS or GNU Linux package" >&2
   exit 1
 fi
 
@@ -196,6 +212,31 @@ gzip_archive_path="${archive_dir}/${archive_stem}-${target}.tar.gz"
 zstd_archive_path="${archive_dir}/${archive_stem}-${target}.tar.zst"
 rm -rf "$package_dir"
 
+archive_outputs=()
+archive_paths=()
+case "$archive_format" in
+  both)
+    archive_outputs+=(
+      --archive-output "$gzip_archive_path"
+      --archive-output "$zstd_archive_path"
+    )
+    archive_paths+=("$gzip_archive_path" "$zstd_archive_path")
+    ;;
+  tar.gz)
+    archive_outputs+=(--archive-output "$gzip_archive_path")
+    archive_paths+=("$gzip_archive_path")
+    ;;
+  tar.zst)
+    archive_outputs+=(--archive-output "$zstd_archive_path")
+    archive_paths+=("$zstd_archive_path")
+    ;;
+  *)
+    echo "Unexpected archive format: $archive_format" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
 python_args=(
   "${repo_root}/scripts/build_codex_package.py"
   --target "$target"
@@ -204,8 +245,13 @@ python_args=(
   --cargo-profile release
   --package-dir "$package_dir"
 )
-if [[ -z "$voice_release_dir" ]]; then
-  python_args+=(--archive-output "$gzip_archive_path" --archive-output "$zstd_archive_path")
+voice_dir="${voice_release_dir:-$voice_runtime_dir}"
+if [[ -z "$voice_dir" ]]; then
+  python_args+=("${archive_outputs[@]}")
+fi
+if [[ -n "$voice_runtime_dir" ]]; then
+  package_version="$(PYTHONPATH="${repo_root}/scripts" "$python_bin" -c 'from codex_package.version import read_workspace_version; print(read_workspace_version().split("+")[0])')"
+  python_args+=(--package-version "${package_version}+$(git -C "$repo_root" rev-parse HEAD)")
 fi
 if ((${#resource_args[@]} > 0)); then
   python_args+=("${resource_args[@]}")
@@ -214,24 +260,28 @@ python_args+=(--force)
 
 "$python_bin" "${python_args[@]}"
 
-if [[ -n "$voice_release_dir" ]]; then
+if [[ -n "$voice_dir" ]]; then
   voice_target="$target"
   if [[ "$target" == *-unknown-linux-musl ]]; then
     voice_target="${target%-musl}-gnu"
   fi
   voice_package="${RUNNER_TEMP:-/tmp}/${archive_stem}-voice-${target}"
   rm -rf "$voice_package"
-  voice_helper="${voice_release_dir%/}/codex-voice-host${exe_suffix}"
+  voice_helper="${voice_dir%/}/codex-voice-host${exe_suffix}"
+  voice_version_args=()
+  if [[ -n "$release_version" ]]; then
+    voice_version_args+=(--release-version "$release_version")
+  fi
   "$python_bin" "${repo_root}/third_party/voice/assemble_package.py" \
     --package "$package_dir" \
     --helper "$voice_helper" \
-    --runtime "${voice_release_dir%/}/runtime" \
+    --runtime "${voice_dir%/}/runtime" \
     --voice-target "$voice_target" \
     --build-commit "$(git -C "$repo_root" rev-parse HEAD)" \
-    --release-version "$release_version" \
+    ${voice_version_args[@]+"${voice_version_args[@]}"} \
     --output "$voice_package"
   PYTHONPATH="${repo_root}/scripts" "$python_bin" - \
-    "$voice_package" "$gzip_archive_path" "$zstd_archive_path" <<'PY'
+    "$voice_package" "${archive_paths[@]}" <<'PY'
 import sys
 from pathlib import Path
 from codex_package.archive import write_archive
