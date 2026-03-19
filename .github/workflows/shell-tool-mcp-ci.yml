@@ -19,6 +19,7 @@ env:
 
 jobs:
   test:
+    if: ${{ github.repository == 'openai/codex' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

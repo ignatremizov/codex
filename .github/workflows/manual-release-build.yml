@@ -1,0 +1,254 @@
+name: manual-release-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_linux:
+        description: Build x86_64 Linux artifact on ubuntu-24.04
+        required: true
+        default: true
+        type: boolean
+      build_macos_intel:
+        description: Build x86_64 macOS artifact on macos-15-intel
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Release build — x86_64-unknown-linux-gnu
+    if: ${{ inputs.build_linux }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 10G
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - uses: dtolnay/rust-toolchain@1.93.0
+
+      - name: Compute lockfile hash
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-release-linux-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-release-linux-cargo-home-${{ steps.lockhash.outputs.hash }}-
+            manual-release-linux-cargo-home-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
+        with:
+          tool: sccache
+          version: 0.7.5
+
+      - name: Install cargo-chef
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
+        with:
+          tool: cargo-chef
+          version: 0.1.71
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Pre-warm dependency cache (cargo-chef)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RECIPE="${RUNNER_TEMP}/chef-recipe.json"
+          cargo chef prepare --recipe-path "$RECIPE"
+          cargo chef cook --recipe-path "$RECIPE" --target x86_64-unknown-linux-gnu --release
+
+      - name: cargo build --release
+        run: cargo build -p codex-cli --bin codex --release --timings
+
+      - name: Package Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="codex-x86_64-unknown-linux-gnu"
+          mkdir -p dist/"${artifact}"
+          cp target/release/codex dist/"${artifact}"/codex
+          tar -C dist -czf "${artifact}.tar.gz" "${artifact}"
+          sha256sum "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256"
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-x86_64-unknown-linux-gnu-${{ github.run_id }}
+          path: |
+            codex-rs/codex-x86_64-unknown-linux-gnu.tar.gz
+            codex-rs/codex-x86_64-unknown-linux-gnu.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload Cargo timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cargo-timings-manual-release-x86_64-unknown-linux-gnu
+          path: codex-rs/target/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Save cargo home cache
+        if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-release-linux-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+  macos_intel:
+    name: Release build — x86_64-apple-darwin
+    if: ${{ inputs.build_macos_intel }}
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 10G
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@1.93.0
+
+      - name: Compute lockfile hash
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(shasum -a 256 Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(shasum -a 256 rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-release-macos-intel-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-release-macos-intel-cargo-home-${{ steps.lockhash.outputs.hash }}-
+            manual-release-macos-intel-cargo-home-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
+        with:
+          tool: sccache
+          version: 0.7.5
+
+      - name: Install cargo-chef
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
+        with:
+          tool: cargo-chef
+          version: 0.1.71
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Pre-warm dependency cache (cargo-chef)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RECIPE="${RUNNER_TEMP}/chef-recipe.json"
+          cargo chef prepare --recipe-path "$RECIPE"
+          cargo chef cook --recipe-path "$RECIPE" --target x86_64-apple-darwin --release
+
+      - name: cargo build --release
+        run: cargo build -p codex-cli --bin codex --release --timings
+
+      - name: Package macOS Intel artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="codex-x86_64-apple-darwin"
+          mkdir -p dist/"${artifact}"
+          cp target/release/codex dist/"${artifact}"/codex
+          tar -C dist -czf "${artifact}.tar.gz" "${artifact}"
+          shasum -a 256 "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256"
+
+      - name: Upload macOS Intel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-x86_64-apple-darwin-${{ github.run_id }}
+          path: |
+            codex-rs/codex-x86_64-apple-darwin.tar.gz
+            codex-rs/codex-x86_64-apple-darwin.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload Cargo timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cargo-timings-manual-release-x86_64-apple-darwin
+          path: codex-rs/target/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Save cargo home cache
+        if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-release-macos-intel-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
