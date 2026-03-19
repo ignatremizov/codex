@@ -6,6 +6,7 @@ on:
 jobs:
   # --- Detect what changed so the fast PR workflow only runs relevant jobs ----
   changed:
+    if: ${{ github.repository == 'openai/codex' }}
     name: Detect changed areas
     runs-on: ubuntu-24.04
     outputs:
