@@ -1,0 +1,184 @@
+name: rust-static-checks
+
+on:
+  workflow_call:
+    inputs:
+      run_clippy:
+        description: Run workspace Clippy in addition to rustfmt
+        required: false
+        default: true
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      run_clippy:
+        description: Run workspace Clippy in addition to rustfmt
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Rust static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    concurrency:
+      group: rust-static-${{ github.sha }}-${{ inputs.run_clippy }}
+      cancel-in-progress: false
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "16777216"
+      SCCACHE_CACHE_SIZE: 10G
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # A same-SHA verify/build pair should not spend several minutes running
+      # identical fmt/Clippy checks twice. Job-level concurrency serializes the
+      # two callers; this marker lets the second caller return immediately.
+      - name: Restore static-success marker
+        id: static_marker
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ runner.temp }}/rust-static-ok
+          key: rust-static-ok-${{ runner.os }}-${{ github.sha }}-${{ inputs.run_clippy }}
+
+      - name: Reuse successful static checks
+        if: steps.static_marker.outputs.cache-hit == 'true'
+        run: echo "fmt/Clippy already passed for ${GITHUB_SHA}; reusing result."
+
+      - name: Free runner disk space
+        if: steps.static_marker.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android /usr/share/dotnet
+          docker system prune -af >/dev/null 2>&1 || true
+
+      - uses: ./.github/actions/setup-ci
+        if: steps.static_marker.outputs.cache-hit != 'true'
+
+      - name: Install Linux build dependencies
+        if: steps.static_marker.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "${GITHUB_WORKSPACE}/.github/scripts/install-apt-packages.sh" \
+            pkg-config libcap-dev libasound2-dev bubblewrap
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        if: steps.static_marker.outputs.cache-hit != 'true'
+        with:
+          components: clippy, rustfmt
+
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        if: steps.static_marker.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Compute lockfile hash
+        if: steps.static_marker.outputs.cache-hit != 'true'
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore shared Cargo home cache
+        if: steps.static_marker.outputs.cache-hit != 'true'
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
+            manual-rust-cargo-home-${{ runner.os }}-
+
+      - name: Install sccache
+        if: steps.static_marker.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: sccache
+
+      - name: Configure shared sccache backend
+        if: steps.static_marker.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+            echo "Using repository-wide sccache GitHub Actions backend"
+          else
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+            echo "SCCACHE_DIR=${CI_BUILD_ROOT}/sccache" >> "$GITHUB_ENV"
+            echo "GitHub sccache backend unavailable; using runner-local cache"
+          fi
+          echo "RUSTC_WRAPPER=$(command -v sccache)" >> "$GITHUB_ENV"
+
+      - name: cargo fmt --check
+        if: steps.static_marker.outputs.cache-hit != 'true'
+        run: cargo fmt -- --config imports_granularity=Item --check
+
+      - name: Prepare pinned voice SDK and runtime
+        if: steps.static_marker.outputs.cache-hit != 'true' && inputs.run_clippy
+        uses: ./.github/actions/setup-manual-voice
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: cargo clippy --workspace --tests
+        if: steps.static_marker.outputs.cache-hit != 'true' && inputs.run_clippy
+        run: cargo clippy --workspace --tests --timings -- -D warnings
+
+      - name: Upload Cargo timings
+        if: ${{ always() && steps.static_marker.outputs.cache-hit != 'true' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cargo-timings-rust-static-${{ github.run_id }}-${{ github.job }}
+          path: ${{ env.CARGO_TARGET_DIR }}/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: sccache stats
+        if: ${{ always() && steps.static_marker.outputs.cache-hit != 'true' }}
+        run: sccache --show-stats || true
+
+      - name: Save shared Cargo home cache
+        if: ${{ always() && !cancelled() && steps.static_marker.outputs.cache-hit != 'true' && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Create static-success marker
+        if: ${{ success() && steps.static_marker.outputs.cache-hit != 'true' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/rust-static-ok"
+          printf '%s\n' "${GITHUB_SHA}" > "${RUNNER_TEMP}/rust-static-ok/sha"
+
+      - name: Save static-success marker
+        if: ${{ success() && steps.static_marker.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ runner.temp }}/rust-static-ok
+          key: rust-static-ok-${{ runner.os }}-${{ github.sha }}-${{ inputs.run_clippy }}
