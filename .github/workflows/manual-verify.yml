@@ -1,0 +1,162 @@
+name: manual-verify
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (Ubuntu, all features)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 10G
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js for js_repl tests
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: codex-rs/node-version.txt
+
+      - name: Install DotSlash
+        uses: facebook/install-dotslash@v2
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Compute lockfile hash
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-verify-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-verify-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
+            manual-verify-cargo-home-${{ runner.os }}-
+
+      - name: Restore sccache cache
+        id: cache_sccache_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/sccache
+          key: manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
+            manual-verify-sccache-${{ runner.os }}-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
+        with:
+          tool: sccache
+          version: 0.7.5
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
+        with:
+          tool: cargo-nextest
+
+      - name: Enable unprivileged user namespaces (Linux)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
+
+      - name: cargo fmt --check
+        run: cargo fmt -- --config imports_granularity=Item --check
+
+      - name: cargo clippy --workspace --all-features --tests
+        run: cargo clippy --workspace --all-features --tests --timings -- -D warnings
+
+      - name: Set up remote test env (Docker)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME=codex-remote-test-env
+          source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
+          echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}" >> "$GITHUB_ENV"
+
+      - name: cargo nextest run --all-features
+        run: env -u CODEX_SANDBOX_NETWORK_DISABLED cargo nextest run --all-features --no-fail-fast --cargo-profile ci-test --timings
+
+      - name: Tear down remote test env
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${CODEX_TEST_REMOTE_ENV:-}" ]]; then
+            docker rm -f "${CODEX_TEST_REMOTE_ENV}" >/dev/null 2>&1 || true
+          fi
+
+      - name: Upload Cargo timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cargo-timings-manual-verify-${{ github.run_id }}
+          path: codex-rs/target/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Save cargo home cache
+        if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-verify-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Save sccache cache
+        if: always() && !cancelled() && steps.cache_sccache_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/sccache
+          key: manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}

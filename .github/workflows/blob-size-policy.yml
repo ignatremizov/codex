@@ -5,6 +5,7 @@ on:
 
 jobs:
   check:
+    if: ${{ github.repository == 'openai/codex' }}
     name: Blob size policy
     runs-on: ubuntu-24.04
     steps:

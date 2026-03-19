@@ -1,0 +1,163 @@
+name: manual-write-generated
+
+on:
+  workflow_dispatch:
+    inputs:
+      write_config_schema:
+        description: Regenerate codex-rs/core/config.schema.json
+        required: true
+        default: true
+        type: boolean
+      write_app_server_schema:
+        description: Regenerate app-server protocol schema artifacts
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  write-generated:
+    name: Regenerate tracked outputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 10G
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.write_config_schema }}" != "true" && "${{ inputs.write_app_server_schema }}" != "true" ]]; then
+            echo "Select at least one generator to run."
+            exit 1
+          fi
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - uses: dtolnay/rust-toolchain@1.93.0
+
+      - name: Compute lockfile hash
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-write-generated-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-write-generated-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
+            manual-write-generated-cargo-home-${{ runner.os }}-
+
+      - name: Restore sccache cache
+        id: cache_sccache_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/sccache
+          key: manual-write-generated-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-write-generated-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
+            manual-write-generated-sccache-${{ runner.os }}-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
+        with:
+          tool: sccache
+          version: 0.7.5
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
+
+      - name: Write config schema
+        if: ${{ inputs.write_config_schema }}
+        run: cargo run -p codex-core --bin codex-write-config-schema
+
+      - name: Write app-server schema
+        if: ${{ inputs.write_app_server_schema }}
+        run: cargo run -p codex-app-server-protocol --bin write_schema_fixtures --
+
+      - name: Capture generated diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --stat > ../generated-stat.txt || true
+          git diff --name-only > ../generated-files.txt || true
+          git diff --binary --full-index > ../generated.patch || true
+
+          {
+            echo "## Generated output summary"
+            echo
+            if [[ -s ../generated-files.txt ]]; then
+              echo "Changed files:"
+              echo '```text'
+              cat ../generated-files.txt
+              echo '```'
+            else
+              echo "No tracked file changes were generated."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload generated diff artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: generated-output-${{ github.run_id }}
+          path: |
+            generated.patch
+            generated-files.txt
+            generated-stat.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Save cargo home cache
+        if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-write-generated-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Save sccache cache
+        if: always() && !cancelled() && steps.cache_sccache_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/sccache
+          key: manual-write-generated-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
