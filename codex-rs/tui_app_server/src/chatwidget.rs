@@ -1980,8 +1980,12 @@ impl ChatWidget {
         self.finalize_completed_assistant_message(Some(&message));
     }
 
-    fn on_agent_message_delta(&mut self, delta: String) {
-        self.handle_streaming_delta(delta);
+    fn on_agent_message_delta(&mut self, delta: String, replay_kind: Option<ReplayKind>) {
+        if matches!(replay_kind, Some(ReplayKind::ThreadSnapshot)) {
+            self.handle_streaming_delta_replay(delta);
+        } else {
+            self.handle_streaming_delta(delta);
+        }
     }
 
     fn on_plan_delta(&mut self, delta: String) {
@@ -3787,6 +3791,40 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    #[inline]
+    fn handle_streaming_delta_replay(&mut self, delta: String) {
+        // Replay should rebuild already-known streamed output without retriggering commit
+        // animation. We still reuse the live controller so any trailing partial line can continue
+        // seamlessly when fresh deltas arrive after the thread switch.
+        self.flush_unified_exec_wait_streak();
+        self.flush_active_cell();
+
+        if self.stream_controller.is_none() {
+            if self.needs_final_message_separator && self.had_work_activity {
+                let elapsed_seconds = self
+                    .bottom_pane
+                    .status_widget()
+                    .map(super::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds)
+                    .map(|current| self.worked_elapsed_from(current));
+                self.add_to_history(history_cell::FinalMessageSeparator::new(
+                    elapsed_seconds,
+                    /*runtime_metrics*/ None,
+                ));
+                self.needs_final_message_separator = false;
+                self.had_work_activity = false;
+            } else if self.needs_final_message_separator {
+                self.needs_final_message_separator = false;
+            }
+            self.stream_controller = Some(StreamController::new(
+                self.last_rendered_width.get().map(|w| w.saturating_sub(2)),
+                &self.config.cwd,
+            ));
+        }
+        if let Some(controller) = self.stream_controller.as_mut() {
+            controller.push(&delta);
+        }
+    }
+
     fn worked_elapsed_from(&mut self, current_elapsed: u64) -> u64 {
         let baseline = match self.last_separator_elapsed_secs {
             Some(last) if current_elapsed < last => 0,
@@ -5503,6 +5541,15 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn finish_thread_snapshot_replay(&mut self) {
+        if let Some(controller) = self.stream_controller.as_mut()
+            && let Some(cell) = controller.drain_replay_snapshot()
+        {
+            self.add_boxed_history(cell);
+        }
+        self.request_redraw();
+    }
+
     pub(crate) fn replay_thread_item(
         &mut self,
         item: ThreadItem,
@@ -5925,7 +5972,7 @@ impl ChatWidget {
                 self.handle_item_completed_notification(notification, replay_kind);
             }
             ServerNotification::AgentMessageDelta(notification) => {
-                self.on_agent_message_delta(notification.delta);
+                self.on_agent_message_delta(notification.delta, replay_kind);
             }
             ServerNotification::PlanDelta(notification) => self.on_plan_delta(notification.delta),
             ServerNotification::ReasoningSummaryTextDelta(notification) => {
@@ -6423,7 +6470,7 @@ impl ChatWidget {
             }
             EventMsg::AgentMessage(AgentMessageEvent { .. }) => {}
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
-                self.on_agent_message_delta(delta)
+                self.on_agent_message_delta(delta, replay_kind)
             }
             EventMsg::PlanDelta(event) => self.on_plan_delta(event.delta),
             EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta })

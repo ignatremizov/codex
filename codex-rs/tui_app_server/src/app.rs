@@ -2742,6 +2742,7 @@ impl App {
         for event in snapshot.events {
             self.handle_thread_event_replay(event);
         }
+        self.chat_widget.finish_thread_snapshot_replay();
         self.chat_widget
             .set_queue_autosend_suppressed(/*suppressed*/ false);
         self.chat_widget
@@ -7743,6 +7744,25 @@ guardian_approval = true
         })
     }
 
+    fn take_history_and_animation_events(
+        app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    ) -> (Vec<String>, usize) {
+        let mut rendered_history = Vec::new();
+        let mut start_commit_animation_count = 0;
+        while let Ok(event) = app_event_rx.try_recv() {
+            match event {
+                AppEvent::InsertHistoryCell(cell) => {
+                    rendered_history.push(lines_to_single_string(&cell.display_lines(120)));
+                }
+                AppEvent::StartCommitAnimation => {
+                    start_commit_animation_count += 1;
+                }
+                _ => {}
+            }
+        }
+        (rendered_history, start_commit_animation_count)
+    }
+
     fn exec_approval_request(
         thread_id: ThreadId,
         turn_id: &str,
@@ -8673,6 +8693,100 @@ guardian_approval = true
         assert_eq!(
             user_messages,
             vec!["first prompt".to_string(), "third prompt".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_thread_snapshot_materializes_agent_deltas_without_commit_animation() {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+
+        app.replay_thread_snapshot(
+            ThreadEventSnapshot {
+                session: Some(test_thread_session(
+                    thread_id,
+                    PathBuf::from("/home/user/project"),
+                )),
+                turns: Vec::new(),
+                events: vec![
+                    ThreadBufferedEvent::Notification(turn_started_notification(
+                        thread_id, "turn-1",
+                    )),
+                    ThreadBufferedEvent::Notification(agent_message_delta_notification(
+                        thread_id,
+                        "turn-1",
+                        "item-1",
+                        "hello\nworld\n",
+                    )),
+                ],
+                input_state: None,
+            },
+            false,
+        );
+
+        let (history, start_commit_animation_count) =
+            take_history_and_animation_events(&mut app_event_rx);
+
+        assert_eq!(start_commit_animation_count, 0);
+        assert!(
+            history
+                .iter()
+                .any(|rendered| rendered.contains("hello\n  world")),
+            "expected replay to materialize complete assistant lines once, got {history:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_thread_snapshot_preserves_stream_state_for_following_live_deltas() {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+
+        app.replay_thread_snapshot(
+            ThreadEventSnapshot {
+                session: Some(test_thread_session(
+                    thread_id,
+                    PathBuf::from("/home/user/project"),
+                )),
+                turns: Vec::new(),
+                events: vec![
+                    ThreadBufferedEvent::Notification(turn_started_notification(
+                        thread_id, "turn-1",
+                    )),
+                    ThreadBufferedEvent::Notification(agent_message_delta_notification(
+                        thread_id,
+                        "turn-1",
+                        "item-1",
+                        "hello\nwor",
+                    )),
+                ],
+                input_state: None,
+            },
+            false,
+        );
+
+        let (replay_history, replay_start_commit_animation_count) =
+            take_history_and_animation_events(&mut app_event_rx);
+        assert_eq!(replay_start_commit_animation_count, 0);
+        assert!(
+            replay_history
+                .iter()
+                .any(|rendered| rendered.contains("hello")),
+            "expected replay to restore the committed portion of the stream, got {replay_history:?}"
+        );
+
+        app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+            agent_message_delta_notification(thread_id, "turn-1", "item-1", "ld\n"),
+        ));
+        app.chat_widget.on_commit_tick();
+
+        let (live_history, live_start_commit_animation_count) =
+            take_history_and_animation_events(&mut app_event_rx);
+        assert_eq!(live_start_commit_animation_count, 1);
+        assert!(
+            live_history
+                .iter()
+                .any(|rendered| rendered.contains("world")),
+            "expected live delta to continue the replay-restored stream, got {live_history:?}"
         );
     }
 

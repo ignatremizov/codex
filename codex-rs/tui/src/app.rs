@@ -2146,6 +2146,7 @@ impl App {
         for event in snapshot.events {
             self.handle_codex_event_replay(event);
         }
+        self.chat_widget.finish_thread_snapshot_replay();
         self.chat_widget
             .set_queue_autosend_suppressed(/*suppressed*/ false);
         if resume_restored_queue {
@@ -4620,6 +4621,49 @@ mod tests {
             .join("\n")
     }
 
+    fn test_session_configured_event(thread_id: ThreadId) -> Event {
+        Event {
+            id: "session-configured".to_string(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: thread_id,
+                forked_from_id: None,
+                thread_name: None,
+                model: "gpt-test".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                service_tier: None,
+                approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                cwd: PathBuf::from("/tmp/project"),
+                reasoning_effort: None,
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                network_proxy: None,
+                rollout_path: Some(PathBuf::new()),
+            }),
+        }
+    }
+
+    fn take_history_and_animation_events(
+        app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    ) -> (Vec<String>, usize) {
+        let mut rendered_history = Vec::new();
+        let mut start_commit_animation_count = 0;
+        while let Ok(event) = app_event_rx.try_recv() {
+            match event {
+                AppEvent::InsertHistoryCell(cell) => {
+                    rendered_history.push(render_history_cell(cell.as_ref(), 120));
+                }
+                AppEvent::StartCommitAnimation => {
+                    start_commit_animation_count += 1;
+                }
+                _ => {}
+            }
+        }
+        (rendered_history, start_commit_animation_count)
+    }
+
     #[tokio::test]
     async fn startup_custom_prompt_deprecation_notice_emits_when_prompts_exist() -> Result<()> {
         let codex_home = tempdir()?;
@@ -5678,6 +5722,105 @@ mod tests {
         assert!(
             new_op_rx.try_recv().is_err(),
             "replayed interrupted turns should restore queued input for editing, not submit it"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_thread_snapshot_materializes_agent_deltas_without_commit_animation() {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+
+        app.replay_thread_snapshot(
+            ThreadEventSnapshot {
+                session_configured: Some(test_session_configured_event(thread_id)),
+                events: vec![
+                    Event {
+                        id: "turn-started".to_string(),
+                        msg: EventMsg::TurnStarted(TurnStartedEvent {
+                            turn_id: "turn-1".to_string(),
+                            model_context_window: None,
+                            collaboration_mode_kind: Default::default(),
+                        }),
+                    },
+                    Event {
+                        id: "agent-delta".to_string(),
+                        msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                            delta: "hello\nworld\n".to_string(),
+                        }),
+                    },
+                ],
+                input_state: None,
+            },
+            false,
+        );
+
+        let (history, start_commit_animation_count) =
+            take_history_and_animation_events(&mut app_event_rx);
+
+        assert_eq!(start_commit_animation_count, 0);
+        assert!(
+            history
+                .iter()
+                .any(|rendered| rendered.contains("hello\n  world")),
+            "expected replay to materialize complete assistant lines once, got {history:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_thread_snapshot_preserves_stream_state_for_following_live_deltas() {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+
+        app.replay_thread_snapshot(
+            ThreadEventSnapshot {
+                session_configured: Some(test_session_configured_event(thread_id)),
+                events: vec![
+                    Event {
+                        id: "turn-started".to_string(),
+                        msg: EventMsg::TurnStarted(TurnStartedEvent {
+                            turn_id: "turn-1".to_string(),
+                            model_context_window: None,
+                            collaboration_mode_kind: Default::default(),
+                        }),
+                    },
+                    Event {
+                        id: "agent-delta".to_string(),
+                        msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                            delta: "hello\nwor".to_string(),
+                        }),
+                    },
+                ],
+                input_state: None,
+            },
+            false,
+        );
+
+        let (replay_history, replay_start_commit_animation_count) =
+            take_history_and_animation_events(&mut app_event_rx);
+        assert_eq!(replay_start_commit_animation_count, 0);
+        assert!(
+            replay_history
+                .iter()
+                .any(|rendered| rendered.contains("hello")),
+            "expected replay to restore the committed portion of the stream, got {replay_history:?}"
+        );
+
+        app.chat_widget.handle_codex_event(Event {
+            id: "live-agent-delta".to_string(),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                delta: "ld\n".to_string(),
+            }),
+        });
+        app.chat_widget.on_commit_tick();
+
+        let (live_history, live_start_commit_animation_count) =
+            take_history_and_animation_events(&mut app_event_rx);
+        assert_eq!(live_start_commit_animation_count, 1);
+        assert!(
+            live_history
+                .iter()
+                .any(|rendered| rendered.contains("world")),
+            "expected live delta to continue the replay-restored stream, got {live_history:?}"
         );
     }
 

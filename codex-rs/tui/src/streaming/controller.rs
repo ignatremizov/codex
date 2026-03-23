@@ -72,6 +72,16 @@ impl StreamController {
         self.emit(out_lines)
     }
 
+    /// Materialize queued replay output without finalizing the active stream.
+    ///
+    /// Thread snapshot replay uses this to show already-complete streamed lines immediately after a
+    /// thread switch while preserving the underlying collector state so later live deltas can
+    /// continue the same message.
+    pub(crate) fn drain_replay_snapshot(&mut self) -> Option<Box<dyn HistoryCell>> {
+        let lines = self.state.drain_all();
+        self.emit(lines)
+    }
+
     /// Step animation: commit at most one queued line and handle end-of-drain cleanup.
     pub(crate) fn on_commit_tick(&mut self) -> (Option<Box<dyn HistoryCell>>, bool) {
         let step = self.state.step();
