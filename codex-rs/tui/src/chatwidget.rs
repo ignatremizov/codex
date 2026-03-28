@@ -2609,14 +2609,11 @@ impl ChatWidget {
 
     fn on_context_compacted(&mut self, summary: Option<String>, message: Option<String>) {
         self.flush_answer_stream_with_separator();
-        self.handle_stream_finished();
+        self.flush_interrupt_queue();
+        self.flush_active_cell();
 
         if !self.config.show_compact_summary {
-            self.add_to_history(history_cell::new_info_event(
-                "Context compacted.".to_owned(),
-                /*hint*/ None,
-            ));
-            self.request_redraw();
+            self.add_info_message("Context compacted.".to_string(), None);
             return;
         }
 
@@ -2637,15 +2634,13 @@ impl ChatWidget {
 
         if let Some(message) = message {
             self.add_boxed_history(Box::new(history_cell::new_compaction_prompt(message)));
-        } else if let Some(summary) = summary {
-            self.add_boxed_history(Box::new(history_cell::new_compaction_summary(summary)));
-        } else {
-            self.add_to_history(history_cell::new_info_event(
-                "Context compacted.".to_owned(),
-                /*hint*/ None,
-            ));
+            return;
         }
-        self.request_redraw();
+        if let Some(summary) = summary {
+            self.add_boxed_history(Box::new(history_cell::new_compaction_summary(summary)));
+            return;
+        }
+        self.add_info_message("Context compacted.".to_string(), None);
     }
     fn on_agent_message_delta(&mut self, delta: String) {
         self.handle_streaming_delta(delta);
@@ -5334,12 +5329,14 @@ impl ChatWidget {
         self.flush_answer_stream_with_separator();
         let question_count = ev.questions.len();
         let summary = Notification::user_input_request_summary(&ev.questions);
-        let title = match (question_count, summary.as_deref()) {
-            (1, Some(summary)) => summary.to_string(),
-            (1, None) => "Question requested".to_string(),
-            (count, _) => format!("{count} questions requested"),
-        };
-        self.notify(Notification::PlanModePrompt { title });
+        // TODO: Keep this fork divergence unless we intentionally align
+        // with upstream commit ce5ad7b295afbaa763b595eef5501ce4c3eb84ab.
+        // `request_user_input` can surface outside Plan mode in our fork, so
+        // collapsing it back into `PlanModePrompt` would be semantically lossy.
+        self.notify(Notification::UserInputRequested {
+            question_count,
+            summary,
+        });
         self.bottom_pane.push_user_input_request(ev);
         self.request_redraw();
     }
@@ -7227,11 +7224,7 @@ impl ChatWidget {
                 if notification.message.is_some() {
                     self.on_context_compacted(notification.summary, notification.message);
                 } else {
-                    self.add_to_history(history_cell::new_info_event(
-                        "Context compacted.".to_owned(),
-                        /*hint*/ None,
-                    ));
-                    self.request_redraw();
+                    self.add_info_message("Context compacted.".to_string(), None);
                 }
             }
         }
@@ -8029,7 +8022,11 @@ impl ChatWidget {
 
     pub(crate) fn maybe_post_pending_notification(&mut self, tui: &mut crate::tui::Tui) {
         if let Some(notif) = self.pending_notification.take() {
-            tui.notify(notif.display());
+            tui.notify(notif.display(NotificationPreviewGraphemeLimits {
+                agent_turn: self.config.tui_agent_notification_preview_graphemes,
+                exec_approval: self.config.tui_exec_approval_notification_preview_graphemes,
+                user_input: self.config.tui_user_input_notification_preview_graphemes,
+            }));
         }
     }
 
@@ -12025,24 +12022,46 @@ impl Renderable for ChatWidget {
 
 #[derive(Debug)]
 enum Notification {
-    AgentTurnComplete { response: String },
-    ExecApprovalRequested { command: String },
-    EditApprovalRequested { cwd: PathBuf, changes: Vec<PathBuf> },
-    ElicitationRequested { server_name: String },
-    PlanModePrompt { title: String },
+    AgentTurnComplete {
+        response: String,
+    },
+    ExecApprovalRequested {
+        command: String,
+    },
+    EditApprovalRequested {
+        cwd: PathBuf,
+        changes: Vec<PathBuf>,
+    },
+    ElicitationRequested {
+        server_name: String,
+    },
+    PlanModePrompt {
+        title: String,
+    },
+    UserInputRequested {
+        question_count: usize,
+        summary: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct NotificationPreviewGraphemeLimits {
+    agent_turn: usize,
+    exec_approval: usize,
+    user_input: usize,
 }
 
 impl Notification {
-    fn display(&self) -> String {
+    fn display(&self, limits: NotificationPreviewGraphemeLimits) -> String {
         match self {
             Notification::AgentTurnComplete { response } => {
-                Notification::agent_turn_preview(response)
+                Notification::agent_turn_preview(response, limits.agent_turn)
                     .unwrap_or_else(|| "Agent turn complete".to_string())
             }
             Notification::ExecApprovalRequested { command } => {
                 format!(
                     "Approval requested: {}",
-                    truncate_text(command, /*max_graphemes*/ 30)
+                    truncate_text(command, limits.exec_approval)
                 )
             }
             Notification::EditApprovalRequested { cwd, changes } => {
@@ -12062,6 +12081,19 @@ impl Notification {
             Notification::PlanModePrompt { title } => {
                 format!("Plan mode prompt: {title}")
             }
+            Notification::UserInputRequested {
+                question_count,
+                summary,
+            } => match (*question_count, summary.as_deref()) {
+                (1, Some(summary)) => {
+                    format!(
+                        "Question requested: {}",
+                        truncate_text(summary, limits.user_input)
+                    )
+                }
+                (1, None) => "Question requested".to_string(),
+                (count, _) => format!("Questions requested: {count}"),
+            },
         }
     }
 
@@ -12072,6 +12104,7 @@ impl Notification {
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. } => "approval-requested",
             Notification::PlanModePrompt { .. } => "plan-mode-prompt",
+            Notification::UserInputRequested { .. } => "user-input-requested",
         }
     }
 
@@ -12081,7 +12114,8 @@ impl Notification {
             Notification::ExecApprovalRequested { .. }
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. }
-            | Notification::PlanModePrompt { .. } => 1,
+            | Notification::PlanModePrompt { .. }
+            | Notification::UserInputRequested { .. } => 1,
         }
     }
 
@@ -12092,7 +12126,7 @@ impl Notification {
         }
     }
 
-    fn agent_turn_preview(response: &str) -> Option<String> {
+    fn agent_turn_preview(response: &str, max_graphemes: usize) -> Option<String> {
         let mut normalized = String::new();
         for part in response.split_whitespace() {
             if !normalized.is_empty() {
@@ -12104,7 +12138,7 @@ impl Notification {
         if trimmed.is_empty() {
             None
         } else {
-            Some(truncate_text(trimmed, AGENT_NOTIFICATION_PREVIEW_GRAPHEMES))
+            Some(truncate_text(trimmed, max_graphemes))
         }
     }
 
@@ -12120,12 +12154,10 @@ impl Notification {
         if summary.is_empty() {
             None
         } else {
-            Some(truncate_text(summary, /*max_graphemes*/ 30))
+            Some(summary.to_string())
         }
     }
 }
-
-const AGENT_NOTIFICATION_PREVIEW_GRAPHEMES: usize = 200;
 
 const PLACEHOLDERS: [&str; 8] = [
     "Explain this codebase",
