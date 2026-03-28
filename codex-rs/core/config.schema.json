@@ -4836,6 +4836,13 @@
       "additionalProperties": false,
       "description": "Collection of settings that are specific to the TUI.",
       "properties": {
+        "agent_notification_preview_graphemes": {
+          "default": 200,
+          "description": "Truncation limit for agent-turn notification previews, measured in graphemes. Defaults to `200`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "agents_overview_grouping": {
           "allOf": [
             {
@@ -4923,6 +4930,13 @@
             "welcome": true
           },
           "description": "Individual visual effects. Each also requires animations to be enabled."
+        },
+        "exec_approval_notification_preview_graphemes": {
+          "default": 30,
+          "description": "Truncation limit for exec-approval notification command previews, measured in graphemes. Defaults to `30`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "fullscreen_transcript": {
           "default": true,
@@ -5289,6 +5303,13 @@
           "default": null,
           "description": "Syntax highlighting theme name (kebab-case).\n\nWhen set, overrides automatic light/dark theme detection. Use `/theme` in the TUI or see `$CODEX_HOME/themes` for custom themes.",
           "type": "string"
+        },
+        "user_input_notification_preview_graphemes": {
+          "default": 30,
+          "description": "Truncation limit for user-input notification summaries, measured in graphemes. Defaults to `30`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "user_shell_output_preview_lines": {
           "default": 50,
