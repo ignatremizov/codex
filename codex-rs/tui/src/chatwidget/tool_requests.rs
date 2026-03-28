@@ -421,12 +421,10 @@ impl ChatWidget {
         self.flush_answer_stream_with_separator();
         let question_count = ev.questions.len();
         let summary = Notification::user_input_request_summary(&ev.questions);
-        let title = match (question_count, summary.as_deref()) {
-            (1, Some(summary)) => summary.to_string(),
-            (1, None) => "Question requested".to_string(),
-            (count, _) => format!("{count} questions requested"),
-        };
-        self.notify(Notification::PlanModePrompt { title });
+        self.notify(Notification::UserInputRequested {
+            question_count,
+            summary,
+        });
         self.bottom_pane.push_user_input_request(ev);
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Waiting,
