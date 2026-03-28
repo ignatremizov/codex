@@ -1,4 +1,5 @@
 use super::*;
+use crate::chatwidget::notifications::NotificationPreviewGraphemeLimits;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -527,11 +528,86 @@ fn plan_mode_prompt_notification_uses_dedicated_type_name() {
         "approval-requested".to_string(),
     ])));
     assert_eq!(
-        notification.display(),
+        notification.display(NotificationPreviewGraphemeLimits {
+            agent_turn: 200,
+            exec_approval: 30,
+            user_input: 30,
+        }),
         format!("Plan mode prompt: {PLAN_IMPLEMENTATION_TITLE}")
     );
 }
 
+#[test]
+fn user_input_requested_notification_uses_dedicated_type_name() {
+    let notification = Notification::UserInputRequested {
+        question_count: 1,
+        summary: Some("Reasoning scope".to_string()),
+    };
+
+    assert!(notification.allowed_for(&Notifications::Custom(vec![
+        "user-input-requested".to_string(),
+    ])));
+    assert!(!notification.allowed_for(&Notifications::Custom(vec![
+        "approval-requested".to_string(),
+    ])));
+    assert_eq!(
+        notification.display(NotificationPreviewGraphemeLimits {
+            agent_turn: 200,
+            exec_approval: 30,
+            user_input: 30,
+        }),
+        "Question requested: Reasoning scope"
+    );
+}
+
+#[test]
+fn agent_turn_complete_notification_uses_configured_preview_limit() {
+    let notification = Notification::AgentTurnComplete {
+        response: "alpha beta gamma delta".to_string(),
+    };
+
+    assert_eq!(
+        notification.display(NotificationPreviewGraphemeLimits {
+            agent_turn: 10,
+            exec_approval: 30,
+            user_input: 30,
+        }),
+        "alpha b..."
+    );
+}
+
+#[test]
+fn exec_approval_notification_uses_configured_preview_limit() {
+    let notification = Notification::ExecApprovalRequested {
+        command: "alpha beta gamma delta".to_string(),
+    };
+
+    assert_eq!(
+        notification.display(NotificationPreviewGraphemeLimits {
+            agent_turn: 200,
+            exec_approval: 10,
+            user_input: 30,
+        }),
+        "Approval requested: alpha b..."
+    );
+}
+
+#[test]
+fn user_input_notification_uses_configured_preview_limit() {
+    let notification = Notification::UserInputRequested {
+        question_count: 1,
+        summary: Some("alpha beta gamma delta".to_string()),
+    };
+
+    assert_eq!(
+        notification.display(NotificationPreviewGraphemeLimits {
+            agent_turn: 200,
+            exec_approval: 30,
+            user_input: 10,
+        }),
+        "Question requested: alpha b..."
+    );
+}
 #[tokio::test]
 async fn open_plan_implementation_prompt_sets_pending_notification() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
@@ -602,7 +678,10 @@ async fn request_user_input_notification_overrides_pending_agent_turn_complete_n
 
     assert_matches!(
         chat.pending_notification,
-        Some(Notification::PlanModePrompt { ref title }) if title == "Reasoning scope"
+        Some(Notification::UserInputRequested {
+            question_count: 1,
+            summary: Some(ref title),
+        }) if title == "Reasoning scope"
     );
 }
 
@@ -610,7 +689,7 @@ async fn request_user_input_notification_overrides_pending_agent_turn_complete_n
 async fn handle_request_user_input_sets_pending_notification() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     chat.config.tui_notifications.notifications =
-        Notifications::Custom(vec!["plan-mode-prompt".to_string()]);
+        Notifications::Custom(vec!["user-input-requested".to_string()]);
 
     chat.handle_request_user_input_now(ToolRequestUserInputParams {
         thread_id: "thread-1".to_string(),
@@ -632,7 +711,10 @@ async fn handle_request_user_input_sets_pending_notification() {
 
     assert_matches!(
         chat.pending_notification,
-        Some(Notification::PlanModePrompt { ref title }) if title == "Reasoning scope"
+        Some(Notification::UserInputRequested {
+            question_count: 1,
+            summary: Some(ref title),
+        }) if title == "Reasoning scope"
     );
 }
 
