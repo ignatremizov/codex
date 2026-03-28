@@ -2,7 +2,22 @@
 //! to keep the primary module under blob-size policy limits.
 
 use super::*;
+use crate::chatwidget::notifications::NotificationPreviewGraphemeLimits;
 use pretty_assertions::assert_eq;
+
+fn notification_preview_limits(chat: &ChatWidget) -> NotificationPreviewGraphemeLimits {
+    NotificationPreviewGraphemeLimits {
+        agent_turn: chat.local_settings.tui.agent_notification_preview_graphemes,
+        exec_approval: chat
+            .local_settings
+            .tui
+            .exec_approval_notification_preview_graphemes,
+        user_input: chat
+            .local_settings
+            .tui
+            .user_input_notification_preview_graphemes,
+    }
+}
 
 #[tokio::test]
 async fn exec_approval_emits_proposed_command_and_decision_history() {
@@ -52,6 +67,10 @@ async fn exec_approval_emits_proposed_command_and_decision_history() {
 #[tokio::test]
 async fn app_server_exec_approval_request_splits_shell_wrapped_command() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    // This regression exercises shell normalization; clipping is covered independently.
+    chat.local_settings
+        .tui
+        .exec_approval_notification_preview_graphemes = 200;
     let script = r#"python3 -c 'print("Hello, world!")'"#;
     let request = exec_approval_request_from_params(
         AppServerCommandExecutionRequestApprovalParams {
@@ -89,7 +108,7 @@ async fn app_server_exec_approval_request_splits_shell_wrapped_command() {
 
     handle_exec_approval_request(&mut chat, "approval-1", request);
     assert_snapshot!(
-        chat.pending_notification.as_ref().expect("approval notification").display(),
+        chat.pending_notification.as_ref().expect("approval notification").display(notification_preview_limits(&chat)),
         @r#"Approval requested: python3 -c 'print("Hello, world!")'"#
     );
 }
@@ -124,7 +143,7 @@ async fn app_server_write_stdin_approval_renders_terminal_input() {
 
     handle_exec_approval_request(&mut chat, "approval-1", event);
     assert_snapshot!(
-        chat.pending_notification.as_ref().expect("approval notification").display(),
+        chat.pending_notification.as_ref().expect("approval notification").display(notification_preview_limits(&chat)),
         @"Approval requested: send terminal input"
     );
 
@@ -233,7 +252,7 @@ async fn network_exec_approval_history_describes_session_host_allowance() {
 
     handle_exec_approval_request(&mut chat, "sub-network", request);
     assert_snapshot!(
-        chat.pending_notification.as_ref().expect("approval notification").display(),
+        chat.pending_notification.as_ref().expect("approval notification").display(notification_preview_limits(&chat)),
         @"Approval requested: network access to example.com"
     );
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::bottom_pane::QueuedInputAction;
+use crate::chatwidget::notifications::NotificationPreviewGraphemeLimits;
 use codex_protocol::items::AsyncUserInputQuestion;
 use pretty_assertions::assert_eq;
 
@@ -167,7 +168,16 @@ async fn question_turn_end_recovers_collapsed_drafts_on_completion_and_failure()
                 .push_back(UserMessage::from("queued prompt").into());
             handle_error(&mut chat, "Turn failed", /*codex_error_info*/ None);
             insta::assert_debug_snapshot!(
-                chat.pending_notification.as_ref().map(Notification::display),
+                chat.pending_notification.as_ref().map(|notification| {
+                    notification.display(NotificationPreviewGraphemeLimits {
+                        agent_turn: chat.local_settings.tui.agent_notification_preview_graphemes,
+                        exec_approval: chat
+                            .local_settings
+                            .tui
+                            .exec_approval_notification_preview_graphemes,
+                        user_input: chat.local_settings.tui.user_input_notification_preview_graphemes,
+                    })
+                }),
                 @"None"
             );
             assert!(matches!(ops.try_recv().unwrap(), Op::UserTurn { .. }));
