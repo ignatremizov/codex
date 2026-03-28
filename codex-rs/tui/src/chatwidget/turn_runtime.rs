@@ -169,7 +169,10 @@ impl ChatWidget {
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
         if !from_replay {
-            let body = Notification::agent_turn_preview(&notification_response);
+            let body = Notification::agent_turn_preview(
+                &notification_response,
+                self.config.tui_agent_notification_preview_graphemes,
+            );
             self.set_ambient_pet_notification(crate::pets::PetNotificationKind::Review, body);
         }
         self.request_redraw();
