@@ -278,6 +278,9 @@ fn config_toml_deserializes_model_availability_nux() {
         Tui {
             notifications: Notifications::default(),
             notification_method: NotificationMethod::default(),
+            agent_notification_preview_graphemes: 200,
+            exec_approval_notification_preview_graphemes: 30,
+            user_input_notification_preview_graphemes: 30,
             animations: true,
             show_tooltips: true,
             show_compact_summary: true,
@@ -1090,6 +1093,9 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
         Tui {
             notifications: Notifications::Enabled(true),
             notification_method: NotificationMethod::Auto,
+            agent_notification_preview_graphemes: 200,
+            exec_approval_notification_preview_graphemes: 30,
+            user_input_notification_preview_graphemes: 30,
             animations: true,
             show_tooltips: true,
             show_compact_summary: true,
@@ -1139,6 +1145,9 @@ show_compact_summary = false
         Tui {
             notifications: Notifications::Enabled(true),
             notification_method: NotificationMethod::Auto,
+            agent_notification_preview_graphemes: 200,
+            exec_approval_notification_preview_graphemes: 30,
+            user_input_notification_preview_graphemes: 30,
             animations: true,
             show_tooltips: true,
             show_compact_summary: false,
@@ -4661,6 +4670,9 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             disable_paste_burst: false,
             tui_notifications: Default::default(),
             tui_notification_method: Default::default(),
+            tui_agent_notification_preview_graphemes: 200,
+            tui_exec_approval_notification_preview_graphemes: 30,
+            tui_user_input_notification_preview_graphemes: 30,
             animations: true,
             show_tooltips: true,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
@@ -4811,6 +4823,9 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         disable_paste_burst: false,
         tui_notifications: Default::default(),
         tui_notification_method: Default::default(),
+        tui_agent_notification_preview_graphemes: 200,
+        tui_exec_approval_notification_preview_graphemes: 30,
+        tui_user_input_notification_preview_graphemes: 30,
         animations: true,
         show_tooltips: true,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
@@ -4959,6 +4974,9 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         disable_paste_burst: false,
         tui_notifications: Default::default(),
         tui_notification_method: Default::default(),
+        tui_agent_notification_preview_graphemes: 200,
+        tui_exec_approval_notification_preview_graphemes: 30,
+        tui_user_input_notification_preview_graphemes: 30,
         animations: true,
         show_tooltips: true,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
@@ -5093,6 +5111,9 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         disable_paste_burst: false,
         tui_notifications: Default::default(),
         tui_notification_method: Default::default(),
+        tui_agent_notification_preview_graphemes: 200,
+        tui_exec_approval_notification_preview_graphemes: 30,
+        tui_user_input_notification_preview_graphemes: 30,
         animations: true,
         show_tooltips: true,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
@@ -6419,6 +6440,12 @@ struct TuiTomlTest {
     notifications: Notifications,
     #[serde(default)]
     notification_method: NotificationMethod,
+    #[serde(default)]
+    agent_notification_preview_graphemes: usize,
+    #[serde(default)]
+    exec_approval_notification_preview_graphemes: usize,
+    #[serde(default)]
+    user_input_notification_preview_graphemes: usize,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -6458,4 +6485,37 @@ fn test_tui_notification_method() {
     let parsed: RootTomlTest =
         toml::from_str(toml).expect("deserialize notification_method=\"bel\"");
     assert_eq!(parsed.tui.notification_method, NotificationMethod::Bel);
+}
+
+#[test]
+fn test_tui_agent_notification_preview_graphemes() {
+    let toml = r#"
+            [tui]
+            agent_notification_preview_graphemes = 512
+        "#;
+    let parsed: RootTomlTest =
+        toml::from_str(toml).expect("deserialize agent_notification_preview_graphemes=512");
+    assert_eq!(parsed.tui.agent_notification_preview_graphemes, 512);
+}
+
+#[test]
+fn test_tui_exec_approval_notification_preview_graphemes() {
+    let toml = r#"
+            [tui]
+            exec_approval_notification_preview_graphemes = 64
+        "#;
+    let parsed: RootTomlTest =
+        toml::from_str(toml).expect("deserialize exec_approval_notification_preview_graphemes=64");
+    assert_eq!(parsed.tui.exec_approval_notification_preview_graphemes, 64);
+}
+
+#[test]
+fn test_tui_user_input_notification_preview_graphemes() {
+    let toml = r#"
+            [tui]
+            user_input_notification_preview_graphemes = 96
+        "#;
+    let parsed: RootTomlTest =
+        toml::from_str(toml).expect("deserialize user_input_notification_preview_graphemes=96");
+    assert_eq!(parsed.tui.user_input_notification_preview_graphemes, 96);
 }
