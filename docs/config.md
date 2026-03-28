@@ -205,6 +205,19 @@ Remote V2 rollout checkpoints retain the service's reported output-token count a
 
 Set either value to `0` to display all retained output. These are client-local presentation settings: they do not change command execution, captured output, or the existing bounded live-output storage. The detailed transcript retains all available output and reports any storage-level omissions separately from omitted display rows.
 
+## TUI notification previews
+
+The following `[tui]` settings limit notification previews by Unicode grapheme clusters. The agent-turn limit applies to both desktop and ambient-pet previews; the execution-approval and user-input limits apply to their respective desktop notification categories:
+
+```toml
+[tui]
+agent_notification_preview_graphemes = 200
+exec_approval_notification_preview_graphemes = 30
+user_input_notification_preview_graphemes = 30
+```
+
+These defaults apply when the settings are omitted. A value of `0` produces an empty preview where a preview is available. The `user-input-requested` notification filter is independent from `plan-mode-prompt` and `async-question`; notification enablement, focus, priority, and coalescing policies are unchanged.
+
 ## Diff backgrounds
 
 The `[tui]` `diff_background` setting controls insert/delete line backgrounds: `auto` (the default) uses adaptive palette colors with active syntax-theme scope overrides, `off` disables content backgrounds, `theme` uses the same adaptive/theme-scope behavior, and `custom` uses the configured `diff_add_bg`/`diff_del_bg` colors when each value is valid.
