@@ -530,24 +530,6 @@ async fn plan_reasoning_scope_popup_all_modes_persists_global_and_plan_override(
     );
 }
 
-#[test]
-fn plan_mode_prompt_notification_uses_dedicated_type_name() {
-    let notification = Notification::PlanModePrompt {
-        title: PLAN_IMPLEMENTATION_TITLE.to_string(),
-    };
-
-    assert!(notification.allowed_for(&Notifications::Custom(
-        vec!["plan-mode-prompt".to_string(),]
-    )));
-    assert!(!notification.allowed_for(&Notifications::Custom(vec![
-        "approval-requested".to_string(),
-    ])));
-    assert_eq!(
-        notification.display(),
-        format!("Plan mode prompt: {PLAN_IMPLEMENTATION_TITLE}")
-    );
-}
-
 #[tokio::test]
 async fn open_plan_implementation_prompt_sets_pending_notification() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.5")).await;
@@ -619,7 +601,10 @@ async fn request_user_input_notification_overrides_pending_agent_turn_complete_n
 
     assert_matches!(
         chat.pending_notification,
-        Some(Notification::PlanModePrompt { ref title }) if title == "Reasoning scope"
+        Some(Notification::UserInputRequested {
+            question_count: 1,
+            summary: Some(ref title),
+        }) if title == "Reasoning scope"
     );
 }
 
@@ -627,7 +612,7 @@ async fn request_user_input_notification_overrides_pending_agent_turn_complete_n
 async fn handle_request_user_input_sets_pending_notification() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.5")).await;
     chat.local_settings.tui.notification_settings.notifications =
-        Notifications::Custom(vec!["plan-mode-prompt".to_string()]);
+        Notifications::Custom(vec!["user-input-requested".to_string()]);
 
     chat.handle_request_user_input_now(ToolRequestUserInputParams {
         thread_id: "thread-1".to_string(),
@@ -650,7 +635,10 @@ async fn handle_request_user_input_sets_pending_notification() {
 
     assert_matches!(
         chat.pending_notification,
-        Some(Notification::PlanModePrompt { ref title }) if title == "Reasoning scope"
+        Some(Notification::UserInputRequested {
+            question_count: 1,
+            summary: Some(ref title),
+        }) if title == "Reasoning scope"
     );
 }
 
