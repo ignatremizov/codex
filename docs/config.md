@@ -112,6 +112,12 @@ Codex can run a legacy notification command when the agent finishes a turn. See 
 
 - https://developers.openai.com/codex/config-reference
 
+Under `[tui]`, desktop notification preview lengths can also be tuned for:
+
+- `agent_notification_preview_graphemes`
+- `exec_approval_notification_preview_graphemes`
+- `user_input_notification_preview_graphemes`
+
 When Codex knows which client started the turn, the legacy notify JSON payload also includes a top-level `client` field. The TUI reports `codex-tui`, and the app server reports the `clientInfo.name` value from `initialize`.
 
 ## JSON Schema
