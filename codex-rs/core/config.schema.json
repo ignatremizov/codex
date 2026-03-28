@@ -3123,6 +3123,13 @@
       "additionalProperties": false,
       "description": "Collection of settings that are specific to the TUI.",
       "properties": {
+        "agent_notification_preview_graphemes": {
+          "default": 200,
+          "description": "Truncation limit for agent-turn notification previews, measured in graphemes. Defaults to `200`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "agent_prompt_preview_lines": {
           "default": 50,
           "description": "Maximum number of rendered subagent prompt rows shown after a multi-agent spawn or input completes.\n\nSet to `0` to show the full subagent prompt in the main TUI. Defaults to `50`.",
@@ -3176,6 +3183,13 @@
           "default": null,
           "description": "Custom delete-line background color (`#RRGGBB`).\n\nUsed when `diff_background = \"custom\"`.",
           "type": "string"
+        },
+        "exec_approval_notification_preview_graphemes": {
+          "default": 30,
+          "description": "Truncation limit for exec-approval notification command previews, measured in graphemes. Defaults to `30`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "keymap": {
           "allOf": [
@@ -3426,6 +3440,13 @@
           "default": null,
           "description": "Syntax highlighting theme name (kebab-case).\n\nWhen set, overrides automatic light/dark theme detection. Use `/theme` in the TUI or see `$CODEX_HOME/themes` for custom themes.",
           "type": "string"
+        },
+        "user_input_notification_preview_graphemes": {
+          "default": 30,
+          "description": "Truncation limit for user-input notification summaries, measured in graphemes. Defaults to `30`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "user_shell_output_preview_lines": {
           "default": 50,
