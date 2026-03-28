@@ -1224,6 +1224,9 @@ fn config_toml_deserializes_model_availability_nux() {
         cfg.tui.expect("tui config should deserialize"),
         Tui {
             notification_settings: TuiNotificationSettings::default(),
+            agent_notification_preview_graphemes: 200,
+            exec_approval_notification_preview_graphemes: 30,
+            user_input_notification_preview_graphemes: 30,
             animations: true,
             show_tooltips: true,
             auto_recap: true,
@@ -4408,6 +4411,9 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
         tui,
         Tui {
             notification_settings: TuiNotificationSettings::default(),
+            agent_notification_preview_graphemes: 200,
+            exec_approval_notification_preview_graphemes: 30,
+            user_input_notification_preview_graphemes: 30,
             animations: true,
             show_tooltips: true,
             auto_recap: true,
