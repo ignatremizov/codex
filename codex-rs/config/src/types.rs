@@ -749,6 +749,21 @@ pub struct Tui {
     #[serde(default, flatten)]
     pub notification_settings: TuiNotificationSettings,
 
+    /// Truncation limit for agent-turn notification previews, measured in graphemes.
+    /// Defaults to `200`.
+    #[serde(default = "default_agent_notification_preview_graphemes")]
+    pub agent_notification_preview_graphemes: usize,
+
+    /// Truncation limit for exec-approval notification command previews, measured in graphemes.
+    /// Defaults to `30`.
+    #[serde(default = "default_exec_approval_notification_preview_graphemes")]
+    pub exec_approval_notification_preview_graphemes: usize,
+
+    /// Truncation limit for user-input notification summaries, measured in graphemes.
+    /// Defaults to `30`.
+    #[serde(default = "default_user_input_notification_preview_graphemes")]
+    pub user_input_notification_preview_graphemes: usize,
+
     /// Enable animations (welcome screen, shimmer effects, spinners).
     /// Defaults to `true`.
     #[serde(default = "default_true")]
@@ -947,6 +962,11 @@ impl Default for Tui {
             fullscreen_transcript: false,
             command_output_preview_lines: DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
             user_shell_output_preview_lines: DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
+            agent_notification_preview_graphemes: default_agent_notification_preview_graphemes(),
+            exec_approval_notification_preview_graphemes:
+                default_exec_approval_notification_preview_graphemes(),
+            user_input_notification_preview_graphemes:
+                default_user_input_notification_preview_graphemes(),
             show_compact_summary: false,
             alternate_screen: Default::default(),
             status_line: None,
@@ -979,6 +999,18 @@ pub enum DiffBackgroundMode {
 
 const fn default_true() -> bool {
     true
+}
+
+const fn default_agent_notification_preview_graphemes() -> usize {
+    200
+}
+
+const fn default_exec_approval_notification_preview_graphemes() -> usize {
+    30
+}
+
+const fn default_user_input_notification_preview_graphemes() -> usize {
+    30
 }
 
 const fn default_tui_command_output_preview_lines() -> usize {

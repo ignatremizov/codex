@@ -1,6 +1,7 @@
 //! Async questions notify once on arrival and honor the terminal notification settings.
 
 use super::*;
+use crate::chatwidget::notifications::NotificationPreviewGraphemeLimits;
 use codex_protocol::items::AsyncUserInputQuestion;
 use pretty_assertions::assert_eq;
 
@@ -37,7 +38,14 @@ async fn live_async_question_notifies_once_and_takes_priority_over_turn_completi
         response: "Done".into(),
     });
     insta::assert_snapshot!(
-        chat.pending_notification.take().unwrap().display(),
+        chat.pending_notification
+            .take()
+            .unwrap()
+            .display(NotificationPreviewGraphemeLimits {
+                agent_turn: 200,
+                exec_approval: 30,
+                user_input: 30,
+            }),
         @"Question: Which environment?"
     );
 
@@ -89,12 +97,26 @@ async fn async_question_notification_summarizes_batches_and_bounds_long_titles()
     ];
     chat.add_async_questions("batch", &questions);
     insta::assert_snapshot!(
-        chat.pending_notification.take().unwrap().display(),
+        chat.pending_notification
+            .take()
+            .unwrap()
+            .display(NotificationPreviewGraphemeLimits {
+                agent_turn: 200,
+                exec_approval: 30,
+                user_input: 30,
+            }),
         @"Question: 2 questions requested"
     );
     chat.add_async_questions("single", &questions[..1]);
     insta::assert_snapshot!(
-        chat.pending_notification.take().unwrap().display(),
+        chat.pending_notification
+            .take()
+            .unwrap()
+            .display(NotificationPreviewGraphemeLimits {
+                agent_turn: 200,
+                exec_approval: 30,
+                user_input: 30,
+            }),
         @"Question: Which environment should we..."
     );
 }

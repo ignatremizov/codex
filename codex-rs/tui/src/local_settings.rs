@@ -78,6 +78,12 @@ impl LocalSettings {
                 fullscreen_transcript: config.tui_fullscreen_transcript,
                 command_output_preview_lines: config.tui_command_output_preview_lines,
                 user_shell_output_preview_lines: config.tui_user_shell_output_preview_lines,
+                agent_notification_preview_graphemes: config
+                    .tui_agent_notification_preview_graphemes,
+                exec_approval_notification_preview_graphemes: config
+                    .tui_exec_approval_notification_preview_graphemes,
+                user_input_notification_preview_graphemes: config
+                    .tui_user_input_notification_preview_graphemes,
                 show_compact_summary: config.show_compact_summary,
                 diff_background: config.tui_diff_background,
                 diff_add_bg: config.tui_diff_add_bg.clone(),
