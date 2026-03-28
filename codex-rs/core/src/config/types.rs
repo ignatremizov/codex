@@ -743,6 +743,21 @@ pub struct Tui {
     #[serde(default)]
     pub notification_method: NotificationMethod,
 
+    /// Truncation limit for agent-turn notification previews, measured in graphemes.
+    /// Defaults to `200`.
+    #[serde(default = "default_agent_notification_preview_graphemes")]
+    pub agent_notification_preview_graphemes: usize,
+
+    /// Truncation limit for exec-approval notification command previews, measured in graphemes.
+    /// Defaults to `30`.
+    #[serde(default = "default_exec_approval_notification_preview_graphemes")]
+    pub exec_approval_notification_preview_graphemes: usize,
+
+    /// Truncation limit for user-input notification summaries, measured in graphemes.
+    /// Defaults to `30`.
+    #[serde(default = "default_user_input_notification_preview_graphemes")]
+    pub user_input_notification_preview_graphemes: usize,
+
     /// Enable animations (welcome screen, shimmer effects, spinners).
     /// Defaults to `true`.
     #[serde(default = "default_true")]
@@ -830,6 +845,18 @@ pub enum DiffBackgroundMode {
 
 const fn default_true() -> bool {
     true
+}
+
+const fn default_agent_notification_preview_graphemes() -> usize {
+    200
+}
+
+const fn default_exec_approval_notification_preview_graphemes() -> usize {
+    30
+}
+
+const fn default_user_input_notification_preview_graphemes() -> usize {
+    30
 }
 
 /// Settings for notices we display to users via the tui and app-server clients

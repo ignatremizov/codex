@@ -3002,7 +3002,11 @@ fn plan_mode_prompt_notification_uses_dedicated_type_name() {
         "approval-requested".to_string(),
     ])));
     assert_eq!(
-        notification.display(),
+        notification.display(NotificationPreviewGraphemeLimits {
+            agent_turn: 200,
+            exec_approval: 30,
+            user_input: 30,
+        }),
         format!("Plan mode prompt: {PLAN_IMPLEMENTATION_TITLE}")
     );
 }
@@ -3021,8 +3025,61 @@ fn user_input_requested_notification_uses_dedicated_type_name() {
         "approval-requested".to_string(),
     ])));
     assert_eq!(
-        notification.display(),
+        notification.display(NotificationPreviewGraphemeLimits {
+            agent_turn: 200,
+            exec_approval: 30,
+            user_input: 30,
+        }),
         "Question requested: Reasoning scope"
+    );
+}
+
+#[test]
+fn agent_turn_complete_notification_uses_configured_preview_limit() {
+    let notification = Notification::AgentTurnComplete {
+        response: "alpha beta gamma delta".to_string(),
+    };
+
+    assert_eq!(
+        notification.display(NotificationPreviewGraphemeLimits {
+            agent_turn: 10,
+            exec_approval: 30,
+            user_input: 30,
+        }),
+        "alpha b..."
+    );
+}
+
+#[test]
+fn exec_approval_notification_uses_configured_preview_limit() {
+    let notification = Notification::ExecApprovalRequested {
+        command: "alpha beta gamma delta".to_string(),
+    };
+
+    assert_eq!(
+        notification.display(NotificationPreviewGraphemeLimits {
+            agent_turn: 200,
+            exec_approval: 10,
+            user_input: 30,
+        }),
+        "Approval requested: alpha b..."
+    );
+}
+
+#[test]
+fn user_input_notification_uses_configured_preview_limit() {
+    let notification = Notification::UserInputRequested {
+        question_count: 1,
+        summary: Some("alpha beta gamma delta".to_string()),
+    };
+
+    assert_eq!(
+        notification.display(NotificationPreviewGraphemeLimits {
+            agent_turn: 200,
+            exec_approval: 30,
+            user_input: 10,
+        }),
+        "Question requested: alpha b..."
     );
 }
 

@@ -329,6 +329,15 @@ pub struct Config {
     /// Notification method for terminal notifications (osc9 or bel).
     pub tui_notification_method: NotificationMethod,
 
+    /// Truncation limit for agent-turn notification previews, measured in graphemes.
+    pub tui_agent_notification_preview_graphemes: usize,
+
+    /// Truncation limit for exec-approval notification command previews, measured in graphemes.
+    pub tui_exec_approval_notification_preview_graphemes: usize,
+
+    /// Truncation limit for user-input notification summaries, measured in graphemes.
+    pub tui_user_input_notification_preview_graphemes: usize,
+
     /// Enable ASCII animations and shimmer effects in the TUI.
     pub animations: bool,
 
@@ -2733,6 +2742,21 @@ impl Config {
                 .as_ref()
                 .map(|t| t.notification_method)
                 .unwrap_or_default(),
+            tui_agent_notification_preview_graphemes: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.agent_notification_preview_graphemes)
+                .unwrap_or(200),
+            tui_exec_approval_notification_preview_graphemes: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.exec_approval_notification_preview_graphemes)
+                .unwrap_or(30),
+            tui_user_input_notification_preview_graphemes: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.user_input_notification_preview_graphemes)
+                .unwrap_or(30),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
             show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
             model_availability_nux: cfg
