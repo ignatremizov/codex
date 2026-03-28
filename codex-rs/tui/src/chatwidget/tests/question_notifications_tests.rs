@@ -1,6 +1,7 @@
 //! Async questions notify once on arrival and honor the terminal notification settings.
 
 use super::*;
+use crate::chatwidget::notifications::NotificationPreviewGraphemeLimits;
 use codex_protocol::items::AsyncUserInputQuestion;
 use pretty_assertions::assert_eq;
 
@@ -37,7 +38,14 @@ async fn live_async_question_notifies_once_and_takes_priority_over_turn_completi
         response: "Done".into(),
     });
     insta::assert_snapshot!(
-        chat.pending_notification.take().unwrap().display(),
+        chat.pending_notification
+            .take()
+            .unwrap()
+            .display(NotificationPreviewGraphemeLimits {
+                agent_turn: 200,
+                exec_approval: 30,
+                user_input: 30,
+            }),
         @"Question: Which environment?"
     );
 
@@ -89,12 +97,26 @@ async fn async_question_notification_summarizes_batches_and_bounds_long_titles()
     ];
     chat.add_async_questions("batch", &questions);
     insta::assert_snapshot!(
-        chat.pending_notification.take().unwrap().display(),
+        chat.pending_notification
+            .take()
+            .unwrap()
+            .display(NotificationPreviewGraphemeLimits {
+                agent_turn: 200,
+                exec_approval: 30,
+                user_input: 30,
+            }),
         @"Question: 2 questions requested"
     );
     chat.add_async_questions("single", &questions[..1]);
     insta::assert_snapshot!(
-        chat.pending_notification.take().unwrap().display(),
+        chat.pending_notification
+            .take()
+            .unwrap()
+            .display(NotificationPreviewGraphemeLimits {
+                agent_turn: 200,
+                exec_approval: 30,
+                user_input: 30,
+            }),
         @"Question: Which environment should we..."
     );
 }
@@ -108,6 +130,17 @@ async fn async_question_notification_expires_when_turn_ends() {
         (AppServerTurnStatus::Failed, None),
     ] {
         let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        let limits = NotificationPreviewGraphemeLimits {
+            agent_turn: chat.local_settings.tui.agent_notification_preview_graphemes,
+            exec_approval: chat
+                .local_settings
+                .tui
+                .exec_approval_notification_preview_graphemes,
+            user_input: chat
+                .local_settings
+                .tui
+                .user_input_notification_preview_graphemes,
+        };
         handle_turn_started(&mut chat, "turn");
         chat.add_async_questions(
             "question",
@@ -132,7 +165,7 @@ async fn async_question_notification_expires_when_turn_ends() {
             (
                 chat.pending_notification
                     .as_ref()
-                    .map(Notification::display),
+                    .map(|notification| notification.display(limits)),
                 chat.bottom_pane.question_editor().unanswered_count(),
             ),
             (expected.map(str::to_string), 0),
@@ -141,7 +174,7 @@ async fn async_question_notification_expires_when_turn_ends() {
             status,
             chat.pending_notification
                 .as_ref()
-                .map(Notification::display),
+                .map(|notification| notification.display(limits)),
         ));
     }
     insta::assert_debug_snapshot!("async_question_turn_end_notifications", outcomes);
