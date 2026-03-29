@@ -6345,6 +6345,9 @@ impl ChatWidget {
                     details: notification.details,
                 })
             }
+            ServerNotification::ContextCompacted(notification) => {
+                self.on_context_compacted(notification.summary, notification.message)
+            }
             ServerNotification::ConfigWarning(notification) => self.on_warning(
                 notification
                     .details
@@ -6438,7 +6441,6 @@ impl ChatWidget {
             | ServerNotification::McpServerOauthLoginCompleted(_)
             | ServerNotification::AppListUpdated(_)
             | ServerNotification::FsChanged(_)
-            | ServerNotification::ContextCompacted(_)
             | ServerNotification::FuzzyFileSearchSessionUpdated(_)
             | ServerNotification::FuzzyFileSearchSessionCompleted(_)
             | ServerNotification::ThreadRealtimeTranscriptUpdated(_)
