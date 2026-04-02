@@ -5902,7 +5902,9 @@ impl CodexMessageProcessor {
             }
         };
 
-        let featured_plugin_ids = if data
+        let featured_plugin_ids = if remote_sync_error.is_some() {
+            Vec::new()
+        } else if data
             .iter()
             .any(|marketplace| marketplace.name == OPENAI_CURATED_MARKETPLACE_NAME)
         {
