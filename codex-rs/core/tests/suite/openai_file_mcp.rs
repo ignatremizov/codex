@@ -27,6 +27,7 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::namespace_child_tool;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
 use pretty_assertions::assert_eq;
@@ -183,6 +184,10 @@ async fn run_extract_turn(test: &TestCodex, server: &MockServer) -> Result<Respo
 async fn codex_apps_file_params_omit_fields_absent_from_tool_schema() -> Result<()> {
     // TODO(anp): Remove after file-upload fixtures support target-native Windows paths.
     skip_if_wine_exec!(Ok(()), "uses a host-native file-upload path");
+    skip_if_remote!(
+        Ok(()),
+        "app-file upload arguments do not yet resolve relative paths using the remote environment native convention"
+    );
 
     let server = start_mock_server().await;
     let apps_server = AppsTestServer::mount(&server).await?;
