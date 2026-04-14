@@ -367,6 +367,8 @@ pub struct TurnContext {
     // so owner-provided environment settings govern the remaining sandbox decisions.
     pub(crate) windows_sandbox_level: WindowsSandboxLevel,
     pub(crate) available_models: Vec<ModelPreset>,
+    pub(crate) unified_exec_yield_time_ms: u64,
+    pub(crate) unified_exec_write_stdin_yield_time_ms: u64,
     pub(crate) final_output_json_schema: Option<Value>,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
     pub(crate) turn_metadata_state: Arc<TurnMetadataState>,
@@ -449,6 +451,8 @@ impl TurnContext {
             multi_agent_version: MultiAgentVersion::Disabled,
             network: self.network.clone(),
             windows_sandbox_level: self.windows_sandbox_level,
+            unified_exec_yield_time_ms: self.unified_exec_yield_time_ms,
+            unified_exec_write_stdin_yield_time_ms: self.unified_exec_write_stdin_yield_time_ms,
             #[allow(deprecated)]
             cwd: self.cwd.clone(),
             final_output_json_schema: None,
@@ -850,6 +854,8 @@ impl TurnContext {
             network: self.network.clone(),
             windows_sandbox_level: self.windows_sandbox_level,
             available_models,
+            unified_exec_yield_time_ms: self.unified_exec_yield_time_ms,
+            unified_exec_write_stdin_yield_time_ms: self.unified_exec_write_stdin_yield_time_ms,
             final_output_json_schema: self.final_output_json_schema.clone(),
             dynamic_tools: self.dynamic_tools.clone(),
             turn_metadata_state: self.turn_metadata_state.clone(),
@@ -1096,6 +1102,9 @@ impl Session {
             trace_id: current_span_trace_id(),
             realtime_active: false,
             code_mode_available: true,
+            unified_exec_yield_time_ms: per_turn_config.unified_exec_yield_time_ms,
+            unified_exec_write_stdin_yield_time_ms: per_turn_config
+                .unified_exec_write_stdin_yield_time_ms,
             config: per_turn_config,
             configured_token_budget,
             use_model_token_budget_defaults,
