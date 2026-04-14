@@ -347,7 +347,7 @@ impl ExecCommandHandler {
                     shell_type,
                     hook_command: hook_command.clone(),
                     process_id,
-                    yield_time_ms,
+                    yield_time_ms: yield_time_ms.unwrap_or(turn.unified_exec_yield_time_ms),
                     max_output_tokens,
                     cwd,
                     sandbox_cwd: native_environment_cwd,
