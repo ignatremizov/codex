@@ -6,6 +6,17 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## Unified exec yield windows
+
+The optional `unified_exec_yield_time_ms` and `unified_exec_write_stdin_yield_time_ms` settings control the default time before unified-exec returns an output snapshot when the individual tool call does not provide `yield_time_ms`:
+
+```toml
+unified_exec_yield_time_ms = 10000
+unified_exec_write_stdin_yield_time_ms = 250
+```
+
+Omitting either setting, or setting it to zero, uses the built-in default shown above. A per-call `yield_time_ms` takes precedence over the corresponding configured default, including an explicit zero; the existing platform and minimum-yield clamps still apply. These are output-yield windows, not process deadlines, and do not change command execution timeouts.
+
 ## Lifecycle hooks
 
 Admins can set top-level `allow_managed_hooks_only = true` in

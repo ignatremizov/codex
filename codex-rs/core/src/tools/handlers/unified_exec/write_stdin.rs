@@ -25,8 +25,8 @@ use super::post_unified_exec_tool_use_payload;
 struct WriteStdinArgs {
     #[serde(default)]
     chars: String,
-    #[serde(default = "super::default_write_stdin_yield_time_ms")]
-    yield_time_ms: u64,
+    #[serde(default)]
+    yield_time_ms: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<usize>,
 }
@@ -97,7 +97,9 @@ impl WriteStdinHandler {
                 WriteStdinRequest {
                     terminal: &terminal,
                     input: &args.chars,
-                    yield_time_ms: args.yield_time_ms,
+                    yield_time_ms: args
+                        .yield_time_ms
+                        .unwrap_or(turn.unified_exec_write_stdin_yield_time_ms),
                     max_output_tokens: args.max_output_tokens,
                     truncation_policy: context
                         .step_context
