@@ -188,6 +188,8 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         approvals_reviewer: ApprovalsReviewer::User,
         enforce_residency: Constrained::allow_any(/*initial_value*/ None),
         exec_command_timeout_ms: 10_000,
+        unified_exec_yield_time_ms: 10_000,
+        unified_exec_write_stdin_yield_time_ms: 250,
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
         base_instructions: None,
