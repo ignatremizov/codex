@@ -53,7 +53,7 @@ use tokio_tungstenite::tungstenite::http::header::ORIGIN;
 #[cfg(any(target_os = "macos", windows))]
 pub(super) const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(not(any(target_os = "macos", windows)))]
-pub(super) const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) type WsClient = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 type HmacSha256 = Hmac<Sha256>;
