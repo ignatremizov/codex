@@ -292,8 +292,14 @@ where
     use tokio::time::Duration;
     use tokio::time::timeout;
     loop {
-        // Allow a bit more time to accommodate async startup work (e.g. config IO, tool discovery)
-        let ev = timeout(wait_time.max(Duration::from_secs(10)), codex.next_event())
+        // Allow a bit more time to accommodate async startup work (e.g. config IO, tool discovery).
+        // Docker-backed remote executor tests can take longer to produce the first matching event.
+        let minimum_wait = if std::env::var_os(remote_env_env_var()).is_some() {
+            Duration::from_secs(180)
+        } else {
+            Duration::from_secs(10)
+        };
+        let ev = timeout(wait_time.max(minimum_wait), codex.next_event())
             .await
             .expect("timeout waiting for event")
             .expect("stream ended unexpectedly");

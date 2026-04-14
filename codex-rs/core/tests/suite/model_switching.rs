@@ -31,6 +31,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::sse_completed;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_remote;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
@@ -791,6 +792,10 @@ async fn model_change_from_generated_image_to_text_preserves_prior_generated_ima
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn thread_rollback_after_generated_image_drops_entire_image_turn_history() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "generated-image rollback coverage is not part of Docker-backed remote executor verification"
+    );
 
     let server = MockServer::start().await;
     let image_model_slug = "test-image-model";

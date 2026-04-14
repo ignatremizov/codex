@@ -38,8 +38,9 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
 
     let websocket_server = start_websocket_server_with_headers(vec![
         // App-server refreshes `/models` over HTTP during thread startup. It points at the same
-        // local test base URL, so let that non-websocket probe consume one connection before the
-        // websocket handshake under test arrives.
+        // local test base URL, so let that non-websocket probe consume one TCP accept before the
+        // websocket handshake under test arrives. The probe never completes a websocket handshake
+        // and therefore is not included in `handshakes()`.
         WebSocketConnectionConfig {
             requests: Vec::new(),
             response_headers: Vec::new(),
@@ -47,17 +48,11 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
             close_after_requests: true,
         },
         WebSocketConnectionConfig {
-            requests: vec![
-                vec![
-                    responses::ev_response_created("warm-1"),
-                    responses::ev_completed("warm-1"),
-                ],
-                vec![
-                    responses::ev_response_created("resp-1"),
-                    responses::ev_assistant_message("msg-1", "Done"),
-                    responses::ev_completed("resp-1"),
-                ],
-            ],
+            requests: vec![vec![
+                responses::ev_response_created("resp-1"),
+                responses::ev_assistant_message("msg-1", "Done"),
+                responses::ev_completed("resp-1"),
+            ]],
             response_headers: Vec::new(),
             accept_delay: None,
             close_after_requests: true,
