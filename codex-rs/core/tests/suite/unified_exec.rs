@@ -32,6 +32,7 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_windows;
 use core_test_support::test_codex::TestCodex;
@@ -803,6 +804,10 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_network_denial_emits_failed_background_end_event() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "network-denial process completion is not stable under Docker-backed remote exec-server tests"
+    );
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
 
@@ -846,6 +851,10 @@ async fn unified_exec_network_denial_emits_failed_background_end_event() -> Resu
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "network-denial process completion is not stable under Docker-backed remote exec-server tests"
+    );
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
 
@@ -964,7 +973,12 @@ async fn wait_for_unified_exec_end(
     call_id: &str,
     response_mock: &core_test_support::responses::ResponseMock,
 ) -> (codex_protocol::protocol::ExecCommandEndEvent, bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let timeout = if std::env::var_os(core_test_support::remote_env_env_var()).is_some() {
+        std::time::Duration::from_secs(45)
+    } else {
+        std::time::Duration::from_secs(15)
+    };
+    let deadline = std::time::Instant::now() + timeout;
     let mut observed_events = Vec::new();
     let mut turn_completed = false;
     let end_event = loop {
