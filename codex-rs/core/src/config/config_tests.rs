@@ -124,6 +124,10 @@ use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
 
+fn create_config_toml(codex_home: &Path, contents: &str) -> std::io::Result<()> {
+    std::fs::write(codex_home.join(CONFIG_TOML_FILE), contents)
+}
+
 fn stdio_mcp(command: &str) -> McpServerConfig {
     stdio_mcp_with_args(command, &[])
 }
@@ -1334,6 +1338,87 @@ async fn runtime_config_defaults_model_availability_nux() {
         cfg.model_availability_nux,
         ModelAvailabilityNuxConfig::default()
     );
+}
+
+#[test]
+fn config_toml_deserializes_unified_exec_yield_times() {
+    let toml = r#"
+unified_exec_yield_time_ms = 1250
+unified_exec_write_stdin_yield_time_ms = 600
+"#;
+    let cfg: ConfigToml = toml::from_str(toml)
+        .expect("TOML deserialization should succeed for unified exec yield times");
+
+    assert_eq!(cfg.unified_exec_yield_time_ms, Some(1250));
+    assert_eq!(cfg.unified_exec_write_stdin_yield_time_ms, Some(600));
+}
+
+#[tokio::test]
+async fn config_loads_unified_exec_yield_times_from_toml() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config = r#"
+unified_exec_yield_time_ms = 2250
+unified_exec_write_stdin_yield_time_ms = 750
+"#;
+    create_config_toml(codex_home.path(), config)?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .build()
+        .await?;
+
+    assert_eq!(config.unified_exec_yield_time_ms, 2250);
+    assert_eq!(config.unified_exec_write_stdin_yield_time_ms, 750);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn config_defaults_unified_exec_yield_times_when_missing() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), "")?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.unified_exec_yield_time_ms,
+        crate::unified_exec::DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS
+    );
+    assert_eq!(
+        config.unified_exec_write_stdin_yield_time_ms,
+        crate::unified_exec::DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn config_defaults_unified_exec_yield_times_when_configured_zero() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        "unified_exec_yield_time_ms = 0\nunified_exec_write_stdin_yield_time_ms = 0\n",
+    )?;
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .build()
+        .await?;
+    assert_eq!(
+        (
+            config.unified_exec_yield_time_ms,
+            config.unified_exec_write_stdin_yield_time_ms,
+        ),
+        (
+            crate::unified_exec::DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS,
+            crate::unified_exec::DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS,
+        )
+    );
+    Ok(())
 }
 
 #[test]
