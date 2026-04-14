@@ -109,7 +109,11 @@ pub struct ConfigToml {
 
     /// Default timeout for shell commands in milliseconds when no per-call timeout is provided.
     pub exec_command_timeout_ms: Option<u64>,
+    /// Default initial yield window for unified exec exec_command output snapshots in milliseconds.
+    pub unified_exec_yield_time_ms: Option<u64>,
 
+    /// Default polling window for unified exec write_stdin output in milliseconds.
+    pub unified_exec_write_stdin_yield_time_ms: Option<u64>,
     /// Sandbox mode to use.
     pub sandbox_mode: Option<SandboxMode>,
 
