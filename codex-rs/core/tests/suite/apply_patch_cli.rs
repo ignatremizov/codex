@@ -255,6 +255,10 @@ fn apply_patch_responses(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_patch_cli_uses_codex_self_exe_with_linux_sandbox_helper_alias() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "local helper alias assertion is not valid for Docker-backed remote executor tests"
+    );
 
     let harness = apply_patch_harness().await?;
     let codex_linux_sandbox_exe = harness
