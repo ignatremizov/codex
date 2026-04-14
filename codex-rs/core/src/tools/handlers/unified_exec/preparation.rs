@@ -305,7 +305,9 @@ impl<'a> ParsedExecCommand<'a> {
             turn_environment: turn_environment.clone(),
             resolved: resolved_command,
             hook_command: args.cmd,
-            yield_time_ms: args.yield_time_ms,
+            yield_time_ms: args
+                .yield_time_ms
+                .unwrap_or(step.turn.unified_exec_yield_time_ms),
             max_output_tokens: args.max_output_tokens,
             completion_timeout,
             cwd,

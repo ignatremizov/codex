@@ -72,8 +72,8 @@ pub(crate) struct ExecCommandArgs {
     login: Option<bool>,
     #[serde(default = "default_tty")]
     tty: bool,
-    #[serde(default = "default_exec_yield_time_ms")]
-    yield_time_ms: u64,
+    #[serde(default)]
+    yield_time_ms: Option<u64>,
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
@@ -108,14 +108,6 @@ impl ExecCommandWorkdirArgs {
             )
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))
     }
-}
-
-fn default_exec_yield_time_ms() -> u64 {
-    10_000
-}
-
-fn default_write_stdin_yield_time_ms() -> u64 {
-    250
 }
 
 fn default_tty() -> bool {
