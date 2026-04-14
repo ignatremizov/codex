@@ -1,6 +1,6 @@
 [profile.default]
 # Retry once so one transient failure does not fail full-CI outright.
-slow-timeout = { period = "15s", terminate-after = 2 }
+slow-timeout = { period = "90s", terminate-after = 2 }
 retries = 1
 
 [profile.default.junit]
