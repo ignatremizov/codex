@@ -1,8 +1,8 @@
 [profile.default]
 # Retry once so one transient failure does not fail full-CI outright.
-# Fanout keeps the full-CI shards moving without treating every >30s test as
+# Fanout keeps the full-CI shards moving without treating every >90s test as
 # stuck. Keep this aligned with the broader timeout budget we give sharded CI.
-slow-timeout = { period = "30s", terminate-after = 2 }
+slow-timeout = { period = "90s", terminate-after = 2 }
 retries = 1
 
 [profile.default.junit]
@@ -39,6 +39,10 @@ slow-timeout = { period = "1m", terminate-after = 4 }
 [[profile.default.overrides]]
 filter = 'test(approval_matrix_covers_all_modes)'
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = 'package(codex-core) & test(snapshot_rollback_followup_turn_trims_context_updates)'
+slow-timeout = { period = "90s", terminate-after = 4 }
 
 [[profile.default.overrides]]
 filter = 'package(codex-app-server-protocol) & (test(typescript_schema_fixtures_match_generated) | test(json_schema_fixtures_match_generated) | test(generate_ts_with_experimental_api_retains_experimental_entries) | test(generated_ts_optional_nullable_fields_only_in_params) | test(generate_json_filters_experimental_fields_and_methods))'

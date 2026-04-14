@@ -77,6 +77,7 @@ type WorkspaceSetup = dyn FnOnce(AbsolutePathBuf, Arc<dyn ExecutorFileSystem>) -
     + Send;
 const TEST_MODEL_WITH_EXPERIMENTAL_TOOLS: &str = "test-gpt-5.1-codex";
 const REMOTE_EXEC_SERVER_URL_ENV_VAR: &str = "CODEX_TEST_REMOTE_EXEC_SERVER_URL";
+const REMOTE_CODEX_PATH_ENV_VAR: &str = "CODEX_TEST_REMOTE_CODEX_PATH";
 static REMOTE_TEST_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const SUBMIT_TURN_COMPLETE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -549,13 +550,20 @@ impl TestCodexBuilder {
         test_env: TestEnv,
         include_local_environment: bool,
     ) -> anyhow::Result<TestCodex> {
-        let (config, fallback_cwd) = self
+        let (mut config, fallback_cwd) = self
             .prepare_config(base_url, &home, test_env.cwd().clone())
             .await?;
+        let use_remote_test_codex_path = test_env.exec_server_url.is_some();
         let exec_server_url = self
             .exec_server_url
             .clone()
             .or_else(|| test_env.exec_server_url.clone());
+        if use_remote_test_codex_path {
+            config.codex_linux_sandbox_exe = Some(PathBuf::from(
+                std::env::var(REMOTE_CODEX_PATH_ENV_VAR)
+                    .unwrap_or_else(|_| "/tmp/codex-remote-env/codex".to_string()),
+            ));
+        }
         #[cfg(target_os = "linux")]
         let codex_linux_sandbox_exe = Some(
             crate::find_codex_linux_sandbox_exe()
