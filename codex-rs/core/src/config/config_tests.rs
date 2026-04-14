@@ -35,6 +35,7 @@ use codex_config::profile_toml::ConfigProfile;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::BundledSkillsConfig;
+use codex_config::types::DiffBackgroundMode;
 use codex_config::types::FeedbackConfigToml;
 use codex_config::types::HistoryPersistence;
 use codex_config::types::McpServerEnvVar;
@@ -72,7 +73,6 @@ use codex_models_manager::bundled_models_response;
 use codex_network_proxy::NetworkMode;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
-use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
@@ -108,6 +108,10 @@ use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
 
+fn create_config_toml(codex_home: &Path, contents: &str) -> std::io::Result<()> {
+    std::fs::write(codex_home.join(CONFIG_TOML_FILE), contents)
+}
+
 fn stdio_mcp(command: &str) -> McpServerConfig {
     McpServerConfig {
         transport: McpServerTransportConfig::Stdio {
@@ -121,6 +125,7 @@ fn stdio_mcp(command: &str) -> McpServerConfig {
         enabled: true,
         required: false,
         supports_parallel_tool_calls: false,
+        allow_implicit_invocation: true,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -146,6 +151,7 @@ fn http_mcp(url: &str) -> McpServerConfig {
         enabled: true,
         required: false,
         supports_parallel_tool_calls: false,
+        allow_implicit_invocation: true,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -559,10 +565,14 @@ fn config_toml_deserializes_model_availability_nux() {
         cfg.tui.expect("tui config should deserialize"),
         Tui {
             notification_settings: TuiNotificationSettings::default(),
+            agent_notification_preview_graphemes: 200,
+            exec_approval_notification_preview_graphemes: 30,
+            user_input_notification_preview_graphemes: 30,
             animations: true,
             show_tooltips: true,
             vim_mode_default: false,
             raw_output_mode: false,
+            show_compact_summary: true,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
             status_line_use_colors: true,
@@ -572,6 +582,9 @@ fn config_toml_deserializes_model_availability_nux() {
             pet_anchor: TuiPetAnchor::Composer,
             session_picker_view: None,
             keymap: TuiKeymap::default(),
+            diff_background: DiffBackgroundMode::Auto,
+            diff_add_bg: None,
+            diff_del_bg: None,
             model_availability_nux: ModelAvailabilityNuxConfig {
                 shown_count: HashMap::from([
                     ("gpt-bar".to_string(), 4),
@@ -704,6 +717,63 @@ async fn runtime_config_ignores_zero_exec_command_timeout_ms() {
         cfg.exec_command_timeout_ms,
         crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS
     );
+}
+
+#[test]
+fn config_toml_deserializes_unified_exec_yield_times() {
+    let toml = r#"
+unified_exec_yield_time_ms = 1250
+unified_exec_write_stdin_yield_time_ms = 600
+"#;
+    let cfg: ConfigToml = toml::from_str(toml)
+        .expect("TOML deserialization should succeed for unified exec yield times");
+
+    assert_eq!(cfg.unified_exec_yield_time_ms, Some(1250));
+    assert_eq!(cfg.unified_exec_write_stdin_yield_time_ms, Some(600));
+}
+
+#[tokio::test]
+async fn config_loads_unified_exec_yield_times_from_toml() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config = r#"
+unified_exec_yield_time_ms = 2250
+unified_exec_write_stdin_yield_time_ms = 750
+"#;
+    create_config_toml(codex_home.path(), config)?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .build()
+        .await?;
+
+    assert_eq!(config.unified_exec_yield_time_ms, 2250);
+    assert_eq!(config.unified_exec_write_stdin_yield_time_ms, 750);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn config_defaults_unified_exec_yield_times_when_missing() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), "")?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.unified_exec_yield_time_ms,
+        crate::unified_exec::DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS
+    );
+    assert_eq!(
+        config.unified_exec_write_stdin_yield_time_ms,
+        crate::unified_exec::DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS
+    );
+
+    Ok(())
 }
 
 #[test]
@@ -3276,10 +3346,14 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
         tui,
         Tui {
             notification_settings: TuiNotificationSettings::default(),
+            agent_notification_preview_graphemes: 200,
+            exec_approval_notification_preview_graphemes: 30,
+            user_input_notification_preview_graphemes: 30,
             animations: true,
             show_tooltips: true,
             vim_mode_default: false,
             raw_output_mode: false,
+            show_compact_summary: true,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
             status_line_use_colors: true,
@@ -3289,6 +3363,9 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             pet_anchor: TuiPetAnchor::Composer,
             session_picker_view: None,
             keymap: TuiKeymap::default(),
+            diff_background: DiffBackgroundMode::Auto,
+            diff_add_bg: None,
+            diff_del_bg: None,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
             terminal_resize_reflow_max_rows: None,
         }
@@ -5100,6 +5177,7 @@ async fn replace_mcp_servers_round_trips_entries() -> anyhow::Result<()> {
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(3)),
             tool_timeout_sec: Some(Duration::from_secs(5)),
@@ -5466,6 +5544,7 @@ async fn replace_mcp_servers_serializes_env_sorted() -> anyhow::Result<()> {
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -5542,6 +5621,7 @@ async fn replace_mcp_servers_serializes_env_vars() -> anyhow::Result<()> {
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -5603,6 +5683,7 @@ async fn replace_mcp_servers_serializes_sourced_env_vars() -> anyhow::Result<()>
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -5654,6 +5735,7 @@ async fn replace_mcp_servers_serializes_cwd() -> anyhow::Result<()> {
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -5708,6 +5790,7 @@ async fn replace_mcp_servers_streamable_http_serializes_bearer_token() -> anyhow
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(2)),
             tool_timeout_sec: None,
@@ -5778,6 +5861,7 @@ async fn replace_mcp_servers_streamable_http_serializes_custom_headers() -> anyh
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(2)),
             tool_timeout_sec: None,
@@ -5860,6 +5944,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(2)),
             tool_timeout_sec: None,
@@ -5895,6 +5980,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -5965,6 +6051,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
+                allow_implicit_invocation: true,
                 disabled_reason: None,
                 startup_timeout_sec: Some(Duration::from_secs(2)),
                 tool_timeout_sec: None,
@@ -5991,6 +6078,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
+                allow_implicit_invocation: true,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -6079,6 +6167,7 @@ async fn replace_mcp_servers_serializes_disabled_flag() -> anyhow::Result<()> {
             enabled: false,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -6129,6 +6218,7 @@ async fn replace_mcp_servers_serializes_required_flag() -> anyhow::Result<()> {
             enabled: true,
             required: true,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -6179,6 +6269,7 @@ async fn replace_mcp_servers_serializes_tool_filters() -> anyhow::Result<()> {
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -6233,6 +6324,7 @@ async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyh
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -7850,6 +7942,7 @@ async fn legacy_profile_selection_is_rejected() -> std::io::Result<()> {
             ..Default::default()
         },
         fixture.codex_home(),
+    )
     .await
     .expect_err("legacy profile selection should be rejected");
 
