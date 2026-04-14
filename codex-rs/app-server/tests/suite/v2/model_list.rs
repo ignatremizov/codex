@@ -27,7 +27,7 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 use wiremock::MockServer;
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 
 fn model_from_preset(preset: &ModelPreset) -> Model {

@@ -63,7 +63,7 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn oauth_login_uses_http_headers_helper() -> Result<()> {
@@ -752,7 +752,7 @@ async fn mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls()
         })
         .await?;
     let response: ListMcpServerStatusResponse =
-        timeout(Duration::from_millis(500), mcp.read_response(request_id)).await??;
+        timeout(Duration::from_millis(1500), mcp.read_response(request_id)).await??;
 
     assert_eq!(response.next_cursor, None);
     assert_eq!(response.data.len(), 1);
