@@ -208,6 +208,8 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         remote_compaction_handoff_fallback_model: None,
         remote_compaction_handoff_enabled: true,
         enforce_residency: Constrained::allow_any(/*initial_value*/ None),
+        unified_exec_yield_time_ms: 10_000,
+        unified_exec_write_stdin_yield_time_ms: 250,
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
         base_instructions: None,
