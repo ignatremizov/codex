@@ -45,7 +45,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms.".to_string(),
+                "Wait before yielding output. Defaults to configured unified_exec_yield_time_ms (10000 ms when unset); effective range is 250-30000 ms.".to_string(),
             )),
         ),
         (
@@ -124,7 +124,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.".to_string(),
+                "Wait before yielding output. Non-empty writes default to configured unified_exec_write_stdin_yield_time_ms (250 ms when unset) and cap at 30000 ms; empty polls wait at least 5000 ms and are uncapped by default.".to_string(),
             )),
         ),
         (
