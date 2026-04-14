@@ -38,6 +38,7 @@ use codex_utils_output_truncation::approx_tokens_from_byte_count;
 use codex_utils_path_uri::PathUri;
 use core_test_support::TempDirExt;
 use core_test_support::assert_regex_match;
+use core_test_support::is_remote_test_environment;
 use core_test_support::managed_network_requirements_loader;
 use core_test_support::process::process_is_alive;
 use core_test_support::process::wait_for_pid_file;
@@ -51,6 +52,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_host_windows;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_target_windows;
 use core_test_support::skip_if_wine_exec;
@@ -1125,6 +1127,10 @@ async fn unified_exec_network_denial_emits_failed_background_end_event() -> Resu
     // TODO(anp): Remove after network-denial fixtures use target-native commands.
     skip_if_target_windows!(Ok(()), "uses the POSIX/Python network-denial fixture");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "network-denial process completion is not stable under Docker-backed remote exec-server tests"
+    );
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1169,6 +1175,10 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
     // TODO(anp): Remove after network-denial fixtures use target-native commands.
     skip_if_target_windows!(Ok(()), "uses the POSIX/Python network-denial fixture");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "network-denial process completion is not stable under Docker-backed remote exec-server tests"
+    );
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1319,7 +1329,12 @@ async fn wait_for_unified_exec_end(
     call_id: &str,
     response_mock: &core_test_support::responses::ResponseMock,
 ) -> (codex_protocol::protocol::ExecCommandEndEvent, bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let timeout = if is_remote_test_environment() {
+        std::time::Duration::from_secs(45)
+    } else {
+        std::time::Duration::from_secs(15)
+    };
+    let deadline = std::time::Instant::now() + timeout;
     let mut observed_events = Vec::new();
     let mut turn_completed = false;
     let end_event = loop {

@@ -244,7 +244,12 @@ async fn granular_complex_forced_rm_denial_explains_why_the_command_was_rejected
     skip_if_target_windows!(Ok(()), "uses a POSIX shell command fixture");
 
     let server = start_mock_server().await;
-    let mut builder = test_codex();
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
     let test = builder.build_with_auto_env(&server).await?;
     let call_id = "forced-rm-denied";
     let args = json!({
@@ -308,7 +313,12 @@ async fn granular_complex_forced_rm_requests_approval_when_allowed() -> Result<(
     skip_if_target_windows!(Ok(()), "uses a POSIX shell command fixture");
 
     let server = start_mock_server().await;
-    let mut builder = test_codex();
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
     let test = builder.build_with_auto_env(&server).await?;
     let call_id = "forced-rm-approval";
     let args = json!({
