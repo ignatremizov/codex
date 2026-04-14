@@ -679,6 +679,12 @@ pub struct Config {
     /// Default timeout for shell commands when no per-call timeout is provided.
     pub exec_command_timeout_ms: u64,
 
+    /// Default initial yield window for unified exec exec_command output snapshots when no per-call value is provided.
+    pub unified_exec_yield_time_ms: u64,
+
+    /// Default polling window for unified exec write_stdin output when no per-call value is provided.
+    pub unified_exec_write_stdin_yield_time_ms: u64,
+
     /// When `true`, `AgentReasoning` events emitted by the backend will be
     /// suppressed from the frontend output. This can reduce visual noise when
     /// users are only interested in the final agent responses.
@@ -3600,6 +3606,14 @@ impl Config {
             .exec_command_timeout_ms
             .filter(|timeout_ms| *timeout_ms > 0)
             .unwrap_or(crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS);
+        let unified_exec_yield_time_ms = cfg
+            .unified_exec_yield_time_ms
+            .filter(|timeout_ms| *timeout_ms > 0)
+            .unwrap_or(crate::unified_exec::DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS);
+        let unified_exec_write_stdin_yield_time_ms = cfg
+            .unified_exec_write_stdin_yield_time_ms
+            .filter(|timeout_ms| *timeout_ms > 0)
+            .unwrap_or(crate::unified_exec::DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS);
 
         let history = cfg.history.unwrap_or_default();
 
@@ -3980,6 +3994,8 @@ impl Config {
             remote_compaction_handoff_enabled: true,
             enforce_residency: enforce_residency.value,
             exec_command_timeout_ms,
+            unified_exec_yield_time_ms,
+            unified_exec_write_stdin_yield_time_ms,
             notify: cfg.notify,
             base_instructions,
             personality,
