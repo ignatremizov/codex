@@ -156,6 +156,9 @@ pub(super) async fn spawn_review_thread(
         windows_sandbox_level: parent_turn_context.windows_sandbox_level,
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
         exec_command_timeout_ms: parent_turn_context.exec_command_timeout_ms,
+        unified_exec_yield_time_ms: parent_turn_context.unified_exec_yield_time_ms,
+        unified_exec_write_stdin_yield_time_ms: parent_turn_context
+            .unified_exec_write_stdin_yield_time_ms,
         #[allow(deprecated)]
         cwd: parent_turn_context.cwd.clone(),
         final_output_json_schema: None,

@@ -499,6 +499,9 @@
             "realtime_conversation": {
               "type": "boolean"
             },
+            "remote_compaction": {
+              "type": "boolean"
+            },
             "remote_compaction_v2": {
               "type": "boolean"
             },
@@ -742,6 +745,15 @@
         }
       },
       "type": "object"
+    },
+    "DiffBackgroundMode": {
+      "enum": [
+        "auto",
+        "off",
+        "theme",
+        "custom"
+      ],
+      "type": "string"
     },
     "ExternalConfigMigrationPrompts": {
       "additionalProperties": false,
@@ -2076,6 +2088,10 @@
       "additionalProperties": false,
       "description": "Raw MCP config shape used for deserialization and supported-field JSON Schema generation.\n\nFields that are accepted only to produce targeted validation errors should be skipped in the generated schema.\n\nKeep `TryFrom<RawMcpServerConfig> for McpServerConfig` exhaustively destructuring this struct so new TOML fields cannot be added here without updating the validation/mapping logic that produces [`McpServerConfig`].",
       "properties": {
+        "allow_implicit_invocation": {
+          "default": null,
+          "type": "boolean"
+        },
         "args": {
           "default": null,
           "items": {
@@ -2566,6 +2582,13 @@
       "additionalProperties": false,
       "description": "Collection of settings that are specific to the TUI.",
       "properties": {
+        "agent_notification_preview_graphemes": {
+          "default": 200,
+          "description": "Truncation limit for agent-turn notification previews, measured in graphemes. Defaults to `200`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "alternate_screen": {
           "allOf": [
             {
@@ -2579,6 +2602,32 @@
           "default": true,
           "description": "Enable animations (welcome screen, shimmer effects, spinners). Defaults to `true`.",
           "type": "boolean"
+        },
+        "diff_add_bg": {
+          "default": null,
+          "description": "Custom insert-line background color (`#RRGGBB`).\n\nUsed when `diff_background = \"custom\"`.",
+          "type": "string"
+        },
+        "diff_background": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DiffBackgroundMode"
+            }
+          ],
+          "default": "auto",
+          "description": "Controls how diff add/remove backgrounds are rendered in the TUI.\n\n- `auto` (default): Use built-in adaptive add/remove backgrounds. - `off`: Disable add/remove line backgrounds. - `theme`: Derive add/remove backgrounds from the active syntax theme (`markup.inserted`/`markup.deleted` with diff fallbacks). - `custom`: Use user-provided custom colors from `diff_add_bg` / `diff_del_bg`."
+        },
+        "diff_del_bg": {
+          "default": null,
+          "description": "Custom delete-line background color (`#RRGGBB`).\n\nUsed when `diff_background = \"custom\"`.",
+          "type": "string"
+        },
+        "exec_approval_notification_preview_graphemes": {
+          "default": 30,
+          "description": "Truncation limit for exec-approval notification command previews, measured in graphemes. Defaults to `30`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "keymap": {
           "allOf": [
@@ -2769,6 +2818,11 @@
           "default": null,
           "description": "Preferred layout for resume/fork session picker results."
         },
+        "show_compact_summary": {
+          "default": true,
+          "description": "Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`. Defaults to `true`.",
+          "type": "boolean"
+        },
         "show_tooltips": {
           "default": true,
           "description": "Show startup tooltips in the TUI welcome screen. Defaults to `true`.",
@@ -2806,6 +2860,13 @@
           "default": null,
           "description": "Syntax highlighting theme name (kebab-case).\n\nWhen set, overrides automatic light/dark theme detection. Use `/theme` in the TUI or see `$CODEX_HOME/themes` for custom themes.",
           "type": "string"
+        },
+        "user_input_notification_preview_graphemes": {
+          "default": 30,
+          "description": "Truncation limit for user-input notification summaries, measured in graphemes. Defaults to `30`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "vim_mode_default": {
           "default": false,
@@ -4291,6 +4352,9 @@
         "realtime_conversation": {
           "type": "boolean"
         },
+        "remote_compaction": {
+          "type": "boolean"
+        },
         "remote_compaction_v2": {
           "type": "boolean"
         },
@@ -4803,6 +4867,18 @@
         }
       ],
       "description": "Collection of settings that are specific to the TUI."
+    },
+    "unified_exec_write_stdin_yield_time_ms": {
+      "description": "Default polling window for unified exec write_stdin output in milliseconds.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "unified_exec_yield_time_ms": {
+      "description": "Default initial yield window for unified exec exec_command output snapshots in milliseconds.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
     },
     "web_search": {
       "allOf": [

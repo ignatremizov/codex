@@ -36,8 +36,8 @@ pub(crate) struct ExecCommandArgs {
     login: Option<bool>,
     #[serde(default = "default_tty")]
     tty: bool,
-    #[serde(default = "default_exec_yield_time_ms")]
-    yield_time_ms: u64,
+    #[serde(default)]
+    yield_time_ms: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<usize>,
     #[serde(default)]
@@ -58,14 +58,6 @@ struct ExecCommandEnvironmentArgs {
     // resolved against the selected environment cwd, not the process cwd.
     #[serde(default)]
     workdir: Option<String>,
-}
-
-fn default_exec_yield_time_ms() -> u64 {
-    10_000
-}
-
-fn default_write_stdin_yield_time_ms() -> u64 {
-    250
 }
 
 fn default_tty() -> bool {
