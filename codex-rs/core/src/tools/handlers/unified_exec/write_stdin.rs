@@ -23,8 +23,8 @@ struct WriteStdinArgs {
     session_id: i32,
     #[serde(default)]
     chars: String,
-    #[serde(default = "super::default_write_stdin_yield_time_ms")]
-    yield_time_ms: u64,
+    #[serde(default)]
+    yield_time_ms: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<usize>,
 }
@@ -73,7 +73,9 @@ impl WriteStdinHandler {
             .write_stdin(WriteStdinRequest {
                 process_id: args.session_id,
                 input: &args.chars,
-                yield_time_ms: args.yield_time_ms,
+                yield_time_ms: args
+                    .yield_time_ms
+                    .unwrap_or(turn.unified_exec_write_stdin_yield_time_ms),
                 max_output_tokens: args.max_output_tokens,
                 truncation_policy: turn.model_info.truncation_policy.into(),
             })
