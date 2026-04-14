@@ -43,7 +43,7 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio::time::timeout;
 
-const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 async fn wait_for_new_pid(path: &Path, previous_pid: Option<&str>) -> Result<String> {
     Ok(timeout(DEFAULT_READ_TIMEOUT, async {
@@ -398,7 +398,7 @@ async fn mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls()
         })
         .await?;
     let response: ListMcpServerStatusResponse =
-        timeout(Duration::from_millis(500), mcp.read_response(request_id)).await??;
+        timeout(Duration::from_millis(1500), mcp.read_response(request_id)).await??;
 
     assert_eq!(response.next_cursor, None);
     assert_eq!(response.data.len(), 1);

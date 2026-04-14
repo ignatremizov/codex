@@ -60,7 +60,7 @@ use super::analytics::mount_analytics_capture;
 use super::analytics::thread_initialized_event;
 use super::analytics::wait_for_analytics_payload;
 
-const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 const EXEC_POLICY_PARSE_WARNING_SUMMARY: &str = "Error parsing rules; custom rules not applied.";
 

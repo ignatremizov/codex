@@ -37,6 +37,7 @@ use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
+use core_test_support::PathExt;
 use core_test_support::TestTargetOs;
 use core_test_support::assert_regex_match;
 use core_test_support::responses::ev_assistant_message;
@@ -61,6 +62,7 @@ use core_test_support::test_target_os;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_with_timeout;
 use serde_json::json;
+use tempfile::TempDir;
 use wiremock::Mock;
 use wiremock::Respond;
 use wiremock::ResponseTemplate;
@@ -108,6 +110,7 @@ async fn submit_without_wait_with_turn_permissions(
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -261,6 +264,10 @@ fn apply_patch_responses(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_patch_cli_uses_codex_self_exe_with_linux_sandbox_helper_alias() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "local helper alias assertion is not valid for Docker-backed remote executor tests"
+    );
 
     let harness = apply_patch_harness().await?;
     let codex_linux_sandbox_exe = harness
@@ -922,6 +929,10 @@ async fn apply_patch_cli_rejects_move_path_traversal_outside_workspace() -> Resu
     // TODO(anp): Remove after apply-patch fixtures use target-native paths.
     skip_if_target_windows!(Ok(()), "asserts POSIX workspace traversal behavior");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "remote executor bwrap setup can fail on protected metadata mount targets before this move-traversal assertion runs"
+    );
 
     let harness = apply_patch_harness().await?;
 
@@ -1336,6 +1347,10 @@ async fn apply_patch_turn_diff_paths_stay_repo_relative_when_session_cwd_is_nest
     // TODO(anp): Remove after apply_patch diff fixtures use target-native paths.
     skip_if_wine_exec!(Ok(()), "asserts POSIX repository paths");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "repo-relative turn diff setup uses the local filesystem"
+    );
 
     let harness = apply_patch_harness_with(|builder| {
         builder
@@ -1654,17 +1669,18 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     let server = start_mock_server().await;
     let mut builder = test_codex();
     let test = builder.build_with_remote_and_local_env(&server).await?;
+    let local_cwd_temp = TempDir::new()?;
+    let local_cwd = local_cwd_temp.path().abs();
     let file_name = "shared-turn-diff.txt";
-    let shared_cwd = PathBuf::from(format!(
+    let remote_cwd = PathBuf::from(format!(
         "/tmp/codex-remote-turn-diff-{}",
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
     ))
     .abs();
-    let shared_cwd_uri = PathUri::from_host_native_path(&shared_cwd)?;
-    let _ = fs::remove_dir_all(shared_cwd.as_path());
+    let remote_cwd_uri = PathUri::from_abs_path(&remote_cwd);
     test.fs()
         .remove(
-            &shared_cwd_uri,
+            &remote_cwd_uri,
             RemoveOptions {
                 recursive: true,
                 force: true,
@@ -1672,10 +1688,9 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
             /*sandbox*/ None,
         )
         .await?;
-    fs::create_dir_all(shared_cwd.as_path())?;
     test.fs()
         .create_directory(
-            &shared_cwd_uri,
+            &remote_cwd_uri,
             CreateDirectoryOptions { recursive: true },
             /*sandbox*/ None,
         )
@@ -1710,13 +1725,13 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     .await;
 
     let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+        turn_permission_fields(PermissionProfile::Disabled, local_cwd.as_path());
     let environments = vec![
-        local(shared_cwd.clone()),
+        local(local_cwd.clone()),
         TurnEnvironmentSelection {
             environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
-            cwd: PathUri::from_abs_path(&shared_cwd),
-            workspace_roots: vec![PathUri::from_abs_path(&shared_cwd)],
+            cwd: remote_cwd_uri.clone(),
+            workspace_roots: vec![remote_cwd_uri.clone()],
         },
     ];
     test.codex
@@ -1730,7 +1745,7 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 environments: Some(codex_protocol::protocol::TurnEnvironmentSelections::new(
-                    test.config.cwd.clone(),
+                    local_cwd.clone(),
                     environments,
                 )),
                 approval_policy: Some(AskForApproval::Never),
@@ -1760,11 +1775,11 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     })
     .await;
 
-    assert_eq!(fs::read_to_string(shared_cwd.join(file_name))?, "local\n");
+    assert_eq!(fs::read_to_string(local_cwd.join(file_name))?, "local\n");
     assert_eq!(
         test.fs()
             .read_file_text(
-                &PathUri::from_host_native_path(shared_cwd.join(file_name))?,
+                &PathUri::from_abs_path(&remote_cwd.join(file_name)),
                 /*sandbox*/ None,
             )
             .await?,
@@ -1790,10 +1805,9 @@ index 0000000000000000000000000000000000000000..9c998f7b995a7327177b38a90d138517
 "#
     );
 
-    let _ = fs::remove_dir_all(shared_cwd.as_path());
     test.fs()
         .remove(
-            &shared_cwd_uri,
+            &remote_cwd_uri,
             RemoveOptions {
                 recursive: true,
                 force: true,
