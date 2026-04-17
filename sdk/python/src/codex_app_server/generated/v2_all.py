@@ -1769,10 +1769,11 @@ class McpServerOauthLoginResponse(BaseModel):
 
 
 class McpServerRefreshResponse(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    refreshed_threads: Annotated[int, Field(alias="refreshedThreads")]
+    skipped_threads: Annotated[int, Field(alias="skippedThreads")]
 
 
 class McpServerStartupState(Enum):

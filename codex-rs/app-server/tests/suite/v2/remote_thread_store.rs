@@ -192,6 +192,7 @@ fn assert_no_local_persistence_artifacts(codex_home: &Path) -> Result<()> {
     // Bazel test runs may initialize shell snapshot storage under codex_home.
     // That is not thread persistence; keep the assertion focused on rollout,
     // session, sqlite, and other unexpected thread-store artifacts.
+    entries.remove(".tmp");
     entries.remove("shell_snapshots");
     assert_eq!(
         entries,

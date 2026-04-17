@@ -13,6 +13,9 @@ use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
+use codex_app_server_protocol::ConfigEdit;
+use codex_app_server_protocol::ConfigReadParams;
+use codex_app_server_protocol::ConfigReadResponse;
 use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::ExternalAgentConfigDetectParams;
 use codex_app_server_protocol::ExternalAgentConfigDetectResponse;
@@ -24,6 +27,7 @@ use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::LogoutAccountResponse;
+use codex_app_server_protocol::McpServerRefreshResponse;
 use codex_app_server_protocol::MemoryResetResponse;
 use codex_app_server_protocol::Model as ApiModel;
 use codex_app_server_protocol::ModelListParams;
@@ -879,21 +883,52 @@ impl AppServerSession {
     }
 
     pub(crate) async fn reload_user_config(&mut self) -> Result<()> {
+        let _ = self
+            .batch_write_user_config(Vec::new(), /*reload_user_config*/ true)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn batch_write_user_config(
+        &mut self,
+        edits: Vec<ConfigEdit>,
+        reload_user_config: bool,
+    ) -> Result<ConfigWriteResponse> {
         let request_id = self.next_request_id();
-        let _: ConfigWriteResponse = self
-            .client
+        self.client
             .request_typed(ClientRequest::ConfigBatchWrite {
                 request_id,
                 params: ConfigBatchWriteParams {
-                    edits: Vec::new(),
+                    edits,
                     file_path: None,
                     expected_version: None,
-                    reload_user_config: true,
+                    reload_user_config,
                 },
             })
             .await
-            .wrap_err("config/batchWrite failed while reloading user config in TUI")?;
-        Ok(())
+            .wrap_err("config/batchWrite failed in TUI")
+    }
+
+    pub(crate) async fn read_config(
+        &mut self,
+        params: ConfigReadParams,
+    ) -> Result<ConfigReadResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ConfigRead { request_id, params })
+            .await
+            .wrap_err("config/read failed in TUI")
+    }
+
+    pub(crate) async fn reload_mcp_servers(&mut self) -> Result<McpServerRefreshResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::McpServerRefresh {
+                request_id,
+                params: None,
+            })
+            .await
+            .wrap_err("config/mcpServer/reload failed in TUI")
     }
 
     pub(crate) async fn thread_realtime_start(

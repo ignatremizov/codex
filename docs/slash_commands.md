@@ -6,3 +6,7 @@ In the TUI, `/compact` summarizes the conversation history and prints the compac
 
 Compaction turns are capped at 15 minutes and at most 50% of the model's context window for output tokens to avoid runaway compactions.
 When compaction runs locally, Codex appends session metadata (session id, rollout path, and large-turn sizes) to the compacted prompt so the model can locate full history later if needed.
+
+The TUI also supports `/linear-on`, `/linear-off`, and `/linear-toggle` to update
+`~/.codex/config.toml` for the `linear` MCP server and queue both user-config and MCP reloads for
+the current session. The MCP refresh still applies on the next active turn.

@@ -11,7 +11,10 @@ impl CodexMessageProcessor {
         let PluginListParams { cwds } = params;
         let roots = cwds.unwrap_or_default();
 
-        let config = match self.load_latest_config(/*fallback_cwd*/ None).await {
+        let config = match self
+            .load_latest_config(/*fallback_cwd*/ None, /*active_profile*/ None)
+            .await
+        {
             Ok(config) => config,
             Err(err) => {
                 self.outgoing.send_error(request_id, err).await;
@@ -218,7 +221,10 @@ impl CodexMessageProcessor {
             marketplace_path.as_path().parent().map(Path::to_path_buf)
         });
 
-        let config = match self.load_latest_config(config_cwd).await {
+        let config = match self
+            .load_latest_config(config_cwd, /*active_profile*/ None)
+            .await
+        {
             Ok(config) => config,
             Err(err) => {
                 self.outgoing.send_error(request_id, err).await;
@@ -394,7 +400,10 @@ impl CodexMessageProcessor {
             }
         };
         let config_cwd = marketplace_path.as_path().parent().map(Path::to_path_buf);
-        let config = match self.load_latest_config(config_cwd.clone()).await {
+        let config = match self
+            .load_latest_config(config_cwd.clone(), /*active_profile*/ None)
+            .await
+        {
             Ok(config) => config,
             Err(err) => {
                 self.outgoing.send_error(request_id, err).await;
@@ -425,7 +434,10 @@ impl CodexMessageProcessor {
 
         match install_result {
             Ok(result) => {
-                let config = match self.load_latest_config(config_cwd).await {
+                let config = match self
+                    .load_latest_config(config_cwd, /*active_profile*/ None)
+                    .await
+                {
                     Ok(config) => config,
                     Err(err) => {
                         warn!(
@@ -441,7 +453,7 @@ impl CodexMessageProcessor {
                     load_plugin_mcp_servers(result.installed_path.as_path()).await;
 
                 if !plugin_mcp_servers.is_empty() {
-                    if let Err(err) = self.queue_mcp_server_refresh_for_config(&config).await {
+                    if let Err(err) = self.queue_mcp_server_refresh_for_loaded_threads().await {
                         warn!(
                             plugin = result.plugin_id.as_key(),
                             "failed to queue MCP refresh after plugin install: {err:?}"
@@ -523,7 +535,10 @@ impl CodexMessageProcessor {
         remote_marketplace_name: String,
         plugin_name: String,
     ) {
-        let config = match self.load_latest_config(/*fallback_cwd*/ None).await {
+        let config = match self
+            .load_latest_config(/*fallback_cwd*/ None, /*active_profile*/ None)
+            .await
+        {
             Ok(config) => config,
             Err(err) => {
                 self.outgoing.send_error(request_id, err).await;

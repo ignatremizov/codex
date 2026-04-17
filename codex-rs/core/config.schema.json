@@ -2201,6 +2201,13 @@
       "additionalProperties": false,
       "description": "Collection of settings that are specific to the TUI.",
       "properties": {
+        "agent_notification_preview_graphemes": {
+          "default": 200,
+          "description": "Truncation limit for agent-turn notification previews, measured in graphemes. Defaults to `200`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "alternate_screen": {
           "allOf": [
             {
@@ -2214,13 +2221,6 @@
           "default": true,
           "description": "Enable animations (welcome screen, shimmer effects, spinners). Defaults to `true`.",
           "type": "boolean"
-        },
-        "agent_notification_preview_graphemes": {
-          "default": 200,
-          "description": "Truncation limit for agent-turn notification previews, measured in graphemes. Defaults to `200`.",
-          "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
         },
         "diff_add_bg": {
           "default": null,

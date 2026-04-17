@@ -11692,11 +11692,15 @@ impl ChatWidget {
         self.bottom_pane.set_plugin_mentions(plugins);
     }
 
-    pub(crate) fn sync_plugin_mentions_config(&mut self, config: &Config) {
+    pub(crate) fn sync_persisted_config_fields(&mut self, config: &Config) {
         self.config.features = config.features.clone();
         self.config.config_layer_stack = config.config_layer_stack.clone();
         self.config.realtime = config.realtime.clone();
         self.config.memories = config.memories.clone();
+        self.config.mcp_servers = config.mcp_servers.clone();
+        self.config.mcp_oauth_credentials_store_mode = config.mcp_oauth_credentials_store_mode;
+        self.config.mcp_oauth_callback_port = config.mcp_oauth_callback_port;
+        self.config.mcp_oauth_callback_url = config.mcp_oauth_callback_url.clone();
     }
 
     pub(crate) fn open_review_popup(&mut self) {

@@ -10584,6 +10584,22 @@
       },
       "McpServerRefreshResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "refreshedThreads": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "skippedThreads": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "refreshedThreads",
+          "skippedThreads"
+        ],
         "title": "McpServerRefreshResponse",
         "type": "object"
       },

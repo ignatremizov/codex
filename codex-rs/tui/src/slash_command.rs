@@ -45,6 +45,9 @@ pub enum SlashCommand {
     Statusline,
     Theme,
     Mcp,
+    LinearOn,
+    LinearOff,
+    LinearToggle,
     Apps,
     Plugins,
     Logout,
@@ -118,6 +121,13 @@ impl SlashCommand {
             SlashCommand::Experimental => "toggle experimental features",
             SlashCommand::Memories => "configure memory use and generation",
             SlashCommand::Mcp => "list configured MCP tools; use /mcp verbose for details",
+            SlashCommand::LinearOn => "enable the Linear MCP server in user config and reload MCP",
+            SlashCommand::LinearOff => {
+                "disable the Linear MCP server in user config and reload MCP"
+            }
+            SlashCommand::LinearToggle => {
+                "toggle the Linear MCP server in user config and reload MCP"
+            }
             SlashCommand::Apps => "manage apps",
             SlashCommand::Plugins => "browse plugins",
             SlashCommand::Logout => "log out of Codex",
@@ -191,6 +201,9 @@ impl SlashCommand {
             | SlashCommand::Stop
             | SlashCommand::Goal
             | SlashCommand::Mcp
+            | SlashCommand::LinearOn
+            | SlashCommand::LinearOff
+            | SlashCommand::LinearToggle
             | SlashCommand::Apps
             | SlashCommand::Plugins
             | SlashCommand::Feedback

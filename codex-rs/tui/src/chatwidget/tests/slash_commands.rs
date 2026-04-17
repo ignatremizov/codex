@@ -1785,6 +1785,49 @@ async fn slash_mcp_invalid_args_show_usage() {
 }
 
 #[tokio::test]
+async fn slash_linear_on_requests_linear_enable_toggle() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::LinearOn);
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ToggleLinearMcp {
+            enabled: Some(true)
+        })
+    );
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
+async fn slash_linear_off_requests_linear_disable_toggle() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::LinearOff);
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ToggleLinearMcp {
+            enabled: Some(false)
+        })
+    );
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
+async fn slash_linear_toggle_requests_linear_toggle() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::LinearToggle);
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ToggleLinearMcp { enabled: None })
+    );
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
 async fn slash_memories_opens_memory_menu() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::MemoryTool, /*enabled*/ true);

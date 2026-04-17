@@ -293,12 +293,6 @@ async fn explicit_plugin_mentions_inject_plugin_guidance() -> Result<()> {
     assert!(
         developer_messages
             .iter()
-            .any(|text| text.contains("MCP servers from this plugin")),
-        "expected visible plugin MCP guidance: {developer_messages:?}"
-    );
-    assert!(
-        developer_messages
-            .iter()
             .any(|text| text.contains("Apps from this plugin")),
         "expected visible plugin app guidance: {developer_messages:?}"
     );

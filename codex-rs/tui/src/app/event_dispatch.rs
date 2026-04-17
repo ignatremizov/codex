@@ -453,6 +453,9 @@ impl App {
             AppEvent::FetchMcpInventory { detail } => {
                 self.fetch_mcp_inventory(app_server, detail);
             }
+            AppEvent::ToggleLinearMcp { enabled } => {
+                self.toggle_linear_mcp(app_server, enabled).await;
+            }
             AppEvent::McpInventoryLoaded { result, detail } => {
                 self.handle_mcp_inventory_result(result, detail);
             }

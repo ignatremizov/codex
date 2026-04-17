@@ -381,6 +381,20 @@ impl ChatWidget {
             SlashCommand::Mcp => {
                 self.add_mcp_output(McpServerStatusDetail::ToolsAndAuthOnly);
             }
+            SlashCommand::LinearOn => {
+                self.app_event_tx.send(AppEvent::ToggleLinearMcp {
+                    enabled: Some(true),
+                });
+            }
+            SlashCommand::LinearOff => {
+                self.app_event_tx.send(AppEvent::ToggleLinearMcp {
+                    enabled: Some(false),
+                });
+            }
+            SlashCommand::LinearToggle => {
+                self.app_event_tx
+                    .send(AppEvent::ToggleLinearMcp { enabled: None });
+            }
             SlashCommand::Apps => {
                 self.add_connectors_output();
             }
@@ -872,6 +886,9 @@ impl ChatWidget {
             | SlashCommand::Skills
             | SlashCommand::Title
             | SlashCommand::Statusline
+            | SlashCommand::LinearOn
+            | SlashCommand::LinearOff
+            | SlashCommand::LinearToggle
             | SlashCommand::Theme => QueueDrain::Stop,
         }
     }

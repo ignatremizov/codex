@@ -5,6 +5,12 @@
 //! loop.
 
 use super::*;
+use codex_app_server_protocol::Config as AppServerConfig;
+use codex_app_server_protocol::ConfigEdit as AppServerConfigEdit;
+use codex_app_server_protocol::ConfigLayer;
+use codex_app_server_protocol::ConfigLayerSource;
+use codex_app_server_protocol::ConfigReadParams;
+use codex_app_server_protocol::MergeStrategy as AppServerMergeStrategy;
 
 impl App {
     pub(super) async fn rebuild_config_for_cwd(&self, cwd: PathBuf) -> Result<Config> {
@@ -26,7 +32,7 @@ impl App {
             .await?;
         self.apply_runtime_policy_overrides(&mut config);
         self.config = config;
-        self.chat_widget.sync_plugin_mentions_config(&self.config);
+        self.chat_widget.sync_persisted_config_fields(&self.config);
         Ok(())
     }
 
@@ -38,6 +44,280 @@ impl App {
                 "failed to refresh config before thread transition; continuing with current in-memory config"
             );
         }
+    }
+
+    pub(super) async fn toggle_linear_mcp(
+        &mut self,
+        app_server: &mut AppServerSession,
+        enabled: Option<bool>,
+    ) {
+        let config_read_cwd = self.config_read_cwd(app_server);
+        let (user_config, current_enabled) = match app_server
+            .read_config(ConfigReadParams {
+                include_layers: true,
+                cwd: config_read_cwd.clone(),
+            })
+            .await
+        {
+            Ok(response) => {
+                let current_enabled = Self::linear_enabled_from_api_config(
+                    &response.config,
+                    self.active_profile.as_deref(),
+                );
+                (
+                    Self::user_config_from_config_read_layers(response.layers.as_deref()),
+                    current_enabled,
+                )
+            }
+            Err(err) => {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to read app-server config before toggling Linear MCP: {err}"
+                ));
+                return;
+            }
+        };
+        let linear_key_path = match self.linear_user_mcp_key_path(user_config.as_ref()) {
+            Ok(Some(linear_key_path)) => linear_key_path,
+            Ok(None) => {
+                let message = if current_enabled.is_some() {
+                    "Linear MCP is inherited from a non-user config layer. Add a `mcp_servers.linear` entry to the app-server user config before using /linear-on, /linear-off, or /linear-toggle.".to_string()
+                } else {
+                    "Linear MCP is not configured in the app-server user config.".to_string()
+                };
+                self.chat_widget.add_error_message(message);
+                return;
+            }
+            Err(err) => {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to inspect the app-server user config before toggling Linear MCP: {err}"
+                ));
+                return;
+            }
+        };
+        let current_enabled = match current_enabled {
+            Some(enabled) => enabled,
+            None => {
+                self.chat_widget.add_error_message(
+                    "Linear MCP is not configured for this session.".to_string(),
+                );
+                return;
+            }
+        };
+        let target_enabled = enabled.unwrap_or(!current_enabled);
+
+        if let Err(err) = app_server
+            .batch_write_user_config(
+                vec![AppServerConfigEdit {
+                    key_path: format!("{linear_key_path}.enabled"),
+                    value: serde_json::json!(target_enabled),
+                    merge_strategy: AppServerMergeStrategy::Replace,
+                }],
+                /*reload_user_config*/ true,
+            )
+            .await
+        {
+            self.chat_widget.add_error_message(format!(
+                "Failed to update Linear MCP config in the app-server user config: {err}"
+            ));
+            return;
+        }
+        let effective_linear_enabled = if app_server.is_remote() {
+            match app_server
+                .read_config(ConfigReadParams {
+                    include_layers: false,
+                    cwd: config_read_cwd,
+                })
+                .await
+            {
+                Ok(response) => Self::linear_enabled_from_api_config(
+                    &response.config,
+                    self.active_profile.as_deref(),
+                ),
+                Err(err) => {
+                    self.chat_widget.add_error_message(format!(
+                        "Linear MCP config was updated, but reading the app-server config failed: {err}"
+                    ));
+                    return;
+                }
+            }
+        } else if let Err(err) = self.refresh_in_memory_config_from_disk().await {
+            self.chat_widget.add_error_message(format!(
+                "Linear MCP config was updated, but reloading the current session config failed: {err}"
+            ));
+            return;
+        } else {
+            self.config
+                .mcp_servers
+                .get()
+                .get("linear")
+                .map(|config| config.enabled)
+        };
+        if app_server.is_remote()
+            && let Some(effective_enabled) = effective_linear_enabled
+        {
+            let mut servers = self.config.mcp_servers.get().clone();
+            if let Some(linear_config) = servers.get_mut("linear") {
+                linear_config.enabled = effective_enabled;
+                if self.config.mcp_servers.set(servers).is_ok() {
+                    self.chat_widget.sync_persisted_config_fields(&self.config);
+                }
+            }
+        }
+        let refresh_result = match app_server.reload_mcp_servers().await {
+            Ok(response) => response,
+            Err(err) => {
+                self.chat_widget.add_error_message(format!(
+                    "Linear MCP config was updated, but reloading MCP servers failed: {err}"
+                ));
+                return;
+            }
+        };
+
+        let state = if target_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        match effective_linear_enabled {
+            Some(current_enabled) if current_enabled == target_enabled => {
+                let hint = if refresh_result.skipped_threads == 0 {
+                    "Config and MCP reload queued; the change applies on the next active turn."
+                        .to_string()
+                } else {
+                    format!(
+                        "Config and MCP reload queued; the change applies on the next active turn. {skipped} loaded thread(s) could not be refreshed and may remain stale.",
+                        skipped = refresh_result.skipped_threads
+                    )
+                };
+                self.chat_widget.add_info_message(
+                    format!("Linear MCP {state} in ~/.codex/config.toml."),
+                    Some(hint),
+                );
+            }
+            Some(current_enabled) => {
+                let effective_state = if current_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                self.chat_widget.add_info_message(
+                    format!(
+                        "Linear MCP {state} in ~/.codex/config.toml, but this session remains {effective_state}."
+                    ),
+                    Some(
+                        "A higher-precedence config layer for the current workspace is overriding the user config."
+                            .to_string(),
+                    ),
+                );
+            }
+            None => {
+                self.chat_widget.add_info_message(
+                    format!("Linear MCP {state} in ~/.codex/config.toml."),
+                    Some(
+                        "This session's effective config does not expose a Linear MCP server entry, so the current workspace may still ignore the change."
+                            .to_string(),
+                    ),
+                );
+            }
+        }
+    }
+
+    fn config_read_cwd(&self, app_server: &AppServerSession) -> Option<String> {
+        if app_server.is_remote() {
+            app_server
+                .remote_cwd_override()
+                .map(|cwd| cwd.display().to_string())
+        } else {
+            Some(self.chat_widget.config_ref().cwd.display().to_string())
+        }
+    }
+
+    fn linear_user_mcp_key_path(
+        &self,
+        user_config: Option<&serde_json::Value>,
+    ) -> Result<Option<String>> {
+        let Some(parsed) = user_config else {
+            return Ok(None);
+        };
+        let top_level_linear = parsed
+            .get("mcp_servers")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|servers| servers.get("linear"));
+
+        if let Some(profile) = self.active_profile.as_deref() {
+            let profile_linear = parsed
+                .get("profiles")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|profiles| profiles.get(profile))
+                .and_then(serde_json::Value::as_object)
+                .and_then(|profile_cfg| profile_cfg.get("mcp_servers"))
+                .and_then(serde_json::Value::as_object)
+                .and_then(|servers| servers.get("linear"));
+
+            if profile_linear.is_some() {
+                return Ok(Some(self.linear_user_key_path()));
+            }
+        }
+
+        if top_level_linear.is_some() {
+            return Ok(Some("mcp_servers.linear".to_string()));
+        }
+
+        Ok(None)
+    }
+
+    fn user_config_from_config_read_layers(
+        layers: Option<&[ConfigLayer]>,
+    ) -> Option<serde_json::Value> {
+        layers?.iter().find_map(|layer| {
+            matches!(&layer.name, ConfigLayerSource::User { .. }).then(|| layer.config.clone())
+        })
+    }
+
+    fn linear_enabled_from_api_config(
+        config: &AppServerConfig,
+        active_profile: Option<&str>,
+    ) -> Option<bool> {
+        let linear_enabled_from_additional = |additional: &HashMap<String, serde_json::Value>| {
+            additional
+                .get("mcp_servers")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|servers| servers.get("linear"))
+                .and_then(serde_json::Value::as_object)
+                .map(|server| {
+                    server
+                        .get("enabled")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(true)
+                })
+        };
+
+        if let Some(profile) = active_profile
+            && let Some(enabled) = config
+                .profiles
+                .get(profile)
+                .and_then(|profile| linear_enabled_from_additional(&profile.additional))
+        {
+            return Some(enabled);
+        }
+
+        linear_enabled_from_additional(&config.additional)
+    }
+
+    fn linear_user_key_path(&self) -> String {
+        if let Some(profile) = self.active_profile.as_deref() {
+            format!(
+                "profiles.{}.mcp_servers.linear",
+                Self::quote_key_path_segment(profile)
+            )
+        } else {
+            "mcp_servers.linear".to_string()
+        }
+    }
+
+    fn quote_key_path_segment(segment: &str) -> String {
+        let escaped = segment.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{escaped}\"")
     }
 
     pub(super) async fn rebuild_config_for_resume_or_fallback(

@@ -274,6 +274,12 @@ pub(crate) enum AppEvent {
         result: Result<PluginListResponse, String>,
     },
 
+    /// Enable, disable, or toggle the Linear MCP server in the user config, then reload config
+    /// and MCP server state for the current session.
+    ToggleLinearMcp {
+        enabled: Option<bool>,
+    },
+
     /// Replace the plugins popup with a plugin-detail loading state.
     OpenPluginDetailLoading {
         plugin_display_name: String,

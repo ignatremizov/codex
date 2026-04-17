@@ -2746,7 +2746,10 @@ pub struct McpServerRefreshParams {}
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct McpServerRefreshResponse {}
+pub struct McpServerRefreshResponse {
+    pub refreshed_threads: u32,
+    pub skipped_threads: u32,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
