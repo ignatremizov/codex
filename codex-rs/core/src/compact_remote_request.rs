@@ -22,6 +22,7 @@ use tracing::info;
 pub(super) struct RemoteCompactAttempt {
     pub(super) new_history: Vec<ResponseItem>,
     pub(super) trace_input_history: Vec<ResponseItem>,
+    pub(super) explicit_mcp_context: Vec<ResponseItem>,
 }
 
 pub(super) async fn run_remote_compact_attempt(
@@ -34,6 +35,8 @@ pub(super) async fn run_remote_compact_attempt(
 ) -> CodexResult<RemoteCompactAttempt> {
     let turn_context = &step_context.turn;
     let mut history = sess.clone_history().await;
+    let explicit_mcp_context =
+        crate::compact::collect_mcp_server_use_context_items(history.raw_items());
     let base_instructions = sess.get_base_instructions().await;
     let (rewritten_outputs, estimated_deleted_tokens) =
         trim_function_call_history_to_fit_context_window(
@@ -122,5 +125,6 @@ pub(super) async fn run_remote_compact_attempt(
     Ok(RemoteCompactAttempt {
         new_history,
         trace_input_history,
+        explicit_mcp_context,
     })
 }
