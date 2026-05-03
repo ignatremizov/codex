@@ -202,6 +202,7 @@ enum McpCallEvent {
 }
 
 const REMOTE_MCP_ENVIRONMENT: &str = "remote";
+const REMOTE_MCP_TEST_ENV_DIR: &str = "/tmp/codex-remote-env";
 
 pub(super) fn remote_aware_environment_id() -> String {
     if is_remote_test_environment() {
@@ -240,7 +241,7 @@ pub(super) fn remote_aware_stdio_server_bin() -> anyhow::Result<String> {
 fn unique_remote_path(binary_name: &str) -> anyhow::Result<String> {
     let unique_suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(format!(
-        "/tmp/codex-remote-env/{binary_name}-{}-{unique_suffix}",
+        "{REMOTE_MCP_TEST_ENV_DIR}/{binary_name}-{}-{unique_suffix}",
         std::process::id()
     ))
 }
@@ -258,7 +259,7 @@ fn copy_binary_to_remote_env(
             container_name,
             "mkdir",
             "-p",
-            "/tmp/codex-remote-env",
+            REMOTE_MCP_TEST_ENV_DIR,
         ])
         .output()
         .context("create remote MCP test binary directory")?;
@@ -368,6 +369,7 @@ fn insert_mcp_server(
             required: false,
             supports_parallel_tool_calls: options.supports_parallel_tool_calls,
             omit_tools_from: None,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(10)),
             tool_timeout_sec: options.tool_timeout_sec,

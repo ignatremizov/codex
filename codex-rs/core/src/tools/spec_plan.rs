@@ -2,6 +2,7 @@ use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::image_preparation::unified_image_budget_enabled;
+use crate::mcp_tool_exposure::McpToolRegistrationContext;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
@@ -119,6 +120,16 @@ struct CoreToolPlanContext<'a> {
     wait_agent_timeouts: WaitAgentTimeoutOptions,
 }
 
+pub(crate) struct ToolRouterBuildParams<'a> {
+    pub(crate) environments: &'a TurnEnvironmentSnapshot,
+    pub(crate) mcp: &'a Arc<codex_mcp::McpBinding>,
+    pub(crate) mcp_tool_exposure: &'a crate::mcp_tool_exposure::McpToolExposure,
+    pub(crate) session_start_mcp_servers: &'a HashMap<String, codex_mcp::EffectiveMcpServer>,
+    pub(crate) apps_enabled: bool,
+    pub(crate) step_store: &'a ExtensionData,
+    pub(crate) tool_suggest_candidates: Option<&'a crate::tools::router::ToolSuggestCandidates>,
+}
+
 #[instrument(level = "trace", skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_tool_router(
@@ -126,12 +137,17 @@ pub(crate) fn build_tool_router(
     turn_context: &TurnContext,
     model_info: &ModelInfo,
     model_messages: Option<&ModelMessages>,
-    environments: &TurnEnvironmentSnapshot,
-    mcp: &Arc<codex_mcp::McpBinding>,
-    apps_enabled: bool,
-    step_store: &ExtensionData,
-    tool_suggest_candidates: Option<&crate::tools::router::ToolSuggestCandidates>,
+    params: ToolRouterBuildParams<'_>,
 ) -> CodexResult<ToolRouter> {
+    let ToolRouterBuildParams {
+        environments,
+        mcp,
+        mcp_tool_exposure,
+        session_start_mcp_servers,
+        apps_enabled,
+        step_store,
+        tool_suggest_candidates,
+    } = params;
     let default_agent_type_description =
         crate::agent::role::spawn_tool_spec::build(&std::collections::BTreeMap::new());
     let wait_for_environment_tool_config = session
@@ -157,16 +173,22 @@ pub(crate) fn build_tool_router(
     } else {
         let registered_mcp_tools = session.services.mcp_handler_cache.append_mcp_tools(
             mcp,
-            &turn_context.config,
-            apps_enabled,
-            &mcp.config().mcp_server_catalog,
-            search_tool_enabled(turn_context, model_info),
+            &mcp_tool_exposure.direct_tools,
+            McpToolRegistrationContext {
+                session_start_mcp_servers,
+                config: &turn_context.config,
+                apps_enabled,
+                mcp_server_catalog: &mcp.config().mcp_server_catalog,
+                search_tool_enabled: search_tool_enabled(turn_context, model_info),
+            },
             &mut registry,
         );
         apply_mcp_tool_exposure_policy(
             turn_context,
             model_info,
             mcp,
+            mcp_tool_exposure,
+            session_start_mcp_servers,
             &registered_mcp_tools,
             &mut registry,
         );
@@ -197,30 +219,45 @@ fn apply_mcp_tool_exposure_policy(
     turn_context: &TurnContext,
     model_info: &ModelInfo,
     mcp: &codex_mcp::McpBinding,
+    desired_exposure: &crate::mcp_tool_exposure::McpToolExposure,
+    session_start_mcp_servers: &HashMap<String, codex_mcp::EffectiveMcpServer>,
     registered_mcp_tools: &HashSet<ToolName>,
     registry: &mut ToolRegistry,
 ) {
     let mut omitted_exposures_by_tool = HashMap::new();
-    for tool in mcp.tools() {
+    for tool in mcp
+        .tools()
+        .iter()
+        .chain(desired_exposure.direct_tools.values())
+        .chain(
+            desired_exposure
+                .deferred_tools
+                .iter()
+                .flat_map(HashMap::values),
+        )
+    {
         let tool_name = tool.canonical_tool_name();
         if !registered_mcp_tools.contains(&tool_name) {
             continue;
         }
-        let Some(server) = mcp.config().mcp_server_catalog.server(&tool.server_name) else {
-            continue;
-        };
+        let omitted_exposures = mcp
+            .config()
+            .mcp_server_catalog
+            .server(&tool.server_name)
+            .map(codex_mcp::ResolvedMcpServer::config)
+            .or_else(|| {
+                session_start_mcp_servers
+                    .get(&tool.server_name)
+                    .map(codex_mcp::EffectiveMcpServer::config)
+            })
+            .and_then(|config| config.omit_tools_from.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .collect::<ToolExposures>();
         omitted_exposures_by_tool
             .entry(tool_name)
-            .or_insert_with(|| {
-                server
-                    .config()
-                    .omit_tools_from
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .copied()
-                    .collect::<ToolExposures>()
-            });
+            .or_insert(omitted_exposures);
     }
 
     for tool in registry.entries_mut() {
@@ -230,7 +267,19 @@ fn apply_mcp_tool_exposure_policy(
         };
         let tool_name = tool_name.with_default_namespace();
 
-        let mut exposures = ToolExposures::ALL.difference(*omitted_exposures);
+        let canonical_name = tool_name.to_string();
+        let mut exposures = if desired_exposure.direct_tools.contains_key(&canonical_name) {
+            ToolExposures::ALL.difference(ToolExposures::DEFERRED)
+        } else if desired_exposure
+            .deferred_tools
+            .as_ref()
+            .is_some_and(|tools| tools.contains_key(&canonical_name))
+        {
+            ToolExposures::ALL.difference(ToolExposures::DIRECT)
+        } else {
+            ToolExposures::empty()
+        };
+        exposures = exposures.difference(*omitted_exposures);
         if tool_name.namespace.as_ref().is_some_and(|namespace| {
             turn_context
                 .config
@@ -240,7 +289,6 @@ fn apply_mcp_tool_exposure_policy(
         }) {
             exposures = exposures.difference(ToolExposures::DEFERRED | ToolExposures::CODE_MODE);
         }
-
         exposures = if search_tool_enabled(turn_context, model_info)
             && exposures.contains(ToolExposures::DEFERRED)
             && (effective_tool_mode(turn_context, model_info) != ToolMode::CodeModeOnly

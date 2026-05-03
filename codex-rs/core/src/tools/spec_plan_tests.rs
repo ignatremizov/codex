@@ -1,5 +1,6 @@
 use crate::session::tests::update_turn_settings_for_test;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use codex_features::Feature;
@@ -50,6 +51,7 @@ use crate::responses_metadata::TurnToolFunctionInfo;
 use crate::responses_metadata::TurnToolNamespacesInfo;
 use crate::responses_metadata::TurnToolSource;
 use crate::session::step_context::StepContext;
+use crate::session::session::Session;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::mcp_config_for_test;
 use crate::session::turn_context::TurnContext;
@@ -515,6 +517,33 @@ fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {
     }
 }
 
+fn build_internal_guardian_tool_router(
+    session: &Session,
+    step_context: &StepContext,
+) -> ToolRouter {
+    let mcp_tool_exposure = crate::mcp_tool_exposure::McpToolExposure {
+        direct_tools: HashMap::new(),
+        deferred_tools: None,
+    };
+    let session_start_mcp_servers = HashMap::new();
+    super::build_tool_router(
+        session,
+        step_context.turn.as_ref(),
+        step_context.turn.model_info(),
+        step_context.settings.model_info.model_messages.as_ref(),
+        super::ToolRouterBuildParams {
+            environments: &step_context.environments,
+            mcp: &step_context.mcp,
+            mcp_tool_exposure: &mcp_tool_exposure,
+            session_start_mcp_servers: &session_start_mcp_servers,
+            apps_enabled: false,
+            step_store: &step_context.turn.extension_data,
+            tool_suggest_candidates: None,
+        },
+    )
+    .expect("build internal Guardian tool router")
+}
+
 #[tokio::test]
 async fn internal_guardian_sessions_exclude_optional_core_tools() {
     let (session, mut turn) = make_session_and_context().await;
@@ -525,18 +554,7 @@ async fn internal_guardian_sessions_exclude_optional_core_tools() {
     let turn = Arc::new(turn);
     let step_context = StepContext::for_test(Arc::clone(&turn));
 
-    let router = super::build_tool_router(
-        &session,
-        step_context.turn.as_ref(),
-        step_context.turn.model_info(),
-        step_context.settings.model_info.model_messages.as_ref(),
-        &step_context.environments,
-        &step_context.mcp,
-        /*apps_enabled*/ false,
-        &turn.extension_data,
-        /*tool_suggest_candidates*/ None,
-    )
-    .expect("build internal Guardian tool router");
+    let router = build_internal_guardian_tool_router(&session, step_context.as_ref());
 
     assert_eq!(
         router
@@ -578,18 +596,7 @@ async fn internal_guardian_sessions_respect_managed_shell_restrictions() {
         let turn = Arc::new(turn);
         let step_context = StepContext::for_test(Arc::clone(&turn));
 
-        let router = super::build_tool_router(
-            &session,
-            step_context.turn.as_ref(),
-            step_context.turn.model_info(),
-            step_context.settings.model_info.model_messages.as_ref(),
-            &step_context.environments,
-            &step_context.mcp,
-            /*apps_enabled*/ false,
-            &turn.extension_data,
-            /*tool_suggest_candidates*/ None,
-        )
-        .expect("build internal Guardian tool router");
+        let router = build_internal_guardian_tool_router(&session, step_context.as_ref());
 
         assert_eq!(
             router
@@ -615,18 +622,7 @@ async fn internal_guardian_sessions_preserve_code_mode() {
     let turn = Arc::new(turn);
     let step_context = StepContext::for_test(Arc::clone(&turn));
 
-    let router = super::build_tool_router(
-        &session,
-        step_context.turn.as_ref(),
-        step_context.turn.model_info(),
-        step_context.settings.model_info.model_messages.as_ref(),
-        &step_context.environments,
-        &step_context.mcp,
-        /*apps_enabled*/ false,
-        &turn.extension_data,
-        /*tool_suggest_candidates*/ None,
-    )
-    .expect("build internal Guardian tool router");
+    let router = build_internal_guardian_tool_router(&session, step_context.as_ref());
 
     assert!(
         router
@@ -686,18 +682,7 @@ async fn internal_guardian_sessions_require_managed_secondary_environments() {
         let turn = Arc::new(turn);
         let step_context = StepContext::for_test(Arc::clone(&turn));
 
-        let router = super::build_tool_router(
-            &session,
-            step_context.turn.as_ref(),
-            step_context.turn.model_info(),
-            step_context.settings.model_info.model_messages.as_ref(),
-            &step_context.environments,
-            &step_context.mcp,
-            /*apps_enabled*/ false,
-            &turn.extension_data,
-            /*tool_suggest_candidates*/ None,
-        )
-        .expect("build internal Guardian tool router");
+        let router = build_internal_guardian_tool_router(&session, step_context.as_ref());
 
         assert_eq!(
             router

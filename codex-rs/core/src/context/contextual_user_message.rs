@@ -9,6 +9,7 @@ use super::InternalModelContextFragment;
 use super::LegacyApplyPatchExecCommandWarning;
 use super::LegacyModelMismatchWarning;
 use super::LegacyUnifiedExecProcessLimitWarning;
+use super::McpServerUseInstructions;
 use super::RecommendedPluginsInstructions;
 use super::SubagentNotification;
 use super::TurnAborted;
@@ -21,6 +22,7 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     EnvironmentsState::matches_text,
     AdditionalContextUserFragment::matches_text,
     codex_skills_extension::is_skill_prompt_fragment,
+    McpServerUseInstructions::matches_text,
     UserShellCommand::matches_text,
     TurnAborted::matches_text,
     SubagentNotification::matches_text,

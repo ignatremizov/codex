@@ -15,6 +15,8 @@ use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
 use codex_history::RolloutItem;
+use codex_mcp::McpConfig;
+use codex_mcp::ToolPluginProvenance;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ThreadId;
@@ -870,6 +872,76 @@ impl CodexThread {
     /// Passively inspects the selected capability roots whose environments are ready now.
     pub fn inspect_selected_capability_roots(&self) -> SelectedCapabilityRootsStatus {
         self.session.inspect_selected_capability_roots()
+    }
+
+    pub async fn has_mcp_server(&self, server_name: &str) -> bool {
+        self.session.has_mcp_server(server_name).await
+    }
+
+    pub async fn has_reference_context(&self) -> bool {
+        self.session.reference_context_item().await.is_some()
+    }
+
+    pub async fn refresh_mcp_servers_now(
+        &self,
+        refresh_config: codex_protocol::protocol::McpServerRefreshConfig,
+    ) -> anyhow::Result<()> {
+        let turn_context = self.session.new_default_turn().await;
+        self.session
+            .refresh_mcp_servers_from_refresh_config(turn_context.as_ref(), refresh_config, None)
+            .await
+    }
+
+    pub async fn refresh_mcp_servers_now_with_mcp_config(
+        &self,
+        mcp_config: McpConfig,
+        tool_plugin_provenance: ToolPluginProvenance,
+    ) {
+        let turn_context = self.session.new_default_turn().await;
+        self.session
+            .refresh_mcp_servers_now_with_mcp_config(
+                turn_context.as_ref(),
+                mcp_config,
+                tool_plugin_provenance,
+            )
+            .await;
+    }
+
+    pub async fn latest_mcp_server_use_context_text(&self, server_name: &str) -> Option<String> {
+        self.session
+            .latest_mcp_server_use_context_text(server_name)
+            .await
+    }
+
+    pub async fn render_mcp_server_use_context_text(&self, server_name: &str) -> String {
+        self.session
+            .render_mcp_server_use_context_text(server_name)
+            .await
+    }
+
+    pub fn mcp_server_was_implicitly_visible_at_session_start(&self, server_name: &str) -> bool {
+        self.session
+            .mcp_server_was_implicitly_visible_at_session_start(server_name)
+    }
+
+    pub async fn current_mcp_inventory_was_direct_at_session_start(
+        &self,
+        server_name: &str,
+    ) -> bool {
+        self.session
+            .current_mcp_inventory_was_direct_at_session_start(server_name)
+            .await
+    }
+
+    pub async fn mcp_server_would_be_direct_at_session_start(&self, server_name: &str) -> bool {
+        let turn_context = self.session.new_default_turn().await;
+        let _ = self.session.session_start_mcp_tools_for_exposure().await;
+        self.session
+            .mcp_server_would_be_direct_at_session_start_for_turn_context(
+                turn_context.as_ref(),
+                server_name,
+            )
+            .await
     }
 
     pub async fn read_mcp_resource(

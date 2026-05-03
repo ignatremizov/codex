@@ -18,6 +18,8 @@ use codex_extension_api::ExtensionDataInit;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::RouteAwareClientPool;
 use codex_login::auth::AgentIdentityAuthPolicy;
+use codex_mcp::EffectiveMcpServer;
+use codex_mcp::ToolInfo as McpToolInfo;
 use codex_model_provider::SharedModelProvider;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -33,6 +35,7 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_skills::SkillError;
 use codex_utils_git_discovery::GitRootDiscovery;
+use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 
@@ -64,11 +67,22 @@ pub(crate) struct Session {
     pub(super) mcp_prewarm_tx: async_channel::Sender<()>,
     pub(super) mcp_prewarm_shutdown: CancellationToken,
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
+    /// Effective MCP server visibility captured at the session-start exposure boundary.
+    ///
+    /// MCP reloads may update live server runtime state, but normal turns must not
+    /// rederive the default model-visible MCP contract from later config because
+    /// adding/removing default tool specs would invalidate the cached session prefix.
+    pub(super) session_start_mcp_servers: HashMap<String, EffectiveMcpServer>,
+    pub(super) session_start_mcp_tools: Mutex<HashMap<String, McpToolInfo>>,
+    pub(super) session_start_direct_mcp_servers: StdMutex<Option<HashSet<String>>>,
+    pub(super) session_start_direct_mcp_tools: Mutex<Option<HashMap<String, McpToolInfo>>>,
+    pub(super) pending_mcp_server_refresh_config: Mutex<Option<McpServerRefreshConfig>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) realtime_history: Option<Mutex<crate::realtime_history::RealtimeHistoryState>>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) async_hook_results: async_channel::Receiver<HookCompletedEvent>,
     pub(crate) input_queue: InputQueue,
+    pub(super) idle_pending_mcp_server_use: Mutex<Vec<String>>,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
@@ -246,7 +260,6 @@ impl SessionConfiguration {
         ThreadConfigSnapshot {
             model: self.step_settings.collaboration_mode.model().to_string(),
             model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
-            active_profile: self.original_config_do_not_use.active_profile.clone(),
             service_tier: self.step_settings.service_tier.clone(),
             approval_policy: self.step_settings.approval_policy.value(),
             approvals_reviewer: self.step_settings.approvals_reviewer,
@@ -1142,14 +1155,13 @@ impl Session {
                 )],
             );
 
-            let mcp_server_names =
-                codex_mcp::effective_mcp_servers(
-                    &mcp_projection.config,
-                    auth.as_ref(),
-                )
-                    .into_iter()
-                    .filter_map(|(name, server)| server.enabled().then_some(name))
-                    .collect::<Vec<_>>();
+            let session_start_mcp_servers =
+                codex_mcp::effective_mcp_servers(&mcp_projection.config, auth.as_ref());
+            let mcp_server_names = session_start_mcp_servers
+                .iter()
+                .filter(|&(_name, server)| server.enabled())
+                .map(|(name, _server)| name.clone())
+                .collect::<Vec<_>>();
             session_telemetry.conversation_starts(
                 config.model_provider.name.as_str(),
                 session_configuration.step_settings.collaboration_mode.reasoning_effort(),
@@ -1528,6 +1540,11 @@ impl Session {
                 mcp_prewarm_tx,
                 mcp_prewarm_shutdown: CancellationToken::new(),
                 mcp_prewarm_task: std::sync::Mutex::new(None),
+                session_start_mcp_servers,
+                session_start_mcp_tools: Mutex::new(HashMap::new()),
+                session_start_direct_mcp_servers: StdMutex::new(None),
+                session_start_direct_mcp_tools: Mutex::new(None),
+                pending_mcp_server_refresh_config: Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 realtime_history: (session_configuration.history_mode == ThreadHistoryMode::Paginated
                     && services.live_thread.is_some())
@@ -1535,6 +1552,7 @@ impl Session {
                 active_turn: Mutex::new(None),
                 async_hook_results,
                 input_queue: InputQueue::new(),
+                idle_pending_mcp_server_use: Mutex::new(Vec::new()),
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
                 git_enrichment_policy,

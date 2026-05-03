@@ -70,6 +70,7 @@ impl ThreadEventStore {
                     .pending_interactive_replay
                     .note_evicted_server_request(request.as_ref()),
                 ThreadBufferedEvent::HistoryEntryResponse(_)
+                | ThreadBufferedEvent::McpInventoryResult(_)
                 | ThreadBufferedEvent::FeedbackSubmission(_) => {}
             }
         }

@@ -738,6 +738,7 @@ impl App {
                         server_request_thread_id(request) == Some(thread_id)
                     }
                     ThreadBufferedEvent::HistoryEntryResponse(_)
+                    | ThreadBufferedEvent::McpInventoryResult(_)
                     | ThreadBufferedEvent::FeedbackSubmission(_) => true,
                 });
                 self.pending_app_server_requests.clear();

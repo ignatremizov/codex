@@ -881,6 +881,16 @@ pub(crate) fn collect_mcp_server_use_context_items(
         .collect()
 }
 
+pub(crate) fn collect_annotated_mcp_server_use_context_items(
+    history_items: &[ResponseItemEnvelope],
+) -> Vec<ResponseItemEnvelope> {
+    history_items
+        .iter()
+        .filter(|envelope| is_mcp_server_use_context_item(&envelope.item))
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn preserve_mcp_server_use_context_items(
     history: Vec<ResponseItem>,
     additional_history_items: &[ResponseItem],
@@ -900,6 +910,25 @@ pub(crate) fn preserve_mcp_server_use_context_items(
     insert_mcp_server_use_context_items_at_compaction_boundary(history, mcp_context)
 }
 
+pub(crate) fn preserve_annotated_mcp_server_use_context_items(
+    history: Vec<ResponseItemEnvelope>,
+    additional_history_items: &[ResponseItemEnvelope],
+) -> Vec<ResponseItemEnvelope> {
+    if history
+        .iter()
+        .any(|envelope| is_mcp_server_use_context_item(&envelope.item))
+    {
+        return history;
+    }
+
+    let mcp_context = collect_annotated_mcp_server_use_context_items(additional_history_items);
+    if mcp_context.is_empty() {
+        return history;
+    }
+
+    insert_annotated_mcp_server_use_context_items_at_compaction_boundary(history, mcp_context)
+}
+
 pub(crate) fn insert_mcp_server_use_context_items_at_compaction_boundary(
     mut history: Vec<ResponseItem>,
     mcp_context: Vec<ResponseItem>,
@@ -916,6 +945,50 @@ pub(crate) fn insert_mcp_server_use_context_items_at_compaction_boundary(
                 return None;
             };
             is_summary_message(&user.message()).then_some(index)
+        })
+        .or_else(|| {
+            history.iter().enumerate().rev().find_map(|(index, item)| {
+                matches!(
+                    item,
+                    ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+                )
+                .then_some(index)
+            })
+        })
+        .unwrap_or(history.len());
+    history.splice(insertion_index..insertion_index, mcp_context);
+    history
+}
+
+pub(crate) fn insert_annotated_mcp_server_use_context_items_at_compaction_boundary(
+    mut history: Vec<ResponseItemEnvelope>,
+    mcp_context: Vec<ResponseItemEnvelope>,
+) -> Vec<ResponseItemEnvelope> {
+    if mcp_context.is_empty() {
+        return history;
+    }
+    let insertion_index = history
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, envelope)| {
+            let Some(TurnItem::UserMessage(user)) = parse_turn_item(&envelope.item) else {
+                return None;
+            };
+            is_summary_message(&user.message()).then_some(index)
+        })
+        .or_else(|| {
+            history
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, envelope)| {
+                    matches!(
+                        &envelope.item,
+                        ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+                    )
+                    .then_some(index)
+                })
         })
         .unwrap_or(history.len());
     history.splice(insertion_index..insertion_index, mcp_context);
