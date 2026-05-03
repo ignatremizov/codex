@@ -1,3 +1,4 @@
+use super::shared::default_enabled;
 use super::shared::v2_enum_from_core;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::items::McpToolCallError as CoreMcpToolCallError;
@@ -33,6 +34,9 @@ v2_enum_from_core!(
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ListMcpServerStatusParams {
+    /// Optional loaded thread whose effective MCP config should be inspected.
+    #[ts(optional = nullable)]
+    pub thread_id: Option<String>,
     /// Opaque pagination cursor returned by a previous call.
     #[ts(optional = nullable)]
     pub cursor: Option<String>,
@@ -43,8 +47,6 @@ pub struct ListMcpServerStatusParams {
     /// Defaults to `Full` when omitted.
     #[ts(optional = nullable)]
     pub detail: Option<McpServerStatusDetail>,
-    #[ts(optional = nullable)]
-    pub thread_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -65,6 +67,8 @@ pub struct McpServerStatus {
     pub resources: Vec<McpResource>,
     pub resource_templates: Vec<McpResourceTemplate>,
     pub auth_status: McpAuthStatus,
+    #[serde(default = "default_enabled")]
+    pub allow_implicit_invocation: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -186,6 +190,30 @@ pub struct McpServerRefreshParams {}
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct McpServerRefreshResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMcpServerActivateParams {
+    pub thread_id: String,
+    pub server_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadMcpServerActivateOutcome {
+    Activated,
+    AlreadyActivated,
+    AlreadyImplicitlyAvailable,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMcpServerActivateResponse {
+    pub outcome: ThreadMcpServerActivateOutcome,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

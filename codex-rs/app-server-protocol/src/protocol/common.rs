@@ -536,6 +536,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadSetNameResponse,
     },
+    ThreadMcpServerActivate => "thread/mcpServer/activate" {
+        params: v2::ThreadMcpServerActivateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadMcpServerActivateResponse,
+    },
     ThreadGoalSet => "thread/goal/set" {
         params: v2::ThreadGoalSetParams,
         serialization: thread_id(params.thread_id),

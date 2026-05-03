@@ -167,6 +167,19 @@ impl<'a> SlashInput<'a> {
         has_slash_command_prefix(name, self.command_flags, self.service_tier_commands)
     }
 
+    pub(super) fn is_editing_mcp_args(&self, first_line: &str, cursor: usize) -> bool {
+        if !self.enabled || self.is_bash_mode {
+            return false;
+        }
+        let Some(tail) = first_line.strip_prefix("/mcp") else {
+            return false;
+        };
+        if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+            return false;
+        }
+        cursor <= first_line.len() && cursor > "/mcp".len()
+    }
+
     pub(super) fn command_popup(&self, filter_text: &str) -> CommandPopup {
         let mut command_popup = CommandPopup::new(
             CommandPopupFlags {
@@ -343,6 +356,14 @@ impl ChatComposer {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
+                let first_line = self
+                    .draft
+                    .textarea
+                    .text()
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
                 if let Some(sel) = popup.selected_item() {
                     if self
                         .complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
@@ -354,17 +375,45 @@ impl ChatComposer {
                     }
 
                     self.stage_selected_slash_command_history(&sel);
-                    self.draft.textarea.set_text_clearing_elements("");
-                    self.draft.is_bash_mode = false;
-                    return (
-                        match sel {
-                            CommandItem::Builtin(cmd) => InputResult::Command(cmd),
-                            CommandItem::ServiceTier(command) => {
-                                InputResult::ServiceTierCommand(command)
+                    match sel {
+                        CommandItem::Builtin(cmd) => {
+                            self.draft.textarea.set_text_clearing_elements("");
+                            self.draft.is_bash_mode = false;
+                            return (InputResult::Command(cmd), true);
+                        }
+                        CommandItem::ServiceTier(command) => {
+                            self.draft.textarea.set_text_clearing_elements("");
+                            self.draft.is_bash_mode = false;
+                            return (InputResult::ServiceTierCommand(command), true);
+                        }
+                        CommandItem::McpSubcommand("use") => {
+                            if let Some(completed_text) =
+                                selected_command_completion(&first_line, &sel)
+                            {
+                                self.draft
+                                    .textarea
+                                    .set_text_clearing_elements(&completed_text);
+                                self.draft
+                                    .textarea
+                                    .set_cursor(self.draft.textarea.text().len());
                             }
-                        },
-                        true,
-                    );
+                            return (InputResult::None, true);
+                        }
+                        CommandItem::McpSubcommand("verbose") | CommandItem::McpServer(_) => {
+                            if let Some(completed_text) =
+                                selected_command_completion(&first_line, &sel)
+                            {
+                                self.draft
+                                    .textarea
+                                    .set_text_clearing_elements(&completed_text);
+                                self.draft
+                                    .textarea
+                                    .set_cursor(self.draft.textarea.text().len());
+                                return self.handle_submission(/*should_queue*/ false);
+                            }
+                        }
+                        CommandItem::McpSubcommand(_) => {}
+                    }
                 }
                 // Fallback to default newline handling if no command selected.
                 self.handle_key_event_without_popup(key_event)
@@ -487,9 +536,17 @@ pub(super) fn selected_command_completion(
     first_line: &str,
     command: &CommandItem,
 ) -> Option<String> {
-    let selected_command_text = format!("/{}", command.command());
-    (!first_line.trim_start().starts_with(&selected_command_text))
-        .then(|| format!("{selected_command_text} "))
+    match command {
+        CommandItem::McpSubcommand("use") => Some("/mcp use ".to_string()),
+        CommandItem::McpSubcommand("verbose") => Some("/mcp verbose".to_string()),
+        CommandItem::McpServer(server_name) => Some(format!("/mcp use {server_name}")),
+        CommandItem::McpSubcommand(_) => None,
+        CommandItem::Builtin(_) | CommandItem::ServiceTier(_) => {
+            let selected_command_text = format!("/{}", command.command());
+            (!first_line.trim_start().starts_with(&selected_command_text))
+                .then(|| format!("{selected_command_text} "))
+        }
+    }
 }
 
 pub(super) fn prepared_args(prepared_text: &str) -> Option<(&str, usize)> {
