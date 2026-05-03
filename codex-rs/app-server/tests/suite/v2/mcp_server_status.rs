@@ -69,6 +69,9 @@ use wiremock::matchers::path;
 
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[path = "mcp_server_activation_tests.rs"]
+mod activation_tests;
+
 #[test_case(false, None, None, None, true; "legacy callback")]
 #[test_case(
     false,

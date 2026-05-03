@@ -229,6 +229,7 @@ mod history_ui;
 mod input;
 mod loaded_threads;
 mod managed_worktree_creation;
+mod mcp_requests;
 mod misalignment_policy;
 mod model_defaults;
 mod new_session;
@@ -655,6 +656,7 @@ pub(crate) struct App {
     last_subagent_backfill_attempt: Option<ThreadId>,
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
+    mcp_requests: mcp_requests::McpRequests,
     pending_app_server_requests: PendingAppServerRequests,
     dynamic_tool_status_updates:
         tokio::sync::broadcast::Sender<codex_app_server_protocol::ThreadStatusChangedNotification>,

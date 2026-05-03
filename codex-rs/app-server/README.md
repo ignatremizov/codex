@@ -340,6 +340,12 @@ This is the server's advertised MCP capabilities object, including its `extensio
 map. It is null when the connection has not initialized successfully; capabilities
 are never inferred from tools or copied from a shared catalog cache.
 
+`allowImplicitInvocation` reports each server's effective prompt-exposure policy. A value of `false` does not disable the server, bypass approval rules, or remove authorized deferred discovery and calls.
+
+`thread/mcpServer/activate` accepts `{ "threadId": "...", "serverName": "..." }` for a loaded thread and requests forward-only insertion of that server's full current tool inventory into model context. It does not start inference, rewrite the initial prompt, or promote the server into the frozen direct tool contract. Unknown or disabled servers are rejected using the thread's effective catalog and environment selection.
+
+The response's `outcome` is `activated` when the operation is accepted, `alreadyActivated` when explicit-use context already exists, or `alreadyImplicitlyAvailable` when the current inventory is already covered directly. `activated` acknowledges admission, not completed startup or durable context insertion. Inventory capture runs at the appropriate actor boundary, and an unavailable inventory can be represented by an empty array. Clients must not interpret any of these outcomes as new tool-call authorization.
+
 # Thread rollback
 
 `thread/rollback` has been removed from the API, including its request and response

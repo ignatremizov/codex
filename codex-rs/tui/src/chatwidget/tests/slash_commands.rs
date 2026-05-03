@@ -2867,6 +2867,94 @@ async fn slash_memory_drop_reports_stubbed_feature() {
 }
 
 #[tokio::test]
+async fn slash_mcp_use_preserves_spaces_and_pre_session_fifo() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = None;
+    for args in ["use team docs", "use second", "use team docs"] {
+        chat.dispatch_command_with_args(SlashCommand::Mcp, args.into(), Vec::new());
+    }
+    let before_binding = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(before_binding, @r"
+    • MCP server `team docs` activation will be requested when the session starts.
+    • MCP server `second` activation will be requested when the session starts.
+    ");
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.bind_mcp_activation();
+    let mut requests = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::SubmitThreadOp {
+            thread_id,
+            op: AppCommand::ActivateMcpServer { server_name },
+        } = event
+        {
+            requests.push((thread_id, server_name));
+        }
+    }
+    assert_eq!(
+        requests,
+        vec![
+            (thread_id, "team docs".into()),
+            (thread_id, "second".into())
+        ]
+    );
+    assert!(op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn slash_mcp_use_refuses_external_writer() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.external_writer_view = true;
+    chat.dispatch_command_with_args(SlashCommand::Mcp, "use team docs".into(), Vec::new());
+    let mut rendered = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::SubmitThreadOp { .. } => panic!("external writer must not activate"),
+            AppEvent::InsertHistoryCell(cell) => {
+                rendered.extend(
+                    cell.display_lines(/*width*/ 120)
+                        .iter()
+                        .map(ToString::to_string),
+                );
+            }
+            _ => {}
+        }
+    }
+    insta::assert_snapshot!(rendered.join("\n"), @"■ This thread is open elsewhere. Close it there and retry resume to continue.");
+    assert!(op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn slash_mcp_completion_tab_then_enter_submits_full_server_name() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.bottom_pane
+        .set_mcp_server_names(vec!["team docs".into()]);
+    chat.bottom_pane
+        .set_composer_text("/mcp use te".into(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(chat.bottom_pane.composer_text(), "/mcp use team docs");
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let mut requests = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::SubmitThreadOp {
+            thread_id,
+            op: AppCommand::ActivateMcpServer { server_name },
+        } = event
+        {
+            requests.push((thread_id, server_name));
+        }
+    }
+    assert_eq!(requests, vec![(thread_id, "team docs".into())]);
+}
+
+#[tokio::test]
 async fn slash_mcp_requests_inventory_via_app_server() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();

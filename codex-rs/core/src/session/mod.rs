@@ -239,6 +239,8 @@ pub(crate) use reasoning_effort::RequestEffortUsage;
 mod input_queue;
 mod mcp;
 mod mcp_prewarm;
+mod mcp_prompt;
+pub(crate) use mcp_prompt::is_mcp_use_input;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
@@ -3821,13 +3823,24 @@ impl Session {
                 .collect::<HashMap<_, _>>();
             extension_data.insert(sandbox_contexts);
         }
+        let mut required_servers = required_servers.to_vec();
+        required_servers.extend(
+            self.mcp_prompt
+                .first_turn_servers
+                .lock()
+                .await
+                .iter()
+                .cloned(),
+        );
+        required_servers.sort();
+        required_servers.dedup();
         let (mcp, prepared_recommendations) = async {
             tokio::join!(
                 // MCP refresh can be large; keep it off the sampling request's stack.
                 Box::pin(self.mcp_runtime_for_step(
                     turn_context.as_ref(),
                     &selected_capability_roots,
-                    required_servers,
+                    &required_servers,
                     required_plugins,
                 )),
                 turn::prepare_tool_recommendations(self.as_ref(), turn_context.as_ref()),
@@ -4450,23 +4463,23 @@ impl Session {
         world_state: Arc<WorldState>,
     ) -> u64 {
         let turn_context = step_context.turn.as_ref();
+        let history = self.clone_history().await;
         let retained_client_developer_messages =
-            if self.enabled(Feature::RetainClientDeveloperMessages) {
-                let history = self.clone_history().await;
-                crate::compact_remote_v2::truncate_retained_messages_for_remote_compaction(
-                    history
-                        .annotated_items()
-                        .iter()
-                        .filter(|item| {
-                            crate::compact_remote_v2::is_client_authored_developer_message(item)
-                        })
-                        .cloned()
-                        .collect(),
-                    crate::compact_remote_v2::RETAINED_MESSAGE_TOKEN_BUDGET,
-                )
-            } else {
-                Vec::new()
-            };
+            crate::compact_remote_v2::truncate_retained_messages_for_remote_compaction(
+                history
+                    .annotated_items()
+                    .iter()
+                    .filter(|item| {
+                        crate::context::McpServerUseInstructions::matches_response_item(&item.item)
+                            || (self.enabled(Feature::RetainClientDeveloperMessages)
+                                && crate::compact_remote_v2::is_client_authored_developer_message(
+                                    item,
+                                ))
+                    })
+                    .cloned()
+                    .collect(),
+                crate::compact_remote_v2::RETAINED_MESSAGE_TOKEN_BUDGET,
+            );
         let window = {
             let mut state = self.state.lock().await;
             state.start_new_context_window()

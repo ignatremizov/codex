@@ -137,6 +137,7 @@ async fn local_mcp_startup_and_refresh_use_configured_http_client() -> Result<()
                     required: false,
                     supports_parallel_tool_calls: false,
                     omit_tools_from: None,
+                    allow_implicit_invocation: true,
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
@@ -335,7 +336,9 @@ async fn skill_mcp_dependency_oauth_uses_configured_http_client() -> Result<()> 
             .await?;
             Ok(())
         });
-    let fixture = builder.build_with_auto_env(&responses_server).await?;
+    // OAuth dependencies use the app-process MCP client and its proxy/callback port.
+    // Match the explicit local selection below instead of creating the skill remotely.
+    let fixture = builder.build(&responses_server).await?;
     responses::mount_sse_once(
         &responses_server,
         responses::sse(vec![
@@ -350,13 +353,7 @@ async fn skill_mcp_dependency_oauth_uses_configured_http_client() -> Result<()> 
         .config
         .cwd
         .join(".agents/skills/proxy-skill/SKILL.md")
-        .canonicalize()
-        .unwrap_or_else(|_| {
-            fixture
-                .config
-                .cwd
-                .join(".agents/skills/proxy-skill/SKILL.md")
-        });
+        .canonicalize()?;
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::Disabled, fixture.config.cwd.as_path());
     let mut environments = local_selections(fixture.config.cwd.clone());
