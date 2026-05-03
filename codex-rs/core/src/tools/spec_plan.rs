@@ -2,6 +2,8 @@ use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::image_preparation::unified_image_budget_enabled;
+use crate::mcp_tool_exposure::McpToolExposure;
+use crate::mcp_tool_exposure::McpToolRegistrationContext;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
@@ -127,6 +129,7 @@ pub(crate) fn build_tool_router(
     model_info: &ModelInfo,
     environments: &TurnEnvironmentSnapshot,
     mcp: &Arc<codex_mcp::McpBinding>,
+    mcp_exposure: &McpToolExposure,
     apps_enabled: bool,
     step_store: &ExtensionData,
     tool_suggest_candidates: Option<&crate::tools::router::ToolSuggestCandidates>,
@@ -153,16 +156,22 @@ pub(crate) fn build_tool_router(
 
     let registered_mcp_tools = session.services.mcp_handler_cache.append_mcp_tools(
         mcp,
-        &turn_context.config,
-        apps_enabled,
-        &mcp.config().mcp_server_catalog,
-        search_tool_enabled(turn_context, model_info),
+        &mcp_exposure.direct_tools,
+        McpToolRegistrationContext {
+            session_start_mcp_servers: &session.mcp_prompt.startup_servers,
+            config: &turn_context.config,
+            apps_enabled,
+            mcp_server_catalog: &mcp.config().mcp_server_catalog,
+            search_tool_enabled: search_tool_enabled(turn_context, model_info),
+        },
         &mut registry,
     );
     apply_mcp_tool_exposure_policy(
         turn_context,
         model_info,
         mcp,
+        mcp_exposure,
+        &session.mcp_prompt.startup_servers,
         &registered_mcp_tools,
         &mut registry,
     );
@@ -192,17 +201,29 @@ fn apply_mcp_tool_exposure_policy(
     turn_context: &TurnContext,
     model_info: &ModelInfo,
     mcp: &codex_mcp::McpBinding,
+    desired: &McpToolExposure,
+    startup_servers: &HashMap<String, codex_mcp::EffectiveMcpServer>,
     registered_mcp_tools: &HashSet<ToolName>,
     registry: &mut ToolRegistry,
 ) {
     let mut omitted_exposures_by_tool = HashMap::new();
     let apps_config = apps_config_from_layer_stack(&turn_context.config.config_layer_stack);
-    for tool in mcp.tools() {
+    for tool in mcp.tools().iter().chain(desired.direct_tools.values()) {
         let tool_name = tool.canonical_tool_name();
         if !registered_mcp_tools.contains(&tool_name) {
             continue;
         }
-        let Some(server) = mcp.config().mcp_server_catalog.server(&tool.server_name) else {
+        let Some(server_config) = mcp
+            .config()
+            .mcp_server_catalog
+            .server(&tool.server_name)
+            .map(codex_mcp::ResolvedMcpServer::config)
+            .or_else(|| {
+                startup_servers
+                    .get(&tool.server_name)
+                    .map(codex_mcp::EffectiveMcpServer::config)
+            })
+        else {
             continue;
         };
         omitted_exposures_by_tool
@@ -214,8 +235,7 @@ fn apply_mcp_tool_exposure_policy(
                     .and_then(|id| apps_config.as_ref()?.apps.get(id))
                     .and_then(|app| app.omit_tools_from.as_deref())
                     .unwrap_or_default();
-                server
-                    .config()
+                server_config
                     .omit_tools_from
                     .as_deref()
                     .unwrap_or_default()
@@ -233,7 +253,31 @@ fn apply_mcp_tool_exposure_policy(
         };
         let tool_name = tool_name.with_default_namespace();
 
-        let mut exposures = ToolExposures::ALL.difference(*omitted_exposures);
+        let canonical_name = tool.runtime.tool_name().to_string();
+        let direct = desired.direct_tools.contains_key(&canonical_name);
+        let deferred = desired
+            .deferred_tools
+            .as_ref()
+            .and_then(|tools| tools.get(&canonical_name));
+        let fallback = desired.allow_direct_fallback
+            && deferred.is_some_and(|tool| {
+                tool.server_name != CODEX_APPS_MCP_SERVER_NAME
+                    && startup_servers
+                        .get(&tool.server_name)
+                        .is_some_and(|server| {
+                            server.enabled() && server.config().allow_implicit_invocation
+                        })
+            });
+        let mut exposures = if direct {
+            ToolExposures::ALL.difference(ToolExposures::DEFERRED)
+        } else if fallback {
+            ToolExposures::ALL
+        } else if deferred.is_some() {
+            ToolExposures::ALL.difference(ToolExposures::DIRECT)
+        } else {
+            ToolExposures::empty()
+        }
+        .difference(*omitted_exposures);
         if tool_name.namespace.as_ref().is_some_and(|namespace| {
             turn_context
                 .config

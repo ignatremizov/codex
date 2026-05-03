@@ -151,6 +151,53 @@ async fn test_step(
 }
 
 #[tokio::test]
+async fn prompt_hidden_call_retains_authority_and_does_not_enable_unknown_tools() {
+    let mut fixture = test_step(
+        "new",
+        AppToolApproval::Prompt,
+        /*supports_sandbox_state_meta*/ false,
+    )
+    .await;
+    let binding = Arc::get_mut(&mut fixture.step).expect("exclusive binding");
+    let key = (SERVER_NAME.to_string(), TOOL_NAME.to_string());
+    let call = binding.calls.get_mut(&key).expect("registered call");
+    call.tool_info.tool.meta = Some(
+        serde_json::from_value(serde_json::json!({"ui": {"visibility": ["app"]}}))
+            .expect("visibility metadata"),
+    );
+    let expected = call.tool_info.clone();
+    assert!(!crate::tool_is_model_visible(&expected));
+    binding.tools.clear();
+    assert_eq!(
+        binding
+            .prepare_call(SERVER_NAME, TOOL_NAME)
+            .map(|call| call.tool_info().clone()),
+        Some(expected),
+    );
+    assert!(
+        binding
+            .prepare_call(SERVER_NAME, "not_registered")
+            .is_none()
+    );
+    let mut config = (*binding.config).clone();
+    config.server_permission_profiles.clear();
+    let call = binding.calls.get(&key).expect("registered call");
+    assert!(
+        PreparedMcpCall::new(
+            Arc::clone(&call.connections),
+            Arc::clone(&call.client),
+            Arc::new(config),
+            Arc::clone(&call.catalog_snapshot),
+            call.tool_info.clone(),
+            call.server_metadata.clone(),
+            call.plugin_id.clone(),
+            call.selected_plugin_server,
+        )
+        .is_none()
+    );
+}
+
+#[tokio::test]
 async fn prepared_call_keeps_captured_connection_and_authority_after_refresh() -> anyhow::Result<()>
 {
     let old = test_step(

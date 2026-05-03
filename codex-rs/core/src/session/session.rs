@@ -1,4 +1,5 @@
 use super::input_queue::InputQueue;
+use super::mcp_prompt::McpPromptState;
 use super::mcp_refresh::McpRefresh;
 use super::step_context::StepContext;
 use super::step_settings::ModelInfoOverrides;
@@ -78,6 +79,7 @@ pub(crate) struct Session {
     pub(super) multi_agent_version: OnceLock<MultiAgentVersion>,
     /// Owns invalidation and serializes refreshes without blocking captured calls.
     pub(super) mcp_refresh: McpRefresh,
+    pub(crate) mcp_prompt: McpPromptState,
     /// Non-owning lookup for approval data retained by running MCP invocations.
     pub(crate) mcp_tool_approval_metadata: std::sync::Mutex<McpToolApprovalMetadataMap>,
     pub(super) mcp_elicitation_reviewer_handle: OnceLock<codex_mcp::ElicitationReviewerHandle>,
@@ -1747,6 +1749,10 @@ impl Session {
                 windows_sandbox_proxy_settings_mode,
                 multi_agent_version,
                 mcp_refresh: McpRefresh::new(),
+                mcp_prompt: McpPromptState::new(codex_mcp::effective_mcp_servers(
+                    &mcp_projection.config,
+                    auth.as_ref(),
+                )),
                 mcp_tool_approval_metadata: Default::default(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
                 mcp_elicitation_lifecycle_handle: OnceLock::new(),

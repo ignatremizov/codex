@@ -5,6 +5,7 @@
 
 mod fs;
 mod history;
+mod mcp;
 mod models;
 mod realtime;
 mod rollout_history;

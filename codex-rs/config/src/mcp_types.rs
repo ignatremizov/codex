@@ -243,6 +243,14 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
 
+    /// When false, omit this server's tools from the default model-visible contract.
+    /// Explicit user activation may still add its current tools to context.
+    #[serde(
+        default = "default_allow_implicit_invocation",
+        skip_serializing_if = "std::clone::Clone::clone"
+    )]
+    pub allow_implicit_invocation: bool,
+
     /// Reason this server was disabled after applying requirements.
     #[serde(skip)]
     pub disabled_reason: Option<McpServerDisabledReason>,
@@ -384,6 +392,8 @@ pub struct RawMcpServerConfig {
     #[serde(default)]
     pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
     #[serde(default)]
+    pub allow_implicit_invocation: Option<bool>,
+    #[serde(default)]
     pub default_tools_approval_mode: Option<AppToolApproval>,
     #[serde(default)]
     pub enabled_tools: Option<Vec<String>>,
@@ -427,6 +437,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             required,
             supports_parallel_tool_calls,
             omit_tools_from,
+            allow_implicit_invocation,
             default_tools_approval_mode,
             enabled_tools,
             disabled_tools,
@@ -532,6 +543,8 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             required: required.unwrap_or_default(),
             supports_parallel_tool_calls: supports_parallel_tool_calls.unwrap_or_default(),
             omit_tools_from,
+            allow_implicit_invocation: allow_implicit_invocation
+                .unwrap_or_else(default_allow_implicit_invocation),
             disabled_reason: None,
             default_tools_approval_mode,
             enabled_tools,
@@ -556,6 +569,10 @@ impl<'de> Deserialize<'de> for McpServerConfig {
 }
 
 const fn default_enabled() -> bool {
+    true
+}
+
+const fn default_allow_implicit_invocation() -> bool {
     true
 }
 

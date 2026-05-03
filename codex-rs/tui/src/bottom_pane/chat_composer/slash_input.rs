@@ -362,6 +362,18 @@ impl ChatComposer {
                 ..
             } => {
                 if let Some(sel) = popup.selected_item() {
+                    if let CommandItem::Mcp(completion) = &sel {
+                        self.draft
+                            .textarea
+                            .set_text_clearing_elements(&completion.text());
+                        self.draft
+                            .textarea
+                            .set_cursor(self.draft.textarea.text().len());
+                        if matches!(completion, super::super::mcp_completion::McpCompletion::Use) {
+                            return (InputResult::None, true);
+                        }
+                        return self.handle_submission(/*should_queue*/ false);
+                    }
                     if self
                         .complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
                             &sel,
@@ -383,6 +395,7 @@ impl ChatComposer {
                             CommandItem::ServiceTier(command) => {
                                 InputResult::ServiceTierCommand(command)
                             }
+                            CommandItem::Mcp(_) => unreachable!("MCP completion handled above"),
                         },
                         true,
                     );
@@ -508,6 +521,9 @@ pub(super) fn selected_command_completion(
     first_line: &str,
     command: &CommandItem,
 ) -> Option<String> {
+    if let CommandItem::Mcp(completion) = command {
+        return Some(completion.text());
+    }
     let selected_command_text = format!("/{}", command.command());
     (!first_line.trim_start().starts_with(&selected_command_text))
         .then(|| format!("{selected_command_text} "))
@@ -547,6 +563,11 @@ pub(super) fn args_elements(
 }
 
 pub(super) fn command_popup_filter_text(first_line: &str, cursor: usize) -> Option<String> {
+    if cursor == first_line.len()
+        && super::super::mcp_completion::candidates(first_line, &[]).is_some()
+    {
+        return Some(first_line.to_string());
+    }
     let (name, _rest) = command_under_cursor(first_line, cursor)?;
     Some(format!("/{name}"))
 }

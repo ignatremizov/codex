@@ -350,6 +350,7 @@ mod questions;
 mod startup_submission;
 use self::interrupts::InterruptManager;
 mod keymap_picker;
+mod mcp_activation;
 mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod misalignment_policy;
@@ -666,6 +667,7 @@ pub(crate) struct ChatWidget {
     /// as "running" while this is populated, even if no agent turn is currently
     /// executing.
     mcp_startup_status: Option<HashMap<String, McpStartupStatus>>,
+    mcp_activation: mcp_activation::McpActivation,
     /// Expected MCP servers for the current startup round, seeded from enabled local config.
     mcp_startup_expected_servers: Option<HashSet<String>>,
     /// After startup settles, ignore stale updates until enough notifications confirm a new round.

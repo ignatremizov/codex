@@ -554,6 +554,10 @@ pub(super) async fn submission_loop(
                     refresh_mcp_servers(&sess);
                     false
                 }
+                Op::ActivateMcpServer { server_name } => {
+                    sess.activate_mcp_server(server_name).await;
+                    false
+                }
                 Op::ReloadUserConfig => {
                     reload_user_config(&sess).await;
                     false

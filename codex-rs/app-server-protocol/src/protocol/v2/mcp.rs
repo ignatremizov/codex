@@ -1,3 +1,4 @@
+use super::shared::default_enabled;
 use super::shared::v2_enum_from_core;
 use crate::JsonSchema;
 use crate::TS;
@@ -88,6 +89,8 @@ pub struct McpServerStatus {
     pub resources: Vec<McpResource>,
     pub resource_templates: Vec<McpResourceTemplate>,
     pub auth_status: McpAuthStatus,
+    #[serde(default = "default_enabled")]
+    pub allow_implicit_invocation: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -98,6 +101,30 @@ pub struct ListMcpServerStatusResponse {
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// If None, there are no more items to return.
     pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMcpServerActivateParams {
+    pub thread_id: String,
+    pub server_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadMcpServerActivateOutcome {
+    Activated,
+    AlreadyActivated,
+    AlreadyImplicitlyAvailable,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMcpServerActivateResponse {
+    pub outcome: ThreadMcpServerActivateOutcome,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

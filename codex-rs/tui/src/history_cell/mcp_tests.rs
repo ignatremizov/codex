@@ -9,6 +9,38 @@ use std::sync::Arc;
 const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
 #[test]
+fn explicit_only_inventory_shows_activation_hint_without_claiming_disabled() {
+    let statuses = serde_json::from_value::<Vec<McpServerStatus>>(json!([{
+        "name": "team.docs",
+        "allowImplicitInvocation": false,
+        "runtimeStatus": "connected",
+        "tools": {},
+        "resources": [],
+        "resourceTemplates": [],
+        "authStatus": "unsupported"
+    }]))
+    .expect("explicit-only MCP status");
+    let cell =
+        new_mcp_tools_output_from_statuses(&statuses, McpServerStatusDetail::ToolsAndAuthOnly);
+    let rendered = cell
+        .display_lines(/*width*/ 100)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @r"
+    /mcp
+
+    🔌  MCP Tools
+
+      • team.docs: connected (0 tools)
+        Explicit only; use /mcp use team.docs
+
+      Use /mcp verbose for tools and resources.
+    ");
+}
+
+#[test]
 fn mcp_inventory_connection_states() {
     use McpServerConnectionStatus as Status;
 
@@ -24,6 +56,7 @@ fn mcp_inventory_connection_states() {
     ]
     .into_iter()
     .map(|(name, runtime_status)| McpServerStatus {
+        allow_implicit_invocation: true,
         server_capabilities: None,
         name: name.to_string(),
         runtime_status,

@@ -137,6 +137,7 @@ async fn local_mcp_startup_and_refresh_use_configured_http_client() -> Result<()
                     required: false,
                     supports_parallel_tool_calls: false,
                     omit_tools_from: None,
+                    allow_implicit_invocation: true,
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,

@@ -99,6 +99,7 @@ pub(crate) async fn make_test_app() -> App {
         last_subagent_backfill_attempt: None,
         primary_session_configured: None,
         pending_primary_events: VecDeque::new(),
+        mcp_requests: mcp_requests::McpRequests::default(),
         pending_app_server_requests: PendingAppServerRequests::default(),
         dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
         dynamic_tool_tasks: HashMap::new(),

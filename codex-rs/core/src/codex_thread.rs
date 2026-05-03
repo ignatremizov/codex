@@ -889,6 +889,18 @@ impl CodexThread {
         self.session.runtime_mcp_config_and_context(config).await
     }
 
+    pub async fn mcp_server_would_be_direct_at_session_start(&self, server_name: &str) -> bool {
+        self.session
+            .mcp_server_would_be_direct_at_session_start(server_name)
+            .await
+    }
+
+    pub async fn latest_mcp_server_use_context_text(&self, server_name: &str) -> Option<String> {
+        self.session
+            .latest_mcp_server_use_context_text(server_name)
+            .await
+    }
+
     /// Captures the exact MCP config and environment bindings for the current thread state.
     pub async fn current_mcp_config_and_runtime_context(
         &self,

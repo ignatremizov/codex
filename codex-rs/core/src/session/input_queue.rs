@@ -81,6 +81,7 @@ pub(crate) struct TurnInputQueue {
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
+    idle_pending_input: Mutex<Vec<TurnInput>>,
 }
 
 struct PendingMailboxCommunication {
@@ -95,6 +96,7 @@ impl InputQueue {
         Self {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            idle_pending_input: Mutex::new(Vec::new()),
         }
     }
 
@@ -139,6 +141,30 @@ impl InputQueue {
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
         !self.mailbox_pending_mails.lock().await.is_empty()
+    }
+
+    pub(crate) async fn queued_turn_inputs(&self) -> Vec<TurnInput> {
+        self.idle_pending_input.lock().await.clone()
+    }
+
+    pub(crate) async fn queue_turn_inputs(&self, input: Vec<TurnInput>) {
+        self.idle_pending_input.lock().await.extend(input);
+    }
+
+    pub(crate) async fn take_queued_turn_inputs(&self) -> Vec<TurnInput> {
+        std::mem::take(&mut *self.idle_pending_input.lock().await)
+    }
+
+    pub(crate) async fn has_queued_turn_trigger(&self) -> bool {
+        self.idle_pending_input
+            .lock()
+            .await
+            .iter()
+            .any(|input| match input {
+                TurnInput::InterAgentCommunication(mail) => mail.trigger_turn,
+                TurnInput::ResponseItem(_) => !super::mcp_prompt::is_mcp_use_input(input),
+                TurnInput::UserInput { .. } | TurnInput::FunctionCallOutput(_) => true,
+            })
     }
 
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
@@ -292,26 +318,35 @@ impl InputQueue {
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
     ) -> (Vec<TurnInput>, TurnStartOptions) {
-        let (pending_input, accepts_mailbox_delivery) = {
+        let (pending_input, accepts_mailbox_delivery, mcp_boundary) = {
             let mut active = active_turn.lock().await;
             match active.as_mut() {
                 Some(active_turn) => {
                     let mut turn_state = active_turn.turn_state.lock().await;
                     let accepts_mailbox_delivery =
                         turn_state.accepts_mailbox_delivery_for_current_turn();
+                    let boundary = turn_state
+                        .pending_input
+                        .items
+                        .iter()
+                        .position(super::mcp_prompt::is_mcp_use_input);
                     let pending_input = if accepts_mailbox_delivery {
-                        turn_state.pending_input.items.split_off(0)
+                        let end = boundary.unwrap_or(turn_state.pending_input.items.len());
+                        turn_state.pending_input.items.drain(..end).collect()
                     } else {
                         Vec::new()
                     };
-                    (pending_input, accepts_mailbox_delivery)
+                    (pending_input, accepts_mailbox_delivery, boundary.is_some())
                 }
-                None => (Vec::new(), true),
+                None => (Vec::new(), true, false),
             }
         };
-        if !accepts_mailbox_delivery {
+        if !accepts_mailbox_delivery || mcp_boundary {
             return (pending_input, TurnStartOptions::default());
         }
+        let mut queued = self.take_queued_turn_inputs().await;
+        queued.extend(pending_input);
+        let pending_input = queued;
         let (mailbox_items, start_options) = self.drain_mailbox_input_items().await;
         if pending_input.is_empty() {
             (mailbox_items, start_options)
@@ -327,17 +362,23 @@ impl InputQueue {
         reason = "active turn checks and turn state reads must remain atomic"
     )]
     pub(crate) async fn has_pending_input(&self, active_turn: &Mutex<Option<ActiveTurn>>) -> bool {
-        let (has_turn_pending_input, accepts_mailbox_delivery) = {
+        let (has_turn_pending_input, accepts_mailbox_delivery, mcp_boundary) = {
             let active = active_turn.lock().await;
             match active.as_ref() {
                 Some(active_turn) => {
                     let turn_state = active_turn.turn_state.lock().await;
+                    let boundary = turn_state
+                        .pending_input
+                        .items
+                        .iter()
+                        .position(super::mcp_prompt::is_mcp_use_input);
                     (
-                        !turn_state.pending_input.items.is_empty(),
+                        boundary.unwrap_or(turn_state.pending_input.items.len()) > 0,
                         turn_state.accepts_mailbox_delivery_for_current_turn(),
+                        boundary.is_some(),
                     )
                 }
-                None => (false, true),
+                None => (false, true, false),
             }
         };
         if !accepts_mailbox_delivery {
@@ -346,11 +387,27 @@ impl InputQueue {
         if has_turn_pending_input {
             return true;
         }
+        if mcp_boundary {
+            return false;
+        }
         self.has_pending_mailbox_items().await
     }
 }
 
 impl TurnInputQueue {
+    pub(crate) fn append_to_front(&mut self, mut items: Vec<TurnInput>) {
+        items.append(&mut self.items);
+        self.items = items;
+    }
+
+    pub(crate) fn as_slice(&self) -> &[TurnInput] {
+        &self.items
+    }
+
+    pub(crate) fn take(&mut self) -> Vec<TurnInput> {
+        std::mem::take(&mut self.items)
+    }
+
     fn has_pending_input(&self) -> bool {
         self.items.iter().any(|input| {
             matches!(

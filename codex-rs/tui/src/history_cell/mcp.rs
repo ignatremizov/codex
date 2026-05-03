@@ -633,6 +633,13 @@ pub(crate) fn new_mcp_tools_output_from_statuses(
             ]
             .into(),
         );
+        if !status.allow_implicit_invocation {
+            lines.push(
+                format!("    Explicit only; use /mcp use {}", status.name)
+                    .dim()
+                    .into(),
+            );
+        }
         if matches!(detail, McpServerStatusDetail::ToolsAndAuthOnly) {
             continue;
         }

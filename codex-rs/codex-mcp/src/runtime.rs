@@ -543,7 +543,7 @@ impl McpRuntime {
         }
         Self::binding_from_published_runtime(
             current,
-            /*required_servers*/ &[],
+            /*required_servers*/ &[server.to_string()],
             /*required_plugins*/ &HashSet::new(),
         )
         .await
@@ -950,6 +950,7 @@ mod tests {
             required: false,
             supports_parallel_tool_calls: false,
             omit_tools_from: None,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,

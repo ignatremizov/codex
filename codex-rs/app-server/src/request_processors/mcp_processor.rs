@@ -6,6 +6,8 @@ use codex_mcp::resolve_oauth_callback;
 
 use crate::thread_state::ThreadStateManager;
 
+mod activation;
+
 const MCP_TOOL_THREAD_ID_META_KEY: &str = "threadId";
 
 #[derive(Clone)]
@@ -387,6 +389,8 @@ impl McpRequestProcessor {
 
         let end = start.saturating_add(effective_limit).min(total);
 
+        let effective_servers = codex_mcp::effective_mcp_servers(&mcp_config, auth.as_ref());
+        let configured_servers = codex_mcp::configured_mcp_servers(&mcp_config);
         let data: Vec<McpServerStatus> = server_names[start..end]
             .iter()
             .map(|name| McpServerStatus {
@@ -413,6 +417,15 @@ impl McpRequestProcessor {
                     .remove(name)
                     .unwrap_or(CoreMcpAuthStatus::Unsupported)
                     .into(),
+                allow_implicit_invocation: effective_servers
+                    .get(name)
+                    .map(|server| server.config().allow_implicit_invocation)
+                    .or_else(|| {
+                        configured_servers
+                            .get(name)
+                            .map(|server| server.allow_implicit_invocation)
+                    })
+                    .unwrap_or(true),
             })
             .collect();
 

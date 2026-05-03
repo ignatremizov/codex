@@ -46,6 +46,7 @@ impl App {
     ) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
+        let sequence = self.mcp_requests.start(thread_id);
         let request_thread_id = self.mcp_inventory_request_thread_id(thread_id);
         tokio::spawn(async move {
             let result = fetch_all_mcp_server_statuses(request_handle, detail, request_thread_id)
@@ -55,17 +56,16 @@ impl App {
                 result,
                 detail,
                 thread_id,
+                sequence,
             });
         });
     }
 
     fn mcp_inventory_request_thread_id(&self, thread_id: Option<ThreadId>) -> Option<ThreadId> {
         thread_id.filter(|thread_id| {
-            self.active_thread_id == Some(*thread_id)
-                && self
-                    .agent_navigation
-                    .get(thread_id)
-                    .is_none_or(|entry| !entry.is_closed)
+            self.agent_navigation
+                .get(thread_id)
+                .is_none_or(|entry| !entry.is_closed)
         })
     }
 
@@ -688,45 +688,6 @@ impl App {
         } else {
             self.handle_feedback_thread_event(event);
         }
-    }
-
-    /// Process the completed MCP inventory fetch: clear the loading spinner, then
-    /// render either the full tool/resource listing or an error into chat history.
-    ///
-    /// When the app-server reports zero servers, a special "empty" cell is shown
-    /// instead of the full table.
-    pub(super) fn handle_mcp_inventory_result(
-        &mut self,
-        result: Result<Vec<McpServerStatus>, String>,
-        detail: McpServerStatusDetail,
-        thread_id: Option<ThreadId>,
-    ) {
-        if thread_id.is_some() && thread_id != self.current_displayed_thread_id() {
-            return;
-        }
-
-        self.chat_widget.clear_mcp_inventory_loading();
-        self.clear_committed_mcp_inventory_loading();
-
-        let statuses = match result {
-            Ok(statuses) => statuses,
-            Err(err) => {
-                self.chat_widget
-                    .add_error_message(format!("Failed to load MCP inventory: {err}"));
-                return;
-            }
-        };
-
-        if statuses.is_empty() {
-            self.chat_widget
-                .add_to_history(history_cell::empty_mcp_output());
-            return;
-        }
-
-        self.chat_widget
-            .add_to_history(history_cell::new_mcp_tools_output_from_statuses(
-                &statuses, detail,
-            ));
     }
 
     pub(super) fn clear_committed_mcp_inventory_loading(&mut self) {
@@ -1559,6 +1520,7 @@ mod tests {
     fn mcp_inventory_maps_prefix_tool_names_by_server() {
         let statuses = vec![
             McpServerStatus {
+                allow_implicit_invocation: true,
                 server_capabilities: None,
                 tools_error: None,
                 name: "docs".to_string(),
@@ -1583,6 +1545,7 @@ mod tests {
                 auth_status: codex_app_server_protocol::McpAuthStatus::Unsupported,
             },
             McpServerStatus {
+                allow_implicit_invocation: true,
                 server_capabilities: None,
                 tools_error: None,
                 name: "disabled".to_string(),

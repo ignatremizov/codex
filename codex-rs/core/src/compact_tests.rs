@@ -24,6 +24,117 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use test_case::test_case;
 
+#[tokio::test]
+async fn repeated_local_compaction_preserves_every_explicit_mcp_inventory() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let provider = ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
+    let (session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        Vec::new(),
+        move |config| {
+            config.model = Some("gpt-5.2".to_string());
+            config.model_provider = provider;
+            config.model_provider.supports_websockets = false;
+        },
+    )
+    .await;
+    let mut items = vec![user_message("first prompt")];
+    for (server_name, inventory) in [
+        (
+            "linear",
+            json!([{"description": "old ".repeat(COMPACT_USER_MESSAGE_MAX_TOKENS + 1)}])
+                .to_string(),
+        ),
+        ("github", r#"["issues"]"#.to_string()),
+        ("linear", r#"["updated"]"#.to_string()),
+    ] {
+        items.push(ContextualUserFragment::into(McpServerUseInstructions::new(
+            server_name.to_string(),
+            inventory,
+        )));
+        items.push(user_message("next prompt"));
+    }
+    items.push(ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "ordinary developer context".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    });
+    session
+        .record_conversation_items(&turn, turn.model_info(), &items)
+        .await;
+    let expected = session
+        .clone_history()
+        .await
+        .annotated_items()
+        .iter()
+        .filter(|envelope| McpServerUseInstructions::matches_response_item(&envelope.item))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(expected.len(), 3);
+    let mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("summary-1", "First summary."),
+                responses::ev_completed("compact-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("summary-2", "Second summary."),
+                responses::ev_completed("compact-2"),
+            ]),
+        ],
+    )
+    .await;
+    for _ in 0..2 {
+        run_compact_task(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            vec![UserInput::Text {
+                text: "Summarize the conversation.".to_string(),
+                text_elements: Vec::new(),
+            }],
+        )
+        .await?;
+        let history = session.clone_history().await;
+        let developers = history
+            .annotated_items()
+            .iter()
+            .filter(|envelope| {
+                matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "developer")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(developers, expected);
+        assert_eq!(
+            &history.annotated_items()[..expected.len()],
+            expected.as_slice()
+        );
+    }
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        let explicit_context = request
+            .input()
+            .into_iter()
+            .filter_map(|item| serde_json::from_value::<ResponseItem>(item).ok())
+            .filter(McpServerUseInstructions::matches_response_item)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            explicit_context,
+            expected
+                .iter()
+                .map(|envelope| envelope.item.clone())
+                .collect::<Vec<_>>(),
+        );
+    }
+    Ok(())
+}
+
 #[test_case(true; "metadata enabled")]
 #[test_case(false; "metadata disabled after capture")]
 #[tokio::test]

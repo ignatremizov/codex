@@ -7,6 +7,7 @@ use crate::client_common::ResponseEvent;
 use crate::context::CompactionSummary;
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianContextMode;
+use crate::context::McpServerUseInstructions;
 use crate::context::world_state::WorldState;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
@@ -409,7 +410,14 @@ async fn run_compact_task_inner_impl(
     );
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}\n\n{session_metadata}");
     let summary_for_event_text = summary_for_event(&summary_text);
-    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
+    // Explicit MCP use is user-requested context expansion. Preserve every accepted inventory
+    // and its envelope in order, independently of the reconstructed user-message budget.
+    let mcp_context = history_items
+        .iter()
+        .filter(|envelope| McpServerUseInstructions::matches_response_item(&envelope.item))
+        .cloned()
+        .collect();
+    let mut new_history = build_compacted_history(mcp_context, &user_messages, &summary_text);
     if let Some(summary_item) = new_history.last_mut() {
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.
