@@ -53,6 +53,15 @@ impl McpRequestProcessor {
             .map(|()| None)
     }
 
+    pub(crate) async fn thread_mcp_server_activate(
+        &self,
+        params: ThreadMcpServerActivateParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_mcp_server_activate_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn mcp_resource_read(
         &self,
         request_id: &ConnectionRequestId,
@@ -81,6 +90,60 @@ impl McpRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to refresh MCP servers: {err}")))?;
         Ok(McpServerRefreshResponse {})
+    }
+
+    async fn thread_mcp_server_activate_response(
+        &self,
+        params: ThreadMcpServerActivateParams,
+    ) -> Result<ThreadMcpServerActivateResponse, JSONRPCErrorError> {
+        let ThreadMcpServerActivateParams {
+            thread_id,
+            server_name,
+        } = params;
+        let (_, thread) = self.load_thread(&thread_id).await?;
+        let config = thread.config().await;
+        let mcp_config = thread.runtime_mcp_config(config.as_ref()).await;
+        let configured_servers = codex_mcp::configured_mcp_servers(&mcp_config);
+        let Some(server_config) = configured_servers.get(&server_name) else {
+            return Err(invalid_request(format!(
+                "unknown MCP server `{server_name}` for thread {thread_id}"
+            )));
+        };
+        if !server_config.enabled {
+            return Err(invalid_request(format!(
+                "MCP server `{server_name}` is disabled for thread {thread_id}"
+            )));
+        }
+        if thread
+            .mcp_server_would_be_direct_at_session_start(&server_name)
+            .await
+        {
+            return Ok(ThreadMcpServerActivateResponse {
+                outcome: ThreadMcpServerActivateOutcome::AlreadyImplicitlyAvailable,
+            });
+        }
+        if thread
+            .latest_mcp_server_use_context_text(&server_name)
+            .await
+            .is_some()
+        {
+            return Ok(ThreadMcpServerActivateResponse {
+                outcome: ThreadMcpServerActivateOutcome::AlreadyActivated,
+            });
+        }
+        thread
+            .submit(Op::ActivateMcpServer {
+                server_name: server_name.clone(),
+            })
+            .await
+            .map_err(|err| {
+                internal_error(format!(
+                    "failed to queue MCP server `{server_name}` activation: {err}"
+                ))
+            })?;
+        Ok(ThreadMcpServerActivateResponse {
+            outcome: ThreadMcpServerActivateOutcome::Activated,
+        })
     }
 
     async fn load_latest_config(
@@ -329,6 +392,7 @@ impl McpRequestProcessor {
             auth_statuses,
             mut server_names,
         } = snapshot;
+        let effective_servers = codex_mcp::effective_mcp_servers(&mcp_config, auth.as_ref());
         server_names.extend(
             auth_statuses
                 .keys()
@@ -358,6 +422,7 @@ impl McpRequestProcessor {
 
         let end = start.saturating_add(effective_limit).min(total);
 
+        let configured_servers = codex_mcp::configured_mcp_servers(&mcp_config);
         let data: Vec<McpServerStatus> = server_names[start..end]
             .iter()
             .map(|name| McpServerStatus {
@@ -371,6 +436,15 @@ impl McpRequestProcessor {
                     .cloned()
                     .unwrap_or(CoreMcpAuthStatus::Unsupported)
                     .into(),
+                allow_implicit_invocation: effective_servers
+                    .get(name)
+                    .map(codex_mcp::EffectiveMcpServer::allow_implicit_invocation)
+                    .or_else(|| {
+                        configured_servers
+                            .get(name)
+                            .map(|server| server.allow_implicit_invocation)
+                    })
+                    .unwrap_or(true),
             })
             .collect();
 

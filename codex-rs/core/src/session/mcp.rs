@@ -1,9 +1,11 @@
 use super::*;
 use crate::mcp::McpRuntimeProjection;
+use codex_config::McpServerConfig;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_mcp::ElicitationReviewRequest;
 use codex_mcp::ElicitationReviewer;
 use codex_mcp::ElicitationReviewerHandle;
+use codex_mcp::ToolPluginProvenance;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY as MCP_ELICITATION_APPROVAL_KIND_KEY;
@@ -405,10 +407,6 @@ impl Session {
         )
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP runtime refresh and publication must remain serialized"
-    )]
     pub(crate) async fn refresh_mcp_servers_if_requested(
         &self,
         turn_context: &TurnContext,
@@ -419,6 +417,28 @@ impl Session {
             return;
         };
 
+        if let Err(err) = self
+            .refresh_mcp_servers_from_refresh_config(
+                turn_context,
+                refresh_config,
+                elicitation_reviewer,
+            )
+            .await
+        {
+            warn!("failed to apply MCP server refresh config: {err:#}");
+        }
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "MCP runtime refresh and publication must remain serialized"
+    )]
+    pub(crate) async fn refresh_mcp_servers_from_refresh_config(
+        &self,
+        turn_context: &TurnContext,
+        refresh_config: McpServerRefreshConfig,
+        elicitation_reviewer: Option<ElicitationReviewerHandle>,
+    ) -> anyhow::Result<()> {
         let McpServerRefreshConfig {
             mcp_servers,
             mcp_oauth_credentials_store_mode,
@@ -429,8 +449,9 @@ impl Session {
             match serde_json::from_value::<HashMap<String, McpServerConfig>>(mcp_servers) {
                 Ok(servers) => servers,
                 Err(err) => {
-                    warn!("failed to parse MCP server refresh config: {err}");
-                    return;
+                    return Err(anyhow::anyhow!(
+                        "failed to parse MCP server refresh config: {err}"
+                    ));
                 }
             };
         let store_mode = match serde_json::from_value::<OAuthCredentialsStoreMode>(
@@ -438,16 +459,18 @@ impl Session {
         ) {
             Ok(mode) => mode,
             Err(err) => {
-                warn!("failed to parse MCP OAuth refresh config: {err}");
-                return;
+                return Err(anyhow::anyhow!(
+                    "failed to parse MCP OAuth refresh config: {err}"
+                ));
             }
         };
         let keyring_backend_kind =
             match serde_json::from_value::<AuthKeyringBackendKind>(auth_keyring_backend_kind) {
                 Ok(kind) => kind,
                 Err(err) => {
-                    warn!("failed to parse MCP auth keyring backend refresh config: {err}");
-                    return;
+                    return Err(anyhow::anyhow!(
+                        "failed to parse MCP auth keyring backend refresh config: {err}"
+                    ));
                 }
             };
 
@@ -461,8 +484,9 @@ impl Session {
             .features
             .set_enabled(Feature::SecretAuthStorage, secret_auth_storage_enabled)
         {
-            warn!("failed to apply MCP auth keyring backend refresh config: {err}");
-            return;
+            return Err(anyhow::anyhow!(
+                "failed to apply MCP auth keyring backend refresh config: {err}"
+            ));
         }
 
         let _guard = self.services.mcp_projection_lock.lock().await;
@@ -494,6 +518,7 @@ impl Session {
             elicitation_reviewer,
         )
         .await;
+        Ok(())
     }
 
     pub(crate) async fn set_openai_form_elicitation_support(
@@ -557,6 +582,33 @@ impl Session {
             &turn_context.environments,
             &available_environment_ids,
             elicitation_reviewer,
+        )
+        .await;
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "MCP runtime refresh and publication must remain serialized"
+    )]
+    pub(crate) async fn refresh_mcp_servers_now_with_mcp_config(
+        &self,
+        turn_context: &TurnContext,
+        mcp_config: McpConfig,
+        _tool_plugin_provenance: ToolPluginProvenance,
+    ) {
+        let _guard = self.services.mcp_projection_lock.lock().await;
+        let current_runtime = self.services.latest_mcp_runtime();
+        let available_environment_ids = current_runtime.available_environment_ids().to_vec();
+        let mcp_projection = McpRuntimeProjection {
+            config: mcp_config,
+            plugins_available: current_runtime.plugins_available(),
+        };
+        self.refresh_mcp_servers_inner(
+            turn_context,
+            mcp_projection,
+            &turn_context.environments,
+            &available_environment_ids,
+            None,
         )
         .await;
     }

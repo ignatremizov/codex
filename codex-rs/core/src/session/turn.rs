@@ -80,6 +80,7 @@ use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
 use codex_git_utils::get_git_repo_root_with_fs;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ServiceTier;
@@ -178,6 +179,14 @@ pub(crate) async fn run_turn(
         sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
         turn_diff_display_roots(turn_context.as_ref()),
     );
+    let _ = sess.session_start_mcp_tools_for_exposure().await;
+    let queued_response_items = sess
+        .render_queued_mcp_server_use_context_for_turn(turn_context.as_ref())
+        .await;
+    if !queued_response_items.is_empty() {
+        sess.record_mcp_server_use_context_items(&turn_context, queued_response_items)
+            .await;
+    }
 
     let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
         &sess,
@@ -230,11 +239,14 @@ pub(crate) async fn run_turn(
 
     let mut next_step_context = Some(first_step_context);
     loop {
+        if run_pending_session_start_hooks(&sess, &turn_context).await {
+            break;
+        }
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
         let pending_input = if can_drain_pending_input {
-            sess.input_queue.get_pending_input(&sess.active_turn).await
+            sess.get_pending_input().await
         } else {
             Vec::new()
         };
@@ -309,8 +321,7 @@ pub(crate) async fn run_turn(
                 } = sampling_request_output;
                 can_drain_pending_input = true;
                 let (has_pending_input, token_status, estimated_token_count) = async {
-                    let has_pending_input =
-                        sess.input_queue.has_pending_input(&sess.active_turn).await;
+                    let has_pending_input = sess.has_pending_input_requiring_follow_up().await;
                     let token_status = super::context_window::context_window_token_status(
                         sess.as_ref(),
                         turn_context.as_ref(),
@@ -401,6 +412,7 @@ pub(crate) async fn run_turn(
                             )
                             .await;
                             stop_hook_active = true;
+                            can_drain_pending_input = false;
                             continue;
                         } else {
                             sess.send_event(
@@ -1247,6 +1259,7 @@ pub(crate) async fn built_tools(
         .mcp_tools()
         .or_cancel(cancellation_token)
         .await?;
+    let session_start_mcp_tools = sess.session_start_mcp_tools_for_exposure().await;
     let loaded_plugins = sess
         .services
         .plugins_manager
@@ -1349,14 +1362,83 @@ pub(crate) async fn built_tools(
             .instrument(trace_span!("built_tools.load_discoverable_tools"))
             .await
         };
-    let mcp_tool_exposure = build_mcp_tool_exposure(
-        all_mcp_tools,
+    // Cache invariant: default MCP tool exposure is part of the session's model-visible
+    // contract. MCP reload may refresh live server processes/config, but it must not
+    // retroactively remove or add default tool specs for an existing session because that
+    // would invalidate the cached session prefix. New MCP prompt context belongs at explicit
+    // `/mcp use` append points; compaction is the only history replacement boundary.
+    let session_start_mcp_servers = sess.session_start_mcp_servers.clone();
+    let explicitly_enabled_connector_ids = sess.get_connector_selection().await;
+    let explicitly_enabled_connectors = connectors.as_ref().map_or_else(Vec::new, |connectors| {
+        connectors
+            .iter()
+            .filter(|connector| explicitly_enabled_connector_ids.contains(connector.id.as_str()))
+            .cloned()
+            .collect()
+    });
+    let all_mcp_tools_by_name = all_mcp_tools
+        .iter()
+        .map(|tool| (tool.canonical_tool_name().to_string(), tool.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut mcp_tool_exposure = build_mcp_tool_exposure(
+        &all_mcp_tools_by_name,
+        &session_start_mcp_tools,
         connectors.as_deref(),
+        explicitly_enabled_connectors.as_slice(),
         &turn_context.config,
+        &session_start_mcp_servers,
         search_tool_enabled(turn_context),
     );
-    let mcp_tools = has_mcp_servers.then_some(mcp_tool_exposure.direct_tools);
+    {
+        let mut session_start_direct_mcp_tools = sess.session_start_direct_mcp_tools.lock().await;
+        // Cache is keyed on the session-start prompt/tool prefix. Freeze only the stable
+        // non-Codex-app MCP direct tools; Codex Apps direct exposure is selected per turn
+        // from explicit connector context and must not be pinned by the first turn.
+        let current_turn_codex_apps_direct_tools = mcp_tool_exposure
+            .direct_tools
+            .iter()
+            .filter(|(_, tool)| tool.server_name == CODEX_APPS_MCP_SERVER_NAME)
+            .map(|(name, tool)| (name.clone(), tool.clone()))
+            .collect::<HashMap<_, _>>();
+        if let Some(direct_tools) = session_start_direct_mcp_tools.as_ref() {
+            mcp_tool_exposure.direct_tools = direct_tools.clone();
+            mcp_tool_exposure
+                .direct_tools
+                .extend(current_turn_codex_apps_direct_tools);
+        } else {
+            let session_start_stable_direct_mcp_tools = mcp_tool_exposure
+                .direct_tools
+                .iter()
+                .filter(|(_, tool)| tool.server_name != CODEX_APPS_MCP_SERVER_NAME)
+                .map(|(name, tool)| (name.clone(), tool.clone()))
+                .collect::<HashMap<_, _>>();
+            let direct_mcp_servers = session_start_stable_direct_mcp_tools
+                .values()
+                .map(|tool| tool.server_name.clone())
+                .collect::<HashSet<_>>();
+            *sess
+                .session_start_direct_mcp_servers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(direct_mcp_servers);
+            *session_start_direct_mcp_tools = Some(session_start_stable_direct_mcp_tools);
+        }
+    }
+    if let Some(deferred_tools) = mcp_tool_exposure.deferred_tools.as_mut() {
+        for direct_tool_name in mcp_tool_exposure.direct_tools.keys() {
+            deferred_tools.remove(direct_tool_name);
+        }
+        if deferred_tools.is_empty() {
+            mcp_tool_exposure.deferred_tools = None;
+        }
+    }
+    let mcp_tools =
+        (!mcp_tool_exposure.direct_tools.is_empty()).then_some(mcp_tool_exposure.direct_tools);
     let deferred_mcp_tools = mcp_tool_exposure.deferred_tools;
+    let mcp_tools = mcp_tools
+        .filter(|_| has_mcp_servers)
+        .map(|tools| tools.into_values().collect::<Vec<_>>());
+    let deferred_mcp_tools =
+        deferred_mcp_tools.map(|tools| tools.into_values().collect::<Vec<_>>());
     Ok(Arc::new(ToolRouter::from_context(
         step_context,
         ToolRouterParams {
@@ -2155,7 +2237,10 @@ async fn try_run_sampling_request(
                 }
                 needs_follow_up |= output_result.needs_follow_up;
                 // todo: remove before stabilizing multi-agent v2
-                if preempt_for_mailbox_mail && sess.input_queue.has_pending_mailbox_items().await {
+                if preempt_for_mailbox_mail
+                    && !sess.active_turn_has_pending_mcp_server_use_boundary().await
+                    && sess.input_queue.has_pending_mailbox_items().await
+                {
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
                         last_agent_message,
