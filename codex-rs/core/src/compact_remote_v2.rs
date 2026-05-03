@@ -328,15 +328,20 @@ async fn run_remote_compact_task_inner_impl(
     }
     let (compacted_history, retained_images) =
         build_v2_compacted_history(&prompt_input, compaction_output);
+    let explicit_mcp_context = crate::compact::collect_mcp_server_use_context_items(&prompt_input);
     analytics_details.retained_image_count = Some(retained_images);
     let (new_window_number, new_window_ids) = sess.advance_auto_compact_window().await;
-    let (new_history, world_state_baseline) = process_compacted_history(
+    let (mut new_history, world_state_baseline) = process_compacted_history(
         sess.as_ref(),
         compaction_turn_context.as_ref(),
         compacted_history,
         &initial_context_injection,
     )
     .await;
+    new_history = crate::compact::insert_mcp_server_use_context_items_at_compaction_boundary(
+        new_history,
+        explicit_mcp_context,
+    );
 
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
@@ -353,18 +358,19 @@ async fn run_remote_compact_task_inner_impl(
         previous_window_id: new_window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(new_window_ids.window_id.to_string()),
     };
+    let final_history = sess
+        .replace_compacted_history(
+            compaction_turn_context.as_ref(),
+            new_history,
+            reference_context_item,
+            world_state_baseline,
+            compacted_item,
+        )
+        .await;
     compaction_trace.record_installed(&CompactionCheckpointTracePayload {
         input_history: &trace_input_history,
-        replacement_history: &new_history,
+        replacement_history: &final_history,
     });
-    sess.replace_compacted_history(
-        compaction_turn_context.as_ref(),
-        new_history,
-        reference_context_item,
-        world_state_baseline,
-        compacted_item,
-    )
-    .await;
     sess.recompute_token_usage(compaction_turn_context).await;
     if crate::compact_handoff_summary::should_decode_remote_compaction_handoff(
         compaction_turn_context.config.as_ref(),

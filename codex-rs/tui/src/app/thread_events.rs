@@ -21,7 +21,15 @@ pub(super) enum ThreadBufferedEvent {
     Notification(ServerNotification),
     Request(ServerRequest),
     HistoryEntryResponse(HistoryLookupResponse),
+    McpInventoryResult(McpInventoryThreadEvent),
     FeedbackSubmission(FeedbackThreadEvent),
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct McpInventoryThreadEvent {
+    pub(super) request_seq: Option<u64>,
+    pub(super) result: Result<Vec<McpServerStatus>, String>,
+    pub(super) detail: McpServerStatusDetail,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +66,7 @@ impl ThreadEventStore {
                 | ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::HookCompleted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::McpServerStatusUpdated(_))
+                | ThreadBufferedEvent::McpInventoryResult(_)
                 | ThreadBufferedEvent::FeedbackSubmission(_)
         )
     }
@@ -169,6 +178,7 @@ impl ThreadEventStore {
                 ThreadBufferedEvent::Request(_)
                 | ThreadBufferedEvent::Notification(_)
                 | ThreadBufferedEvent::HistoryEntryResponse(_)
+                | ThreadBufferedEvent::McpInventoryResult(_)
                 | ThreadBufferedEvent::FeedbackSubmission(_) => None,
             })
             .collect()
@@ -196,6 +206,7 @@ impl ThreadEventStore {
                 ThreadBufferedEvent::Request(_)
                 | ThreadBufferedEvent::Notification(_)
                 | ThreadBufferedEvent::HistoryEntryResponse(_)
+                | ThreadBufferedEvent::McpInventoryResult(_)
                 | ThreadBufferedEvent::FeedbackSubmission(_) => None,
             })
             .or_else(|| {
@@ -229,6 +240,7 @@ impl ThreadEventStore {
                         .should_replay_snapshot_request(request),
                     ThreadBufferedEvent::Notification(_)
                     | ThreadBufferedEvent::HistoryEntryResponse(_)
+                    | ThreadBufferedEvent::McpInventoryResult(_)
                     | ThreadBufferedEvent::FeedbackSubmission(_) => true,
                 })
                 .cloned()
