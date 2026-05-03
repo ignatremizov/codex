@@ -36,6 +36,13 @@
         "integer",
         "null"
       ]
+    },
+    "threadId": {
+      "description": "Optional loaded thread whose effective MCP config should be inspected.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "ListMcpServerStatusParams",

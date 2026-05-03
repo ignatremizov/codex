@@ -454,6 +454,7 @@ fn codex_apps_mcp_server_config(config: &McpConfig) -> McpServerConfig {
         experimental_environment: None,
         enabled: true,
         required: false,
+        allow_implicit_invocation: true,
         supports_parallel_tool_calls: false,
         disabled_reason: None,
         startup_timeout_sec: Some(Duration::from_secs(30)),

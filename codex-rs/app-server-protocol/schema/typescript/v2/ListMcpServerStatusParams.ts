@@ -5,6 +5,10 @@ import type { McpServerStatusDetail } from "./McpServerStatusDetail";
 
 export type ListMcpServerStatusParams = {
 /**
+ * Optional loaded thread whose effective MCP config should be inspected.
+ */
+threadId?: string | null,
+/**
  * Opaque pagination cursor returned by a previous call.
  */
 cursor?: string | null,

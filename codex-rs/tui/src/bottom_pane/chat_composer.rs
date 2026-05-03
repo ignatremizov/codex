@@ -365,6 +365,7 @@ pub(crate) struct ChatComposer {
     next_element_id: u64,
     skills: Option<Vec<SkillMetadata>>,
     plugins: Option<Vec<PluginCapabilitySummary>>,
+    mcp_server_names: Vec<String>,
     connectors_snapshot: Option<ConnectorsSnapshot>,
     collaboration_modes_enabled: bool,
     config: ChatComposerConfig,
@@ -529,6 +530,7 @@ impl ChatComposer {
             next_element_id: 0,
             skills: None,
             plugins: None,
+            mcp_server_names: Vec::new(),
             connectors_snapshot: None,
             collaboration_modes_enabled: false,
             config,
@@ -578,6 +580,13 @@ impl ChatComposer {
 
     pub fn set_plugin_mentions(&mut self, plugins: Option<Vec<PluginCapabilitySummary>>) {
         self.plugins = plugins;
+        self.sync_popups();
+    }
+
+    pub fn set_mcp_server_names(&mut self, mut server_names: Vec<String>) {
+        server_names.sort();
+        server_names.dedup();
+        self.mcp_server_names = server_names;
         self.sync_popups();
     }
 
@@ -1707,30 +1716,37 @@ impl ChatComposer {
                 // before applying completion.
                 let first_line = self.draft.textarea.text().lines().next().unwrap_or("");
                 popup.on_composer_text_change(first_line.to_string());
-                if let Some(selected_cmd) = popup.selected_item() {
-                    let selected_command_text = format!("/{}", selected_cmd.command());
-                    if let CommandItem::Builtin(cmd) = selected_cmd
-                        && cmd == SlashCommand::Skills
-                    {
-                        self.stage_selected_slash_command_history(&CommandItem::Builtin(cmd));
-                        self.draft.textarea.set_text_clearing_elements("");
-                        self.draft.is_bash_mode = false;
-                        return (InputResult::Command(cmd), true);
+                match popup.selected_item() {
+                    Some(item @ (CommandItem::McpSubcommand(_) | CommandItem::McpServer(_))) => {
+                        if self.complete_mcp_popup_item(item) {
+                            return (InputResult::None, true);
+                        }
                     }
+                    Some(item @ CommandItem::Builtin(cmd)) => {
+                        if cmd == SlashCommand::Skills {
+                            self.stage_selected_slash_command_history(&item);
+                            self.draft.textarea.set_text_clearing_elements("");
+                            self.draft.is_bash_mode = false;
+                            return (InputResult::Command(cmd), true);
+                        }
 
-                    let starts_with_cmd =
-                        first_line.trim_start().starts_with(&selected_command_text);
-                    if !starts_with_cmd {
-                        self.draft
-                            .textarea
-                            .set_text_clearing_elements(&format!("{selected_command_text} "));
-                        if !self.draft.textarea.text().is_empty() {
+                        let selected_command_text = format!("/{}", cmd.command());
+                        let starts_with_cmd =
+                            first_line.trim_start().starts_with(&selected_command_text);
+                        if !starts_with_cmd {
                             self.draft
                                 .textarea
-                                .set_cursor(self.draft.textarea.text().len());
+                                .set_text_clearing_elements(&format!("/{} ", cmd.command()));
+                            if !self.draft.textarea.text().is_empty() {
+                                self.draft
+                                    .textarea
+                                    .set_cursor(self.draft.textarea.text().len());
+                            }
+                            return (InputResult::None, true);
                         }
-                        return (InputResult::None, true);
                     }
+                    Some(CommandItem::ServiceTier(_)) => {}
+                    None => {}
                 }
                 if self.is_task_running {
                     return self.handle_submission(/*should_queue*/ true);
@@ -1746,8 +1762,8 @@ impl ChatComposer {
                 // while the slash-command popup is active.
                 let first_line = self.draft.textarea.text().lines().next().unwrap_or("");
                 popup.on_composer_text_change(first_line.to_string());
-                if let Some(selected_cmd) = popup.selected_item() {
-                    let selected_command_text = format!("/{}", selected_cmd.command());
+                if let Some(CommandItem::Builtin(cmd)) = popup.selected_item() {
+                    let selected_command_text = format!("/{}", cmd.command());
                     let starts_with_cmd =
                         first_line.trim_start().starts_with(&selected_command_text);
                     if !starts_with_cmd {
@@ -1771,22 +1787,66 @@ impl ChatComposer {
             } => {
                 if let Some(sel) = popup.selected_item() {
                     self.stage_selected_slash_command_history(&sel);
-                    self.draft.textarea.set_text_clearing_elements("");
-                    self.draft.is_bash_mode = false;
-                    return (
-                        match sel {
-                            CommandItem::Builtin(cmd) => InputResult::Command(cmd),
-                            CommandItem::ServiceTier(command) => {
-                                InputResult::ServiceTierCommand(command)
+                    match sel {
+                        CommandItem::Builtin(cmd) => {
+                            self.draft.textarea.set_text_clearing_elements("");
+                            self.draft.is_bash_mode = false;
+                            return (InputResult::Command(cmd), true);
+                        }
+                        CommandItem::ServiceTier(command) => {
+                            self.draft.textarea.set_text_clearing_elements("");
+                            self.draft.is_bash_mode = false;
+                            return (InputResult::ServiceTierCommand(command), true);
+                        }
+                        CommandItem::McpSubcommand("use") => {
+                            self.complete_mcp_popup_item(sel);
+                            return (InputResult::None, true);
+                        }
+                        CommandItem::McpSubcommand("verbose") | CommandItem::McpServer(_) => {
+                            if self.complete_mcp_popup_item(sel) {
+                                return self.handle_submission(/*should_queue*/ false);
                             }
-                        },
-                        true,
-                    );
+                        }
+                        CommandItem::McpSubcommand(_) => {}
+                    }
                 }
                 // Fallback to default newline handling if no command selected.
                 self.handle_key_event_without_popup(key_event)
             }
             input => self.handle_input_basic(input),
+        }
+    }
+
+    fn complete_mcp_popup_item(&mut self, item: CommandItem) -> bool {
+        match item {
+            CommandItem::McpSubcommand("use") => {
+                self.draft.textarea.set_text_clearing_elements("/mcp use ");
+                self.draft
+                    .textarea
+                    .set_cursor(self.draft.textarea.text().len());
+                true
+            }
+            CommandItem::McpSubcommand("verbose") => {
+                self.draft
+                    .textarea
+                    .set_text_clearing_elements("/mcp verbose");
+                self.draft
+                    .textarea
+                    .set_cursor(self.draft.textarea.text().len());
+                true
+            }
+            CommandItem::McpServer(server_name) => {
+                self.draft
+                    .textarea
+                    .set_text_clearing_elements(&format!("/mcp use {server_name}"));
+                self.draft
+                    .textarea
+                    .set_cursor(self.draft.textarea.text().len());
+                true
+            }
+            CommandItem::Builtin(_)
+            | CommandItem::ServiceTier(_)
+            | CommandItem::McpSubcommand(_) => false,
         }
     }
 
@@ -3096,7 +3156,13 @@ impl ChatComposer {
         if matches!(command, CommandItem::Builtin(SlashCommand::Clear)) {
             return;
         }
-        self.stage_slash_command_history_text(format!("/{}", command.command()));
+        let text = match command {
+            CommandItem::Builtin(cmd) => format!("/{}", cmd.command()),
+            CommandItem::ServiceTier(command) => format!("/{}", command.name),
+            CommandItem::McpSubcommand(subcommand) => format!("/mcp {subcommand}"),
+            CommandItem::McpServer(server_name) => format!("/mcp use {server_name}"),
+        };
+        self.stage_slash_command_history_text(text);
     }
 
     /// Store the provided command text and the current composer adornments in the pending slot.
@@ -3809,6 +3875,16 @@ impl ChatComposer {
         Some((name, rest))
     }
 
+    fn is_editing_mcp_args(first_line: &str, cursor: usize) -> bool {
+        let Some(tail) = first_line.strip_prefix("/mcp") else {
+            return false;
+        };
+        if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+            return false;
+        }
+        cursor <= first_line.len() && cursor > "/mcp".len()
+    }
+
     /// Heuristic for whether the typed slash command looks like a valid
     /// prefix for any known built-in command.
     /// Empty names only count when there is no extra content after the '/'.
@@ -3847,6 +3923,8 @@ impl ChatComposer {
         let is_editing_slash_command_name = caret_on_first_line
             && Self::slash_command_under_cursor(first_line, cursor)
                 .is_some_and(|(name, rest)| self.looks_like_slash_prefix(name, rest));
+        let is_editing_mcp_args =
+            caret_on_first_line && Self::is_editing_mcp_args(first_line, cursor);
 
         // If the cursor is currently positioned within an `@token`, prefer the
         // file-search popup over the slash popup so users can insert a file path
@@ -3859,14 +3937,15 @@ impl ChatComposer {
         }
         match &mut self.popups.active {
             ActivePopup::Command(popup) => {
-                if is_editing_slash_command_name {
+                if is_editing_slash_command_name || is_editing_mcp_args {
+                    popup.set_mcp_server_names(self.mcp_server_names.clone());
                     popup.on_composer_text_change(first_line.to_string());
                 } else {
                     self.popups.active = ActivePopup::None;
                 }
             }
             _ => {
-                if is_editing_slash_command_name {
+                if is_editing_slash_command_name || is_editing_mcp_args {
                     let collaboration_modes_enabled = self.collaboration_modes_enabled;
                     let connectors_enabled = self.connectors_enabled;
                     let plugins_command_enabled = self.plugins_command_enabled;
@@ -3890,6 +3969,7 @@ impl ChatComposer {
                         },
                         self.service_tier_commands.clone(),
                     );
+                    command_popup.set_mcp_server_names(self.mcp_server_names.clone());
                     command_popup.on_composer_text_change(first_line.to_string());
                     self.popups.active = ActivePopup::Command(command_popup);
                 }
@@ -7583,7 +7663,7 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected model command, got service tier {command:?}")
                 }
-                None => panic!("no selected command for '/mo'"),
+                other => panic!("expected model to be selected for '/mo', got {other:?}"),
             },
             _ => panic!("slash popup not active after typing '/mo'"),
         }
@@ -7639,7 +7719,7 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected resume command, got service tier {command:?}")
                 }
-                None => panic!("no selected command for '/res'"),
+                other => panic!("expected resume to be selected for '/res', got {other:?}"),
             },
             _ => panic!("slash popup not active after typing '/res'"),
         }
@@ -7692,6 +7772,12 @@ mod tests {
                 }
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected pets command, got service tier {command:?}")
+                }
+                Some(CommandItem::McpSubcommand(command)) => {
+                    panic!("expected pets command, got MCP subcommand {command:?}")
+                }
+                Some(CommandItem::McpServer(server)) => {
+                    panic!("expected pets command, got MCP server {server:?}")
                 }
                 None => panic!("no selected command for '/pet'"),
             },
@@ -8170,6 +8256,99 @@ mod tests {
             composer.draft.textarea.cursor(),
             composer.draft.textarea.text().len()
         );
+    }
+
+    #[test]
+    fn slash_mcp_tab_completes_use_subcommand() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        composer.set_text_content("/mcp u".to_string(), Vec::new(), Vec::new());
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(result, InputResult::None);
+        assert_eq!(composer.draft.textarea.text(), "/mcp use ");
+        assert_eq!(
+            composer.draft.textarea.cursor(),
+            composer.draft.textarea.text().len()
+        );
+    }
+
+    #[test]
+    fn slash_mcp_use_tab_completes_configured_server_name() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_mcp_server_names(vec![
+            "github".to_string(),
+            "linear".to_string(),
+            "local docs".to_string(),
+        ]);
+        composer.set_text_content("/mcp use l".to_string(), Vec::new(), Vec::new());
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(result, InputResult::None);
+        assert_eq!(composer.draft.textarea.text(), "/mcp use linear");
+        assert_eq!(
+            composer.draft.textarea.cursor(),
+            composer.draft.textarea.text().len()
+        );
+    }
+
+    #[test]
+    fn slash_mcp_use_enter_accepts_configured_server_name() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_mcp_server_names(vec!["github".to_string(), "linear".to_string()]);
+        composer.set_text_content("/mcp use g".to_string(), Vec::new(), Vec::new());
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        match result {
+            InputResult::CommandWithArgs(cmd, args, elements) => {
+                assert_eq!(cmd, SlashCommand::Mcp);
+                assert_eq!(args, "use github");
+                assert!(elements.is_empty());
+            }
+            other => panic!("expected completed /mcp use command, got {other:?}"),
+        }
     }
 
     #[test]

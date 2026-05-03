@@ -2472,6 +2472,7 @@ fn build_specs_with_inputs_for_test(
     let params = ToolRegistryBuildParams {
         mcp_tools: mcp_tool_inputs.as_deref(),
         deferred_mcp_tools: deferred_mcp_tools.as_deref(),
+        unavailable_called_tools: &[],
         discoverable_tools: discoverable_tools.as_deref(),
         extension_tool_executors,
         dynamic_tools,

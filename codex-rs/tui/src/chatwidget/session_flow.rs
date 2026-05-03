@@ -119,6 +119,14 @@ impl ChatWidget {
         if self.connectors_enabled() {
             self.prefetch_connectors();
         }
+        if let Some(thread_id) = self.thread_id {
+            while let Some(server_name) = self.pending_mcp_server_uses.pop_front() {
+                self.app_event_tx.send(AppEvent::SubmitThreadOp {
+                    thread_id,
+                    op: AppCommand::activate_mcp_server(server_name),
+                });
+            }
+        }
         if let Some(user_message) = self.initial_user_message.take() {
             if self.suppress_initial_user_message_submit {
                 self.initial_user_message = Some(user_message);

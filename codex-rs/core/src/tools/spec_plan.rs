@@ -23,6 +23,7 @@ use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::handlers::ShellCommandHandlerOptions;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandler;
+use crate::tools::handlers::UnavailableToolHandler;
 use crate::tools::handlers::UpdateGoalHandler;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WriteStdinHandler;
@@ -82,6 +83,7 @@ const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and manag
 struct ToolRegistryBuildParams<'a> {
     mcp_tools: Option<&'a [ToolInfo]>,
     deferred_mcp_tools: Option<&'a [ToolInfo]>,
+    unavailable_called_tools: &'a [ToolName],
     discoverable_tools: Option<&'a [DiscoverableTool]>,
     extension_tool_executors: &'a [Arc<dyn ToolExecutor<ExtensionToolCall>>],
     dynamic_tools: &'a [DynamicToolSpec],
@@ -101,6 +103,7 @@ fn build_tool_specs_and_registry(
     let ToolRouterParams {
         mcp_tools,
         deferred_mcp_tools,
+        unavailable_called_tools,
         discoverable_tools,
         extension_tool_executors,
         dynamic_tools,
@@ -112,6 +115,7 @@ fn build_tool_specs_and_registry(
         ToolRegistryBuildParams {
             mcp_tools: mcp_tools.as_deref(),
             deferred_mcp_tools: deferred_mcp_tools.as_deref(),
+            unavailable_called_tools: &unavailable_called_tools,
             discoverable_tools: discoverable_tools.as_deref(),
             extension_tool_executors: &extension_tool_executors,
             dynamic_tools,
@@ -251,9 +255,20 @@ fn build_code_mode_executors(
             executor.spec()
         })
         .collect::<Vec<_>>();
-    let namespace_descriptions = code_mode_namespace_descriptions(&code_mode_nested_tool_specs);
+    let code_mode_prompt_tool_specs = executors
+        .iter()
+        .filter(|executor| executor.exposure() != ToolExposure::Deferred)
+        .filter_map(|executor| {
+            if executor.exposure() == ToolExposure::DirectModelOnly {
+                return None;
+            }
+
+            executor.spec()
+        })
+        .collect::<Vec<_>>();
+    let namespace_descriptions = code_mode_namespace_descriptions(&code_mode_prompt_tool_specs);
     let mut enabled_tools =
-        collect_code_mode_exec_prompt_tool_definitions(code_mode_nested_tool_specs.iter());
+        collect_code_mode_exec_prompt_tool_definitions(code_mode_prompt_tool_specs.iter());
     enabled_tools
         .sort_by(|left, right| compare_code_mode_tools(left, right, &namespace_descriptions));
 
@@ -532,6 +547,12 @@ fn collect_tool_executors(
                 ToolExposure::Deferred,
             )));
         }
+    }
+
+    for tool_name in params.unavailable_called_tools {
+        executors.push(Arc::new(UnavailableToolHandler::with_spec(
+            tool_name.clone(),
+        )));
     }
 
     for tool in params.dynamic_tools {

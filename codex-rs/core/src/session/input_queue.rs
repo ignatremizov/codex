@@ -14,6 +14,28 @@ pub(crate) struct TurnInputQueue {
     items: Vec<ResponseInputItem>,
 }
 
+impl TurnInputQueue {
+    pub(crate) fn append_to_front(&mut self, mut items: Vec<ResponseInputItem>) {
+        if items.is_empty() {
+            return;
+        }
+        items.append(&mut self.items);
+        self.items = items;
+    }
+
+    pub(crate) fn as_slice(&self) -> &[ResponseInputItem] {
+        &self.items
+    }
+
+    pub(crate) fn take(&mut self) -> Vec<ResponseInputItem> {
+        std::mem::take(&mut self.items)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     mailbox_tx: watch::Sender<()>,
@@ -82,6 +104,10 @@ impl InputQueue {
 
     pub(crate) async fn take_queued_response_items_for_next_turn(&self) -> Vec<ResponseInputItem> {
         std::mem::take(&mut *self.idle_pending_input.lock().await)
+    }
+
+    pub(crate) async fn queued_response_items_for_next_turn(&self) -> Vec<ResponseInputItem> {
+        self.idle_pending_input.lock().await.clone()
     }
 
     pub(crate) async fn has_queued_response_items_for_next_turn(&self) -> bool {

@@ -1,4 +1,5 @@
 use crate::agent::AgentStatus;
+use crate::config::Config;
 use crate::config::ConstraintResult;
 use crate::goals::ExternalGoalSet;
 use crate::goals::GoalRuntimeEvent;
@@ -6,6 +7,8 @@ use crate::session::Codex;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
 use codex_features::Feature;
+use codex_mcp::McpConfig;
+use codex_mcp::ToolPluginProvenance;
 use codex_otel::SessionTelemetry;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
@@ -53,6 +56,7 @@ use codex_rollout::state_db::StateDbHandle;
 pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
+    pub active_profile: Option<String>,
     pub service_tier: Option<String>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
@@ -502,6 +506,10 @@ impl CodexThread {
         self.codex.session.get_config().await
     }
 
+    pub async fn get_config(&self) -> Arc<Config> {
+        self.codex.session.get_config().await
+    }
+
     /// Refresh the thread's layer-backed user config state from a caller-supplied
     /// config snapshot. Thread-scoped layers and session-static settings remain
     /// unchanged.
@@ -511,6 +519,87 @@ impl CodexThread {
 
     pub async fn environment_selections(&self) -> Vec<TurnEnvironmentSelection> {
         self.codex.thread_environment_selections().await
+    }
+
+    pub async fn has_mcp_server(&self, server_name: &str) -> bool {
+        self.codex.session.has_mcp_server(server_name).await
+    }
+
+    pub async fn has_reference_context(&self) -> bool {
+        self.codex.session.reference_context_item().await.is_some()
+    }
+
+    pub async fn refresh_mcp_servers_now(
+        &self,
+        refresh_config: codex_protocol::protocol::McpServerRefreshConfig,
+    ) -> anyhow::Result<()> {
+        let turn_context = self.codex.session.new_default_turn().await;
+        self.codex
+            .session
+            .refresh_mcp_servers_from_refresh_config(turn_context.as_ref(), refresh_config)
+            .await
+    }
+
+    pub async fn refresh_mcp_servers_now_with_mcp_config(
+        &self,
+        mcp_config: McpConfig,
+        tool_plugin_provenance: ToolPluginProvenance,
+    ) {
+        let turn_context = self.codex.session.new_default_turn().await;
+        self.codex
+            .session
+            .refresh_mcp_servers_now_with_mcp_config(
+                turn_context.as_ref(),
+                mcp_config,
+                tool_plugin_provenance,
+            )
+            .await;
+    }
+
+    pub async fn latest_mcp_server_use_context_text(&self, server_name: &str) -> Option<String> {
+        self.codex
+            .session
+            .latest_mcp_server_use_context_text(server_name)
+            .await
+    }
+
+    pub async fn render_mcp_server_use_context_text(&self, server_name: &str) -> String {
+        self.codex
+            .session
+            .render_mcp_server_use_context_text(server_name)
+            .await
+    }
+
+    pub fn mcp_server_was_implicitly_visible_at_session_start(&self, server_name: &str) -> bool {
+        self.codex
+            .session
+            .mcp_server_was_implicitly_visible_at_session_start(server_name)
+    }
+
+    pub async fn current_mcp_inventory_was_direct_at_session_start(
+        &self,
+        server_name: &str,
+    ) -> bool {
+        self.codex
+            .session
+            .current_mcp_inventory_was_direct_at_session_start(server_name)
+            .await
+    }
+
+    pub async fn mcp_server_would_be_direct_at_session_start(&self, server_name: &str) -> bool {
+        let turn_context = self.codex.session.new_default_turn().await;
+        let _ = self
+            .codex
+            .session
+            .session_start_mcp_tools_for_exposure()
+            .await;
+        self.codex
+            .session
+            .mcp_server_would_be_direct_at_session_start_for_turn_context(
+                turn_context.as_ref(),
+                server_name,
+            )
+            .await
     }
 
     pub async fn read_mcp_resource(

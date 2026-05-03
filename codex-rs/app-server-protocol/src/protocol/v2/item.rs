@@ -855,13 +855,11 @@ impl From<CoreTurnItem> for ThreadItem {
                     duration_ms,
                 }
             }
-            CoreTurnItem::ContextCompaction(compaction) => {
-                ThreadItem::ContextCompaction {
-                    id: compaction.id,
-                    summary: compaction.summary,
-                    message: compaction.message,
-                }
-            }
+            CoreTurnItem::ContextCompaction(compaction) => ThreadItem::ContextCompaction {
+                id: compaction.id,
+                summary: compaction.summary,
+                message: compaction.message,
+            },
         }
     }
 }

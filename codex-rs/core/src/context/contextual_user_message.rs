@@ -9,6 +9,7 @@ use super::GoalContext;
 use super::LegacyApplyPatchExecCommandWarning;
 use super::LegacyModelMismatchWarning;
 use super::LegacyUnifiedExecProcessLimitWarning;
+use super::McpServerUseInstructions;
 use super::SkillInstructions;
 use super::SubagentNotification;
 use super::TurnAborted;
@@ -20,6 +21,8 @@ static USER_INSTRUCTIONS_REGISTRATION: FragmentRegistrationProxy<UserInstruction
 static ENVIRONMENT_CONTEXT_REGISTRATION: FragmentRegistrationProxy<EnvironmentContext> =
     FragmentRegistrationProxy::new();
 static SKILL_INSTRUCTIONS_REGISTRATION: FragmentRegistrationProxy<SkillInstructions> =
+    FragmentRegistrationProxy::new();
+static MCP_SERVER_USE_REGISTRATION: FragmentRegistrationProxy<McpServerUseInstructions> =
     FragmentRegistrationProxy::new();
 static USER_SHELL_COMMAND_REGISTRATION: FragmentRegistrationProxy<UserShellCommand> =
     FragmentRegistrationProxy::new();
@@ -43,6 +46,7 @@ static CONTEXTUAL_USER_FRAGMENTS: &[&dyn FragmentRegistration] = &[
     &USER_INSTRUCTIONS_REGISTRATION,
     &ENVIRONMENT_CONTEXT_REGISTRATION,
     &SKILL_INSTRUCTIONS_REGISTRATION,
+    &MCP_SERVER_USE_REGISTRATION,
     &USER_SHELL_COMMAND_REGISTRATION,
     &TURN_ABORTED_REGISTRATION,
     &SUBAGENT_NOTIFICATION_REGISTRATION,

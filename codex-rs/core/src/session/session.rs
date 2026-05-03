@@ -2,12 +2,15 @@ use super::input_queue::InputQueue;
 use super::*;
 use crate::goals::GoalRuntimeState;
 use crate::state::ActiveTurn;
+use codex_mcp::EffectiveMcpServer;
+use codex_mcp::ToolInfo as McpToolInfo;
 use codex_protocol::SessionId;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::Semaphore;
 
 /// Context for an initialized model agent
@@ -26,10 +29,20 @@ pub(crate) struct Session {
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
     pub(super) features: ManagedFeatures,
+    /// Effective MCP server visibility captured at the session-start exposure boundary.
+    ///
+    /// MCP reloads may update live server runtime state, but normal turns must not
+    /// rederive the default model-visible MCP contract from later config because
+    /// adding/removing default tool specs would invalidate the cached session prefix.
+    pub(super) session_start_mcp_servers: HashMap<String, EffectiveMcpServer>,
+    pub(super) session_start_mcp_tools: Mutex<HashMap<String, McpToolInfo>>,
+    pub(super) session_start_direct_mcp_servers: StdMutex<Option<HashSet<String>>>,
+    pub(super) session_start_direct_mcp_tools: Mutex<Option<HashMap<String, McpToolInfo>>>,
     pub(super) pending_mcp_server_refresh_config: Mutex<Option<McpServerRefreshConfig>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) input_queue: InputQueue,
+    pub(super) idle_pending_mcp_server_use: Mutex<Vec<String>>,
     pub(crate) goal_runtime: GoalRuntimeState,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
@@ -962,10 +975,15 @@ impl Session {
                 state: Mutex::new(state),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
+                session_start_mcp_servers: mcp_servers.clone(),
+                session_start_mcp_tools: Mutex::new(HashMap::new()),
+                session_start_direct_mcp_servers: StdMutex::new(None),
+                session_start_direct_mcp_tools: Mutex::new(None),
                 pending_mcp_server_refresh_config: Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 active_turn: Mutex::new(None),
                 input_queue: InputQueue::new(),
+                idle_pending_mcp_server_use: Mutex::new(Vec::new()),
                 goal_runtime: GoalRuntimeState::new(),
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
@@ -1089,6 +1107,17 @@ impl Session {
             {
                 let mut manager_guard = sess.services.mcp_connection_manager.write().await;
                 *manager_guard = mcp_connection_manager;
+            }
+            {
+                let manager_guard = sess.services.mcp_connection_manager.read().await;
+                let tools = manager_guard
+                    .list_all_tools()
+                    .await
+                    .into_iter()
+                    .map(|tool| (tool.canonical_tool_name().to_string(), tool))
+                    .collect();
+                let mut session_start_mcp_tools = sess.session_start_mcp_tools.lock().await;
+                *session_start_mcp_tools = tools;
             }
             {
                 let mut cancel_guard = sess.services.mcp_startup_cancellation_token.lock().await;

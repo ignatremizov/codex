@@ -11,6 +11,7 @@ use tokio_util::task::AbortOnDropHandle;
 
 use codex_extension_api::ExtensionData;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
+use codex_protocol::models::ResponseInputItem;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
@@ -217,6 +218,26 @@ impl TurnState {
         key: &str,
     ) -> Option<oneshot::Sender<DynamicToolResponse>> {
         self.pending_dynamic_tools.remove(key)
+    }
+
+    pub(crate) fn prepend_pending_input(&mut self, input: Vec<ResponseInputItem>) {
+        if input.is_empty() {
+            return;
+        }
+
+        self.pending_input.append_to_front(input);
+    }
+
+    pub(crate) fn pending_input(&self) -> &[ResponseInputItem] {
+        self.pending_input.as_slice()
+    }
+
+    pub(crate) fn take_pending_input(&mut self) -> Vec<ResponseInputItem> {
+        if self.pending_input.is_empty() {
+            Vec::with_capacity(0)
+        } else {
+            self.pending_input.take()
+        }
     }
 
     pub(crate) fn accept_mailbox_delivery_for_current_turn(&mut self) {

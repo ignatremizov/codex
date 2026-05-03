@@ -281,6 +281,7 @@ fn build_specs_with_inputs_for_test(
         ToolRouterParams {
             mcp_tools,
             deferred_mcp_tools,
+            unavailable_called_tools: Vec::new(),
             discoverable_tools,
             extension_tool_executors: extension_tool_executors.to_vec(),
             dynamic_tools,
@@ -342,6 +343,7 @@ async fn assert_model_tools(
         ToolRouterParams {
             mcp_tools: None,
             deferred_mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
             discoverable_tools: None,
             extension_tool_executors: Vec::new(),
             dynamic_tools: &[],
@@ -1292,6 +1294,7 @@ async fn code_mode_only_can_expose_multi_agent_v2_as_normal_tools() {
         ToolRouterParams {
             mcp_tools: None,
             deferred_mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
             discoverable_tools: None,
             extension_tool_executors: Vec::new(),
             dynamic_tools: &[],
@@ -1362,6 +1365,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
         ToolRouterParams {
             mcp_tools: None,
             deferred_mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
             discoverable_tools: None,
             extension_tool_executors: Vec::new(),
             dynamic_tools: &[],

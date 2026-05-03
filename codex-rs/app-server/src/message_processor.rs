@@ -1214,6 +1214,9 @@ impl MessageProcessor {
                     .mcp_server_status_list(&request_id, params)
                     .await
             }
+            ClientRequest::ThreadMcpServerActivate { params, .. } => {
+                self.mcp_processor.thread_mcp_server_activate(params).await
+            }
             ClientRequest::McpResourceRead { params, .. } => {
                 self.mcp_processor
                     .mcp_resource_read(&request_id, params)

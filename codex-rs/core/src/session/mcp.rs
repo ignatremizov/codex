@@ -1,4 +1,5 @@
 use super::*;
+use codex_config::McpServerConfig;
 use codex_mcp::ElicitationReviewRequest;
 use codex_mcp::ElicitationReviewer;
 use codex_mcp::ElicitationReviewerHandle;
@@ -272,17 +273,11 @@ impl Session {
         mcp_servers: HashMap<String, McpServerConfig>,
         store_mode: OAuthCredentialsStoreMode,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
+        mcp_config: McpConfig,
+        tool_plugin_provenance: ToolPluginProvenance,
     ) {
         let auth = self.services.auth_manager.auth().await;
         let config = self.get_config().await;
-        let mcp_config = config
-            .to_mcp_config(self.services.plugins_manager.as_ref())
-            .await;
-        let tool_plugin_provenance = self
-            .services
-            .mcp_manager
-            .tool_plugin_provenance(config.as_ref())
-            .await;
         let mcp_servers =
             effective_mcp_servers_from_configured(mcp_servers, &mcp_config, auth.as_ref());
         let host_owned_codex_apps_enabled =
@@ -348,38 +343,58 @@ impl Session {
     pub(crate) async fn refresh_mcp_servers_if_requested(
         &self,
         turn_context: &TurnContext,
-        elicitation_reviewer: Option<ElicitationReviewerHandle>,
+        _elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
         let refresh_config = { self.pending_mcp_server_refresh_config.lock().await.take() };
         let Some(refresh_config) = refresh_config else {
             return;
         };
 
+        if let Err(err) = self
+            .refresh_mcp_servers_from_refresh_config(turn_context, refresh_config)
+            .await
+        {
+            warn!("failed to refresh MCP servers: {err:#}");
+        }
+    }
+
+    pub(crate) async fn refresh_mcp_servers_from_refresh_config(
+        &self,
+        turn_context: &TurnContext,
+        refresh_config: McpServerRefreshConfig,
+    ) -> anyhow::Result<()> {
         let McpServerRefreshConfig {
             mcp_servers,
             mcp_oauth_credentials_store_mode,
         } = refresh_config;
 
-        let mcp_servers =
-            match serde_json::from_value::<HashMap<String, McpServerConfig>>(mcp_servers) {
-                Ok(servers) => servers,
-                Err(err) => {
-                    warn!("failed to parse MCP server refresh config: {err}");
-                    return;
-                }
-            };
-        let store_mode = match serde_json::from_value::<OAuthCredentialsStoreMode>(
-            mcp_oauth_credentials_store_mode,
-        ) {
-            Ok(mode) => mode,
-            Err(err) => {
-                warn!("failed to parse MCP OAuth refresh config: {err}");
-                return;
-            }
-        };
-
-        self.refresh_mcp_servers_inner(turn_context, mcp_servers, store_mode, elicitation_reviewer)
+        let mcp_servers = serde_json::from_value::<HashMap<String, McpServerConfig>>(mcp_servers)
+            .map_err(|err| {
+            anyhow::anyhow!("failed to parse MCP server refresh config: {err}")
+        })?;
+        let store_mode =
+            serde_json::from_value::<OAuthCredentialsStoreMode>(mcp_oauth_credentials_store_mode)
+                .map_err(|err| anyhow::anyhow!("failed to parse MCP OAuth refresh config: {err}"))?;
+        let config = self.get_config().await;
+        let mcp_config = config
+            .to_mcp_config(self.services.plugins_manager.as_ref())
             .await;
+        let tool_plugin_provenance = self
+            .services
+            .mcp_manager
+            .tool_plugin_provenance(config.as_ref())
+            .await;
+
+        self.refresh_mcp_servers_inner(
+            turn_context,
+            mcp_servers,
+            store_mode,
+            /*elicitation_reviewer*/ None,
+            mcp_config,
+            tool_plugin_provenance,
+        )
+        .await;
+        Ok(())
     }
 
     pub(crate) async fn refresh_mcp_servers_now(
@@ -389,8 +404,43 @@ impl Session {
         store_mode: OAuthCredentialsStoreMode,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
-        self.refresh_mcp_servers_inner(turn_context, mcp_servers, store_mode, elicitation_reviewer)
+        let config = self.get_config().await;
+        let mcp_config = config
+            .to_mcp_config(self.services.plugins_manager.as_ref())
             .await;
+        let tool_plugin_provenance = self
+            .services
+            .mcp_manager
+            .tool_plugin_provenance(config.as_ref())
+            .await;
+        self.refresh_mcp_servers_inner(
+            turn_context,
+            mcp_servers,
+            store_mode,
+            elicitation_reviewer,
+            mcp_config,
+            tool_plugin_provenance,
+        )
+        .await;
+    }
+
+    pub(crate) async fn refresh_mcp_servers_now_with_mcp_config(
+        &self,
+        turn_context: &TurnContext,
+        mcp_config: McpConfig,
+        tool_plugin_provenance: ToolPluginProvenance,
+    ) {
+        let mcp_servers = mcp_config.configured_mcp_servers.clone();
+        let store_mode = mcp_config.mcp_oauth_credentials_store_mode;
+        self.refresh_mcp_servers_inner(
+            turn_context,
+            mcp_servers,
+            store_mode,
+            /*elicitation_reviewer*/ None,
+            mcp_config,
+            tool_plugin_provenance,
+        )
+        .await;
     }
 
     #[cfg(test)]
