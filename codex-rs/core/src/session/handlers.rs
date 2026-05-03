@@ -467,6 +467,66 @@ pub async fn refresh_mcp_servers(sess: &Arc<Session>, refresh_config: McpServerR
     *guard = Some(refresh_config);
 }
 
+pub async fn queue_mcp_server_use_context(sess: &Session, server_name: String) {
+    if sess
+        .current_mcp_inventory_was_direct_at_session_start(server_name.as_str())
+        .await
+    {
+        return;
+    }
+    let should_render_now = sess.reference_context_item().await.is_some();
+    let text = if should_render_now {
+        Some(
+            sess.render_mcp_server_use_context_text(server_name.as_str())
+                .await,
+        )
+    } else {
+        None
+    };
+    if let Some(text) = text.as_deref()
+        && sess
+            .latest_mcp_server_use_context_text(server_name.as_str())
+            .await
+            .as_deref()
+            == Some(text)
+    {
+        return;
+    }
+    if text.is_none()
+        && sess
+            .has_queued_mcp_server_use_context(server_name.as_str())
+            .await
+    {
+        return;
+    }
+    // Cache invariant: `/mcp use` is a forward-only prompt-context injection. It must append at
+    // the user-invoked point in history and must not rewrite earlier history or promote MCP tools
+    // into the top-level tool contract, because either would invalidate the cached session prefix.
+    if let Some(text) = text {
+        let response_input_item = ResponseInputItem::Message {
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText { text }],
+            phase: None,
+        };
+        let has_active_turn = sess.active_turn.lock().await.is_some();
+        if has_active_turn
+            && sess
+                .inject_response_items(vec![response_input_item.clone()])
+                .await
+                .is_ok()
+        {
+            return;
+        }
+
+        let turn_context = sess.new_default_turn().await;
+        sess.record_mcp_server_use_context_items(turn_context.as_ref(), vec![response_input_item])
+            .await;
+    } else {
+        sess.queue_mcp_server_use_context_for_first_turn(server_name)
+            .await;
+    }
+}
+
 pub async fn reload_user_config(sess: &Arc<Session>) {
     sess.reload_user_config_layer().await;
 }
@@ -808,6 +868,10 @@ pub(super) async fn submission_loop(
                 }
                 Op::RefreshMcpServers { config } => {
                     refresh_mcp_servers(&sess, config).await;
+                    false
+                }
+                Op::ActivateMcpServer { server_name } => {
+                    queue_mcp_server_use_context(&sess, server_name).await;
                     false
                 }
                 Op::ReloadUserConfig => {

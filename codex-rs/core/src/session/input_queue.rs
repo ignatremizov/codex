@@ -21,12 +21,34 @@ pub(crate) struct TurnInputQueue {
     items: Vec<TurnInput>,
 }
 
+impl TurnInputQueue {
+    pub(crate) fn append_to_front(&mut self, mut items: Vec<TurnInput>) {
+        if items.is_empty() {
+            return;
+        }
+        items.append(&mut self.items);
+        self.items = items;
+    }
+
+    pub(crate) fn as_slice(&self) -> &[TurnInput] {
+        &self.items
+    }
+
+    pub(crate) fn take(&mut self) -> Vec<TurnInput> {
+        std::mem::take(&mut self.items)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     mailbox_tx: watch::Sender<()>,
     mailbox_pending_mails: Mutex<VecDeque<InterAgentCommunication>>,
 
-    idle_pending_input: Mutex<Vec<ResponseInputItem>>,
+    idle_pending_input: Mutex<Vec<TurnInput>>,
 }
 
 impl InputQueue {
@@ -80,6 +102,14 @@ impl InputQueue {
     }
 
     pub(crate) async fn queue_response_items_for_next_turn(&self, items: Vec<ResponseInputItem>) {
+        let items = items
+            .into_iter()
+            .map(TurnInput::ResponseInputItem)
+            .collect::<Vec<_>>();
+        self.queue_turn_inputs_for_next_turn(items).await;
+    }
+
+    pub(crate) async fn queue_turn_inputs_for_next_turn(&self, items: Vec<TurnInput>) {
         if items.is_empty() {
             return;
         }
@@ -87,8 +117,20 @@ impl InputQueue {
         self.idle_pending_input.lock().await.extend(items);
     }
 
-    pub(crate) async fn take_queued_response_items_for_next_turn(&self) -> Vec<ResponseInputItem> {
+    pub(crate) async fn take_queued_items_for_next_turn(&self) -> Vec<TurnInput> {
         std::mem::take(&mut *self.idle_pending_input.lock().await)
+    }
+
+    pub(crate) async fn queued_response_items_for_next_turn(&self) -> Vec<ResponseInputItem> {
+        self.idle_pending_input
+            .lock()
+            .await
+            .iter()
+            .filter_map(|item| match item {
+                TurnInput::ResponseInputItem(item) => Some(item.clone()),
+                TurnInput::UserInput(_) => None,
+            })
+            .collect()
     }
 
     pub(crate) async fn has_queued_response_items_for_next_turn(&self) -> bool {
@@ -249,6 +291,7 @@ impl InputQueue {
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state reads must remain atomic"
     )]
+    #[cfg(test)]
     pub(crate) async fn has_pending_input(&self, active_turn: &Mutex<Option<ActiveTurn>>) -> bool {
         let (has_turn_pending_input, accepts_mailbox_delivery) = {
             let active = active_turn.lock().await;

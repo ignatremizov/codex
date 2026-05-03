@@ -347,10 +347,7 @@ impl Session {
         {
             warn!("failed to apply goal runtime turn-start event: {err}");
         }
-        let queued_response_items = self
-            .input_queue
-            .take_queued_response_items_for_next_turn()
-            .await;
+        let queued_items = self.input_queue.take_queued_items_for_next_turn().await;
         let mailbox_items = self.input_queue.get_pending_input(&self.active_turn).await;
         let turn_state = {
             let mut active = self.active_turn.lock().await;
@@ -359,10 +356,7 @@ impl Session {
             Arc::clone(&turn.turn_state)
         };
         turn_state.lock().await.token_usage_at_turn_start = token_usage_at_turn_start.clone();
-        let mut pending_items = queued_response_items
-            .into_iter()
-            .map(TurnInput::ResponseInputItem)
-            .collect::<Vec<_>>();
+        let mut pending_items = queued_items;
         pending_items.extend(mailbox_items);
         self.input_queue
             .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
@@ -659,15 +653,8 @@ impl Session {
             }
         }
         let queued_pending_input_after_mcp_use = !pending_input_after_mcp_use.is_empty();
-        let pending_response_items_after_mcp_use = pending_input_after_mcp_use
-            .into_iter()
-            .map(|item| match item {
-                TurnInput::ResponseInputItem(item) => item,
-                TurnInput::UserInput(items) => codex_protocol::models::ResponseInputItem::from(items),
-            })
-            .collect();
         self.input_queue
-            .queue_response_items_for_next_turn(pending_response_items_after_mcp_use)
+            .queue_turn_inputs_for_next_turn(pending_input_after_mcp_use)
             .await;
         // Emit token usage metrics.
         {
@@ -930,21 +917,10 @@ impl Session {
 }
 
 fn is_mcp_server_use_context_input(item: &TurnInput) -> bool {
-    let TurnInput::ResponseInputItem(codex_protocol::models::ResponseInputItem::Message {
-        role,
-        content,
-        ..
-    }) = item
-    else {
+    let TurnInput::ResponseInputItem(item) = item else {
         return false;
     };
-    role == "developer"
-        && content.iter().any(|content_item| match content_item {
-            ContentItem::InputText { text } => {
-                crate::context::McpServerUseInstructions::parse_server_name(text).is_some()
-            }
-            ContentItem::InputImage { .. } | ContentItem::OutputText { .. } => false,
-        })
+    crate::context::McpServerUseInstructions::matches_response_input_item(item)
 }
 
 fn start_pending_work_later(sess: Arc<Session>) -> BoxFuture<'static, ()> {

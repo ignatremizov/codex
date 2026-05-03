@@ -340,7 +340,7 @@ async fn search_tool_hides_apps_tools_without_search() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_app_mentions_respect_always_defer() -> Result<()> {
+async fn explicit_app_mentions_preserve_direct_app_tools_with_always_defer() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -374,21 +374,17 @@ async fn explicit_app_mentions_respect_always_defer() -> Result<()> {
     let body = mock.single_request().body_json();
     let tools = tool_names(&body);
     assert!(
-        tools.iter().any(|name| name == TOOL_SEARCH_TOOL_NAME),
-        "explicit app mentions should leave app tools deferred when always-defer is active: {tools:?}"
-    );
-    assert!(
         namespace_child_tool(
             &body,
             SEARCH_CALENDAR_NAMESPACE,
             SEARCH_CALENDAR_CREATE_TOOL
         )
-        .is_none(),
-        "explicit app mentions should not directly expose create tool, got tools: {tools:?}"
+        .is_some(),
+        "explicit app mentions should directly expose the mentioned app create tool, got tools: {tools:?}"
     );
     assert!(
-        namespace_child_tool(&body, SEARCH_CALENDAR_NAMESPACE, SEARCH_CALENDAR_LIST_TOOL).is_none(),
-        "explicit app mentions should not directly expose list tool, got tools: {tools:?}"
+        namespace_child_tool(&body, SEARCH_CALENDAR_NAMESPACE, SEARCH_CALENDAR_LIST_TOOL).is_some(),
+        "explicit app mentions should directly expose the mentioned app list tool, got tools: {tools:?}"
     );
 
     Ok(())
@@ -1027,6 +1023,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                     oauth: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
+                    allow_implicit_invocation: true,
                     tools: HashMap::new(),
                 },
             );
@@ -1156,6 +1153,7 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                     oauth: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
+                    allow_implicit_invocation: true,
                     tools: HashMap::new(),
                 },
             );
@@ -1304,6 +1302,7 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                     oauth: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
+                    allow_implicit_invocation: true,
                     tools: HashMap::new(),
                 },
             );

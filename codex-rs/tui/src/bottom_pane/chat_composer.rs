@@ -365,6 +365,7 @@ pub(crate) struct ChatComposer {
     next_element_id: u64,
     skills: Option<Vec<SkillMetadata>>,
     plugins: Option<Vec<PluginCapabilitySummary>>,
+    mcp_server_names: Vec<String>,
     connectors_snapshot: Option<ConnectorsSnapshot>,
     collaboration_modes_enabled: bool,
     config: ChatComposerConfig,
@@ -533,6 +534,7 @@ impl ChatComposer {
             next_element_id: 0,
             skills: None,
             plugins: None,
+            mcp_server_names: Vec::new(),
             connectors_snapshot: None,
             collaboration_modes_enabled: false,
             config,
@@ -582,6 +584,13 @@ impl ChatComposer {
 
     pub fn set_plugin_mentions(&mut self, plugins: Option<Vec<PluginCapabilitySummary>>) {
         self.plugins = plugins;
+        self.sync_popups();
+    }
+
+    pub fn set_mcp_server_names(&mut self, mut server_names: Vec<String>) {
+        server_names.sort();
+        server_names.dedup();
+        self.mcp_server_names = server_names;
         self.sync_popups();
     }
 
@@ -2897,7 +2906,13 @@ impl ChatComposer {
         if matches!(command, CommandItem::Builtin(SlashCommand::Clear)) {
             return;
         }
-        self.stage_slash_command_history_text(format!("/{}", command.command()));
+        let text = match command {
+            CommandItem::Builtin(cmd) => format!("/{}", cmd.command()),
+            CommandItem::ServiceTier(command) => format!("/{}", command.name),
+            CommandItem::McpSubcommand(subcommand) => format!("/mcp {subcommand}"),
+            CommandItem::McpServer(server_name) => format!("/mcp use {server_name}"),
+        };
+        self.stage_slash_command_history_text(text);
     }
 
     /// Store the provided command text and the current composer adornments in the pending slot.
@@ -3500,10 +3515,11 @@ impl ChatComposer {
         let cursor = self.draft.textarea.cursor();
         let caret_on_first_line = cursor <= first_line_end;
 
-        let is_editing_slash_command_name = caret_on_first_line
-            && self
-                .slash_input()
-                .is_editing_command_name(first_line, cursor);
+        let slash_input = self.slash_input();
+        let is_editing_slash_command_name =
+            caret_on_first_line && slash_input.is_editing_command_name(first_line, cursor);
+        let is_editing_mcp_args =
+            caret_on_first_line && slash_input.is_editing_mcp_args(first_line, cursor);
 
         // If the cursor is currently positioned within an `@token`, prefer the
         // file-search popup over the slash popup so users can insert a file path
@@ -3516,15 +3532,18 @@ impl ChatComposer {
         }
         match &mut self.popups.active {
             ActivePopup::Command(popup) => {
-                if is_editing_slash_command_name {
+                if is_editing_slash_command_name || is_editing_mcp_args {
+                    popup.set_mcp_server_names(self.mcp_server_names.clone());
                     popup.on_composer_text_change(first_line.to_string());
                 } else {
                     self.popups.active = ActivePopup::None;
                 }
             }
             _ => {
-                if is_editing_slash_command_name {
-                    let command_popup = self.slash_input().command_popup(first_line);
+                if is_editing_slash_command_name || is_editing_mcp_args {
+                    let mut command_popup = self.slash_input().command_popup(first_line);
+                    command_popup.set_mcp_server_names(self.mcp_server_names.clone());
+                    command_popup.on_composer_text_change(first_line.to_string());
                     self.popups.active = ActivePopup::Command(command_popup);
                 }
             }
@@ -7264,7 +7283,7 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected model command, got service tier {command:?}")
                 }
-                None => panic!("no selected command for '/mo'"),
+                other => panic!("expected model to be selected for '/mo', got {other:?}"),
             },
             _ => panic!("slash popup not active after typing '/mo'"),
         }
@@ -7320,7 +7339,7 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected resume command, got service tier {command:?}")
                 }
-                None => panic!("no selected command for '/res'"),
+                other => panic!("expected resume to be selected for '/res', got {other:?}"),
             },
             _ => panic!("slash popup not active after typing '/res'"),
         }
@@ -7373,6 +7392,12 @@ mod tests {
                 }
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected pets command, got service tier {command:?}")
+                }
+                Some(CommandItem::McpSubcommand(command)) => {
+                    panic!("expected pets command, got MCP subcommand {command:?}")
+                }
+                Some(CommandItem::McpServer(server)) => {
+                    panic!("expected pets command, got MCP server {server:?}")
                 }
                 None => panic!("no selected command for '/pet'"),
             },
@@ -7428,6 +7453,12 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected btw command, got service tier {command:?}")
                 }
+                Some(CommandItem::McpSubcommand(command)) => {
+                    panic!("expected btw command, got MCP subcommand {command:?}")
+                }
+                Some(CommandItem::McpServer(server)) => {
+                    panic!("expected btw command, got MCP server {server:?}")
+                }
                 None => panic!("no selected command for '/bt'"),
             },
             _ => panic!("slash popup not active after typing '/bt'"),
@@ -7481,6 +7512,12 @@ mod tests {
                 }
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected side command, got service tier {command:?}")
+                }
+                Some(CommandItem::McpSubcommand(command)) => {
+                    panic!("expected side command, got MCP subcommand {command:?}")
+                }
+                Some(CommandItem::McpServer(server)) => {
+                    panic!("expected side command, got MCP server {server:?}")
                 }
                 None => panic!("no selected command for '/si'"),
             },
@@ -7993,6 +8030,99 @@ mod tests {
             composer.draft.textarea.cursor(),
             composer.draft.textarea.text().len()
         );
+    }
+
+    #[test]
+    fn slash_mcp_tab_completes_use_subcommand() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        composer.set_text_content("/mcp u".to_string(), Vec::new(), Vec::new());
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(result, InputResult::None);
+        assert_eq!(composer.draft.textarea.text(), "/mcp use ");
+        assert_eq!(
+            composer.draft.textarea.cursor(),
+            composer.draft.textarea.text().len()
+        );
+    }
+
+    #[test]
+    fn slash_mcp_use_tab_completes_configured_server_name() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_mcp_server_names(vec![
+            "github".to_string(),
+            "linear".to_string(),
+            "local docs".to_string(),
+        ]);
+        composer.set_text_content("/mcp use l".to_string(), Vec::new(), Vec::new());
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(result, InputResult::None);
+        assert_eq!(composer.draft.textarea.text(), "/mcp use linear");
+        assert_eq!(
+            composer.draft.textarea.cursor(),
+            composer.draft.textarea.text().len()
+        );
+    }
+
+    #[test]
+    fn slash_mcp_use_enter_accepts_configured_server_name() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_mcp_server_names(vec!["github".to_string(), "linear".to_string()]);
+        composer.set_text_content("/mcp use g".to_string(), Vec::new(), Vec::new());
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        match result {
+            InputResult::CommandWithArgs(cmd, args, elements) => {
+                assert_eq!(cmd, SlashCommand::Mcp);
+                assert_eq!(args, "use github");
+                assert!(elements.is_empty());
+            }
+            other => panic!("expected completed /mcp use command, got {other:?}"),
+        }
     }
 
     #[test]

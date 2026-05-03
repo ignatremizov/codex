@@ -112,6 +112,7 @@ async fn parallel_support_does_not_match_namespaced_local_tool_names() -> anyhow
         &turn,
         ToolRouterParams {
             deferred_mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
             mcp_tools: Some(mcp_tools),
             discoverable_tools: None,
             extension_tool_executors: Vec::new(),
@@ -178,6 +179,7 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
         &turn,
         ToolRouterParams {
             deferred_mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
             mcp_tools: Some(vec![
                 mcp_tool_info(
                     "echo",
@@ -226,6 +228,7 @@ async fn tools_without_handlers_do_not_support_parallel() -> anyhow::Result<()> 
         &turn,
         ToolRouterParams {
             deferred_mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
             mcp_tools: None,
             discoverable_tools: None,
             extension_tool_executors: Vec::new(),
@@ -278,6 +281,7 @@ async fn specs_filter_deferred_dynamic_tools() -> anyhow::Result<()> {
         &turn,
         ToolRouterParams {
             deferred_mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
             mcp_tools: None,
             discoverable_tools: None,
             extension_tool_executors: Vec::new(),
@@ -345,6 +349,7 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
         &turn,
         ToolRouterParams {
             deferred_mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
             mcp_tools: None,
             discoverable_tools: None,
             extension_tool_executors: extension_tool_executors(&session),

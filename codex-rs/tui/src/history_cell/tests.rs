@@ -824,6 +824,7 @@ fn mcp_tools_output_from_statuses_renders_status_only_servers() {
         resources: Vec::new(),
         resource_templates: Vec::new(),
         auth_status: codex_app_server_protocol::McpAuthStatus::Unsupported,
+        allow_implicit_invocation: true,
     }];
 
     let cell =
@@ -870,6 +871,7 @@ fn mcp_tools_output_from_statuses_renders_verbose_inventory() {
             mime_type: None,
         }],
         auth_status: codex_app_server_protocol::McpAuthStatus::Unsupported,
+        allow_implicit_invocation: true,
     }];
 
     let cell = new_mcp_tools_output_from_statuses(&statuses, McpServerStatusDetail::Full);
