@@ -159,17 +159,20 @@ HTTP_PROXY = {http_proxy}
                 (MCP_SERVER_NAME): {
                     "command": stdio_server_bin()?,
                     "env_vars": [EXECUTOR_ENV_NAME],
+                    "allow_implicit_invocation": true,
                     "startup_timeout_sec": 10,
                 },
                 (HTTP_MCP_SERVER_NAME): {
                     "url": EXECUTOR_HTTP_MCP_URL,
                     "environment_id": "local",
+                    "allow_implicit_invocation": true,
                     "startup_timeout_sec": 10,
                 },
                 (OAUTH_MCP_SERVER_NAME): {
                     "url": EXECUTOR_OAUTH_MCP_URL,
                     "environment_id": "local",
                     "oauth": {"clientId": "executor-oauth-client"},
+                    "allow_implicit_invocation": true,
                     "startup_timeout_sec": 10,
                 }
             }
@@ -330,7 +333,7 @@ startup_timeout_sec = 10
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2);
-    assert!(requests[0].tool_by_name(&namespace, "echo").is_some());
+    assert!(requests[0].tool_by_name(&namespace, "echo").is_none());
     let output = requests[1].function_call_output(TOOL_CALL_ID);
     let output = output
         .get("output")

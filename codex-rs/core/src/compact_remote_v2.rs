@@ -320,18 +320,19 @@ async fn run_remote_compact_task_inner_impl(
         previous_window_id: new_window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(new_window_ids.window_id.to_string()),
     };
+    let final_history = sess
+        .replace_compacted_history(
+            turn_context.as_ref(),
+            new_history,
+            reference_context_item,
+            world_state_baseline,
+            compacted_item,
+        )
+        .await;
     compaction_trace.record_installed(&CompactionCheckpointTracePayload {
         input_history: &trace_input_history,
-        replacement_history: &new_history,
+        replacement_history: &final_history,
     });
-    sess.replace_compacted_history(
-        turn_context.as_ref(),
-        new_history,
-        reference_context_item,
-        world_state_baseline,
-        compacted_item,
-    )
-    .await;
     sess.recompute_token_usage(turn_context).await;
 
     sess.emit_turn_item_completed(turn_context, compaction_item)

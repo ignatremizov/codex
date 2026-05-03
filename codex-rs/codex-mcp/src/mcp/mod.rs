@@ -534,6 +534,7 @@ fn mcp_server_config_for_url(
         environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
         required: false,
+        allow_implicit_invocation: true,
         supports_parallel_tool_calls: false,
         disabled_reason: None,
         startup_timeout_sec: Some(Duration::from_secs(30)),

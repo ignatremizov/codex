@@ -578,6 +578,9 @@ pub(crate) struct App {
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
     pending_app_server_requests: PendingAppServerRequests,
     pending_startup_thread_start: bool,
+    pending_mcp_inventory_threads: HashMap<ThreadId, usize>,
+    latest_mcp_inventory_request_seq: HashMap<ThreadId, u64>,
+    next_mcp_inventory_request_seq: u64,
     // Serialize plugin enablement writes per plugin so stale completions cannot
     // overwrite a newer toggle, even if the plugin is toggled from different
     // cwd contexts.
@@ -1063,6 +1066,9 @@ See the Codex keymap documentation for supported actions and examples."
             pending_primary_events: VecDeque::new(),
             pending_app_server_requests: PendingAppServerRequests::default(),
             pending_startup_thread_start,
+            pending_mcp_inventory_threads: HashMap::new(),
+            latest_mcp_inventory_request_seq: HashMap::new(),
+            next_mcp_inventory_request_seq: 0,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
         };

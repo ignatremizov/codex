@@ -176,6 +176,15 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub supports_parallel_tool_calls: bool,
 
+    /// When `false`, this server stays connected but its tools are hidden from
+    /// the default model-visible tool contract until explicitly activated for
+    /// the current session.
+    #[serde(
+        default = "default_allow_implicit_invocation",
+        skip_serializing_if = "std::clone::Clone::clone"
+    )]
+    pub allow_implicit_invocation: bool,
+
     /// Reason this server was disabled after applying requirements.
     #[serde(skip)]
     pub disabled_reason: Option<McpServerDisabledReason>,
@@ -284,6 +293,8 @@ pub struct RawMcpServerConfig {
     #[serde(default)]
     pub supports_parallel_tool_calls: Option<bool>,
     #[serde(default)]
+    pub allow_implicit_invocation: Option<bool>,
+    #[serde(default)]
     pub default_tools_approval_mode: Option<AppToolApproval>,
     #[serde(default)]
     pub enabled_tools: Option<Vec<String>>,
@@ -325,6 +336,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             enabled,
             required,
             supports_parallel_tool_calls,
+            allow_implicit_invocation,
             default_tools_approval_mode,
             enabled_tools,
             disabled_tools,
@@ -392,6 +404,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
 
         let environment_id =
             environment_id.unwrap_or_else(|| DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string());
+        validate_remote_stdio_cwd(&transport, &environment_id)?;
 
         Ok(Self {
             transport,
@@ -402,6 +415,8 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             enabled: enabled.unwrap_or_else(default_enabled),
             required: required.unwrap_or_default(),
             supports_parallel_tool_calls: supports_parallel_tool_calls.unwrap_or_default(),
+            allow_implicit_invocation: allow_implicit_invocation
+                .unwrap_or_else(default_allow_implicit_invocation),
             disabled_reason: None,
             default_tools_approval_mode,
             enabled_tools,
@@ -427,6 +442,33 @@ impl<'de> Deserialize<'de> for McpServerConfig {
 
 const fn default_enabled() -> bool {
     true
+}
+
+const fn default_allow_implicit_invocation() -> bool {
+    true
+}
+
+fn validate_remote_stdio_cwd(
+    transport: &McpServerTransportConfig,
+    environment_id: &str,
+) -> Result<(), String> {
+    if environment_id == DEFAULT_MCP_SERVER_ENVIRONMENT_ID {
+        return Ok(());
+    }
+    let McpServerTransportConfig::Stdio { cwd, .. } = transport else {
+        return Ok(());
+    };
+    let Some(cwd) = cwd else {
+        return Err(format!(
+            "remote stdio MCP servers require an absolute cwd when environment_id is `{environment_id}`"
+        ));
+    };
+    if cwd.infer_absolute_path_convention().is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "remote stdio MCP servers require an absolute cwd when environment_id is `{environment_id}`, got `{cwd}`",
+    ))
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]

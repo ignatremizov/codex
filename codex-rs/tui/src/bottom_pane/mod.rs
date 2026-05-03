@@ -323,6 +323,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub fn set_mcp_server_names(&mut self, server_names: Vec<String>) {
+        self.composer.set_mcp_server_names(server_names);
+        self.request_redraw();
+    }
+
     pub fn set_plugins_command_enabled(&mut self, enabled: bool) {
         self.composer.set_plugins_command_enabled(enabled);
         self.request_redraw();
