@@ -31,8 +31,10 @@
 //! here. That split lets the composer stage a recall entry before clearing input while this module
 //! records the attempted slash command after dispatch just like ordinary submitted text.
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -607,6 +609,10 @@ pub(crate) struct ChatWidget {
     mcp_startup_pending_next_round: HashMap<String, McpStartupStatus>,
     /// Tracks whether the buffered next round has seen any `Starting` update yet.
     mcp_startup_pending_next_round_saw_starting: bool,
+    /// MCP names learned from status/list responses, scoped by thread for autocomplete.
+    mcp_status_known_server_names_by_thread: HashMap<Option<ThreadId>, BTreeSet<String>>,
+    /// `/mcp use` requests entered before the first thread id exists.
+    pending_mcp_server_uses: VecDeque<String>,
     connectors: ConnectorsState,
     ide_context: IdeContextState,
     plugins_cache: PluginsCacheState,
@@ -1521,8 +1527,8 @@ impl ChatWidget {
         self.bump_active_cell_revision();
         self.request_redraw();
         self.app_event_tx.send(AppEvent::FetchMcpInventory {
-            detail,
             thread_id: self.thread_id(),
+            detail,
         });
     }
 

@@ -579,6 +579,9 @@ pub(crate) struct App {
     pending_startup_thread_start: bool,
     /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
     rate_limit_hard_stop_generation: u64,
+    pending_mcp_inventory_threads: HashMap<ThreadId, usize>,
+    latest_mcp_inventory_request_seq: HashMap<ThreadId, u64>,
+    next_mcp_inventory_request_seq: u64,
     // Serialize plugin enablement writes per plugin so stale completions cannot
     // overwrite a newer toggle, even if the plugin is toggled from different
     // cwd contexts.
@@ -1069,6 +1072,9 @@ See the Codex keymap documentation for supported actions and examples."
             pending_app_server_requests: PendingAppServerRequests::default(),
             pending_startup_thread_start,
             rate_limit_hard_stop_generation: 0,
+            pending_mcp_inventory_threads: HashMap::new(),
+            latest_mcp_inventory_request_seq: HashMap::new(),
+            next_mcp_inventory_request_seq: 0,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
         };
