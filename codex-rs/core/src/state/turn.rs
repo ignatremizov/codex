@@ -19,6 +19,7 @@ use rmcp::model::RequestId;
 use tokio::sync::oneshot;
 
 use crate::agent::control::AgentExecutionGuard;
+use crate::session::TurnInput;
 use crate::session::TurnInputQueue;
 use crate::session::turn_context::TurnContext;
 use crate::tasks::AnySessionTask;
@@ -192,6 +193,26 @@ impl TurnState {
         key: &str,
     ) -> Option<oneshot::Sender<DynamicToolResponse>> {
         self.pending_dynamic_tools.remove(key)
+    }
+
+    pub(crate) fn prepend_pending_input(&mut self, input: Vec<TurnInput>) {
+        if input.is_empty() {
+            return;
+        }
+
+        self.pending_input.append_to_front(input);
+    }
+
+    pub(crate) fn pending_input(&self) -> &[TurnInput] {
+        self.pending_input.as_slice()
+    }
+
+    pub(crate) fn take_pending_input(&mut self) -> Vec<TurnInput> {
+        if self.pending_input.is_empty() {
+            Vec::with_capacity(0)
+        } else {
+            self.pending_input.take()
+        }
     }
 
     pub(crate) fn accept_mailbox_delivery_for_current_turn(&mut self) {

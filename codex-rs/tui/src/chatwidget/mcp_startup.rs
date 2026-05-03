@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 
 use codex_app_server_protocol::McpServerStartupState;
+use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::McpServerStatusUpdatedNotification;
 
 use super::ChatWidget;
@@ -263,6 +264,12 @@ impl ChatWidget {
         &mut self,
         notification: McpServerStatusUpdatedNotification,
     ) {
+        self.mcp_status_known_server_names_by_thread
+            .entry(self.thread_id)
+            .or_default()
+            .insert(notification.name.clone());
+        self.sync_mcp_server_name_completions();
+
         let status = match notification.status {
             McpServerStartupState::Starting => McpStartupStatus::Starting,
             McpServerStartupState::Ready => McpStartupStatus::Ready,
@@ -278,5 +285,30 @@ impl ChatWidget {
             status,
             /*complete_when_settled*/ true,
         );
+    }
+
+    pub(crate) fn sync_mcp_server_name_completions_from_statuses(
+        &mut self,
+        statuses: &[McpServerStatus],
+    ) {
+        let names = self
+            .mcp_status_known_server_names_by_thread
+            .entry(self.thread_id)
+            .or_default();
+        names.extend(statuses.iter().map(|status| status.name.clone()));
+        self.sync_mcp_server_name_completions();
+    }
+
+    pub(super) fn sync_mcp_server_name_completions(&mut self) {
+        let mut server_names: BTreeSet<String> =
+            self.config.mcp_servers.get().keys().cloned().collect();
+        if let Some(names) = self
+            .mcp_status_known_server_names_by_thread
+            .get(&self.thread_id)
+        {
+            server_names.extend(names.iter().cloned());
+        }
+        self.bottom_pane
+            .set_mcp_server_names(server_names.into_iter().collect());
     }
 }

@@ -105,6 +105,7 @@ use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::models::format_allow_prefixes;
@@ -194,7 +195,6 @@ use crate::thread_rollout_truncation::initial_history_has_prior_user_turns;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStackOrdering;
-use codex_config::types::McpServerConfig;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -312,6 +312,7 @@ use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
 use crate::shell;
 #[cfg(test)]
 use crate::skills::SkillLoadOutcome;
+use crate::state::ActiveTurn;
 use crate::state::AutoCompactWindowIds;
 use crate::state::AutoCompactWindowSnapshot;
 use crate::state::PendingRequestPermissions;
@@ -336,6 +337,7 @@ use codex_core_plugins::PluginsManager;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_git_utils::get_git_repo_root;
 use codex_mcp::McpConfig;
+use codex_mcp::ToolInfo as McpToolInfo;
 use codex_mcp::effective_mcp_servers;
 use codex_otel::SessionTelemetry;
 use codex_otel::THREAD_STARTED_METRIC;
@@ -1243,6 +1245,250 @@ impl Session {
         state.clear_connector_selection();
     }
 
+    pub(crate) async fn latest_mcp_server_use_context_text(
+        &self,
+        server_name: &str,
+    ) -> Option<String> {
+        {
+            let queued = self.input_queue.queued_response_items_for_next_turn().await;
+            if let Some(text) = queued.iter().rev().find_map(|item| {
+                let ResponseItem::Message { role, content, .. } = item else {
+                    return None;
+                };
+                if role != "developer" {
+                    return None;
+                }
+                content.iter().find_map(|content_item| match content_item {
+                    ContentItem::InputText { text }
+                        if crate::context::McpServerUseInstructions::parse_server_name(text)
+                            .as_deref()
+                            == Some(server_name) =>
+                    {
+                        Some(text.clone())
+                    }
+                    ContentItem::InputText { .. }
+                    | ContentItem::InputImage { .. }
+                    | ContentItem::OutputText { .. } => None,
+                })
+            }) {
+                return Some(text);
+            }
+        }
+        let active_turn_state = {
+            let active = self.active_turn.lock().await;
+            active
+                .as_ref()
+                .map(|active_turn| Arc::clone(&active_turn.turn_state))
+        };
+        if let Some(active_turn_state) = active_turn_state {
+            let turn_state = active_turn_state.lock().await;
+            if let Some(text) = turn_state.pending_input().iter().rev().find_map(|item| {
+                let TurnInput::ResponseItem(ResponseItem::Message { role, content, .. }) = item
+                else {
+                    return None;
+                };
+                if role != "developer" {
+                    return None;
+                }
+                content.iter().find_map(|content_item| match content_item {
+                    ContentItem::InputText { text }
+                        if crate::context::McpServerUseInstructions::parse_server_name(text)
+                            .as_deref()
+                            == Some(server_name) =>
+                    {
+                        Some(text.clone())
+                    }
+                    ContentItem::InputText { .. }
+                    | ContentItem::InputImage { .. }
+                    | ContentItem::OutputText { .. } => None,
+                })
+            }) {
+                return Some(text);
+            }
+        }
+        let history = self.clone_history().await;
+        history.raw_items().iter().rev().find_map(|item| {
+            let ResponseItem::Message { role, content, .. } = item else {
+                return None;
+            };
+            if role != "developer" {
+                return None;
+            }
+            content.iter().find_map(|content_item| match content_item {
+                ContentItem::InputText { text }
+                    if crate::context::McpServerUseInstructions::parse_server_name(text)
+                        .as_deref()
+                        == Some(server_name) =>
+                {
+                    Some(text.clone())
+                }
+                ContentItem::InputText { .. }
+                | ContentItem::InputImage { .. }
+                | ContentItem::OutputText { .. } => None,
+            })
+        })
+    }
+
+    pub(crate) async fn render_mcp_server_use_context_text(&self, server_name: &str) -> String {
+        let tool_inventory_json = {
+            let manager = self.services.mcp_connection_manager.load_full();
+            let _ = manager
+                .wait_for_server_ready(server_name, std::time::Duration::from_secs(5))
+                .await;
+            let mut tool_inventory = manager
+                .list_all_tools()
+                .await
+                .into_iter()
+                .filter(|tool| tool.server_name == server_name)
+                .map(|tool| {
+                    let canonical_tool_name = tool.canonical_tool_name().to_string();
+                    let inventory_entry = serde_json::json!({
+                            "canonical_tool_name": &canonical_tool_name,
+                            "tool_info": tool,
+                    });
+                    (canonical_tool_name, inventory_entry)
+                })
+                .collect::<Vec<_>>();
+            tool_inventory.sort_by(|(left, _), (right, _)| left.cmp(right));
+            let tool_inventory = tool_inventory
+                .into_iter()
+                .map(|(_, tool)| tool)
+                .collect::<Vec<_>>();
+            if tool_inventory.is_empty() {
+                "[]".to_string()
+            } else {
+                match serde_json::to_string_pretty(&tool_inventory) {
+                    Ok(tool_inventory_json) => tool_inventory_json,
+                    Err(error) => {
+                        warn!(
+                            "failed to serialize MCP tool inventory for `{server_name}`: {error}"
+                        );
+                        "[]".to_string()
+                    }
+                }
+            }
+        };
+        crate::context::McpServerUseInstructions::new(server_name.to_string(), tool_inventory_json)
+            .render()
+    }
+
+    pub(crate) fn mcp_server_was_implicitly_visible_at_session_start(
+        &self,
+        server_name: &str,
+    ) -> bool {
+        if !self
+            .session_start_mcp_servers
+            .get(server_name)
+            .is_some_and(|server| server.enabled() && server.allow_implicit_invocation())
+        {
+            return false;
+        }
+        if let Some(direct_mcp_servers) = self
+            .session_start_direct_mcp_servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            return direct_mcp_servers.contains(server_name);
+        }
+        false
+    }
+
+    pub(crate) async fn current_mcp_inventory_was_direct_at_session_start(
+        &self,
+        server_name: &str,
+    ) -> bool {
+        if !self.mcp_server_was_implicitly_visible_at_session_start(server_name) {
+            return false;
+        }
+        let frozen_direct_tools = {
+            let frozen_direct_tools = self.session_start_direct_mcp_tools.lock().await;
+            let Some(frozen_direct_tools) = frozen_direct_tools.as_ref() else {
+                return false;
+            };
+            frozen_direct_tools.clone()
+        };
+        let manager = self.services.mcp_connection_manager.load_full();
+        let _ = manager
+            .wait_for_server_ready(server_name, std::time::Duration::from_secs(5))
+            .await;
+        let current_tools = manager.list_all_tools().await;
+        let current_tools = current_tools
+            .iter()
+            .filter(|tool| tool.server_name == server_name)
+            .map(|tool| (tool.canonical_tool_name().to_string(), tool))
+            .collect::<HashMap<_, _>>();
+        let frozen_direct_tools = frozen_direct_tools
+            .iter()
+            .filter(|(_, tool)| tool.server_name == server_name)
+            .collect::<HashMap<_, _>>();
+        current_tools.len() == frozen_direct_tools.len()
+            && current_tools.iter().all(|(name, tool)| {
+                frozen_direct_tools.get(name).is_some_and(|frozen_tool| {
+                    serde_json::to_value(frozen_tool).ok() == serde_json::to_value(tool).ok()
+                })
+            })
+    }
+
+    pub(crate) async fn session_start_mcp_tools_for_exposure(
+        &self,
+    ) -> HashMap<String, McpToolInfo> {
+        let direct_contract_unfrozen = {
+            self.session_start_direct_mcp_servers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none()
+        };
+        if direct_contract_unfrozen {
+            let ready_tools = self
+                .collect_available_session_start_implicit_mcp_tools()
+                .await;
+            let mut session_start_mcp_tools = self.session_start_mcp_tools.lock().await;
+            let direct_contract_still_unfrozen = {
+                self.session_start_direct_mcp_servers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_none()
+            };
+            if direct_contract_still_unfrozen {
+                *session_start_mcp_tools = ready_tools;
+            }
+            return session_start_mcp_tools.clone();
+        }
+        self.session_start_mcp_tools.lock().await.clone()
+    }
+
+    async fn collect_available_session_start_implicit_mcp_tools(
+        &self,
+    ) -> HashMap<String, McpToolInfo> {
+        let manager = self.services.mcp_connection_manager.load_full();
+        let available_tools = manager.list_all_tools_available_now();
+        let available_servers = available_tools
+            .iter()
+            .map(|tool| tool.server_name.clone())
+            .collect::<HashSet<_>>();
+        for (server_name, server_config) in &self.session_start_mcp_servers {
+            if server_config.enabled()
+                && server_config.allow_implicit_invocation()
+                && !available_servers.contains(server_name.as_str())
+            {
+                let _ = manager
+                    .wait_for_server_ready(server_name, std::time::Duration::from_secs(5))
+                    .await;
+            }
+        }
+        manager
+            .list_all_tools_available_now()
+            .into_iter()
+            .filter(|tool| {
+                self.session_start_mcp_servers
+                    .get(&tool.server_name)
+                    .is_some_and(|server| server.enabled() && server.allow_implicit_invocation())
+            })
+            .map(|tool| (tool.canonical_tool_name().to_string(), tool))
+            .collect()
+    }
+
     async fn record_initial_history(&self, conversation_history: InitialHistory) {
         let (is_subagent, is_paginated_subagent) = {
             let state = self.state.lock().await;
@@ -1559,6 +1805,212 @@ impl Session {
 
     pub(crate) async fn user_instructions(&self) -> Option<codex_extension_api::UserInstructions> {
         self.services.agents_md_manager.user_instructions()
+    }
+
+    pub(crate) async fn has_mcp_server(&self, server_name: &str) -> bool {
+        self.session_start_mcp_servers.contains_key(server_name)
+    }
+
+    pub(crate) async fn has_queued_mcp_server_use_context(&self, server_name: &str) -> bool {
+        self.idle_pending_mcp_server_use
+            .lock()
+            .await
+            .iter()
+            .any(|queued_server_name| queued_server_name == server_name)
+    }
+
+    pub(crate) async fn queue_mcp_server_use_context_for_first_turn(&self, server_name: String) {
+        self.idle_pending_mcp_server_use
+            .lock()
+            .await
+            .push(server_name);
+    }
+
+    pub(crate) async fn render_queued_mcp_server_use_context_for_turn(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Vec<ResponseItem> {
+        let server_names = std::mem::take(&mut *self.idle_pending_mcp_server_use.lock().await);
+        let mut items = Vec::with_capacity(server_names.len());
+        for server_name in server_names {
+            if self
+                .mcp_server_would_be_direct_at_session_start_for_turn_context(
+                    turn_context,
+                    &server_name,
+                )
+                .await
+            {
+                continue;
+            }
+            let text = self
+                .render_mcp_server_use_context_text(server_name.as_str())
+                .await;
+            if self
+                .latest_mcp_server_use_context_text(server_name.as_str())
+                .await
+                .as_deref()
+                == Some(text.as_str())
+            {
+                continue;
+            }
+            items.push(ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText { text }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            });
+        }
+        items
+    }
+
+    pub(crate) async fn mcp_server_would_be_direct_at_session_start_for_turn_context(
+        &self,
+        turn_context: &TurnContext,
+        server_name: &str,
+    ) -> bool {
+        if !self
+            .session_start_mcp_servers
+            .get(server_name)
+            .is_some_and(|server| server.enabled() && server.allow_implicit_invocation())
+        {
+            return false;
+        }
+        let direct_contract_frozen = {
+            self.session_start_direct_mcp_servers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some()
+        };
+        if direct_contract_frozen {
+            return self
+                .current_mcp_inventory_was_direct_at_session_start(server_name)
+                .await;
+        }
+        let session_start_mcp_tools = self.session_start_mcp_tools.lock().await.clone();
+        let exposure = crate::mcp_tool_exposure::build_mcp_tool_exposure(
+            &session_start_mcp_tools,
+            &session_start_mcp_tools,
+            /*connectors*/ None,
+            &[],
+            &turn_context.config,
+            &self.session_start_mcp_servers,
+            crate::tools::spec_plan::search_tool_enabled(turn_context),
+        );
+        exposure
+            .direct_tools
+            .values()
+            .any(|tool| tool.server_name == server_name)
+    }
+
+    pub(crate) async fn has_pending_input_requiring_follow_up(&self) -> bool {
+        let (
+            has_turn_pending_input_requiring_follow_up,
+            accepts_mailbox_delivery,
+            mcp_use_boundary_pending,
+        ) = {
+            let active_turn_state = {
+                let active = self.active_turn.lock().await;
+                active
+                    .as_ref()
+                    .map(|active_turn| Arc::clone(&active_turn.turn_state))
+            };
+            let Some(active_turn_state) = active_turn_state else {
+                return self.input_queue.has_pending_mailbox_items().await;
+            };
+            let turn_state = active_turn_state.lock().await;
+            let accepts_mailbox_delivery = turn_state.accepts_mailbox_delivery_for_current_turn();
+            let mut has_follow_up_before_mcp_use = false;
+            let mut mcp_use_boundary_pending = false;
+            for item in turn_state.pending_input() {
+                if is_mcp_server_use_context_input_item(item) {
+                    mcp_use_boundary_pending = true;
+                    break;
+                }
+                if !matches!(
+                    item,
+                    TurnInput::InterAgentCommunication(communication)
+                        if !communication.trigger_turn && !accepts_mailbox_delivery
+                ) {
+                    has_follow_up_before_mcp_use = true;
+                }
+            }
+            (
+                has_follow_up_before_mcp_use,
+                accepts_mailbox_delivery,
+                mcp_use_boundary_pending,
+            )
+        };
+        if has_turn_pending_input_requiring_follow_up {
+            return true;
+        }
+        if mcp_use_boundary_pending {
+            return false;
+        }
+        accepts_mailbox_delivery && self.input_queue.has_pending_mailbox_items().await
+    }
+
+    pub(crate) async fn active_turn_has_pending_mcp_server_use_boundary(&self) -> bool {
+        let turn_state = {
+            let active = self.active_turn.lock().await;
+            let Some(active_turn) = active.as_ref() else {
+                return false;
+            };
+            Arc::clone(&active_turn.turn_state)
+        };
+        turn_state
+            .lock()
+            .await
+            .pending_input()
+            .iter()
+            .any(is_mcp_server_use_context_input_item)
+    }
+
+    pub(crate) async fn record_mcp_server_use_context_items(
+        self: &Arc<Self>,
+        turn_context: &Arc<TurnContext>,
+        items: Vec<ResponseItem>,
+    ) {
+        if items.is_empty() {
+            return;
+        }
+        if self.reference_context_item().await.is_none() {
+            let step_context = self.capture_step_context(Arc::clone(turn_context)).await;
+            self.record_context_updates_and_set_reference_context_item(step_context.as_ref())
+                .await;
+        }
+        self.record_conversation_items_silently(turn_context.as_ref(), &items)
+            .await;
+    }
+
+    pub(crate) async fn record_active_turn_mcp_server_use_context_before_abort(
+        self: &Arc<Self>,
+        active_turn: &ActiveTurn,
+    ) {
+        let mcp_input = {
+            let mut turn_state = active_turn.turn_state.lock().await;
+            let pending_input = turn_state.take_pending_input();
+            let mut non_mcp_input = Vec::new();
+            let mut mcp_input = Vec::new();
+            for item in pending_input {
+                if is_mcp_server_use_context_input_item(&item) {
+                    let TurnInput::ResponseItem(item) = item else {
+                        continue;
+                    };
+                    mcp_input.push(item);
+                } else {
+                    non_mcp_input.push(item);
+                }
+            }
+            turn_state.prepend_pending_input(non_mcp_input);
+            mcp_input
+        };
+        if mcp_input.is_empty() {
+            return;
+        }
+        let turn_context = self.new_default_turn().await;
+        self.record_mcp_server_use_context_items(&turn_context, mcp_input)
+            .await;
     }
 
     pub(crate) async fn provider(&self) -> ModelProviderInfo {
@@ -2976,6 +3428,28 @@ impl Session {
         self.send_raw_response_items(turn_context, items).await;
     }
 
+    pub(crate) async fn record_conversation_items_silently(
+        &self,
+        turn_context: &TurnContext,
+        items: &[ResponseItem],
+    ) {
+        self.record_into_history(items, turn_context).await;
+        self.persist_rollout_response_items(items).await;
+    }
+
+    /// Append ResponseItems to the in-memory conversation history only.
+    pub(crate) async fn record_into_history(
+        &self,
+        items: &[ResponseItem],
+        turn_context: &TurnContext,
+    ) {
+        let mut state = self.state.lock().await;
+        state.record_items(
+            items.iter(),
+            turn_context.model_info.truncation_policy.into(),
+        );
+    }
+
     async fn maybe_warn_on_server_model_mismatch(
         self: &Arc<Self>,
         turn_context: &Arc<TurnContext>,
@@ -3052,28 +3526,31 @@ impl Session {
         items: Vec<ResponseItem>,
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
-        compacted_item: CompactedItem,
-    ) {
+        mut compacted_item: CompactedItem,
+    ) -> Vec<ResponseItem> {
         let items = if turn_context.item_ids_enabled() {
             Self::assign_missing_response_item_ids(Cow::Owned(items)).into_owned()
         } else {
             items
         };
-        let compacted_item = CompactedItem {
-            replacement_history: Some(items.clone()),
-            ..compacted_item
-        };
         // Compaction starts a new history window, so its WorldState baseline must be full.
         let mut world_state_item = None;
-        {
+        let final_items = {
             let mut state = self.state.lock().await;
-            state.replace_history(items, reference_context_item.clone());
+            let final_items = crate::compact::preserve_mcp_server_use_context_items(
+                items,
+                state.history.raw_items(),
+            );
+            state.replace_history(final_items.clone(), reference_context_item.clone());
             if let Some(world_state) = world_state_baseline {
                 let snapshot = world_state.snapshot();
                 world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
                 state.history.set_world_state_baseline(snapshot);
             }
-        }
+            final_items
+        };
+
+        compacted_item.replacement_history = Some(final_items.clone());
 
         self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
             .await;
@@ -3090,6 +3567,7 @@ impl Session {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
         }
+        final_items
     }
 
     async fn persist_rollout_response_items(&self, items: &[ResponseItem]) {
@@ -3997,6 +4475,55 @@ impl Session {
         turn_state.lock().await.has_memory_citation = true;
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
+    pub async fn get_pending_input(&self) -> Vec<TurnInput> {
+        let (pending_input, accepts_mailbox_delivery, deferred_mcp_boundary) = {
+            let mut active = self.active_turn.lock().await;
+            match active.as_mut() {
+                Some(at) => {
+                    let mut ts = at.turn_state.lock().await;
+                    let pending_input = ts.take_pending_input();
+                    let mut current_turn_pending_input = Vec::new();
+                    let mut completion_pending_input = Vec::new();
+                    let mut defer_to_completion = false;
+                    for item in pending_input {
+                        if defer_to_completion || is_mcp_server_use_context_input_item(&item) {
+                            defer_to_completion = true;
+                            completion_pending_input.push(item);
+                        } else {
+                            current_turn_pending_input.push(item);
+                        }
+                    }
+                    if !completion_pending_input.is_empty() {
+                        ts.prepend_pending_input(completion_pending_input);
+                    }
+                    (
+                        current_turn_pending_input,
+                        ts.accepts_mailbox_delivery_for_current_turn(),
+                        defer_to_completion,
+                    )
+                }
+                None => (Vec::new(), true, false),
+            }
+        };
+        if !accepts_mailbox_delivery || deferred_mcp_boundary {
+            return pending_input;
+        }
+        let mailbox_items = self.input_queue.drain_mailbox_input_items().await;
+        if pending_input.is_empty() {
+            mailbox_items
+        } else if mailbox_items.is_empty() {
+            pending_input
+        } else {
+            let mut pending_input = pending_input;
+            pending_input.extend(mailbox_items);
+            pending_input
+        }
+    }
+
     pub async fn interrupt_task(self: &Arc<Self>) {
         info!("interrupt received: abort current task, if any");
         let had_active_turn = self.active_turn.lock().await.is_some();
@@ -4111,6 +4638,13 @@ async fn build_hooks_for_config(
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
     })
+}
+
+fn is_mcp_server_use_context_input_item(item: &TurnInput) -> bool {
+    let TurnInput::ResponseItem(item) = item else {
+        return false;
+    };
+    crate::context::McpServerUseInstructions::matches_response_item(item)
 }
 
 #[cfg(test)]
