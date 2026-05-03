@@ -2165,6 +2165,7 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
             resources: Vec::new(),
             resource_templates: Vec::new(),
             auth_status: McpAuthStatus::Unsupported,
+            allow_implicit_invocation: false,
         }],
         next_cursor: None,
     };
@@ -2179,9 +2180,39 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
                 "resources": [],
                 "resourceTemplates": [],
                 "authStatus": "unsupported",
+                "allowImplicitInvocation": false,
             }],
             "nextCursor": null,
         })
+    );
+}
+
+#[test]
+fn mcp_server_status_defaults_missing_allow_implicit_invocation_to_true() {
+    let response: ListMcpServerStatusResponse = serde_json::from_value(json!({
+        "data": [{
+            "name": "legacy-server",
+            "serverInfo": null,
+            "tools": {},
+            "resources": [],
+            "resourceTemplates": [],
+            "authStatus": "unsupported",
+        }],
+        "nextCursor": null,
+    }))
+    .expect("legacy response without allowImplicitInvocation should deserialize");
+
+    assert_eq!(
+        response.data,
+        vec![McpServerStatus {
+            name: "legacy-server".to_string(),
+            server_info: None,
+            tools: HashMap::new(),
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            auth_status: McpAuthStatus::Unsupported,
+            allow_implicit_invocation: true,
+        }]
     );
 }
 
@@ -2257,6 +2288,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
             resources: Vec::new(),
             resource_templates: Vec::new(),
             auth_status: McpAuthStatus::Unsupported,
+            allow_implicit_invocation: true,
         }],
         next_cursor: None,
     };
@@ -2278,6 +2310,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
                 "resources": [],
                 "resourceTemplates": [],
                 "authStatus": "unsupported",
+                "allowImplicitInvocation": true,
             }],
             "nextCursor": null,
         })

@@ -245,12 +245,12 @@ async fn selected_capability_stack_tracks_environment_availability_and_resume() 
     assert_eq!(6, requests.len());
     for request in &requests[1..4] {
         assert_selected_skill_is_injected(request, /*expected_count*/ 1);
-        assert_selected_plugin_tools(request);
+        assert_selected_plugin_direct_tools(request);
         assert_plugin_guidance_count(request, /*expected_count*/ 1);
     }
     assert_plugin_guidance_count(&requests[4], /*expected_count*/ 1);
     assert_selected_skill_is_injected(&requests[5], /*expected_count*/ 2);
-    assert_selected_plugin_tools(&requests[5]);
+    assert_selected_plugin_direct_tools(&requests[5]);
     let output = requests[2].function_call_output(MCP_CALL_ID);
     let output = output["output"]
         .as_str()
@@ -415,9 +415,9 @@ async fn selected_capabilities_become_available_between_samples_in_one_turn() ->
     let requests = response_mock.requests();
     assert_eq!(3, requests.len());
     assert_selected_skill_catalog_available(&requests[1]);
-    assert_selected_plugin_tools(&requests[1]);
+    assert_selected_plugin_direct_tools(&requests[1]);
     assert_plugin_guidance_count(&requests[1], /*expected_count*/ 1);
-    assert_selected_plugin_tools(&requests[2]);
+    assert_selected_plugin_direct_tools(&requests[2]);
     assert_plugin_guidance_count(&requests[2], /*expected_count*/ 1);
     let output = requests[2].function_call_output(MCP_CALL_ID);
     let output = output["output"]
@@ -525,6 +525,7 @@ fn selected_capability_fixture(
                         "MCP_TEST_PID_FILE": pid_file.to_string_lossy(),
                     },
                     "env_vars": [EXECUTOR_ENV_NAME],
+                    "allow_implicit_invocation": true,
                     "startup_timeout_sec": 10,
                 }
             }
@@ -617,11 +618,11 @@ fn latest_selected_skill_update(request: &ResponsesRequest) -> Option<String> {
         .rfind(|text| text.contains(SKILL_DESCRIPTION) || text.contains(NO_SELECTED_SKILLS_MESSAGE))
 }
 
-fn assert_selected_plugin_tools(request: &ResponsesRequest) {
+fn assert_selected_plugin_direct_tools(request: &ResponsesRequest) {
     assert!(
         request
             .tool_by_name(&format!("mcp__{MCP_SERVER_NAME}"), "echo")
-            .is_some()
+            .is_none()
     );
     let connector = request
         .tool_by_name("mcp__codex_apps__calendar", "connector_calendar")

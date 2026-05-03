@@ -38,20 +38,34 @@ impl App {
     pub(super) fn fetch_mcp_inventory(
         &mut self,
         app_server: &AppServerSession,
-        detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        detail: McpServerStatusDetail,
     ) {
+        let request_seq = thread_id.map(|thread_id| {
+            self.next_mcp_inventory_request_seq =
+                self.next_mcp_inventory_request_seq.wrapping_add(1);
+            let seq = self.next_mcp_inventory_request_seq;
+            self.latest_mcp_inventory_request_seq.insert(thread_id, seq);
+            seq
+        });
+        if let Some(thread_id) = thread_id {
+            *self
+                .pending_mcp_inventory_threads
+                .entry(thread_id)
+                .or_default() += 1;
+        }
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         let request_thread_id = self.mcp_inventory_request_thread_id(thread_id);
         tokio::spawn(async move {
-            let result = fetch_all_mcp_server_statuses(request_handle, detail, request_thread_id)
+            let result = fetch_all_mcp_server_statuses(request_handle, request_thread_id, detail)
                 .await
                 .map_err(|err| err.to_string());
             app_event_tx.send(AppEvent::McpInventoryLoaded {
+                thread_id,
+                request_seq,
                 result,
                 detail,
-                thread_id,
             });
         });
     }
@@ -666,20 +680,104 @@ impl App {
     /// Process the completed MCP inventory fetch: clear the loading spinner, then
     /// render either the full tool/resource listing or an error into chat history.
     ///
-    /// When the app-server reports zero servers, a special "empty" cell is shown
-    /// instead of the full table.
-    pub(super) fn handle_mcp_inventory_result(
+    /// When both the local config and the app-server report zero servers, a special
+    /// "empty" cell is shown instead of the full table.
+    pub(super) async fn handle_mcp_inventory_result(
         &mut self,
+        thread_id: Option<ThreadId>,
+        request_seq: Option<u64>,
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
-        thread_id: Option<ThreadId>,
     ) {
-        if thread_id.is_some() && thread_id != self.current_displayed_thread_id() {
+        if let Some(thread_id) = thread_id {
+            match self.pending_mcp_inventory_threads.entry(thread_id) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let remaining = entry.get_mut();
+                    *remaining = remaining.saturating_sub(1);
+                    if *remaining == 0 {
+                        entry.remove();
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(_) => {}
+            }
+            if let Some(request_seq) = request_seq
+                && Some(request_seq)
+                    != self
+                        .latest_mcp_inventory_request_seq
+                        .get(&thread_id)
+                        .copied()
+            {
+                return;
+            }
+        }
+        if thread_id != self.chat_widget.thread_id() {
+            if let Some(thread_id) = thread_id {
+                let (sender, store) = {
+                    let channel = self.ensure_thread_channel(thread_id);
+                    (channel.sender.clone(), Arc::clone(&channel.store))
+                };
+                let event = ThreadBufferedEvent::McpInventoryResult(McpInventoryThreadEvent {
+                    request_seq,
+                    result,
+                    detail,
+                });
+                let should_send = {
+                    let mut guard = store.lock().await;
+                    guard.buffer.push_back(event.clone());
+                    if guard.buffer.len() > guard.capacity
+                        && let Some(removed) = guard.buffer.pop_front()
+                        && let ThreadBufferedEvent::Request(request) = &removed
+                    {
+                        guard
+                            .pending_interactive_replay
+                            .note_evicted_server_request(request);
+                    }
+                    guard.active
+                };
+                if should_send {
+                    let _ = sender.try_send(event);
+                }
+            } else if let Some(primary_thread_id) = self.primary_thread_id {
+                let (sender, store) = {
+                    let channel = self.ensure_thread_channel(primary_thread_id);
+                    (channel.sender.clone(), Arc::clone(&channel.store))
+                };
+                let event = ThreadBufferedEvent::McpInventoryResult(McpInventoryThreadEvent {
+                    request_seq,
+                    result,
+                    detail,
+                });
+                let should_send = {
+                    let mut guard = store.lock().await;
+                    guard.buffer.push_back(event.clone());
+                    if guard.buffer.len() > guard.capacity
+                        && let Some(removed) = guard.buffer.pop_front()
+                        && let ThreadBufferedEvent::Request(request) = &removed
+                    {
+                        guard
+                            .pending_interactive_replay
+                            .note_evicted_server_request(request);
+                    }
+                    guard.active
+                };
+                if should_send {
+                    let _ = sender.try_send(event);
+                }
+            } else {
+                self.pending_primary_events
+                    .push_back(ThreadBufferedEvent::McpInventoryResult(
+                        McpInventoryThreadEvent {
+                            request_seq,
+                            result,
+                            detail,
+                        },
+                    ));
+            }
             return;
         }
-
         self.chat_widget.clear_mcp_inventory_loading();
         self.clear_committed_mcp_inventory_loading();
+        let config = self.chat_widget.config_ref().clone();
 
         let statuses = match result {
             Ok(statuses) => statuses,
@@ -689,8 +787,10 @@ impl App {
                 return;
             }
         };
+        self.chat_widget
+            .sync_mcp_server_name_completions_from_statuses(&statuses);
 
-        if statuses.is_empty() {
+        if config.mcp_servers.get().is_empty() && statuses.is_empty() {
             self.chat_widget
                 .add_to_history(history_cell::empty_mcp_output());
             return;
@@ -700,6 +800,19 @@ impl App {
             .add_to_history(history_cell::new_mcp_tools_output_from_statuses(
                 &statuses, detail,
             ));
+    }
+
+    pub(super) fn sync_mcp_inventory_loading_for_current_thread(&mut self) {
+        if self.chat_widget.thread_id().is_none_or(|thread_id| {
+            self.pending_mcp_inventory_threads
+                .get(&thread_id)
+                .copied()
+                .unwrap_or_default()
+                == 0
+        }) {
+            self.chat_widget.clear_mcp_inventory_loading();
+            self.clear_committed_mcp_inventory_loading();
+        }
     }
 
     pub(super) fn clear_committed_mcp_inventory_loading(&mut self) {
@@ -720,8 +833,8 @@ impl App {
 
 pub(super) async fn fetch_all_mcp_server_statuses(
     request_handle: AppServerRequestHandle,
-    detail: McpServerStatusDetail,
     thread_id: Option<ThreadId>,
+    detail: McpServerStatusDetail,
 ) -> Result<Vec<McpServerStatus>> {
     let mut cursor = None;
     let mut statuses = Vec::new();
@@ -1436,6 +1549,7 @@ mod tests {
             McpServerStatus {
                 name: "docs".to_string(),
                 server_info: None,
+                allow_implicit_invocation: true,
                 tools: HashMap::from([(
                     "list".to_string(),
                     Tool {
@@ -1456,6 +1570,7 @@ mod tests {
             McpServerStatus {
                 name: "disabled".to_string(),
                 server_info: None,
+                allow_implicit_invocation: true,
                 tools: HashMap::new(),
                 resources: Vec::new(),
                 resource_templates: Vec::new(),
