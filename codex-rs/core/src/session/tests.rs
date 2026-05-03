@@ -5456,10 +5456,15 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
+        session_start_mcp_servers: HashMap::new(),
+        session_start_mcp_tools: Mutex::new(HashMap::new()),
+        session_start_direct_mcp_servers: std::sync::Mutex::new(None),
+        session_start_direct_mcp_tools: Mutex::new(None),
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
+        idle_pending_mcp_server_use: Mutex::new(Vec::new()),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         next_internal_sub_id: AtomicU64::new(0),
@@ -7611,10 +7616,15 @@ where
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
+        session_start_mcp_servers: HashMap::new(),
+        session_start_mcp_tools: Mutex::new(HashMap::new()),
+        session_start_direct_mcp_servers: std::sync::Mutex::new(None),
+        session_start_direct_mcp_tools: Mutex::new(None),
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
+        idle_pending_mcp_server_use: Mutex::new(Vec::new()),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         next_internal_sub_id: AtomicU64::new(0),
@@ -7946,6 +7956,7 @@ async fn built_tools_uses_the_step_mcp_runtime() -> anyhow::Result<()> {
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -10153,6 +10164,261 @@ async fn steer_input_returns_active_turn_id() {
 
     assert_eq!(turn_id, tc.sub_id);
     assert!(sess.input_queue.has_pending_input(&sess.active_turn).await);
+}
+
+#[tokio::test]
+async fn queued_response_items_for_next_turn_move_into_next_active_turn() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let queued_item = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "queued before wake".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    sess.input_queue
+        .queue_response_items_for_next_turn(vec![queued_item.clone()])
+        .await;
+
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    assert_eq!(
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
+        vec![TurnInput::ResponseItem(queued_item)]
+    );
+}
+
+#[tokio::test]
+async fn active_turn_mcp_use_defers_itself_and_later_pending_input_to_completion() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    let before_mcp = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "before mcp".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mcp_use = ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: crate::context::McpServerUseInstructions::new(
+                "linear".to_string(),
+                r#"[{"canonical_tool_name":"mcp__linear__list_issues"}]"#.to_string(),
+            )
+            .render(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let after_mcp = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "after mcp".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    sess.inject_response_items(vec![before_mcp.clone(), mcp_use, after_mcp])
+        .await
+        .expect("inject pending input into active turn");
+    sess.input_queue
+        .enqueue_mailbox_communication(InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("worker path should parse"),
+            AgentPath::root(),
+            Vec::new(),
+            "mailbox behind mcp".to_string(),
+            /*trigger_turn*/ true,
+        ))
+        .await;
+
+    assert_eq!(
+        sess.get_pending_input().await,
+        vec![TurnInput::ResponseItem(before_mcp)]
+    );
+    assert!(
+        !sess.has_pending_input_requiring_follow_up().await,
+        "MCP-use context is a completion boundary; later input and mailbox mail must not force same-turn follow-up"
+    );
+    assert!(
+        sess.get_pending_input().await.is_empty(),
+        "MCP-use context, later input, and mailbox mail stay pending for task completion or a later turn"
+    );
+}
+
+#[tokio::test]
+async fn interrupt_records_active_turn_mcp_use_before_clearing_pending_input() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    let mcp_use = ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: crate::context::McpServerUseInstructions::new(
+                "linear".to_string(),
+                r#"[{"canonical_tool_name":"mcp__linear__list_issues"}]"#.to_string(),
+            )
+            .render(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    sess.inject_response_items(vec![mcp_use.clone()])
+        .await
+        .expect("inject MCP-use context into active turn");
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+
+    assert_eq!(
+        sess.latest_mcp_server_use_context_text("linear").await,
+        Some(
+            crate::context::McpServerUseInstructions::new(
+                "linear".to_string(),
+                r#"[{"canonical_tool_name":"mcp__linear__list_issues"}]"#.to_string(),
+            )
+            .render()
+        ),
+        "acknowledged active-turn /mcp use must survive interruption"
+    );
+}
+
+#[tokio::test]
+async fn mcp_use_after_reference_context_persists_for_post_start_server() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let step_context = sess.capture_step_context(Arc::clone(&tc)).await;
+    sess.record_context_updates_and_set_reference_context_item(&step_context)
+        .await;
+
+    crate::session::handlers::queue_mcp_server_use_context(&sess, "linear".to_string()).await;
+
+    assert_eq!(
+        sess.latest_mcp_server_use_context_text("linear")
+            .await
+            .as_deref()
+            .map(crate::context::McpServerUseInstructions::parse_server_name),
+        Some(Some("linear".to_string())),
+        "post-start MCP servers added by reload/plugin refresh must be persisted at the /mcp use point, not left in volatile pending state"
+    );
+    assert!(
+        !sess.has_queued_mcp_server_use_context("linear").await,
+        "persisted /mcp use context must not also remain queued"
+    );
+}
+
+#[tokio::test]
+async fn active_turn_completion_records_consecutive_mcp_use_blocks_without_waking_synthetic_turn() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    for server_name in ["linear", "github"] {
+        let mcp_use = ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: crate::context::McpServerUseInstructions::new(
+                    server_name.to_string(),
+                    format!(r#"[{{"canonical_tool_name":"mcp__{server_name}__tool"}}]"#),
+                )
+                .render(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+        sess.inject_response_items(vec![mcp_use])
+            .await
+            .expect("inject MCP-use context into active turn");
+    }
+
+    sess.on_task_finished(Arc::clone(&tc), /*task_result*/ Ok(None))
+        .await;
+
+    assert!(
+        !sess
+            .input_queue
+            .has_queued_response_items_for_next_turn()
+            .await,
+        "consecutive MCP-use blocks should be recorded at completion, not queued as MCP-only work"
+    );
+    assert!(
+        sess.latest_mcp_server_use_context_text("linear")
+            .await
+            .is_some()
+    );
+    assert!(
+        sess.latest_mcp_server_use_context_text("github")
+            .await
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn idle_interrupt_does_not_wake_queued_next_turn_items() {
+    let (sess, _tc, _rx) = make_session_and_context_with_rx().await;
+    let queued_item = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "queued before interrupt".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    sess.input_queue
+        .queue_response_items_for_next_turn(vec![queued_item])
+        .await;
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+
+    assert!(sess.active_turn.lock().await.is_none());
+    assert!(
+        sess.input_queue
+            .has_queued_response_items_for_next_turn()
+            .await
+    );
 }
 
 #[tokio::test]
