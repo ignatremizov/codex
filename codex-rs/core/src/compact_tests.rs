@@ -450,6 +450,30 @@ fn insert_mcp_server_use_context_items_at_compaction_boundary_does_not_prepend()
     );
 }
 
+#[test]
+fn insert_mcp_server_use_context_items_keeps_terminal_compaction_last() {
+    let linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();
+    let compaction = ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "remote-v2".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let history = vec![user_message("retained prompt"), compaction.clone()];
+    let mcp_context = vec![developer_message(linear.clone())];
+
+    let merged = insert_mcp_server_use_context_items_at_compaction_boundary(history, mcp_context);
+
+    assert_eq!(
+        merged,
+        vec![
+            user_message("retained prompt"),
+            developer_message(linear),
+            compaction,
+        ]
+    );
+}
+
 #[tokio::test]
 async fn should_use_remote_compact_task_for_azure_provider() {
     let provider = ModelProviderInfo {
