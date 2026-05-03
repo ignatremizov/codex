@@ -1,6 +1,7 @@
 use super::mcp_refresh::McpRefreshInvalidationGuard;
 use super::*;
 use crate::environment_selection::combine_selected_capability_roots;
+use codex_config::McpServerConfig;
 use codex_exec_server::ExecutorCapabilityDiscoveryCache;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::MAX_SELECTED_CAPABILITY_ROOTS;

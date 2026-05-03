@@ -25,6 +25,7 @@ use crate::hook_runtime::run_legacy_after_agent_hook;
 use crate::hook_runtime::run_pending_session_start_hooks;
 use crate::hook_runtime::run_turn_stop_hooks;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
+use crate::mcp_tool_exposure::build_mcp_tool_exposure;
 use crate::mentions::build_connector_slug_counts;
 use crate::mentions::collect_explicit_app_ids;
 use crate::mentions::collect_explicit_plugin_mentions;
@@ -58,7 +59,9 @@ use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::router::ToolSuggestPresentation;
+use crate::tools::spec_plan::ToolRouterBuildParams;
 use crate::tools::spec_plan::build_tool_router;
+use crate::tools::spec_plan::search_tool_enabled;
 use crate::tools::spec_plan::tool_suggest_enabled;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::turn_timing::record_turn_ttft_metric;
@@ -79,6 +82,7 @@ use codex_features::Feature;
 use codex_file_system::FindUpErrorPolicy;
 use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_login::CodexAuth;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::ResponseItemId;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
@@ -261,6 +265,16 @@ pub(crate) async fn run_turn(
         },
     );
     let mut world_state = world_state?;
+    if !turn_context.is_compact_subagent() {
+        let _ = sess.session_start_mcp_tools_for_exposure().await;
+        let queued_response_items = sess
+            .render_queued_mcp_server_use_context_for_turn(turn_context.as_ref())
+            .await;
+        if !queued_response_items.is_empty() {
+            sess.record_mcp_server_use_context_items(&turn_context, queued_response_items)
+                .await;
+        }
+    }
 
     let (injection_items, explicitly_enabled_connectors) = if turn_context.is_compact_subagent() {
         (Vec::new(), HashSet::new())
@@ -328,14 +342,14 @@ pub(crate) async fn run_turn(
 
     let mut next_step_context = Some(first_step_context);
     loop {
+        if run_pending_session_start_hooks(&sess, &turn_context).await {
+            break;
+        }
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
         let pending_input = if can_drain_pending_input {
-            sess.input_queue
-                .get_pending_input(&sess.active_turn)
-                .await
-                .0
+            sess.get_pending_input().await
         } else {
             Vec::new()
         };
@@ -568,6 +582,7 @@ pub(crate) async fn run_turn(
                                 )
                                 .await;
                             stop_hook_active = true;
+                            can_drain_pending_input = false;
                             continue;
                         } else {
                             sess.send_event(
@@ -748,6 +763,22 @@ async fn required_mcp_servers_for_input(
             .filter(|server| !server.is_empty())
             .map(str::to_string)
     }));
+    let explicit_app_ids = collect_explicit_app_ids(user_input);
+    if turn_context.apps_enabled() && !explicit_app_ids.is_empty() {
+        sess.merge_connector_selection(explicit_app_ids).await;
+        required_servers.insert(CODEX_APPS_MCP_SERVER_NAME.to_string());
+        let required_apps = [CODEX_APPS_MCP_SERVER_NAME.to_string()];
+        let _ = sess
+            .services
+            .mcp_runtime
+            .current_binding_with_required_servers(&required_apps)
+            .await;
+        let _ = sess
+            .services
+            .mcp_runtime
+            .latest_hard_refresh_codex_apps_tools_cache()
+            .await;
+    }
 
     let connector_slug_counts = if turn_context.apps_enabled() && !mentions.plain_names.is_empty() {
         let cached_connectors =
@@ -1681,16 +1712,90 @@ pub(crate) async fn built_tools(
             .instrument(trace_span!("built_tools.load_discoverable_tools"))
             .await
         };
+    // Freeze the stable direct MCP contract at the session-start exposure boundary. Runtime
+    // refreshes remain callable through deferred exposure without mutating the cached prefix.
+    let session_start_mcp_tools = sess.session_start_mcp_tools_for_exposure().await;
+    let session_start_mcp_servers = sess.session_start_mcp_servers.clone();
+    let explicitly_enabled_connector_ids = sess.get_connector_selection().await;
+    let explicitly_enabled_connectors =
+        accessible_connectors
+            .as_ref()
+            .map_or_else(Vec::new, |connectors| {
+                connectors
+                    .iter()
+                    .filter(|connector| {
+                        explicitly_enabled_connector_ids.contains(connector.id.as_str())
+                    })
+                    .cloned()
+                    .collect()
+            });
+    let all_mcp_tools_by_name = all_mcp_tools
+        .iter()
+        .map(|tool| (tool.canonical_tool_name().to_string(), tool.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut mcp_tool_exposure = build_mcp_tool_exposure(
+        &all_mcp_tools_by_name,
+        &session_start_mcp_tools,
+        accessible_connectors.as_deref(),
+        explicitly_enabled_connectors.as_slice(),
+        &turn_context.config,
+        &session_start_mcp_servers,
+        search_tool_enabled(turn_context, model_info),
+    );
+    {
+        let mut session_start_direct_mcp_tools = sess.session_start_direct_mcp_tools.lock().await;
+        let current_turn_codex_apps_direct_tools = mcp_tool_exposure
+            .direct_tools
+            .iter()
+            .filter(|(_, tool)| tool.server_name == CODEX_APPS_MCP_SERVER_NAME)
+            .map(|(name, tool)| (name.clone(), tool.clone()))
+            .collect::<HashMap<_, _>>();
+        if let Some(direct_tools) = session_start_direct_mcp_tools.as_ref() {
+            mcp_tool_exposure.direct_tools = direct_tools.clone();
+            mcp_tool_exposure
+                .direct_tools
+                .extend(current_turn_codex_apps_direct_tools);
+        } else {
+            let stable_direct_tools = mcp_tool_exposure
+                .direct_tools
+                .iter()
+                .filter(|(_, tool)| tool.server_name != CODEX_APPS_MCP_SERVER_NAME)
+                .map(|(name, tool)| (name.clone(), tool.clone()))
+                .collect::<HashMap<_, _>>();
+            let direct_mcp_servers = stable_direct_tools
+                .values()
+                .map(|tool| tool.server_name.clone())
+                .collect::<HashSet<_>>();
+            *sess
+                .session_start_direct_mcp_servers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(direct_mcp_servers);
+            *session_start_direct_mcp_tools = Some(stable_direct_tools);
+        }
+    }
+    if let Some(deferred_tools) = mcp_tool_exposure.deferred_tools.as_mut() {
+        for direct_tool_name in mcp_tool_exposure.direct_tools.keys() {
+            deferred_tools.remove(direct_tool_name);
+        }
+        if deferred_tools.is_empty() {
+            mcp_tool_exposure.deferred_tools = None;
+        }
+    }
+
     Ok(Arc::new(build_tool_router(
         sess,
         turn_context,
         model_info,
         model_messages,
-        environments,
-        mcp,
-        apps_enabled,
-        step_store,
-        tool_suggest_candidates.as_ref(),
+        ToolRouterBuildParams {
+            environments,
+            mcp,
+            mcp_tool_exposure: &mcp_tool_exposure,
+            session_start_mcp_servers: &session_start_mcp_servers,
+            apps_enabled,
+            step_store,
+            tool_suggest_candidates: tool_suggest_candidates.as_ref(),
+        },
     )?))
 }
 
@@ -2527,7 +2632,10 @@ async fn try_run_sampling_request(
                 }
                 needs_follow_up |= output_result.needs_follow_up;
                 // todo: remove before stabilizing multi-agent v2
-                if preempt_for_mailbox_mail && sess.input_queue.has_pending_mailbox_items().await {
+                if preempt_for_mailbox_mail
+                    && !sess.active_turn_has_pending_mcp_server_use_boundary().await
+                    && sess.input_queue.has_pending_mailbox_items().await
+                {
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
                         last_agent_message,

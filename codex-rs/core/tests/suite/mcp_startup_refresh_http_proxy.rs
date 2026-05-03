@@ -121,6 +121,7 @@ async fn local_mcp_startup_and_refresh_use_configured_http_client() -> Result<()
             servers.insert(
                 SERVER_NAME.to_string(),
                 McpServerConfig {
+                    allow_implicit_invocation: false,
                     auth: Default::default(),
                     transport: McpServerTransportConfig::StreamableHttp {
                         url: SERVER_URL.to_string(),
@@ -335,7 +336,7 @@ async fn skill_mcp_dependency_oauth_uses_configured_http_client() -> Result<()> 
             .await?;
             Ok(())
         });
-    let fixture = builder.build_with_auto_env(&responses_server).await?;
+    let fixture = builder.build(&responses_server).await?;
     responses::mount_sse_once(
         &responses_server,
         responses::sse(vec![

@@ -142,6 +142,14 @@ impl Session {
             .await;
     }
 
+    /// Returns the input if there is no active turn to inject into.
+    pub async fn inject_response_items(
+        &self,
+        input: Vec<ResponseItem>,
+    ) -> Result<(), Vec<ResponseItem>> {
+        self.inject_if_running(input).await
+    }
+
     /// Injects items into active work, or records them without starting a turn.
     pub(crate) async fn inject_no_new_turn(
         &self,

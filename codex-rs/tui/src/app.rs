@@ -621,6 +621,9 @@ pub(crate) struct App {
     dynamic_tool_status_updates:
         tokio::sync::broadcast::Sender<codex_app_server_protocol::ThreadStatusChangedNotification>,
     dynamic_tool_tasks: HashMap<codex_app_server_protocol::RequestId, (String, JoinHandle<()>)>,
+    pending_mcp_inventory_threads: HashMap<ThreadId, usize>,
+    latest_mcp_inventory_request_seq: HashMap<ThreadId, u64>,
+    next_mcp_inventory_request_seq: u64,
     pending_startup_thread_start: bool,
     /// Keeps protected screens quarantined until initialized chat receives genuine user input.
     startup_protected_input_boundary: bool,

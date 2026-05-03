@@ -159,6 +159,14 @@ impl ChatWidget {
         self.refresh_skills_for_current_cwd(/*force_reload*/ true);
         self.refresh_connector_mentions(/*force_refresh*/ false);
         let initial_user_message_pending = self.initial_user_message.is_some();
+        if let Some(thread_id) = self.thread_id {
+            while let Some(server_name) = self.pending_mcp_server_uses.pop_front() {
+                self.app_event_tx.send(AppEvent::SubmitThreadOp {
+                    thread_id,
+                    op: AppCommand::activate_mcp_server(server_name),
+                });
+            }
+        }
         self.submit_initial_user_message_if_pending();
         if self.mcp_startup_status.is_none()
             && (!initial_user_message_pending || self.is_user_turn_pending_or_running())

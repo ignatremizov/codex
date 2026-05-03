@@ -421,8 +421,8 @@ impl Session {
 
     /// Starts a regular turn when the session is idle and pending work is waiting.
     ///
-    /// Pending work includes mailbox mail marked with `trigger_turn`, or any mailbox mail while
-    /// an outstanding durable sleep is attached to the thread.
+    /// Pending work includes inputs queued behind a context boundary, mailbox mail marked with
+    /// `trigger_turn`, or any mailbox mail while an outstanding durable sleep is attached.
     ///
     /// This helper generates a fresh sub-id for the synthetic turn before delegating to the
     /// explicit-sub-id variant.
@@ -438,15 +438,16 @@ impl Session {
     /// Starts a regular turn with the provided sub-id when pending work should wake an idle
     /// session.
     ///
-    /// The turn is created only when the session is idle and mailbox mail either requests a turn
-    /// or can wake an outstanding durable sleep.
+    /// The turn is created only when the session is idle and queued input is waiting, or mailbox
+    /// mail either requests a turn or can wake an outstanding durable sleep.
     pub(crate) async fn maybe_start_turn_for_pending_work_with_sub_id(
         self: &Arc<Self>,
         sub_id: String,
     ) {
-        if !self.input_queue.has_pending_mailbox_items().await
-            || (!self.input_queue.has_trigger_turn_mailbox_items().await
-                && !self.has_outstanding_durable_sleep())
+        if !self.input_queue.has_queued_turn_inputs().await
+            && (!self.input_queue.has_pending_mailbox_items().await
+                || (!self.input_queue.has_trigger_turn_mailbox_items().await
+                    && !self.has_outstanding_durable_sleep()))
         {
             return;
         }
@@ -532,6 +533,8 @@ impl Session {
         if let Some(active_turn) = active_turn_to_clear {
             // Let interrupted tasks observe cancellation before dropping pending approvals, or an
             // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+            self.record_active_turn_mcp_server_use_context_before_abort(&active_turn)
+                .await;
             self.input_queue.clear_pending(&active_turn).await;
         }
         if reason == TurnAbortReason::Interrupted && aborted_turn {
@@ -578,6 +581,8 @@ impl Session {
         }
         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
         // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+        self.record_active_turn_mcp_server_use_context_before_abort(&active_turn)
+            .await;
         self.input_queue.clear_pending(&active_turn).await;
 
         if reason == TurnAbortReason::Interrupted {
@@ -628,7 +633,7 @@ impl Session {
         let Some(turn_state) = turn_state else {
             return;
         };
-        let pending_input = self
+        let mut pending_input = self
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
             .await;
@@ -640,6 +645,18 @@ impl Session {
                 ts.token_usage_at_turn_start.clone(),
             )
         };
+        let mut pending_input_after_mcp_use = Vec::new();
+        if let Some(mcp_index) = pending_input
+            .iter()
+            .position(is_mcp_server_use_context_input)
+            && let Some(first_non_mcp_after_boundary) = pending_input
+                .iter()
+                .enumerate()
+                .skip(mcp_index)
+                .find_map(|(index, item)| (!is_mcp_server_use_context_input(item)).then_some(index))
+        {
+            pending_input_after_mcp_use = pending_input.split_off(first_non_mcp_after_boundary);
+        }
         run_hooks_and_record_inputs(
             self,
             &turn_context,
@@ -647,6 +664,10 @@ impl Session {
             PersistContext::Standard,
         )
         .await;
+        let queued_pending_input_after_mcp_use = !pending_input_after_mcp_use.is_empty();
+        self.input_queue
+            .queue_turn_inputs_for_next_turn(pending_input_after_mcp_use)
+            .await;
         // Emit token usage metrics.
         {
             // TODO(jif): drop this
@@ -854,7 +875,7 @@ impl Session {
                 false
             }
         };
-        if cleared_active_turn {
+        if cleared_active_turn && !queued_pending_input_after_mcp_use {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
         }
         // Regular items were flushed before this terminal event was appended; buffering
@@ -1002,6 +1023,13 @@ impl Session {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
     }
+}
+
+fn is_mcp_server_use_context_input(item: &TurnInput) -> bool {
+    let TurnInput::ResponseItem(item) = item else {
+        return false;
+    };
+    crate::context::McpServerUseInstructions::matches_response_item(item)
 }
 
 #[cfg(test)]

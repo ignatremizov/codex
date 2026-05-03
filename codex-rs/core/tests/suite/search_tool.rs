@@ -161,7 +161,6 @@ async fn search_tool_enabled_by_default_adds_tool_search() -> Result<()> {
 
     let mut builder = configured_builder(apps_server.chatgpt_base_url.clone());
     let test = builder.build_with_auto_env(&server).await?;
-
     test.submit_turn_with_approval_and_permission_profile(
         "list tools",
         AskForApproval::Never,
@@ -502,7 +501,7 @@ async fn search_tool_hides_apps_tools_without_search() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_app_mentions_leave_app_tools_deferred() -> Result<()> {
+async fn explicit_app_mentions_preserve_direct_app_tools_with_always_defer() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -519,6 +518,7 @@ async fn explicit_app_mentions_leave_app_tools_deferred() -> Result<()> {
 
     let mut builder = configured_builder(apps_server.chatgpt_base_url.clone());
     let test = builder.build_with_auto_env(&server).await?;
+    wait_for_mcp_server(&test.codex, "codex_apps").await?;
 
     test.submit_turn_with_approval_and_permission_profile(
         "Use [$calendar](app://calendar) and then call tools.",
@@ -539,12 +539,12 @@ async fn explicit_app_mentions_leave_app_tools_deferred() -> Result<()> {
             SEARCH_CALENDAR_NAMESPACE,
             SEARCH_CALENDAR_CREATE_TOOL
         )
-        .is_none(),
-        "explicit app mentions should not directly expose create tool, got tools: {tools:?}"
+        .is_some(),
+        "explicit app mentions should directly expose the mentioned app create tool, got tools: {tools:?}"
     );
     assert!(
-        namespace_child_tool(&body, SEARCH_CALENDAR_NAMESPACE, SEARCH_CALENDAR_LIST_TOOL).is_none(),
-        "explicit app mentions should not directly expose list tool, got tools: {tools:?}"
+        namespace_child_tool(&body, SEARCH_CALENDAR_NAMESPACE, SEARCH_CALENDAR_LIST_TOOL).is_some(),
+        "explicit app mentions should directly expose the mentioned app list tool, got tools: {tools:?}"
     );
 
     Ok(())
@@ -1337,6 +1337,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
                     omit_tools_from: None,
+                    allow_implicit_invocation: true,
                     tools: HashMap::new(),
                 },
             );
@@ -1470,6 +1471,7 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
                     omit_tools_from: None,
+                    allow_implicit_invocation: true,
                     tools: HashMap::new(),
                 },
             );
@@ -1619,6 +1621,7 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
                     omit_tools_from: None,
+                    allow_implicit_invocation: true,
                     tools: HashMap::new(),
                 },
             );

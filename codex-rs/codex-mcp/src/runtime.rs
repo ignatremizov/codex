@@ -445,7 +445,8 @@ impl McpRuntime {
         if !current.connections.wait_for_server_startup(server).await {
             return None;
         }
-        Self::binding_from_published_runtime(current, /*required_servers*/ &[]).await
+        let required_servers = [server.to_string()];
+        Self::binding_from_published_runtime(current, &required_servers).await
     }
 
     /// Returns the latest published configuration without waiting for clients.
@@ -829,6 +830,7 @@ mod tests {
             },
             environment_id: environment_id.to_string(),
             enabled: true,
+            allow_implicit_invocation: true,
             required: false,
             supports_parallel_tool_calls: false,
             omit_tools_from: None,

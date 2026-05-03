@@ -89,7 +89,7 @@ impl SessionTask for RegularTask {
             if ctx.terminal_error.lock().await.is_some() {
                 return Ok(last_agent_message);
             }
-            if !sess.input_queue.has_pending_input(&sess.active_turn).await {
+            if !sess.has_pending_input_requiring_follow_up().await {
                 return Ok(last_agent_message);
             }
             next_input = Vec::new();

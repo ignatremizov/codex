@@ -1,4 +1,6 @@
 use super::*;
+use crate::context::ContextualUserFragment;
+use crate::context::McpServerUseInstructions;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ResponseItemId;
@@ -435,6 +437,122 @@ fn build_compacted_history_preserves_user_message_passthrough_metadata() {
             ResponseItemEnvelope::new(ContextualUserFragment::into(CompactionSummary::new(
                 "summary text",
             ))),
+        ]
+    );
+}
+
+#[test]
+fn collect_mcp_server_use_context_items_preserves_every_explicit_inventory_in_history_order() {
+    let old_linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["old"]"#.to_string()).render();
+    let github =
+        McpServerUseInstructions::new("github".to_string(), r#"["gh"]"#.to_string()).render();
+    let new_linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["new"]"#.to_string()).render();
+    let history = vec![
+        developer_message(old_linear.clone()),
+        developer_message(github.clone()),
+        developer_message(new_linear.clone()),
+    ];
+
+    let collected = collect_mcp_server_use_context_items(&history);
+
+    assert_eq!(
+        collected,
+        vec![
+            developer_message(old_linear),
+            developer_message(github),
+            developer_message(new_linear),
+        ]
+    );
+}
+
+#[test]
+fn preserve_mcp_server_use_context_items_does_not_rewrite_existing_replacement_history() {
+    let linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();
+    let github =
+        McpServerUseInstructions::new("github".to_string(), r#"["github"]"#.to_string()).render();
+    let replacement = vec![user_message("retained prompt"), developer_message(linear)];
+    let additional = vec![developer_message(github)];
+
+    let merged = preserve_mcp_server_use_context_items(replacement.clone(), &additional);
+
+    assert_eq!(merged, replacement);
+}
+
+#[test]
+fn build_compacted_history_preserving_mcp_context_keeps_invocation_order_in_retained_tail() {
+    let linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();
+    let history = vec![
+        user_message("first prompt"),
+        developer_message(linear.clone()),
+        user_message("second prompt"),
+    ];
+
+    let compacted =
+        build_compacted_history_preserving_mcp_context(&annotated(history), "summary text");
+
+    assert_eq!(
+        raw(compacted),
+        vec![
+            user_message("first prompt"),
+            developer_message(linear),
+            user_message("second prompt"),
+            user_message("summary text"),
+        ]
+    );
+}
+
+#[test]
+fn insert_mcp_server_use_context_items_at_compaction_boundary_does_not_prepend() {
+    let linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();
+    let summary = format!("{SUMMARY_PREFIX}\nsummary text");
+    let history = vec![user_message("retained prompt"), user_message(&summary)];
+    let mcp_context = vec![developer_message(linear.clone())];
+
+    let merged = insert_mcp_server_use_context_items_at_compaction_boundary(history, mcp_context);
+
+    assert_eq!(
+        merged
+            .iter()
+            .filter_map(|item| match item {
+                ResponseItem::Message { role, content, .. } => {
+                    Some(format!("{role}:{}", content_items_to_text(content)?))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            "user:retained prompt".to_string(),
+            format!("developer:{linear}"),
+            format!("user:{summary}"),
+        ]
+    );
+}
+
+#[test]
+fn insert_mcp_server_use_context_items_keeps_terminal_compaction_last() {
+    let linear =
+        McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();
+    let compaction = ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "remote-v2".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let history = vec![user_message("retained prompt"), compaction.clone()];
+    let mcp_context = vec![developer_message(linear.clone())];
+
+    let merged = insert_mcp_server_use_context_items_at_compaction_boundary(history, mcp_context);
+
+    assert_eq!(
+        merged,
+        vec![
+            user_message("retained prompt"),
+            developer_message(linear),
+            compaction,
         ]
     );
 }
