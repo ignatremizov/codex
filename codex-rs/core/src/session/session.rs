@@ -12,6 +12,8 @@ use codex_extension_api::ExtensionDataInit;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::RouteAwareClientPool;
 use codex_login::auth::AgentIdentityAuthPolicy;
+use codex_mcp::EffectiveMcpServer;
+use codex_mcp::ToolInfo as McpToolInfo;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -22,6 +24,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 
@@ -50,9 +53,20 @@ pub(crate) struct Session {
     pub(super) mcp_prewarm_tx: async_channel::Sender<()>,
     pub(super) mcp_prewarm_shutdown: CancellationToken,
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
+    /// Effective MCP server visibility captured at the session-start exposure boundary.
+    ///
+    /// MCP reloads may update live server runtime state, but normal turns must not
+    /// rederive the default model-visible MCP contract from later config because
+    /// adding/removing default tool specs would invalidate the cached session prefix.
+    pub(super) session_start_mcp_servers: HashMap<String, EffectiveMcpServer>,
+    pub(super) session_start_mcp_tools: Mutex<HashMap<String, McpToolInfo>>,
+    pub(super) session_start_direct_mcp_servers: StdMutex<Option<HashSet<String>>>,
+    pub(super) session_start_direct_mcp_tools: Mutex<Option<HashMap<String, McpToolInfo>>>,
+    pub(super) pending_mcp_server_refresh_config: Mutex<Option<McpServerRefreshConfig>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) input_queue: InputQueue,
+    pub(super) idle_pending_mcp_server_use: Mutex<Vec<String>>,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
@@ -214,7 +228,6 @@ impl SessionConfiguration {
         ThreadConfigSnapshot {
             model: self.collaboration_mode.model().to_string(),
             model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
-            active_profile: self.original_config_do_not_use.active_profile.clone(),
             service_tier: self.service_tier.clone(),
             approval_policy: self.approval_policy.value(),
             approvals_reviewer: self.approvals_reviewer,
@@ -1204,9 +1217,15 @@ impl Session {
                 mcp_prewarm_tx,
                 mcp_prewarm_shutdown: CancellationToken::new(),
                 mcp_prewarm_task: std::sync::Mutex::new(None),
+                session_start_mcp_servers: mcp_servers.clone(),
+                session_start_mcp_tools: Mutex::new(HashMap::new()),
+                session_start_direct_mcp_servers: StdMutex::new(None),
+                session_start_direct_mcp_tools: Mutex::new(None),
+                pending_mcp_server_refresh_config: Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 active_turn: Mutex::new(None),
                 input_queue: InputQueue::new(),
+                idle_pending_mcp_server_use: Mutex::new(Vec::new()),
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
                 git_enrichment_policy,

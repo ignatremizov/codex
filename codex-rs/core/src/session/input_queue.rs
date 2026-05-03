@@ -31,10 +31,33 @@ pub(crate) struct TurnInputQueue {
     items: Vec<TurnInput>,
 }
 
+impl TurnInputQueue {
+    pub(crate) fn append_to_front(&mut self, mut items: Vec<TurnInput>) {
+        if items.is_empty() {
+            return;
+        }
+        items.append(&mut self.items);
+        self.items = items;
+    }
+
+    pub(crate) fn as_slice(&self) -> &[TurnInput] {
+        &self.items
+    }
+
+    pub(crate) fn take(&mut self) -> Vec<TurnInput> {
+        std::mem::take(&mut self.items)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
+    idle_pending_input: Mutex<Vec<TurnInput>>,
 }
 
 struct PendingMailboxCommunication {
@@ -48,6 +71,7 @@ impl InputQueue {
         Self {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            idle_pending_input: Mutex::new(Vec::new()),
         }
     }
 
@@ -101,7 +125,9 @@ impl InputQueue {
             .any(|mail| mail.communication.trigger_turn)
     }
 
-    pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, Option<String>) {
+    async fn drain_mailbox_input_items_with_parent_turn_id(
+        &self,
+    ) -> (Vec<TurnInput>, Option<String>) {
         let pending_mails = self
             .mailbox_pending_mails
             .lock()
@@ -119,6 +145,48 @@ impl InputQueue {
             .map(|mail| TurnInput::InterAgentCommunication(mail.communication))
             .collect();
         (items, parent_turn_id)
+    }
+
+    pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<TurnInput> {
+        self.drain_mailbox_input_items_with_parent_turn_id().await.0
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn queue_response_items_for_next_turn(&self, items: Vec<ResponseItem>) {
+        let items = items
+            .into_iter()
+            .map(TurnInput::ResponseItem)
+            .collect::<Vec<_>>();
+        self.queue_turn_inputs_for_next_turn(items).await;
+    }
+
+    pub(crate) async fn queue_turn_inputs_for_next_turn(&self, items: Vec<TurnInput>) {
+        if items.is_empty() {
+            return;
+        }
+
+        self.idle_pending_input.lock().await.extend(items);
+    }
+
+    pub(crate) async fn take_queued_items_for_next_turn(&self) -> Vec<TurnInput> {
+        std::mem::take(&mut *self.idle_pending_input.lock().await)
+    }
+
+    pub(crate) async fn queued_response_items_for_next_turn(&self) -> Vec<ResponseItem> {
+        self.idle_pending_input
+            .lock()
+            .await
+            .iter()
+            .filter_map(|item| match item {
+                TurnInput::ResponseItem(item) => Some(item.clone()),
+                TurnInput::UserInput { .. } | TurnInput::InterAgentCommunication(_) => None,
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn has_queued_response_items_for_next_turn(&self) -> bool {
+        !self.idle_pending_input.lock().await.is_empty()
     }
 
     pub(crate) async fn turn_state_for_sub_id(
@@ -153,14 +221,20 @@ impl InputQueue {
             return;
         };
         let mut turn_state = turn_state.lock().await;
-        // Explicit same-turn work still needs a follow-up. Queue-only child mail does not: keep
-        // it pending so task completion records it for the next turn without sampling again.
-        if turn_state.pending_input.items.iter().any(|input| {
-            !matches!(
-                input,
-                TurnInput::InterAgentCommunication(communication) if !communication.trigger_turn
-            )
-        }) {
+        // Explicit same-turn work still needs a follow-up. Queue-only child mail and MCP-use
+        // context do not: task completion persists them for the next turn without sampling again.
+        if turn_state
+            .pending_input
+            .items
+            .iter()
+            .any(|input| match input {
+                TurnInput::InterAgentCommunication(communication) => communication.trigger_turn,
+                TurnInput::ResponseItem(item) => {
+                    !crate::context::McpServerUseInstructions::matches_response_item(item)
+                }
+                TurnInput::UserInput { .. } => true,
+            })
+        {
             return;
         }
         turn_state.set_mailbox_delivery_phase(MailboxDeliveryPhase::NextTurn);
@@ -245,7 +319,8 @@ impl InputQueue {
         if !accepts_mailbox_delivery {
             return (pending_input, None);
         }
-        let (mailbox_items, parent_turn_id) = self.drain_mailbox_input_items().await;
+        let (mailbox_items, parent_turn_id) =
+            self.drain_mailbox_input_items_with_parent_turn_id().await;
         if pending_input.is_empty() {
             (mailbox_items, parent_turn_id)
         } else {
@@ -259,6 +334,7 @@ impl InputQueue {
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state reads must remain atomic"
     )]
+    #[cfg(test)]
     pub(crate) async fn has_pending_input(&self, active_turn: &Mutex<Option<ActiveTurn>>) -> bool {
         let (has_turn_pending_input, accepts_mailbox_delivery) = {
             let active = active_turn.lock().await;
@@ -417,7 +493,7 @@ mod tests {
             .await;
 
         assert_eq!(
-            input_queue.drain_mailbox_input_items().await.0,
+            input_queue.drain_mailbox_input_items().await,
             vec![
                 TurnInput::InterAgentCommunication(mail_one),
                 TurnInput::InterAgentCommunication(mail_two)
@@ -448,7 +524,9 @@ mod tests {
                     )
                     .await;
             }
-            let (_, parent_turn_id) = input_queue.drain_mailbox_input_items().await;
+            let (_, parent_turn_id) = input_queue
+                .drain_mailbox_input_items_with_parent_turn_id()
+                .await;
             assert_eq!(parent_turn_id.as_deref(), expected_parent_turn_id);
         }
     }

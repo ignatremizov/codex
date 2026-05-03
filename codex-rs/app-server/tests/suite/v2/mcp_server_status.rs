@@ -112,6 +112,7 @@ async fn mcp_server_status_list_returns_raw_server_and_tool_names() -> Result<()
     assert_eq!(response.data.len(), 1);
     let status = &response.data[0];
     assert_eq!(status.name, "some-server");
+    assert!(status.allow_implicit_invocation);
     assert_eq!(
         status.tools.keys().cloned().collect::<BTreeSet<_>>(),
         BTreeSet::from(["look-up.raw".to_string()])
@@ -391,10 +392,10 @@ async fn mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls()
 
     let request_id = mcp
         .send_list_mcp_server_status_request(ListMcpServerStatusParams {
+            thread_id: None,
             cursor: None,
             limit: None,
             detail: Some(McpServerStatusDetail::ToolsAndAuthOnly),
-            thread_id: None,
         })
         .await?;
     let response: ListMcpServerStatusResponse =
@@ -404,6 +405,7 @@ async fn mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls()
     assert_eq!(response.data.len(), 1);
     let status = &response.data[0];
     assert_eq!(status.name, "some-server");
+    assert!(status.allow_implicit_invocation);
     assert_eq!(
         status.tools.keys().cloned().collect::<BTreeSet<_>>(),
         BTreeSet::from(["lookup".to_string()])

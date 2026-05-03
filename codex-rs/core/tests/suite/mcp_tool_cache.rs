@@ -121,6 +121,7 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
                 SERVER_NAME.to_string(),
                 serde_json::from_value(json!({
                     "command": command,
+                    "cwd": config.cwd,
                     "environment_id": environment_id,
                     "env": {
                         "MCP_TEST_APP_ONLY_CWD_MARKER_FILE": app_only_cwd_marker_file,
@@ -281,15 +282,14 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
     fixture.codex.shutdown_and_wait().await?;
     fs.write_file(&barrier_file, b"ready".to_vec(), /*sandbox*/ None)
         .await?;
-    let expected_error = format!("MCP tool `{SERVER_NAME}/cwd` is not available to the model");
     assert_eq!(cached_turn.await??, second_process);
     let output = cached_done_response
         .single_request()
         .function_call_output_text(app_only_call_id)
-        .expect("app-only tool error should be returned to the model");
+        .expect("model-hidden tool output should be returned to the model");
     assert!(
-        output.contains(&expected_error),
-        "model-visible tool output should contain the live visibility error: {output}"
+        output.contains(fixture.config.cwd.to_string_lossy().as_ref()),
+        "model-hidden cached tool should remain callable against live session state: {output}"
     );
     let output = cached_done_response
         .single_request()

@@ -1531,6 +1531,7 @@ async fn tool_catalog_cache_sanitizes_tools_and_tracks_environment_generation() 
         McpRuntimeContext::new(Arc::clone(&environment_manager), PathBuf::from("/tmp"));
     let config: McpServerConfig = serde_json::from_value(serde_json::json!({
         "command": "docs-mcp",
+        "cwd": "/tmp",
         "environment_id": "remote"
     }))
     .expect("MCP config");
@@ -2765,6 +2766,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
                 },
                 environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                 enabled: true,
+                allow_implicit_invocation: true,
                 required: false,
                 supports_parallel_tool_calls: false,
                 disabled_reason: None,
@@ -2791,6 +2793,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
                 },
                 environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                 enabled: true,
+                allow_implicit_invocation: true,
                 required: false,
                 supports_parallel_tool_calls: false,
                 disabled_reason: None,
@@ -2905,6 +2908,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
         },
         environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
+        allow_implicit_invocation: true,
         required: false,
         supports_parallel_tool_calls: false,
         disabled_reason: None,
@@ -2996,6 +3000,7 @@ fn mcp_init_error_display_reports_generic_errors() {
         },
         environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
+        allow_implicit_invocation: true,
         required: false,
         supports_parallel_tool_calls: false,
         disabled_reason: None,
@@ -3048,6 +3053,7 @@ fn reusable_server_config(url: &str) -> McpServerConfig {
         environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
         enabled: true,
         required: false,
+        allow_implicit_invocation: true,
         supports_parallel_tool_calls: false,
         disabled_reason: None,
         startup_timeout_sec: None,

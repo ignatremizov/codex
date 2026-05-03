@@ -54,6 +54,10 @@
     },
     "McpServerStatus": {
       "properties": {
+        "allowImplicitInvocation": {
+          "default": true,
+          "type": "boolean"
+        },
         "authStatus": {
           "$ref": "#/definitions/McpAuthStatus"
         },

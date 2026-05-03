@@ -22,7 +22,15 @@ pub(super) enum ThreadBufferedEvent {
     Notification(Box<ServerNotification>),
     Request(Box<ServerRequest>),
     HistoryEntryResponse(HistoryLookupResponse),
+    McpInventoryResult(McpInventoryThreadEvent),
     FeedbackSubmission(FeedbackThreadEvent),
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct McpInventoryThreadEvent {
+    pub(super) request_seq: Option<u64>,
+    pub(super) result: Result<Vec<McpServerStatus>, String>,
+    pub(super) detail: McpServerStatusDetail,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +63,9 @@ pub(super) struct ThreadEventStore {
 impl ThreadEventStore {
     pub(super) fn event_survives_session_refresh(event: &ThreadBufferedEvent) -> bool {
         match event {
-            ThreadBufferedEvent::Request(_) | ThreadBufferedEvent::FeedbackSubmission(_) => true,
+            ThreadBufferedEvent::Request(_)
+            | ThreadBufferedEvent::McpInventoryResult(_)
+            | ThreadBufferedEvent::FeedbackSubmission(_) => true,
             ThreadBufferedEvent::Notification(notification) => matches!(
                 notification.as_ref(),
                 ServerNotification::HookStarted(_)
@@ -68,11 +78,16 @@ impl ThreadEventStore {
 
     pub(super) fn event_survives_thread_rollback(event: &ThreadBufferedEvent) -> bool {
         Self::event_survives_session_refresh(event)
-            || matches!(
-                event,
-                ThreadBufferedEvent::Notification(ServerNotification::ThreadSettingsUpdated(_))
-                    | ThreadBufferedEvent::HistoryEntryResponse(_)
-            )
+            || match event {
+                ThreadBufferedEvent::Notification(notification) => matches!(
+                    notification.as_ref(),
+                    ServerNotification::ThreadSettingsUpdated(_)
+                ),
+                ThreadBufferedEvent::HistoryEntryResponse(_) => true,
+                ThreadBufferedEvent::Request(_)
+                | ThreadBufferedEvent::McpInventoryResult(_)
+                | ThreadBufferedEvent::FeedbackSubmission(_) => false,
+            }
     }
 
     pub(super) fn new(capacity: usize) -> Self {
@@ -211,6 +226,7 @@ impl ThreadEventStore {
                 ThreadBufferedEvent::Request(_)
                 | ThreadBufferedEvent::Notification(_)
                 | ThreadBufferedEvent::HistoryEntryResponse(_)
+                | ThreadBufferedEvent::McpInventoryResult(_)
                 | ThreadBufferedEvent::FeedbackSubmission(_) => None,
             })
             .collect()
@@ -240,6 +256,7 @@ impl ThreadEventStore {
                 },
                 ThreadBufferedEvent::Request(_)
                 | ThreadBufferedEvent::HistoryEntryResponse(_)
+                | ThreadBufferedEvent::McpInventoryResult(_)
                 | ThreadBufferedEvent::FeedbackSubmission(_) => None,
             })
             .or_else(|| {
@@ -273,6 +290,7 @@ impl ThreadEventStore {
                         .should_replay_snapshot_request(request.as_ref()),
                     ThreadBufferedEvent::Notification(_)
                     | ThreadBufferedEvent::HistoryEntryResponse(_)
+                    | ThreadBufferedEvent::McpInventoryResult(_)
                     | ThreadBufferedEvent::FeedbackSubmission(_) => true,
                 })
                 .cloned()

@@ -264,10 +264,11 @@ impl McpRuntime {
         if !current.connections.wait_for_server_startup(server).await {
             return None;
         }
+        let required_servers = [server.to_string()];
         Some(Arc::new(
             current
                 .connections
-                .capture_binding_with_metadata(config, current.plugins_available, &[])
+                .capture_binding_with_metadata(config, current.plugins_available, &required_servers)
                 .await,
         ))
     }
@@ -481,6 +482,7 @@ mod tests {
             },
             environment_id: environment_id.to_string(),
             enabled: true,
+            allow_implicit_invocation: true,
             required: false,
             supports_parallel_tool_calls: false,
             disabled_reason: None,

@@ -30,6 +30,7 @@ use crate::injection::ToolMentionKind;
 use crate::injection::app_id_from_path;
 use crate::injection::tool_kind_for_path;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
+use crate::mcp_tool_exposure::build_mcp_tool_exposure;
 use crate::mcp_tool_exposure::build_mcp_tool_runtimes;
 use crate::mentions::build_connector_slug_counts;
 use crate::mentions::build_skill_name_counts;
@@ -59,9 +60,7 @@ use crate::tasks::emit_compact_metric;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
-use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
-use crate::tools::registry::ToolRegistry;
 use crate::tools::router::ToolRouterParams;
 use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::router::ToolSuggestPresentation;
@@ -227,6 +226,17 @@ pub(crate) async fn run_turn(
         sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
         turn_diff_display_roots(first_step_context.as_ref()),
     );
+    if !turn_context.is_compact_subagent() {
+        let _ = sess.session_start_mcp_tools_for_exposure().await;
+        let queued_response_items = sess
+            .render_queued_mcp_server_use_context_for_turn(turn_context.as_ref())
+            .await;
+        if !queued_response_items.is_empty() {
+            sess.record_mcp_server_use_context_items(&turn_context, queued_response_items)
+                .await;
+        }
+    }
+
     let (injection_items, explicitly_enabled_connectors) = if turn_context.is_compact_subagent() {
         (Vec::new(), HashSet::new())
     } else {
@@ -284,14 +294,14 @@ pub(crate) async fn run_turn(
 
     let mut next_step_context = Some(first_step_context);
     loop {
+        if run_pending_session_start_hooks(&sess, &turn_context).await {
+            break;
+        }
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
         let pending_input = if can_drain_pending_input {
-            sess.input_queue
-                .get_pending_input(&sess.active_turn)
-                .await
-                .0
+            sess.get_pending_input().await
         } else {
             Vec::new()
         };
@@ -507,6 +517,7 @@ pub(crate) async fn run_turn(
                                 )
                                 .await;
                             stop_hook_active = true;
+                            can_drain_pending_input = false;
                             continue;
                         } else {
                             sess.send_event(
@@ -682,6 +693,22 @@ async fn required_mcp_servers_for_input(
             .filter(|server| !server.is_empty())
             .map(str::to_string)
     }));
+    let explicit_app_ids = collect_explicit_app_ids(user_input);
+    if turn_context.apps_enabled() && !explicit_app_ids.is_empty() {
+        sess.merge_connector_selection(explicit_app_ids).await;
+        required_servers.insert(CODEX_APPS_MCP_SERVER_NAME.to_string());
+        let required_apps = [CODEX_APPS_MCP_SERVER_NAME.to_string()];
+        let _ = sess
+            .services
+            .mcp_runtime
+            .current_binding_with_required_servers(&required_apps)
+            .await;
+        let _ = sess
+            .services
+            .mcp_runtime
+            .latest_hard_refresh_codex_apps_tools_cache()
+            .await;
+    }
 
     let connector_slug_counts = if turn_context.apps_enabled() && !mentions.plain_names.is_empty() {
         let cached_connectors =
@@ -1614,7 +1641,9 @@ pub(crate) async fn built_tools(
     let mcp_tool_runtimes = build_mcp_tool_runtimes(
         &all_mcp_tools,
         connectors.as_deref(),
+        explicitly_enabled_connectors.as_slice(),
         &turn_context.config,
+        &session_start_mcp_servers,
         search_tool_enabled(turn_context),
     );
     let tool_router = Arc::new(ToolRouter::from_context(
@@ -2425,7 +2454,10 @@ async fn try_run_sampling_request(
                 }
                 needs_follow_up |= output_result.needs_follow_up;
                 // todo: remove before stabilizing multi-agent v2
-                if preempt_for_mailbox_mail && sess.input_queue.has_pending_mailbox_items().await {
+                if preempt_for_mailbox_mail
+                    && !sess.active_turn_has_pending_mcp_server_use_boundary().await
+                    && sess.input_queue.has_pending_mailbox_items().await
+                {
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
                         last_agent_message,

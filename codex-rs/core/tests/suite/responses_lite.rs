@@ -810,7 +810,6 @@ async fn responses_lite_does_not_expose_standalone_web_search_for_opted_in_bedro
         Some("true")
     );
     let body = request.body_json();
-    assert!(body.get("tools").is_none());
     let tools = additional_tools(&body)?;
     assert!(!has_namespaced_tool(tools, "web", "run"));
     assert!(!has_hosted_tool(tools, "web_search"));
@@ -861,7 +860,6 @@ async fn assert_responses_lite_custom_provider_web_search(
         Some("true")
     );
     let body = request.body_json();
-    assert!(body.get("tools").is_none());
     let tools = additional_tools(&body)?;
     assert_eq!(has_namespaced_tool(tools, "web", "run"), expect_web_run);
     assert!(!has_hosted_tool(tools, "web_search"));
