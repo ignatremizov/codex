@@ -55,6 +55,9 @@ pub(super) async fn make_test_app() -> App {
         primary_session_configured: None,
         pending_primary_events: VecDeque::new(),
         pending_app_server_requests: PendingAppServerRequests::default(),
+        pending_mcp_inventory_threads: HashMap::new(),
+        latest_mcp_inventory_request_seq: HashMap::new(),
+        next_mcp_inventory_request_seq: 0,
         pending_plugin_enabled_writes: HashMap::new(),
     }
 }

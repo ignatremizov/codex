@@ -937,6 +937,7 @@ pub(crate) struct ChatWidget {
     // history has been rendered so resumed/forked prompts keep chronological
     // order.
     suppress_initial_user_message_submit: bool,
+    pending_mcp_server_uses: VecDeque<String>,
     // User inputs queued while a turn is in progress.
     queued_user_messages: VecDeque<QueuedUserMessage>,
     // History records for queued user messages. Slash commands such as `/goal`
@@ -2433,6 +2434,7 @@ impl ChatWidget {
         if self.connectors_enabled() {
             self.prefetch_connectors();
         }
+        self.submit_pending_mcp_server_uses();
         if let Some(user_message) = self.initial_user_message.take() {
             if self.suppress_initial_user_message_submit {
                 self.initial_user_message = Some(user_message);
@@ -2452,6 +2454,18 @@ impl ChatWidget {
 
     pub(crate) fn set_initial_user_message_submit_suppressed(&mut self, suppressed: bool) {
         self.suppress_initial_user_message_submit = suppressed;
+    }
+
+    fn submit_pending_mcp_server_uses(&mut self) {
+        let Some(thread_id) = self.thread_id else {
+            return;
+        };
+        for server_name in self.pending_mcp_server_uses.drain(..) {
+            self.app_event_tx.send(AppEvent::SubmitThreadOp {
+                thread_id,
+                op: Op::ActivateMcpServer { server_name },
+            });
+        }
     }
 
     pub(crate) fn submit_initial_user_message_if_pending(&mut self) {
@@ -5631,6 +5645,7 @@ impl ChatWidget {
             startup_tooltip_override,
             suppress_session_configured_redraw: false,
             suppress_initial_user_message_submit: false,
+            pending_mcp_server_uses: VecDeque::new(),
             pending_notification: None,
             quit_shortcut_expires_at: None,
             quit_shortcut_key: None,
@@ -11055,8 +11070,10 @@ impl ChatWidget {
         )));
         self.bump_active_cell_revision();
         self.request_redraw();
-        self.app_event_tx
-            .send(AppEvent::FetchMcpInventory { detail });
+        self.app_event_tx.send(AppEvent::FetchMcpInventory {
+            thread_id: self.thread_id,
+            detail,
+        });
     }
 
     /// Remove the MCP loading spinner if it is still the active cell.
@@ -11697,6 +11714,7 @@ impl ChatWidget {
         self.config.config_layer_stack = config.config_layer_stack.clone();
         self.config.realtime = config.realtime.clone();
         self.config.memories = config.memories.clone();
+        self.config.mcp_servers = config.mcp_servers.clone();
     }
 
     pub(crate) fn open_review_popup(&mut self) {

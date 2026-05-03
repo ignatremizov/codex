@@ -1526,6 +1526,12 @@
             "integer",
             "null"
           ]
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -3543,6 +3549,21 @@
       },
       "type": "object"
     },
+    "ThreadMcpServerActivateParams": {
+      "properties": {
+        "serverName": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "serverName",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadMemoryMode": {
       "enum": [
         "enabled",
@@ -4589,6 +4610,30 @@
         "params"
       ],
       "title": "Thread/name/setRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/mcpServer/activate"
+          ],
+          "title": "Thread/mcpServer/activateRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadMcpServerActivateParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/mcpServer/activateRequest",
       "type": "object"
     },
     {

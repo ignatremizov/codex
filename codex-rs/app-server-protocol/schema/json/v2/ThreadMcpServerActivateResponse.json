@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadMcpServerActivateOutcome": {
+      "enum": [
+        "activated",
+        "alreadyActivated",
+        "alreadyImplicitlyAvailable"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "outcome": {
+      "$ref": "#/definitions/ThreadMcpServerActivateOutcome"
+    }
+  },
+  "required": [
+    "outcome"
+  ],
+  "title": "ThreadMcpServerActivateResponse",
+  "type": "object"
+}

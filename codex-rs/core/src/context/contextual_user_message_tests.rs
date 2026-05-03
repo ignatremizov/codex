@@ -1,5 +1,6 @@
 use super::*;
 use crate::context::ContextualUserFragment;
+use crate::context::McpServerUseInstructions;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::build_hook_prompt_message;
 use codex_protocol::models::ResponseItem;
@@ -96,4 +97,44 @@ fn detects_hook_prompt_fragment_and_roundtrips_escaping() {
         }],
     );
     assert!(!text.contains("&quot;waves&quot; & <tides>"));
+}
+
+#[test]
+fn mcp_use_fragment_hard_product_requirement_preserves_full_verbatim_inventory_without_any_truncation()
+ {
+    let tool_names = (0..100)
+        .map(|index| format!("tool_{index}_{}", "x".repeat(400)))
+        .collect::<Vec<_>>();
+    let fragment = McpServerUseInstructions::new("acme docs".to_string(), tool_names.clone());
+    let rendered = fragment.render();
+
+    assert!(McpServerUseInstructions::matches_text(&rendered));
+    assert_eq!(
+        McpServerUseInstructions::parse_server_name(&rendered),
+        Some("acme docs".to_string())
+    );
+    for tool_name in tool_names {
+        assert!(
+            rendered.contains(tool_name.as_str()),
+            "HARD PRODUCT REQUIREMENT: /mcp use is explicit user-directed context expansion and must preserve the full verbatim MCP tool inventory; adding token caps, byte caps, tool-count caps, truncation, summarization, abbreviation, hashing, pagination, or omission here is a product-contract violation"
+        );
+    }
+    assert!(
+        rendered.len() > 40 * 1024,
+        "this test intentionally uses a large fragment so future reviewers can see that no-cap behavior is deliberate product policy"
+    );
+    assert!(
+        is_contextual_user_fragment(&ContentItem::InputText { text: rendered }),
+        "expected /mcp use scaffolding to remain recognized contextual prompt content"
+    );
+}
+
+#[test]
+fn mcp_use_fragment_roundtrips_server_names_with_backticks() {
+    let fragment = McpServerUseInstructions::new("foo`bar".to_string(), vec!["tool".to_string()]);
+    let rendered = fragment.render();
+    assert_eq!(
+        McpServerUseInstructions::parse_server_name(&rendered),
+        Some("foo`bar".to_string())
+    );
 }

@@ -1720,6 +1720,10 @@
       "additionalProperties": false,
       "description": "Raw MCP config shape used for deserialization and supported-field JSON Schema generation.\n\nFields that are accepted only to produce targeted validation errors should be skipped in the generated schema.\n\nKeep `TryFrom<RawMcpServerConfig> for McpServerConfig` exhaustively destructuring this struct so new TOML fields cannot be added here without updating the validation/mapping logic that produces [`McpServerConfig`].",
       "properties": {
+        "allow_implicit_invocation": {
+          "default": null,
+          "type": "boolean"
+        },
         "args": {
           "default": null,
           "items": {
@@ -2201,6 +2205,13 @@
       "additionalProperties": false,
       "description": "Collection of settings that are specific to the TUI.",
       "properties": {
+        "agent_notification_preview_graphemes": {
+          "default": 200,
+          "description": "Truncation limit for agent-turn notification previews, measured in graphemes. Defaults to `200`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "alternate_screen": {
           "allOf": [
             {
@@ -2214,13 +2225,6 @@
           "default": true,
           "description": "Enable animations (welcome screen, shimmer effects, spinners). Defaults to `true`.",
           "type": "boolean"
-        },
-        "agent_notification_preview_graphemes": {
-          "default": 200,
-          "description": "Truncation limit for agent-turn notification previews, measured in graphemes. Defaults to `200`.",
-          "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
         },
         "diff_add_bg": {
           "default": null,

@@ -10,15 +10,34 @@ impl App {
     pub(super) fn fetch_mcp_inventory(
         &mut self,
         app_server: &AppServerSession,
+        thread_id: Option<ThreadId>,
         detail: McpServerStatusDetail,
     ) {
+        let request_seq = thread_id.map(|thread_id| {
+            self.next_mcp_inventory_request_seq =
+                self.next_mcp_inventory_request_seq.wrapping_add(1);
+            let seq = self.next_mcp_inventory_request_seq;
+            self.latest_mcp_inventory_request_seq.insert(thread_id, seq);
+            seq
+        });
+        if let Some(thread_id) = thread_id {
+            *self
+                .pending_mcp_inventory_threads
+                .entry(thread_id)
+                .or_default() += 1;
+        }
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let result = fetch_all_mcp_server_statuses(request_handle, detail)
+            let result = fetch_all_mcp_server_statuses(request_handle, thread_id, detail)
                 .await
                 .map_err(|err| err.to_string());
-            app_event_tx.send(AppEvent::McpInventoryLoaded { result, detail });
+            app_event_tx.send(AppEvent::McpInventoryLoaded {
+                thread_id,
+                request_seq,
+                result,
+                detail,
+            });
         });
     }
 
@@ -343,14 +362,102 @@ impl App {
     ///
     /// When both the local config and the app-server report zero servers, a special
     /// "empty" cell is shown instead of the full table.
-    pub(super) fn handle_mcp_inventory_result(
+    pub(super) async fn handle_mcp_inventory_result(
         &mut self,
+        thread_id: Option<ThreadId>,
+        request_seq: Option<u64>,
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
     ) {
-        let config = self.chat_widget.config_ref().clone();
+        if let Some(thread_id) = thread_id {
+            match self.pending_mcp_inventory_threads.entry(thread_id) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let remaining = entry.get_mut();
+                    *remaining = remaining.saturating_sub(1);
+                    if *remaining == 0 {
+                        entry.remove();
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(_) => {}
+            }
+            if let Some(request_seq) = request_seq
+                && Some(request_seq)
+                    != self
+                        .latest_mcp_inventory_request_seq
+                        .get(&thread_id)
+                        .copied()
+            {
+                return;
+            }
+        }
+        if thread_id != self.chat_widget.thread_id() {
+            if let Some(thread_id) = thread_id {
+                let (sender, store) = {
+                    let channel = self.ensure_thread_channel(thread_id);
+                    (channel.sender.clone(), Arc::clone(&channel.store))
+                };
+                let event = ThreadBufferedEvent::McpInventoryResult(McpInventoryThreadEvent {
+                    request_seq,
+                    result,
+                    detail,
+                });
+                let should_send = {
+                    let mut guard = store.lock().await;
+                    guard.buffer.push_back(event.clone());
+                    if guard.buffer.len() > guard.capacity
+                        && let Some(removed) = guard.buffer.pop_front()
+                        && let ThreadBufferedEvent::Request(request) = &removed
+                    {
+                        guard
+                            .pending_interactive_replay
+                            .note_evicted_server_request(request);
+                    }
+                    guard.active
+                };
+                if should_send {
+                    let _ = sender.try_send(event);
+                }
+            } else if let Some(primary_thread_id) = self.primary_thread_id {
+                let (sender, store) = {
+                    let channel = self.ensure_thread_channel(primary_thread_id);
+                    (channel.sender.clone(), Arc::clone(&channel.store))
+                };
+                let event = ThreadBufferedEvent::McpInventoryResult(McpInventoryThreadEvent {
+                    request_seq,
+                    result,
+                    detail,
+                });
+                let should_send = {
+                    let mut guard = store.lock().await;
+                    guard.buffer.push_back(event.clone());
+                    if guard.buffer.len() > guard.capacity
+                        && let Some(removed) = guard.buffer.pop_front()
+                        && let ThreadBufferedEvent::Request(request) = &removed
+                    {
+                        guard
+                            .pending_interactive_replay
+                            .note_evicted_server_request(request);
+                    }
+                    guard.active
+                };
+                if should_send {
+                    let _ = sender.try_send(event);
+                }
+            } else {
+                self.pending_primary_events
+                    .push_back(ThreadBufferedEvent::McpInventoryResult(
+                        McpInventoryThreadEvent {
+                            request_seq,
+                            result,
+                            detail,
+                        },
+                    ));
+            }
+            return;
+        }
         self.chat_widget.clear_mcp_inventory_loading();
         self.clear_committed_mcp_inventory_loading();
+        let config = self.chat_widget.config_ref().clone();
 
         let statuses = match result {
             Ok(statuses) => statuses,
@@ -373,6 +480,19 @@ impl App {
             ));
     }
 
+    pub(super) fn sync_mcp_inventory_loading_for_current_thread(&mut self) {
+        if self.chat_widget.thread_id().is_none_or(|thread_id| {
+            self.pending_mcp_inventory_threads
+                .get(&thread_id)
+                .copied()
+                .unwrap_or_default()
+                == 0
+        }) {
+            self.chat_widget.clear_mcp_inventory_loading();
+            self.clear_committed_mcp_inventory_loading();
+        }
+    }
+
     pub(super) fn clear_committed_mcp_inventory_loading(&mut self) {
         let Some(index) = self
             .transcript_cells
@@ -391,6 +511,7 @@ impl App {
 
 pub(super) async fn fetch_all_mcp_server_statuses(
     request_handle: AppServerRequestHandle,
+    thread_id: Option<ThreadId>,
     detail: McpServerStatusDetail,
 ) -> Result<Vec<McpServerStatus>> {
     let mut cursor = None;
@@ -402,6 +523,7 @@ pub(super) async fn fetch_all_mcp_server_statuses(
             .request_typed(ClientRequest::McpServerStatusList {
                 request_id,
                 params: ListMcpServerStatusParams {
+                    thread_id: thread_id.map(|thread_id| thread_id.to_string()),
                     cursor: cursor.clone(),
                     limit: Some(100),
                     detail: Some(detail),
@@ -689,6 +811,7 @@ mod tests {
         let statuses = vec![
             McpServerStatus {
                 name: "docs".to_string(),
+                allow_implicit_invocation: true,
                 tools: HashMap::from([(
                     "list".to_string(),
                     Tool {
@@ -708,6 +831,7 @@ mod tests {
             },
             McpServerStatus {
                 name: "disabled".to_string(),
+                allow_implicit_invocation: true,
                 tools: HashMap::new(),
                 resources: Vec::new(),
                 resource_templates: Vec::new(),

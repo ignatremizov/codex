@@ -1742,6 +1742,7 @@ async fn slash_mcp_requests_inventory_via_app_server() {
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::FetchMcpInventory {
+            thread_id: None,
             detail: McpServerStatusDetail::ToolsAndAuthOnly
         })
     );
@@ -1758,6 +1759,7 @@ async fn slash_mcp_verbose_requests_full_inventory_via_app_server() {
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::FetchMcpInventory {
+            thread_id: None,
             detail: McpServerStatusDetail::Full
         })
     );
@@ -1777,11 +1779,224 @@ async fn slash_mcp_invalid_args_show_usage() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        rendered.contains("Usage: /mcp [verbose]"),
+        rendered.contains("Usage: /mcp [verbose] | /mcp use <server>"),
         "expected usage message, got: {rendered:?}"
     );
     assert_eq!(recall_latest_after_clearing(&mut chat), "/mcp full");
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
+async fn slash_mcp_use_hidden_server_queues_context_enablement() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config
+        .mcp_servers
+        .set(std::collections::HashMap::from([(
+            "linear".to_string(),
+            codex_config::types::McpServerConfig {
+                transport: codex_config::types::McpServerTransportConfig::Stdio {
+                    command: "linear-server".to_string(),
+                    args: Vec::new(),
+                    env: None,
+                    env_vars: Vec::new(),
+                    cwd: None,
+                },
+                experimental_environment: None,
+                enabled: true,
+                required: false,
+                supports_parallel_tool_calls: false,
+                allow_implicit_invocation: false,
+                disabled_reason: None,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+                default_tools_approval_mode: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                scopes: None,
+                oauth_resource: None,
+                tools: std::collections::HashMap::new(),
+            },
+        )]))
+        .expect("test config should accept MCP server");
+
+    chat.dispatch_command_with_args(SlashCommand::Mcp, "use linear".to_string(), Vec::new());
+
+    let mut found = false;
+    let mut inserted_history = false;
+    while let Ok(app_ev) = rx.try_recv() {
+        match app_ev {
+            AppEvent::SubmitThreadOp {
+                op: Op::ActivateMcpServer { server_name },
+                ..
+            } => {
+                assert_eq!(server_name, "linear");
+                found = true;
+            }
+            AppEvent::InsertHistoryCell(_) => inserted_history = true,
+            _ => {}
+        }
+    }
+    assert!(found, "expected ActivateMcpServer op to be sent");
+    assert!(!inserted_history, "expected no local history cell");
+    assert!(
+        op_rx.try_recv().is_err(),
+        "expected no direct core op to be sent"
+    );
+}
+
+#[tokio::test]
+async fn slash_mcp_use_preserves_server_names_with_spaces() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(SlashCommand::Mcp, "USE acme docs".to_string(), Vec::new());
+
+    let mut found = false;
+    let mut inserted_history = false;
+    while let Ok(app_ev) = rx.try_recv() {
+        match app_ev {
+            AppEvent::SubmitThreadOp {
+                op: Op::ActivateMcpServer { server_name },
+                ..
+            } => {
+                assert_eq!(server_name, "acme docs");
+                found = true;
+            }
+            AppEvent::InsertHistoryCell(_) => inserted_history = true,
+            _ => {}
+        }
+    }
+    assert!(
+        found,
+        "expected ActivateMcpServer op to preserve spaced name"
+    );
+    assert!(!inserted_history, "expected no local history cell");
+    assert!(
+        op_rx.try_recv().is_err(),
+        "expected no direct core op to be sent"
+    );
+}
+
+#[tokio::test]
+async fn slash_mcp_use_implicit_server_still_asks_server() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config
+        .mcp_servers
+        .set(std::collections::HashMap::from([(
+            "docs".to_string(),
+            codex_config::types::McpServerConfig {
+                transport: codex_config::types::McpServerTransportConfig::Stdio {
+                    command: "docs-server".to_string(),
+                    args: Vec::new(),
+                    env: None,
+                    env_vars: Vec::new(),
+                    cwd: None,
+                },
+                experimental_environment: None,
+                enabled: true,
+                required: false,
+                supports_parallel_tool_calls: false,
+                allow_implicit_invocation: true,
+                disabled_reason: None,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+                default_tools_approval_mode: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                scopes: None,
+                oauth_resource: None,
+                tools: std::collections::HashMap::new(),
+            },
+        )]))
+        .expect("test config should accept MCP server");
+
+    chat.dispatch_command_with_args(SlashCommand::Mcp, "use docs".to_string(), Vec::new());
+
+    let mut found = false;
+    let mut inserted_history = false;
+    while let Ok(app_ev) = rx.try_recv() {
+        match app_ev {
+            AppEvent::SubmitThreadOp {
+                op: Op::ActivateMcpServer { server_name },
+                ..
+            } => {
+                assert_eq!(server_name, "docs");
+                found = true;
+            }
+            AppEvent::InsertHistoryCell(_) => inserted_history = true,
+            _ => {}
+        }
+    }
+    assert!(found, "expected app-server to decide MCP visibility");
+    assert!(!inserted_history, "expected no local history cell");
+    assert!(
+        op_rx.try_recv().is_err(),
+        "expected no direct core op to be sent"
+    );
+}
+
+#[tokio::test]
+async fn slash_mcp_use_before_session_start_queues_until_configured() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::Mcp, "Use linear".to_string(), Vec::new());
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("will be queued when the session starts"));
+    assert!(
+        !std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::SubmitThreadOp { .. })),
+        "expected no thread op before SessionConfigured"
+    );
+
+    let thread_id = ThreadId::new();
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(codex_protocol::protocol::SessionConfiguredEvent {
+            session_id: thread_id,
+            forked_from_id: None,
+            thread_name: None,
+            model: "test-model".to_string(),
+            model_provider_id: "test-provider".to_string(),
+            service_tier: None,
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: None,
+            cwd: test_path_buf("/home/user/project").abs(),
+            reasoning_effort: Some(ReasoningEffortConfig::default()),
+            history_log_id: 0,
+            history_entry_count: 0,
+            initial_messages: None,
+            network_proxy: None,
+            rollout_path: None,
+        }),
+    });
+
+    let mut found = false;
+    while let Ok(app_ev) = rx.try_recv() {
+        if let AppEvent::SubmitThreadOp {
+            thread_id: actual_thread_id,
+            op: Op::ActivateMcpServer { server_name },
+        } = app_ev
+        {
+            assert_eq!(actual_thread_id, thread_id);
+            assert_eq!(server_name, "linear");
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "expected queued MCP use to flush after SessionConfigured"
+    );
 }
 
 #[tokio::test]

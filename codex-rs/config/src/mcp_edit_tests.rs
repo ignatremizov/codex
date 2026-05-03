@@ -26,6 +26,7 @@ async fn replace_mcp_servers_serializes_per_tool_approval_overrides() -> anyhow:
             enabled: true,
             required: false,
             supports_parallel_tool_calls: true,
+            allow_implicit_invocation: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -63,6 +64,7 @@ async fn replace_mcp_servers_serializes_per_tool_approval_overrides() -> anyhow:
         r#"[mcp_servers.docs]
 command = "docs-server"
 supports_parallel_tool_calls = true
+allow_implicit_invocation = false
 default_tools_approval_mode = "auto"
 
 [mcp_servers.docs.tools]

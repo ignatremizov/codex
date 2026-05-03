@@ -26,6 +26,22 @@ Only enable parallel calls for MCP servers whose tools are safe to run at the
 same time. If tools read and write shared state, files, databases, or external
 resources, review those read/write race conditions before enabling this setting.
 
+To keep an MCP server connected but hide its tools from the default model
+context until the user explicitly opts in, set
+`allow_implicit_invocation = false` on that server:
+
+```toml
+[mcp_servers.linear]
+url = "https://example.com/mcp"
+allow_implicit_invocation = false
+```
+
+This only affects whether Codex tells the model about the server by default.
+The MCP server still starts normally, and its tools remain available to the
+runtime. In the TUI, `/mcp use <server>` adds forward-only context for later
+turns so the model can use that server explicitly without rebuilding prior
+session context.
+
 ## MCP tool approvals
 
 Codex stores approval defaults and per-tool overrides for custom MCP servers

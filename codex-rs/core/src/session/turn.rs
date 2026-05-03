@@ -283,6 +283,20 @@ pub(crate) async fn run_turn(
         &available_connectors,
         &skill_name_counts_lower,
     ));
+    explicitly_enabled_connectors.extend(
+        available_connectors
+            .iter()
+            .filter(|connector| connector.is_enabled)
+            .filter(|connector| {
+                mentioned_plugins.iter().any(|plugin| {
+                    connector
+                        .plugin_display_names
+                        .iter()
+                        .any(|plugin_name| plugin_name == &plugin.display_name)
+                })
+            })
+            .map(|connector| connector.id.clone()),
+    );
     let connector_names_by_id = available_connectors
         .iter()
         .map(|connector| (connector.id.as_str(), connector.name.as_str()))

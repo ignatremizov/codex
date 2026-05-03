@@ -56,6 +56,9 @@ use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadMcpServerActivateOutcome;
+use codex_app_server_protocol::ThreadMcpServerActivateParams;
+use codex_app_server_protocol::ThreadMcpServerActivateResponse;
 use codex_app_server_protocol::ThreadMemoryMode;
 use codex_app_server_protocol::ThreadMemoryModeSetParams;
 use codex_app_server_protocol::ThreadMemoryModeSetResponse;
@@ -639,6 +642,26 @@ impl AppServerSession {
             .await
             .wrap_err("thread/name/set failed in TUI")?;
         Ok(())
+    }
+
+    pub(crate) async fn thread_mcp_server_activate(
+        &mut self,
+        thread_id: ThreadId,
+        server_name: String,
+    ) -> Result<ThreadMcpServerActivateOutcome> {
+        let request_id = self.next_request_id();
+        let response: ThreadMcpServerActivateResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadMcpServerActivate {
+                request_id,
+                params: ThreadMcpServerActivateParams {
+                    thread_id: thread_id.to_string(),
+                    server_name,
+                },
+            })
+            .await
+            .wrap_err("thread/mcpServer/activate failed in TUI")?;
+        Ok(response.outcome)
     }
 
     pub(crate) async fn thread_memory_mode_set(

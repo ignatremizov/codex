@@ -360,6 +360,30 @@
             },
             "method": {
               "enum": [
+                "thread/mcpServer/activate"
+              ],
+              "title": "Thread/mcpServer/activateRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadMcpServerActivateParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/mcpServer/activateRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/metadata/update"
               ],
               "title": "Thread/metadata/updateRequestMethod",
@@ -9957,6 +9981,12 @@
               "integer",
               "null"
             ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "title": "ListMcpServerStatusParams",
@@ -10585,7 +10615,23 @@
       "McpServerRefreshResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "McpServerRefreshResponse",
-        "type": "object"
+        "type": "object",
+        "required": [
+          "refreshedThreads",
+          "skippedThreads"
+        ],
+        "properties": {
+          "refreshedThreads": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "skippedThreads": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          }
+        }
       },
       "McpServerStartupState": {
         "enum": [
@@ -10598,6 +10644,9 @@
       },
       "McpServerStatus": {
         "properties": {
+          "allowImplicitInvocation": {
+            "type": "boolean"
+          },
           "authStatus": {
             "$ref": "#/definitions/v2/McpAuthStatus"
           },
@@ -10624,6 +10673,7 @@
           }
         },
         "required": [
+          "allowImplicitInvocation",
           "authStatus",
           "name",
           "resourceTemplates",
@@ -15635,6 +15685,44 @@
           "data"
         ],
         "title": "ThreadLoadedListResponse",
+        "type": "object"
+      },
+      "ThreadMcpServerActivateOutcome": {
+        "enum": [
+          "activated",
+          "alreadyActivated",
+          "alreadyImplicitlyAvailable"
+        ],
+        "type": "string"
+      },
+      "ThreadMcpServerActivateParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "serverName": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "serverName",
+          "threadId"
+        ],
+        "title": "ThreadMcpServerActivateParams",
+        "type": "object"
+      },
+      "ThreadMcpServerActivateResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "outcome": {
+            "$ref": "#/definitions/v2/ThreadMcpServerActivateOutcome"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "ThreadMcpServerActivateResponse",
         "type": "object"
       },
       "ThreadMemoryMode": {

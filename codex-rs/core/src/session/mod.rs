@@ -1126,6 +1126,79 @@ impl Session {
         state.clear_connector_selection();
     }
 
+    pub(crate) async fn latest_mcp_server_use_context_text(
+        &self,
+        server_name: &str,
+    ) -> Option<String> {
+        {
+            let queued = self.idle_pending_input.lock().await;
+            if let Some(text) = queued.iter().rev().find_map(|item| {
+                let ResponseInputItem::Message { role, content } = item else {
+                    return None;
+                };
+                if role != "developer" {
+                    return None;
+                }
+                content.iter().find_map(|content_item| match content_item {
+                    ContentItem::InputText { text }
+                        if crate::context::McpServerUseInstructions::parse_server_name(text)
+                            .as_deref()
+                            == Some(server_name) =>
+                    {
+                        Some(text.clone())
+                    }
+                    ContentItem::InputText { .. }
+                    | ContentItem::InputImage { .. }
+                    | ContentItem::OutputText { .. } => None,
+                })
+            }) {
+                return Some(text);
+            }
+        }
+
+        let history = self.clone_history().await;
+        history.raw_items().iter().rev().find_map(|item| {
+            let ResponseItem::Message { role, content, .. } = item else {
+                return None;
+            };
+            if role != "developer" {
+                return None;
+            }
+            content.iter().find_map(|content_item| match content_item {
+                ContentItem::InputText { text }
+                    if crate::context::McpServerUseInstructions::parse_server_name(text)
+                        .as_deref()
+                        == Some(server_name) =>
+                {
+                    Some(text.clone())
+                }
+                ContentItem::InputText { .. }
+                | ContentItem::InputImage { .. }
+                | ContentItem::OutputText { .. } => None,
+            })
+        })
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "MCP tool listing reads through the session-owned manager guard"
+    )]
+    pub(crate) async fn render_mcp_server_use_context_text(&self, server_name: &str) -> String {
+        let tool_names = {
+            let manager = self.services.mcp_connection_manager.read().await;
+            let mut tool_names = manager
+                .list_all_tools()
+                .await
+                .into_iter()
+                .filter(|(_, tool)| tool.server_name == server_name)
+                .map(|(_, tool)| tool.canonical_tool_name().to_string())
+                .collect::<Vec<_>>();
+            tool_names.sort();
+            tool_names
+        };
+        crate::context::McpServerUseInstructions::new(server_name.to_string(), tool_names).render()
+    }
+
     async fn record_initial_history(&self, conversation_history: InitialHistory) {
         let turn_context = self.new_default_turn().await;
         let is_subagent = {
@@ -2340,6 +2413,15 @@ impl Session {
         self.record_into_history(items, turn_context).await;
         self.persist_rollout_response_items(items).await;
         self.send_raw_response_items(turn_context, items).await;
+    }
+
+    pub(crate) async fn record_conversation_items_silently(
+        &self,
+        turn_context: &TurnContext,
+        items: &[ResponseItem],
+    ) {
+        self.record_into_history(items, turn_context).await;
+        self.persist_rollout_response_items(items).await;
     }
 
     /// Append ResponseItems to the in-memory conversation history only.

@@ -5,6 +5,7 @@ use codex_protocol::models::ContentItem;
 use super::EnvironmentContext;
 use super::FragmentRegistration;
 use super::FragmentRegistrationProxy;
+use super::McpServerUseInstructions;
 use super::SkillInstructions;
 use super::SubagentNotification;
 use super::TurnAborted;
@@ -17,6 +18,8 @@ static ENVIRONMENT_CONTEXT_REGISTRATION: FragmentRegistrationProxy<EnvironmentCo
     FragmentRegistrationProxy::new();
 static SKILL_INSTRUCTIONS_REGISTRATION: FragmentRegistrationProxy<SkillInstructions> =
     FragmentRegistrationProxy::new();
+static MCP_SERVER_USE_REGISTRATION: FragmentRegistrationProxy<McpServerUseInstructions> =
+    FragmentRegistrationProxy::new();
 static USER_SHELL_COMMAND_REGISTRATION: FragmentRegistrationProxy<UserShellCommand> =
     FragmentRegistrationProxy::new();
 static TURN_ABORTED_REGISTRATION: FragmentRegistrationProxy<TurnAborted> =
@@ -28,6 +31,7 @@ static CONTEXTUAL_USER_FRAGMENTS: &[&dyn FragmentRegistration] = &[
     &USER_INSTRUCTIONS_REGISTRATION,
     &ENVIRONMENT_CONTEXT_REGISTRATION,
     &SKILL_INSTRUCTIONS_REGISTRATION,
+    &MCP_SERVER_USE_REGISTRATION,
     &USER_SHELL_COMMAND_REGISTRATION,
     &TURN_ABORTED_REGISTRATION,
     &SUBAGENT_NOTIFICATION_REGISTRATION,
@@ -36,6 +40,7 @@ static CONTEXTUAL_USER_FRAGMENTS: &[&dyn FragmentRegistration] = &[
 static MEMORY_EXCLUDED_CONTEXTUAL_USER_FRAGMENTS: &[&dyn FragmentRegistration] = &[
     &USER_INSTRUCTIONS_REGISTRATION,
     &SKILL_INSTRUCTIONS_REGISTRATION,
+    &MCP_SERVER_USE_REGISTRATION,
 ];
 
 fn is_standard_contextual_user_text(text: &str) -> bool {

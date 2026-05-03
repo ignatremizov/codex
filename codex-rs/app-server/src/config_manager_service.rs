@@ -405,10 +405,40 @@ fn parse_key_path(path: &str) -> Result<Vec<String>, String> {
     if path.trim().is_empty() {
         return Err("keyPath must not be empty".to_string());
     }
-    Ok(path
-        .split('.')
-        .map(std::string::ToString::to_string)
-        .collect())
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut chars = path.chars().peekable();
+    let mut in_quotes = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+            }
+            '\\' if in_quotes => {
+                let Some(next) = chars.next() else {
+                    return Err("unterminated escape in keyPath".to_string());
+                };
+                current.push(next);
+            }
+            '.' if !in_quotes => {
+                if current.is_empty() {
+                    return Err("keyPath contains an empty segment".to_string());
+                }
+                segments.push(std::mem::take(&mut current));
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if in_quotes {
+        return Err("unterminated quoted segment in keyPath".to_string());
+    }
+    if current.is_empty() {
+        return Err("keyPath contains an empty trailing segment".to_string());
+    }
+    segments.push(current);
+    Ok(segments)
 }
 
 #[derive(Debug)]

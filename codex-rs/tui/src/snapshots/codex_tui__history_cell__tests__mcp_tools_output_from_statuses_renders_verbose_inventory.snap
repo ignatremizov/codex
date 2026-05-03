@@ -8,6 +8,7 @@ expression: rendered
 
   • plugin_docs
     • Status: enabled
+    • Visibility: visible by default
     • Auth: Unsupported
     • Command: docs-server --stdio
     • Tools: lookup

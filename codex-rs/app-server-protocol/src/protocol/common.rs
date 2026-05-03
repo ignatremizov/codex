@@ -285,6 +285,10 @@ client_request_definitions! {
         params: v2::ThreadSetNameParams,
         response: v2::ThreadSetNameResponse,
     },
+    ThreadMcpServerActivate => "thread/mcpServer/activate" {
+        params: v2::ThreadMcpServerActivateParams,
+        response: v2::ThreadMcpServerActivateResponse,
+    },
     #[experimental("thread/goal/set")]
     ThreadGoalSet => "thread/goal/set" {
         params: v2::ThreadGoalSetParams,

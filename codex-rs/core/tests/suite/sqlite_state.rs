@@ -377,6 +377,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
                 enabled: true,
                 required: false,
                 supports_parallel_tool_calls: false,
+                allow_implicit_invocation: true,
                 disabled_reason: None,
                 startup_timeout_sec: Some(Duration::from_secs(10)),
                 tool_timeout_sec: None,

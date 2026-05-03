@@ -24,6 +24,32 @@ pub(crate) fn build_mcp_tool_exposure(
     config: &Config,
     tools_config: &ToolsConfig,
 ) -> McpToolExposure {
+    // `allow_implicit_invocation = false` only suppresses default direct/model-visible MCP
+    // exposure. Hidden servers remain connected at runtime and intentionally stay discoverable
+    // through deferred `tool_search` exposure.
+    let direct_visible_mcp_tools = all_mcp_tools
+        .iter()
+        .filter(|(_, tool)| {
+            config
+                .mcp_servers
+                .get()
+                .get(tool.server_name.as_str())
+                .is_none_or(|server| server.allow_implicit_invocation)
+        })
+        .map(|(name, tool)| (name.clone(), tool.clone()))
+        .collect::<HashMap<_, _>>();
+    let hidden_mcp_tools = all_mcp_tools
+        .iter()
+        .filter(|(_, tool)| {
+            config
+                .mcp_servers
+                .get()
+                .get(tool.server_name.as_str())
+                .is_some_and(|server| !server.allow_implicit_invocation)
+        })
+        .map(|(name, tool)| (name.clone(), tool.clone()))
+        .collect::<HashMap<_, _>>();
+
     let mut deferred_tools = filter_non_codex_apps_mcp_tools_only(all_mcp_tools);
     if let Some(connectors) = connectors {
         deferred_tools.extend(filter_codex_apps_mcp_tools(
@@ -40,14 +66,25 @@ pub(crate) fn build_mcp_tool_exposure(
             || deferred_tools.len() >= DIRECT_MCP_TOOL_EXPOSURE_THRESHOLD);
 
     if !should_defer {
+        let direct_codex_apps_connectors = connectors.unwrap_or(explicitly_enabled_connectors);
+        let mut direct_tools = filter_non_codex_apps_mcp_tools_only(&direct_visible_mcp_tools);
+        direct_tools.extend(filter_codex_apps_mcp_tools(
+            &direct_visible_mcp_tools,
+            direct_codex_apps_connectors,
+            config,
+        ));
         return McpToolExposure {
-            direct_tools: deferred_tools,
-            deferred_tools: None,
+            direct_tools,
+            // Keep hidden tools registered/callable even when tool_search is off.
+            deferred_tools: (!hidden_mcp_tools.is_empty()).then_some(hidden_mcp_tools),
         };
     }
 
-    let direct_tools =
-        filter_codex_apps_mcp_tools(all_mcp_tools, explicitly_enabled_connectors, config);
+    let direct_tools = filter_codex_apps_mcp_tools(
+        &direct_visible_mcp_tools,
+        explicitly_enabled_connectors,
+        config,
+    );
     for direct_tool_name in direct_tools.keys() {
         deferred_tools.remove(direct_tool_name);
     }

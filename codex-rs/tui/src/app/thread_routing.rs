@@ -673,6 +673,38 @@ impl App {
                 app_server.reload_user_config().await?;
                 Ok(true)
             }
+            AppCommandView::Other(Op::ActivateMcpServer { server_name }) => {
+                let outcome = app_server
+                    .thread_mcp_server_activate(thread_id, server_name.clone())
+                    .await?;
+                match outcome {
+                    codex_app_server_protocol::ThreadMcpServerActivateOutcome::Activated => {
+                        self.chat_widget.add_info_message(
+                            format!(
+                                "Explicit-use instructions for MCP server `{server_name}` have been queued for later turns."
+                            ),
+                            Some("The server itself was already running; only the prompt context was added.".to_string()),
+                        );
+                    }
+                    codex_app_server_protocol::ThreadMcpServerActivateOutcome::AlreadyActivated => {
+                        self.chat_widget.add_info_message(
+                            format!(
+                                "Explicit-use instructions for MCP server `{server_name}` are already present."
+                            ),
+                            /*hint*/ None,
+                        );
+                    }
+                    codex_app_server_protocol::ThreadMcpServerActivateOutcome::AlreadyImplicitlyAvailable => {
+                        self.chat_widget.add_info_message(
+                            format!(
+                                "MCP server `{server_name}` is already visible to the model by default."
+                            ),
+                            /*hint*/ None,
+                        );
+                    }
+                }
+                Ok(true)
+            }
             AppCommandView::OverrideTurnContext { .. } => Ok(true),
             AppCommandView::Other(Op::ApproveGuardianDeniedAction { event }) => {
                 app_server
@@ -1052,6 +1084,15 @@ impl App {
                     self.enqueue_thread_history_entry_response(thread_id, event)
                         .await?;
                 }
+                ThreadBufferedEvent::McpInventoryResult(event) => {
+                    self.handle_mcp_inventory_result(
+                        /*thread_id*/ None,
+                        event.request_seq,
+                        event.result,
+                        event.detail,
+                    )
+                    .await;
+                }
                 ThreadBufferedEvent::FeedbackSubmission(event) => {
                     self.enqueue_thread_feedback_event(thread_id, event).await;
                 }
@@ -1227,6 +1268,7 @@ impl App {
                 self.chat_widget.handle_thread_session(session);
             }
         }
+        self.sync_mcp_inventory_loading_for_current_thread();
         self.chat_widget
             .set_queue_autosend_suppressed(/*suppressed*/ true);
         self.chat_widget
@@ -1339,6 +1381,40 @@ impl App {
             ThreadBufferedEvent::HistoryEntryResponse(event) => {
                 self.chat_widget.handle_history_entry_response(event);
             }
+            ThreadBufferedEvent::McpInventoryResult(event) => {
+                if event.request_seq.is_some()
+                    && event.request_seq
+                        != self.chat_widget.thread_id().and_then(|thread_id| {
+                            self.latest_mcp_inventory_request_seq
+                                .get(&thread_id)
+                                .copied()
+                        })
+                {
+                    return;
+                }
+                self.chat_widget.clear_mcp_inventory_loading();
+                self.clear_committed_mcp_inventory_loading();
+                let config = self.chat_widget.config_ref().clone();
+                match event.result {
+                    Ok(statuses) => {
+                        if config.mcp_servers.get().is_empty() && statuses.is_empty() {
+                            self.chat_widget
+                                .add_to_history(history_cell::empty_mcp_output());
+                        } else {
+                            self.chat_widget.add_to_history(
+                                history_cell::new_mcp_tools_output_from_statuses(
+                                    &config,
+                                    &statuses,
+                                    event.detail,
+                                ),
+                            );
+                        }
+                    }
+                    Err(err) => self
+                        .chat_widget
+                        .add_error_message(format!("Failed to load MCP inventory: {err}")),
+                }
+            }
             ThreadBufferedEvent::FeedbackSubmission(event) => {
                 self.handle_feedback_thread_event(event);
             }
@@ -1358,6 +1434,38 @@ impl App {
                 .handle_server_request(request, Some(ReplayKind::ThreadSnapshot)),
             ThreadBufferedEvent::HistoryEntryResponse(event) => {
                 self.chat_widget.handle_history_entry_response(event)
+            }
+            ThreadBufferedEvent::McpInventoryResult(event) => {
+                if event.request_seq.is_some()
+                    && event.request_seq
+                        != self.chat_widget.thread_id().and_then(|thread_id| {
+                            self.latest_mcp_inventory_request_seq
+                                .get(&thread_id)
+                                .copied()
+                        })
+                {
+                    return;
+                }
+                let config = self.chat_widget.config_ref().clone();
+                match event.result {
+                    Ok(statuses) => {
+                        if config.mcp_servers.get().is_empty() && statuses.is_empty() {
+                            self.chat_widget
+                                .add_to_history(history_cell::empty_mcp_output());
+                        } else {
+                            self.chat_widget.add_to_history(
+                                history_cell::new_mcp_tools_output_from_statuses(
+                                    &config,
+                                    &statuses,
+                                    event.detail,
+                                ),
+                            );
+                        }
+                    }
+                    Err(err) => self
+                        .chat_widget
+                        .add_error_message(format!("Failed to load MCP inventory: {err}")),
+                }
             }
             ThreadBufferedEvent::FeedbackSubmission(event) => {
                 self.handle_feedback_thread_event(event);

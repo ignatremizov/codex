@@ -170,6 +170,9 @@ use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadMcpServerActivateOutcome;
+use codex_app_server_protocol::ThreadMcpServerActivateParams;
+use codex_app_server_protocol::ThreadMcpServerActivateResponse;
 use codex_app_server_protocol::ThreadMemoryModeSetParams;
 use codex_app_server_protocol::ThreadMemoryModeSetResponse;
 use codex_app_server_protocol::ThreadMetadataGitInfoUpdateParams;
@@ -966,6 +969,10 @@ impl CodexMessageProcessor {
             }
             ClientRequest::ThreadSetName { request_id, params } => {
                 self.thread_set_name(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::ThreadMcpServerActivate { request_id, params } => {
+                self.thread_mcp_server_activate(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::ThreadGoalSet { request_id, params } => {
@@ -3246,6 +3253,103 @@ impl CodexMessageProcessor {
             .await;
     }
 
+    async fn thread_mcp_server_activate(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadMcpServerActivateParams,
+    ) {
+        let ThreadMcpServerActivateParams {
+            thread_id,
+            server_name,
+        } = params;
+        let thread_id = match ThreadId::from_string(&thread_id) {
+            Ok(id) => id,
+            Err(err) => {
+                self.send_invalid_request_error(request_id, format!("invalid thread id: {err}"))
+                    .await;
+                return;
+            }
+        };
+
+        let thread = match self.thread_manager.get_thread(thread_id).await {
+            Ok(thread) => thread,
+            Err(err) => {
+                self.send_invalid_request_error(
+                    request_id,
+                    format!("thread {thread_id} is not loaded: {err}"),
+                )
+                .await;
+                return;
+            }
+        };
+
+        let config = match self.load_config_for_loaded_thread(thread.as_ref()).await {
+            Ok(config) => config,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let mcp_config = config
+            .to_mcp_config(self.thread_manager.plugins_manager().as_ref())
+            .await;
+        let auth = self.auth_manager.auth().await;
+        let effective_servers = effective_mcp_servers(&mcp_config, auth.as_ref());
+        let Some(server_config) = effective_servers.get(server_name.as_str()) else {
+            self.send_invalid_request_error(
+                request_id,
+                format!("unknown MCP server `{server_name}`"),
+            )
+            .await;
+            return;
+        };
+        if !server_config.enabled {
+            self.send_invalid_request_error(
+                request_id,
+                format!("MCP server `{server_name}` is disabled"),
+            )
+            .await;
+            return;
+        }
+
+        let latest_text = thread
+            .latest_mcp_server_use_context_text(server_name.as_str())
+            .await;
+        let current_text = thread
+            .render_mcp_server_use_context_text(server_name.as_str())
+            .await;
+
+        let outcome = if latest_text.as_deref() == Some(current_text.as_str()) {
+            ThreadMcpServerActivateOutcome::AlreadyActivated
+        } else if server_config.allow_implicit_invocation {
+            ThreadMcpServerActivateOutcome::AlreadyImplicitlyAvailable
+        } else {
+            if let Err(err) = self
+                .submit_core_op(
+                    &request_id,
+                    thread.as_ref(),
+                    Op::ActivateMcpServer {
+                        server_name: server_name.clone(),
+                    },
+                )
+                .await
+            {
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to queue MCP server prompt context: {err}"),
+                )
+                .await;
+                return;
+            }
+            ThreadMcpServerActivateOutcome::Activated
+        };
+
+        self.outgoing
+            .send_response(request_id, ThreadMcpServerActivateResponse { outcome })
+            .await;
+    }
+
     async fn thread_memory_mode_set(
         &self,
         request_id: ConnectionRequestId,
@@ -4580,7 +4684,6 @@ impl CodexMessageProcessor {
             &mut typesafe_overrides,
         )
         .await;
-
         // Derive a Config using the same logic as new conversation, honoring overrides if provided.
         let config = match self
             .config_manager
@@ -5394,7 +5497,6 @@ impl CodexMessageProcessor {
         self.thread_watch_manager
             .upsert_thread_silently(thread.clone())
             .await;
-
         thread.status = resolve_thread_status(
             self.thread_watch_manager
                 .loaded_status_for_thread(&thread.id)
@@ -5840,27 +5942,40 @@ impl CodexMessageProcessor {
     }
 
     async fn mcp_server_refresh(&self, request_id: ConnectionRequestId, _params: Option<()>) {
-        let config = match self.load_latest_config(/*fallback_cwd*/ None).await {
-            Ok(config) => config,
+        let result = self.queue_mcp_server_refreshes(Some(&request_id)).await;
+        let (refreshed_threads, skipped_threads) = match result {
+            Ok(result) => result,
             Err(error) => {
                 self.outgoing.send_error(request_id, error).await;
                 return;
             }
         };
 
-        if let Err(error) = self.queue_mcp_server_refresh_for_config(&config).await {
-            self.outgoing.send_error(request_id, error).await;
+        if refreshed_threads == 0 && skipped_threads > 0 {
+            self.outgoing
+                .send_error(
+                    request_id,
+                    JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: "failed to queue MCP refresh for any loaded thread".to_string(),
+                        data: None,
+                    },
+                )
+                .await;
             return;
         }
 
-        let response = McpServerRefreshResponse {};
+        let response = McpServerRefreshResponse {
+            refreshed_threads,
+            skipped_threads,
+        };
         self.outgoing.send_response(request_id, response).await;
     }
 
     async fn queue_mcp_server_refresh_for_config(
         &self,
         config: &Config,
-    ) -> Result<(), JSONRPCErrorError> {
+    ) -> Result<McpServerRefreshConfig, JSONRPCErrorError> {
         let configured_servers = self
             .thread_manager
             .mcp_manager()
@@ -5891,16 +6006,109 @@ impl CodexMessageProcessor {
                 }
             };
 
-        let refresh_config = McpServerRefreshConfig {
+        Ok(McpServerRefreshConfig {
             mcp_servers,
             mcp_oauth_credentials_store_mode,
-        };
+        })
+    }
 
-        // Refresh requests are queued per thread; each thread rebuilds MCP connections on its next
-        // active turn to avoid work for threads that never resume.
-        let thread_manager = Arc::clone(&self.thread_manager);
-        thread_manager.refresh_mcp_servers(refresh_config).await;
-        Ok(())
+    async fn load_config_for_loaded_thread(
+        &self,
+        thread: &CodexThread,
+    ) -> Result<Config, JSONRPCErrorError> {
+        Ok(thread.get_config().await.as_ref().clone())
+    }
+
+    async fn load_latest_config_for_loaded_thread(
+        &self,
+        thread: &CodexThread,
+    ) -> Result<Config, JSONRPCErrorError> {
+        let snapshot = thread.config_snapshot().await;
+        self.config_manager
+            .load_for_cwd(
+                /*request_overrides*/ None,
+                ConfigOverrides {
+                    model_provider: Some(snapshot.model_provider_id),
+                    config_profile: snapshot.active_profile,
+                    ..Default::default()
+                },
+                Some(snapshot.cwd.to_path_buf()),
+            )
+            .await
+            .map_err(|err| JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                message: format!("failed to load latest thread-scoped config: {err}"),
+                data: None,
+            })
+    }
+
+    async fn queue_mcp_server_refreshes(
+        &self,
+        request_id: Option<&ConnectionRequestId>,
+    ) -> Result<(u32, u32), JSONRPCErrorError> {
+        let thread_ids = self.thread_manager.list_thread_ids().await;
+        if thread_ids.is_empty() {
+            let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+            let _ = self.queue_mcp_server_refresh_for_config(&config).await?;
+            return Ok((0, 0));
+        }
+        let mut refreshed_threads = 0_u32;
+        let mut skipped_threads = 0_u32;
+        for thread_id in thread_ids {
+            let thread = match self.thread_manager.get_thread(thread_id).await {
+                Ok(thread) => thread,
+                Err(err) => {
+                    warn!("failed to load thread {thread_id} for MCP refresh: {err}");
+                    skipped_threads = skipped_threads.saturating_add(1);
+                    continue;
+                }
+            };
+            let config = match self
+                .load_latest_config_for_loaded_thread(thread.as_ref())
+                .await
+            {
+                Ok(config) => config,
+                Err(err) => {
+                    warn!("failed to load thread-scoped config for thread {thread_id}: {err:?}");
+                    skipped_threads = skipped_threads.saturating_add(1);
+                    continue;
+                }
+            };
+            let refresh_config = match self.queue_mcp_server_refresh_for_config(&config).await {
+                Ok(refresh_config) => refresh_config,
+                Err(err) => {
+                    warn!("failed to build MCP refresh config for thread {thread_id}: {err:?}");
+                    skipped_threads = skipped_threads.saturating_add(1);
+                    continue;
+                }
+            };
+            let submit_result = match request_id {
+                Some(request_id) => {
+                    self.submit_core_op(
+                        request_id,
+                        thread.as_ref(),
+                        Op::RefreshMcpServers {
+                            config: refresh_config,
+                        },
+                    )
+                    .await
+                }
+                None => {
+                    thread
+                        .submit(Op::RefreshMcpServers {
+                            config: refresh_config,
+                        })
+                        .await
+                }
+            };
+            if let Err(err) = submit_result {
+                warn!("failed to queue MCP refresh for thread {thread_id}: {err}");
+                skipped_threads = skipped_threads.saturating_add(1);
+            } else {
+                refreshed_threads = refreshed_threads.saturating_add(1);
+            }
+        }
+        Ok((refreshed_threads, skipped_threads))
     }
 
     async fn mcp_server_oauth_login(
@@ -6019,9 +6227,38 @@ impl CodexMessageProcessor {
         params: ListMcpServerStatusParams,
     ) {
         let request = request_id.clone();
-
+        let thread = if let Some(thread_id) = params.thread_id.as_deref() {
+            let thread_id = match ThreadId::from_string(thread_id) {
+                Ok(id) => id,
+                Err(err) => {
+                    self.send_invalid_request_error(
+                        request_id,
+                        format!("invalid thread id: {err}"),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            match self.thread_manager.get_thread(thread_id).await {
+                Ok(thread) => Some((thread_id, thread)),
+                Err(err) => {
+                    self.send_invalid_request_error(
+                        request_id,
+                        format!("thread {thread_id} is not loaded: {err}"),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let outgoing = Arc::clone(&self.outgoing);
-        let config = match self.load_latest_config(/*fallback_cwd*/ None).await {
+        let config: Config = match if let Some((_, thread)) = thread.as_ref() {
+            self.load_config_for_loaded_thread(thread.as_ref()).await
+        } else {
+            self.load_latest_config(/*fallback_cwd*/ None).await
+        } {
             Ok(config) => config,
             Err(error) => {
                 self.outgoing.send_error(request, error).await;
@@ -6033,16 +6270,20 @@ impl CodexMessageProcessor {
             .await;
         let auth = self.auth_manager.auth().await;
         let environment_manager = self.thread_manager.environment_manager();
+        let fallback_cwd = if let Some((_, thread)) = thread.as_ref() {
+            thread.config_snapshot().await.cwd.to_path_buf()
+        } else {
+            config.cwd.to_path_buf()
+        };
         let runtime_environment = match environment_manager.default_environment() {
             Some(environment) => {
                 // Status listing has no turn cwd. This fallback is used only
                 // by executor-backed stdio MCPs whose config omits `cwd`.
-                McpRuntimeEnvironment::new(environment, config.cwd.to_path_buf())
+                McpRuntimeEnvironment::new(environment, fallback_cwd)
             }
-            None => McpRuntimeEnvironment::new(
-                environment_manager.local_environment(),
-                config.cwd.to_path_buf(),
-            ),
+            None => {
+                McpRuntimeEnvironment::new(environment_manager.local_environment(), fallback_cwd)
+            }
         };
 
         tokio::spawn(async move {
@@ -6140,6 +6381,17 @@ impl CodexMessageProcessor {
             .iter()
             .map(|name| McpServerStatus {
                 name: name.clone(),
+                allow_implicit_invocation: config
+                    .mcp_servers
+                    .get()
+                    .get(name.as_str())
+                    .map(|server| server.allow_implicit_invocation)
+                    .or_else(|| {
+                        effective_servers
+                            .get(name.as_str())
+                            .map(|server| server.allow_implicit_invocation)
+                    })
+                    .unwrap_or(true),
                 tools: tools_by_server.get(name).cloned().unwrap_or_default(),
                 resources: resources.get(name).cloned().unwrap_or_default(),
                 resource_templates: resource_templates.get(name).cloned().unwrap_or_default(),
@@ -10910,6 +11162,7 @@ mod tests {
         let config_snapshot = ThreadConfigSnapshot {
             model: "gpt-5".to_string(),
             model_provider_id: "openai".to_string(),
+            active_profile: None,
             service_tier: Some(codex_protocol::config_types::ServiceTier::Flex),
             approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,

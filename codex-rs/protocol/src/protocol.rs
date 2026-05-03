@@ -734,6 +734,10 @@ pub enum Op {
     /// Request MCP servers to reinitialize and refresh cached tool lists.
     RefreshMcpServers { config: McpServerRefreshConfig },
 
+    /// Queue forward-only model context so later turns may explicitly use an
+    /// MCP server that is otherwise hidden from default prompt exposure.
+    ActivateMcpServer { server_name: String },
+
     /// Reload user config layer overrides for the active session.
     ///
     /// This updates runtime config-derived behavior (for example app
@@ -900,6 +904,7 @@ impl Op {
             Self::GetHistoryEntryRequest { .. } => "get_history_entry_request",
             Self::ListMcpTools => "list_mcp_tools",
             Self::RefreshMcpServers { .. } => "refresh_mcp_servers",
+            Self::ActivateMcpServer { .. } => "activate_mcp_server",
             Self::ReloadUserConfig => "reload_user_config",
             Self::ListSkills { .. } => "list_skills",
             Self::Compact => "compact",

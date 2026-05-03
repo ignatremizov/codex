@@ -1,4 +1,5 @@
 use crate::agent::AgentStatus;
+use crate::config::Config;
 use crate::config::ConstraintResult;
 use crate::file_watcher::WatchRegistration;
 use crate::goals::GoalRuntimeEvent;
@@ -35,6 +36,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use rmcp::model::ReadResourceRequestParams;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 
@@ -44,6 +46,7 @@ use codex_rollout::state_db::StateDbHandle;
 pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
+    pub active_profile: Option<String>,
     pub service_tier: Option<ServiceTier>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
@@ -361,6 +364,24 @@ impl CodexThread {
 
     pub async fn config_snapshot(&self) -> ThreadConfigSnapshot {
         self.codex.thread_config_snapshot().await
+    }
+
+    pub async fn get_config(&self) -> Arc<Config> {
+        self.codex.session.get_config().await
+    }
+
+    pub async fn latest_mcp_server_use_context_text(&self, server_name: &str) -> Option<String> {
+        self.codex
+            .session
+            .latest_mcp_server_use_context_text(server_name)
+            .await
+    }
+
+    pub async fn render_mcp_server_use_context_text(&self, server_name: &str) -> String {
+        self.codex
+            .session
+            .render_mcp_server_use_context_text(server_name)
+            .await
     }
 
     pub async fn read_mcp_resource(

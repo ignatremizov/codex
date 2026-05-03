@@ -208,6 +208,138 @@ async fn directly_exposes_explicit_apps_without_deferred_overlap() {
 }
 
 #[tokio::test]
+async fn non_deferred_exposure_still_filters_codex_apps_to_explicit_connectors() {
+    let config = test_config().await;
+    let tools_config = tools_config_for_mcp_tool_exposure(/*search_tool*/ false).await;
+    let mcp_tools = HashMap::from([
+        (
+            "mcp__rmcp__tool".to_string(),
+            make_mcp_tool(
+                "rmcp", "tool", /*connector_id*/ None, /*connector_name*/ None,
+            ),
+        ),
+        (
+            "mcp__codex_apps__calendar_create_event".to_string(),
+            make_mcp_tool(
+                CODEX_APPS_MCP_SERVER_NAME,
+                "calendar_create_event",
+                Some("calendar"),
+                Some("Calendar"),
+            ),
+        ),
+        (
+            "mcp__codex_apps__drive_list".to_string(),
+            make_mcp_tool(
+                CODEX_APPS_MCP_SERVER_NAME,
+                "drive_list",
+                Some("drive"),
+                Some("Drive"),
+            ),
+        ),
+    ]);
+
+    let exposure = build_mcp_tool_exposure(
+        &mcp_tools,
+        /*connectors*/ None,
+        &[make_connector("calendar", "Calendar")],
+        &config,
+        &tools_config,
+    );
+
+    let mut tool_names: Vec<_> = exposure.direct_tools.keys().cloned().collect();
+    tool_names.sort();
+    assert_eq!(
+        tool_names,
+        vec![
+            "mcp__codex_apps__calendar_create_event".to_string(),
+            "mcp__rmcp__tool".to_string(),
+        ]
+    );
+    assert!(exposure.deferred_tools.is_none());
+}
+
+#[tokio::test]
+async fn tool_search_disabled_exposes_all_enabled_codex_apps_directly() {
+    let config = test_config().await;
+    let tools_config = tools_config_for_mcp_tool_exposure(/*search_tool*/ false).await;
+    let mcp_tools = HashMap::from([
+        (
+            "mcp__codex_apps__calendar_create_event".to_string(),
+            make_mcp_tool(
+                CODEX_APPS_MCP_SERVER_NAME,
+                "calendar_create_event",
+                Some("calendar"),
+                Some("Calendar"),
+            ),
+        ),
+        (
+            "mcp__codex_apps__drive_list".to_string(),
+            make_mcp_tool(
+                CODEX_APPS_MCP_SERVER_NAME,
+                "drive_list",
+                Some("drive"),
+                Some("Drive"),
+            ),
+        ),
+    ]);
+    let connectors = vec![
+        make_connector("calendar", "Calendar"),
+        make_connector("drive", "Drive"),
+    ];
+
+    let exposure = build_mcp_tool_exposure(
+        &mcp_tools,
+        Some(connectors.as_slice()),
+        &[],
+        &config,
+        &tools_config,
+    );
+
+    let mut tool_names: Vec<_> = exposure.direct_tools.keys().cloned().collect();
+    tool_names.sort();
+    assert_eq!(
+        tool_names,
+        vec![
+            "mcp__codex_apps__calendar_create_event".to_string(),
+            "mcp__codex_apps__drive_list".to_string(),
+        ]
+    );
+    assert!(exposure.deferred_tools.is_none());
+}
+
+#[tokio::test]
+async fn small_codex_apps_inventory_exposes_enabled_apps_directly() {
+    let config = test_config().await;
+    let tools_config = tools_config_for_mcp_tool_exposure(/*search_tool*/ true).await;
+    let mcp_tools = HashMap::from([(
+        "mcp__codex_apps__calendar_create_event".to_string(),
+        make_mcp_tool(
+            CODEX_APPS_MCP_SERVER_NAME,
+            "calendar_create_event",
+            Some("calendar"),
+            Some("Calendar"),
+        ),
+    )]);
+    let connectors = vec![make_connector("calendar", "Calendar")];
+
+    let exposure = build_mcp_tool_exposure(
+        &mcp_tools,
+        Some(connectors.as_slice()),
+        &[],
+        &config,
+        &tools_config,
+    );
+
+    let mut tool_names: Vec<_> = exposure.direct_tools.keys().cloned().collect();
+    tool_names.sort();
+    assert_eq!(
+        tool_names,
+        vec!["mcp__codex_apps__calendar_create_event".to_string()]
+    );
+    assert!(exposure.deferred_tools.is_none());
+}
+
+#[tokio::test]
 async fn always_defer_feature_preserves_explicit_apps() {
     let mut config = test_config().await;
     config
@@ -254,4 +386,81 @@ async fn always_defer_feature_preserves_explicit_apps() {
         .expect("MCP tools should be discoverable through tool_search");
     assert!(deferred_tools.contains_key("mcp__rmcp__tool"));
     assert!(!deferred_tools.contains_key("mcp__codex_apps__calendar_create_event"));
+}
+
+#[tokio::test]
+async fn hidden_servers_are_hidden_from_default_direct_exposure_but_still_tool_search_discoverable()
+{
+    let mut config = test_config().await;
+    config
+        .mcp_servers
+        .set(HashMap::from([(
+            "rmcp".to_string(),
+            codex_config::types::McpServerConfig {
+                transport: codex_config::types::McpServerTransportConfig::Stdio {
+                    command: "echo".to_string(),
+                    args: Vec::new(),
+                    env: None,
+                    env_vars: Vec::new(),
+                    cwd: None,
+                },
+                experimental_environment: None,
+                enabled: true,
+                required: false,
+                supports_parallel_tool_calls: false,
+                allow_implicit_invocation: false,
+                disabled_reason: None,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+                default_tools_approval_mode: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                scopes: None,
+                oauth_resource: None,
+                tools: HashMap::new(),
+            },
+        )]))
+        .expect("test config should accept MCP server config");
+    let tools_config = tools_config_for_mcp_tool_exposure(/*search_tool*/ true).await;
+    let mcp_tools = HashMap::from([(
+        "mcp__rmcp__tool".to_string(),
+        make_mcp_tool(
+            "rmcp", "tool", /*connector_id*/ None, /*connector_name*/ None,
+        ),
+    )]);
+
+    let hidden = build_mcp_tool_exposure(
+        &mcp_tools,
+        /*connectors*/ None,
+        &[],
+        &config,
+        &tools_config,
+    );
+    assert!(hidden.direct_tools.is_empty());
+    assert!(
+        hidden
+            .deferred_tools
+            .as_ref()
+            .is_some_and(|tools| tools.contains_key("mcp__rmcp__tool")),
+        "hidden MCP servers should remain deferred/callable rather than appearing in default direct exposure"
+    );
+
+    let after_mcp_use = build_mcp_tool_exposure(
+        &mcp_tools,
+        /*connectors*/ None,
+        &[],
+        &config,
+        &tools_config,
+    );
+    assert!(
+        after_mcp_use.direct_tools.is_empty(),
+        "/mcp use injects prompt history only; it must not rewrite the top-level tool contract"
+    );
+    assert!(
+        after_mcp_use
+            .deferred_tools
+            .as_ref()
+            .is_some_and(|tools| tools.contains_key("mcp__rmcp__tool")),
+        "hidden MCP servers stay deferred/callable after /mcp use so cacheable tool exposure is stable"
+    );
 }

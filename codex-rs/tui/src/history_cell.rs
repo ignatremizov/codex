@@ -2240,6 +2240,15 @@ pub(crate) fn new_mcp_tools_output_from_statuses(
                 codex_app_server_protocol::McpAuthStatus::OAuth => McpAuthStatus::OAuth,
             })
             .unwrap_or(McpAuthStatus::Unsupported);
+        let implicitly_visible = status
+            .map(|status| status.allow_implicit_invocation)
+            .unwrap_or_else(|| cfg.is_none_or(|cfg| cfg.allow_implicit_invocation));
+        let visibility = if implicitly_visible {
+            "visible by default"
+        } else {
+            "hidden by default"
+        };
+        lines.push(vec!["    • Visibility: ".into(), visibility.into()].into());
         lines.push(vec!["    • Auth: ".into(), auth_status.to_string().into()].into());
 
         if let Some(cfg) = cfg {
@@ -3568,6 +3577,7 @@ mod tests {
 
         let statuses = vec![McpServerStatus {
             name: "plugin_docs".to_string(),
+            allow_implicit_invocation: false,
             tools: HashMap::from([(
                 "lookup".to_string(),
                 Tool {
@@ -3609,6 +3619,7 @@ mod tests {
 
         let statuses = vec![McpServerStatus {
             name: "plugin_docs".to_string(),
+            allow_implicit_invocation: true,
             tools: HashMap::from([(
                 "lookup".to_string(),
                 Tool {

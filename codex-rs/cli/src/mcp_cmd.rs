@@ -300,6 +300,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         transport: transport.clone(),
         experimental_environment: None,
         enabled: true,
+        allow_implicit_invocation: true,
         required: false,
         supports_parallel_tool_calls: false,
         disabled_reason: None,

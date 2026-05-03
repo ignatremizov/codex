@@ -7,6 +7,7 @@ expression: rendered
 🔌  MCP Tools
 
   • plugin_docs
+    • Visibility: hidden by default
     • Auth: Unsupported
     • Command: docs-server --stdio
     • Tools: lookup

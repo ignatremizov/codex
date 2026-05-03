@@ -31,6 +31,7 @@ const SIDE_REVIEW_UNAVAILABLE_MESSAGE: &str =
 const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str = "Press Esc to return to the main thread first.";
 const GOAL_USAGE: &str = "Usage: /goal <objective>";
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
+const MCP_USAGE: &str = "Usage: /mcp [verbose] | /mcp use <server>";
 
 impl ChatWidget {
     /// Dispatch a bare slash command and record its staged local-history entry.
@@ -563,10 +564,43 @@ impl ChatWidget {
                     }
                 }
             }
-            SlashCommand::Mcp => match trimmed.to_ascii_lowercase().as_str() {
-                "verbose" => self.add_mcp_output(McpServerStatusDetail::Full),
-                _ => self.add_error_message("Usage: /mcp [verbose]".to_string()),
-            },
+            SlashCommand::Mcp => {
+                let trimmed_lower = trimmed.to_ascii_lowercase();
+                match trimmed_lower.as_str() {
+                    "verbose" => {
+                        self.add_mcp_output(McpServerStatusDetail::Full);
+                    }
+                    _ if trimmed_lower
+                        .strip_prefix("use ")
+                        .is_some_and(|server_name| !server_name.trim().is_empty()) =>
+                    {
+                        let server_name = trimmed["use ".len()..].trim();
+                        if let Some(thread_id) = self.thread_id {
+                            self.app_event_tx.send(AppEvent::SubmitThreadOp {
+                                thread_id,
+                                op: Op::ActivateMcpServer {
+                                    server_name: server_name.to_string(),
+                                },
+                            });
+                        } else {
+                            let server_name = server_name.to_string();
+                            if !self.pending_mcp_server_uses.contains(&server_name) {
+                                self.pending_mcp_server_uses.push_back(server_name.clone());
+                            }
+                            self.add_info_message(
+                                format!(
+                                    "Explicit-use instructions for MCP server `{server_name}` will be queued when the session starts."
+                                ),
+                                Some(
+                                    "The server itself is already running; only the prompt context will be added."
+                                        .to_string(),
+                                ),
+                            );
+                        }
+                    }
+                    _ => self.add_error_message(MCP_USAGE.to_string()),
+                }
+            }
             SlashCommand::Rename if !trimmed.is_empty() => {
                 if !self.ensure_thread_rename_allowed() {
                     return;

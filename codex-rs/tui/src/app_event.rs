@@ -366,11 +366,14 @@ pub(crate) enum AppEvent {
 
     /// Fetch MCP inventory via app-server RPCs and render it into history.
     FetchMcpInventory {
+        thread_id: Option<ThreadId>,
         detail: McpServerStatusDetail,
     },
 
     /// Result of fetching MCP inventory via app-server RPCs.
     McpInventoryLoaded {
+        thread_id: Option<ThreadId>,
+        request_seq: Option<u64>,
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
     },

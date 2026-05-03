@@ -36,6 +36,7 @@ use codex_mcp::collect_mcp_snapshot_from_manager;
 use codex_mcp::compute_auth_statuses;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -520,6 +521,33 @@ pub async fn get_history_entry_request(
 pub async fn refresh_mcp_servers(sess: &Arc<Session>, refresh_config: McpServerRefreshConfig) {
     let mut guard = sess.pending_mcp_server_refresh_config.lock().await;
     *guard = Some(refresh_config);
+}
+
+pub async fn queue_mcp_server_use_context(sess: &Session, server_name: String) {
+    let text = sess
+        .render_mcp_server_use_context_text(server_name.as_str())
+        .await;
+    if sess
+        .latest_mcp_server_use_context_text(server_name.as_str())
+        .await
+        .as_deref()
+        == Some(text.as_str())
+    {
+        return;
+    }
+    // Cache invariant: `/mcp use` is a forward-only prompt-context injection. It must append at
+    // the user-invoked point in history and must not rewrite earlier history or promote MCP tools
+    // into the top-level tool contract, because either would invalidate the cached session prefix.
+    let turn_context = sess.new_default_turn().await;
+    let response_item = ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText { text }],
+        end_turn: None,
+        phase: None,
+    };
+    sess.record_conversation_items_silently(turn_context.as_ref(), &[response_item])
+        .await;
 }
 
 pub async fn reload_user_config(sess: &Arc<Session>) {
@@ -1161,6 +1189,10 @@ pub(super) async fn submission_loop(
                 }
                 Op::RefreshMcpServers { config } => {
                     refresh_mcp_servers(&sess, config).await;
+                    false
+                }
+                Op::ActivateMcpServer { server_name } => {
+                    queue_mcp_server_use_context(&sess, server_name).await;
                     false
                 }
                 Op::ReloadUserConfig => {
