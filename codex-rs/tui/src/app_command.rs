@@ -102,6 +102,9 @@ pub(crate) enum AppCommand {
     Review {
         target: ReviewTarget,
     },
+    ActivateMcpServer {
+        server_name: String,
+    },
     ApproveGuardianDeniedAction {
         event: GuardianAssessmentEvent,
     },
@@ -263,6 +266,10 @@ impl AppCommand {
 
     pub(crate) fn review(target: ReviewTarget) -> Self {
         Self::Review { target }
+    }
+
+    pub(crate) fn activate_mcp_server(server_name: String) -> Self {
+        Self::ActivateMcpServer { server_name }
     }
 
     pub(crate) fn approve_guardian_denied_action(event: GuardianAssessmentEvent) -> Self {

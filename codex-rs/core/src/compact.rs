@@ -827,6 +827,15 @@ pub(crate) fn insert_mcp_server_use_context_items_at_compaction_boundary(
             };
             is_summary_message(&user.message()).then_some(index)
         })
+        .or_else(|| {
+            history.iter().enumerate().rev().find_map(|(index, item)| {
+                matches!(
+                    item,
+                    ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+                )
+                .then_some(index)
+            })
+        })
         .unwrap_or(history.len());
     history.splice(insertion_index..insertion_index, mcp_context);
     history

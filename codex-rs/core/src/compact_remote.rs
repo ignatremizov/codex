@@ -257,9 +257,10 @@ async fn run_remote_compact_task_inner_impl(
     let RemoteCompactAttempt {
         new_history,
         trace_input_history,
+        explicit_mcp_context,
     } = attempt;
     let (new_window_number, new_window_ids) = sess.advance_auto_compact_window().await;
-    let (new_history, world_state_baseline) = process_compacted_history(
+    let (mut new_history, world_state_baseline) = process_compacted_history(
         sess.as_ref(),
         compaction_turn_context.as_ref(),
         new_history,
@@ -267,6 +268,10 @@ async fn run_remote_compact_task_inner_impl(
     )
     .await;
 
+    new_history = crate::compact::insert_mcp_server_use_context_items_at_compaction_boundary(
+        new_history,
+        explicit_mcp_context,
+    );
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage(_) => {
@@ -288,18 +293,19 @@ async fn run_remote_compact_task_inner_impl(
     // Install is the semantic boundary where the compact endpoint's output becomes live
     // thread history. Keep it distinct from the later inference request so the reducer can
     // still represent repeated developer/context prefix items exactly as the model saw them.
+    let final_history = sess
+        .replace_compacted_history(
+            compaction_turn_context.as_ref(),
+            new_history,
+            reference_context_item,
+            world_state_baseline,
+            compacted_item,
+        )
+        .await;
     compaction_trace.record_installed(&CompactionCheckpointTracePayload {
         input_history: &trace_input_history,
-        replacement_history: &new_history,
+        replacement_history: &final_history,
     });
-    sess.replace_compacted_history(
-        compaction_turn_context.as_ref(),
-        new_history,
-        reference_context_item,
-        world_state_baseline,
-        compacted_item,
-    )
-    .await;
     sess.recompute_token_usage(compaction_turn_context).await;
 
     context_compaction_item.summary = summary.clone();

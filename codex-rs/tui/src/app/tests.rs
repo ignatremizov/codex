@@ -161,17 +161,20 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
         )));
 
     app.handle_mcp_inventory_result(
+        None,
+        None,
         Ok(vec![McpServerStatus {
             name: "docs".to_string(),
             server_info: None,
+            allow_implicit_invocation: true,
             tools: HashMap::new(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
             auth_status: codex_app_server_protocol::McpAuthStatus::Unsupported,
         }]),
         McpServerStatusDetail::ToolsAndAuthOnly,
-        /*thread_id*/ None,
-    );
+    )
+    .await;
 
     assert_eq!(app.transcript_cells.len(), 0);
 
@@ -182,12 +185,70 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
         )));
 
     app.handle_mcp_inventory_result(
+        Some(ThreadId::new()),
+        None,
         Ok(Vec::new()),
         McpServerStatusDetail::ToolsAndAuthOnly,
-        Some(ThreadId::new()),
-    );
+    )
+    .await;
 
     assert_eq!(app.transcript_cells.len(), 1);
+}
+
+#[tokio::test]
+async fn threadless_mcp_inventory_result_is_buffered_for_primary_thread_after_switch() {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let active_thread_id = ThreadId::new();
+    let primary_session = test_thread_session(primary_thread_id, test_path_buf("/tmp/main"));
+    let active_session = test_thread_session(active_thread_id, test_path_buf("/tmp/active"));
+
+    app.primary_thread_id = Some(primary_thread_id);
+    app.thread_event_channels.insert(
+        primary_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            primary_session,
+            Vec::new(),
+        ),
+    );
+    app.chat_widget.handle_thread_session(active_session);
+
+    app.handle_mcp_inventory_result(
+        /*thread_id*/ None,
+        /*request_seq*/ None,
+        Ok(vec![McpServerStatus {
+            name: "docs".to_string(),
+            server_info: None,
+            allow_implicit_invocation: true,
+            tools: HashMap::new(),
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            auth_status: codex_app_server_protocol::McpAuthStatus::Unsupported,
+        }]),
+        McpServerStatusDetail::ToolsAndAuthOnly,
+    )
+    .await;
+
+    let store = app
+        .thread_event_channels
+        .get(&primary_thread_id)
+        .expect("primary thread channel should exist")
+        .store
+        .lock()
+        .await;
+    let event = store
+        .buffer
+        .back()
+        .expect("threadless MCP inventory result should be buffered");
+    assert!(matches!(
+        event,
+        ThreadBufferedEvent::McpInventoryResult(McpInventoryThreadEvent {
+            request_seq: None,
+            result: Ok(statuses),
+            detail: McpServerStatusDetail::ToolsAndAuthOnly,
+        }) if statuses.iter().map(|status| status.name.as_str()).collect::<Vec<_>>() == vec!["docs"]
+    ));
 }
 
 #[test]
@@ -4165,6 +4226,9 @@ async fn make_test_app() -> App {
         pending_app_server_requests: PendingAppServerRequests::default(),
         pending_startup_thread_start: false,
         rate_limit_hard_stop_generation: 0,
+        pending_mcp_inventory_threads: HashMap::new(),
+        latest_mcp_inventory_request_seq: HashMap::new(),
+        next_mcp_inventory_request_seq: 0,
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
     }
@@ -4231,6 +4295,9 @@ async fn make_test_app_with_channels() -> (
             pending_app_server_requests: PendingAppServerRequests::default(),
             pending_startup_thread_start: false,
             rate_limit_hard_stop_generation: 0,
+            pending_mcp_inventory_threads: HashMap::new(),
+            latest_mcp_inventory_request_seq: HashMap::new(),
+            next_mcp_inventory_request_seq: 0,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
         },

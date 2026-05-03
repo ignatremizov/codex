@@ -253,7 +253,7 @@ async fn namespaced_custom_tool_call_preserves_namespace_through_dispatch_and_re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shell_command_escalated_permissions_rejected_then_ok() -> Result<()> {
+async fn shell_escalated_permissions_rejected_then_ok() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
