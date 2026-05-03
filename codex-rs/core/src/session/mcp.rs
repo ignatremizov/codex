@@ -1,4 +1,5 @@
 use super::*;
+use codex_config::McpServerConfig;
 use codex_mcp::ElicitationReviewRequest;
 use codex_mcp::ElicitationReviewer;
 use codex_mcp::ElicitationReviewerHandle;
@@ -48,6 +49,15 @@ struct PluginInstallElicitationTelemetryMetadata {
     tool_type: String,
     tool_id: String,
     tool_name: String,
+}
+
+struct McpRefreshInputs {
+    mcp_servers: HashMap<String, McpServerConfig>,
+    store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    elicitation_reviewer: Option<ElicitationReviewerHandle>,
+    mcp_config: McpConfig,
+    tool_plugin_provenance: ToolPluginProvenance,
 }
 
 impl GuardianMcpElicitationReviewer {
@@ -297,15 +307,18 @@ impl Session {
     async fn refresh_mcp_servers_inner(
         &self,
         turn_context: &TurnContext,
-        mcp_servers: HashMap<String, McpServerConfig>,
-        store_mode: OAuthCredentialsStoreMode,
-        keyring_backend_kind: AuthKeyringBackendKind,
-        elicitation_reviewer: Option<ElicitationReviewerHandle>,
+        inputs: McpRefreshInputs,
     ) {
+        let McpRefreshInputs {
+            mcp_servers,
+            store_mode,
+            keyring_backend_kind,
+            elicitation_reviewer,
+            mcp_config,
+            tool_plugin_provenance,
+        } = inputs;
         let auth = self.services.auth_manager.auth().await;
         let config = self.get_config().await;
-        let mcp_config = self.runtime_mcp_config(config.as_ref()).await;
-        let tool_plugin_provenance = codex_mcp::tool_plugin_provenance(&mcp_config);
         let mcp_servers =
             effective_mcp_servers_from_configured(mcp_servers, &mcp_config, auth.as_ref());
         let host_owned_codex_apps_enabled =
@@ -368,53 +381,64 @@ impl Session {
     pub(crate) async fn refresh_mcp_servers_if_requested(
         &self,
         turn_context: &TurnContext,
-        elicitation_reviewer: Option<ElicitationReviewerHandle>,
+        _elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
         let refresh_config = { self.pending_mcp_server_refresh_config.lock().await.take() };
         let Some(refresh_config) = refresh_config else {
             return;
         };
 
+        if let Err(err) = self
+            .refresh_mcp_servers_from_refresh_config(turn_context, refresh_config)
+            .await
+        {
+            warn!("failed to refresh MCP servers: {err:#}");
+        }
+    }
+
+    pub(crate) async fn refresh_mcp_servers_from_refresh_config(
+        &self,
+        turn_context: &TurnContext,
+        refresh_config: McpServerRefreshConfig,
+    ) -> anyhow::Result<()> {
         let McpServerRefreshConfig {
             mcp_servers,
             mcp_oauth_credentials_store_mode,
             auth_keyring_backend_kind,
         } = refresh_config;
 
-        let mcp_servers =
-            match serde_json::from_value::<HashMap<String, McpServerConfig>>(mcp_servers) {
-                Ok(servers) => servers,
-                Err(err) => {
-                    warn!("failed to parse MCP server refresh config: {err}");
-                    return;
-                }
-            };
-        let store_mode = match serde_json::from_value::<OAuthCredentialsStoreMode>(
-            mcp_oauth_credentials_store_mode,
-        ) {
-            Ok(mode) => mode,
-            Err(err) => {
-                warn!("failed to parse MCP OAuth refresh config: {err}");
-                return;
-            }
-        };
-        let keyring_backend_kind =
-            match serde_json::from_value::<AuthKeyringBackendKind>(auth_keyring_backend_kind) {
-                Ok(kind) => kind,
-                Err(err) => {
-                    warn!("failed to parse MCP auth keyring backend refresh config: {err}");
-                    return;
-                }
-            };
+        let mcp_servers = serde_json::from_value::<HashMap<String, McpServerConfig>>(mcp_servers)
+            .map_err(|err| {
+            anyhow::anyhow!("failed to parse MCP server refresh config: {err}")
+        })?;
+        let store_mode =
+            serde_json::from_value::<OAuthCredentialsStoreMode>(mcp_oauth_credentials_store_mode)
+                .map_err(|err| anyhow::anyhow!("failed to parse MCP OAuth refresh config: {err}"))?;
+        let keyring_backend_kind = serde_json::from_value::<AuthKeyringBackendKind>(
+            auth_keyring_backend_kind,
+        )
+        .map_err(|err| {
+            anyhow::anyhow!("failed to parse MCP auth keyring backend refresh config: {err}")
+        })?;
+        let config = self.get_config().await;
+        let mcp_config = config
+            .to_mcp_config(self.services.plugins_manager.as_ref())
+            .await;
+        let tool_plugin_provenance = codex_mcp::tool_plugin_provenance(&mcp_config);
 
         self.refresh_mcp_servers_inner(
             turn_context,
-            mcp_servers,
-            store_mode,
-            keyring_backend_kind,
-            elicitation_reviewer,
+            McpRefreshInputs {
+                mcp_servers,
+                store_mode,
+                keyring_backend_kind,
+                elicitation_reviewer: None,
+                mcp_config,
+                tool_plugin_provenance,
+            },
         )
         .await;
+        Ok(())
     }
 
     pub(crate) async fn refresh_mcp_servers_now(
@@ -425,12 +449,43 @@ impl Session {
         keyring_backend_kind: AuthKeyringBackendKind,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
+        let config = self.get_config().await;
+        let mcp_config = config
+            .to_mcp_config(self.services.plugins_manager.as_ref())
+            .await;
+        let tool_plugin_provenance = codex_mcp::tool_plugin_provenance(&mcp_config);
         self.refresh_mcp_servers_inner(
             turn_context,
-            mcp_servers,
-            store_mode,
-            keyring_backend_kind,
-            elicitation_reviewer,
+            McpRefreshInputs {
+                mcp_servers,
+                store_mode,
+                keyring_backend_kind,
+                elicitation_reviewer,
+                mcp_config,
+                tool_plugin_provenance,
+            },
+        )
+        .await;
+    }
+
+    pub(crate) async fn refresh_mcp_servers_now_with_mcp_config(
+        &self,
+        turn_context: &TurnContext,
+        mcp_config: McpConfig,
+        tool_plugin_provenance: ToolPluginProvenance,
+    ) {
+        let mcp_servers = codex_mcp::configured_mcp_servers(&mcp_config);
+        let store_mode = mcp_config.mcp_oauth_credentials_store_mode;
+        self.refresh_mcp_servers_inner(
+            turn_context,
+            McpRefreshInputs {
+                mcp_servers,
+                store_mode,
+                keyring_backend_kind: mcp_config.auth_keyring_backend_kind,
+                elicitation_reviewer: None,
+                mcp_config,
+                tool_plugin_provenance,
+            },
         )
         .await;
     }

@@ -778,6 +778,8 @@ class ContextCompactedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    message: str | None = None
+    summary: str | None = None
     thread_id: Annotated[str, Field(alias="threadId")]
     turn_id: Annotated[str, Field(alias="turnId")]
 
@@ -1787,8 +1789,12 @@ class ManagedHooksRequirements(BaseModel):
     permission_request: Annotated[
         list[ConfiguredHookMatcherGroup], Field(alias="PermissionRequest")
     ]
-    post_compact: Annotated[list[ConfiguredHookMatcherGroup], Field(alias="PostCompact")]
-    post_tool_use: Annotated[list[ConfiguredHookMatcherGroup], Field(alias="PostToolUse")]
+    post_compact: Annotated[
+        list[ConfiguredHookMatcherGroup], Field(alias="PostCompact")
+    ]
+    post_tool_use: Annotated[
+        list[ConfiguredHookMatcherGroup], Field(alias="PostToolUse")
+    ]
     pre_compact: Annotated[list[ConfiguredHookMatcherGroup], Field(alias="PreCompact")]
     pre_tool_use: Annotated[list[ConfiguredHookMatcherGroup], Field(alias="PreToolUse")]
     session_start: Annotated[list[ConfiguredHookMatcherGroup], Field(alias="SessionStart")]
@@ -3015,7 +3021,9 @@ class ContextCompactionResponseItem(BaseModel):
         populate_by_name=True,
     )
     encrypted_content: str | None = None
-    type: Annotated[Literal["context_compaction"], Field(title="ContextCompactionResponseItemType")]
+    type: Annotated[
+        Literal["context_compaction"], Field(title="ContextCompactionResponseItemType")
+    ]
 
 
 class OtherResponseItem(BaseModel):
@@ -3245,7 +3253,9 @@ class ProcessExitedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    method: Annotated[Literal["process/exited"], Field(title="Process/exitedNotificationMethod")]
+    method: Annotated[
+        Literal["process/exited"], Field(title="Process/exitedNotificationMethod")
+    ]
     params: ProcessExitedNotification
 
 
@@ -3960,7 +3970,11 @@ class ContextCompactionThreadItem(BaseModel):
         populate_by_name=True,
     )
     id: str
-    type: Annotated[Literal["contextCompaction"], Field(title="ContextCompactionThreadItemType")]
+    message: str | None = None
+    summary: str | None = None
+    type: Annotated[
+        Literal["contextCompaction"], Field(title="ContextCompactionThreadItemType")
+    ]
 
 
 class ThreadListCwdFilter(RootModel[str | list[str]]):
@@ -3996,6 +4010,27 @@ class ThreadLoadedListResponse(BaseModel):
             description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
         ),
     ] = None
+
+
+class ThreadMcpServerActivateOutcome(Enum):
+    activated = "activated"
+    already_activated = "alreadyActivated"
+    already_implicitly_available = "alreadyImplicitlyAvailable"
+
+
+class ThreadMcpServerActivateParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    server_name: Annotated[str, Field(alias="serverName")]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadMcpServerActivateResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    outcome: ThreadMcpServerActivateOutcome
 
 
 class ThreadMemoryMode(Enum):
@@ -4794,6 +4829,18 @@ class ThreadGoalClearRequest(BaseModel):
     params: ThreadGoalClearParams
 
 
+class ThreadMcpServerActivateRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/mcpServer/activate"],
+        Field(title="Thread/mcpServer/activateRequestMethod"),
+    ]
+    params: ThreadMcpServerActivateParams
+
+
 class ThreadMetadataUpdateRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5255,7 +5302,8 @@ class WindowsSandboxReadinessRequest(BaseModel):
     )
     id: RequestId
     method: Annotated[
-        Literal["windowsSandbox/readiness"], Field(title="WindowsSandbox/readinessRequestMethod")
+        Literal["windowsSandbox/readiness"],
+        Field(title="WindowsSandbox/readinessRequestMethod"),
     ]
     params: None = None
 
@@ -5966,7 +6014,13 @@ class ListMcpServerStatusParams(BaseModel):
         int | None,
         Field(description="Optional page size; defaults to a server-defined value.", ge=0),
     ] = None
-    thread_id: Annotated[str | None, Field(alias="threadId")] = None
+    thread_id: Annotated[
+        str | None,
+        Field(
+            alias="threadId",
+            description="Optional loaded thread whose effective MCP config should be inspected.",
+        ),
+    ] = None
 
 
 class McpResourceReadResponse(BaseModel):
@@ -5980,6 +6034,7 @@ class McpServerStatus(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    allow_implicit_invocation: Annotated[bool, Field(alias="allowImplicitInvocation")]
     auth_status: Annotated[McpAuthStatus, Field(alias="authStatus")]
     name: str
     resource_templates: Annotated[list[ResourceTemplate], Field(alias="resourceTemplates")]
@@ -6014,7 +6069,10 @@ class Model(BaseModel):
     )
     additional_speed_tiers: Annotated[
         list[str] | None,
-        Field(alias="additionalSpeedTiers", description="Deprecated: use `serviceTiers` instead."),
+        Field(
+            alias="additionalSpeedTiers",
+            description="Deprecated: use `serviceTiers` instead.",
+        ),
     ] = []
     availability_nux: Annotated[ModelAvailabilityNux | None, Field(alias="availabilityNux")] = None
     default_reasoning_effort: Annotated[ReasoningEffort, Field(alias="defaultReasoningEffort")]
@@ -6035,7 +6093,9 @@ class Model(BaseModel):
     ]
     is_default: Annotated[bool, Field(alias="isDefault")]
     model: str
-    service_tiers: Annotated[list[ModelServiceTier] | None, Field(alias="serviceTiers")] = []
+    service_tiers: Annotated[
+        list[ModelServiceTier] | None, Field(alias="serviceTiers")
+    ] = []
     supported_reasoning_efforts: Annotated[
         list[ReasoningEffortOption], Field(alias="supportedReasoningEfforts")
     ]
@@ -6294,7 +6354,8 @@ class ProcessOutputDeltaServerNotification(BaseModel):
         populate_by_name=True,
     )
     method: Annotated[
-        Literal["process/outputDelta"], Field(title="Process/outputDeltaNotificationMethod")
+        Literal["process/outputDelta"],
+        Field(title="Process/outputDeltaNotificationMethod"),
     ]
     params: ProcessOutputDeltaNotification
 
@@ -6514,7 +6575,9 @@ class ThreadForkParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    approval_policy: Annotated[AskForApproval | None, Field(alias="approvalPolicy")] = None
+    approval_policy: Annotated[AskForApproval | None, Field(alias="approvalPolicy")] = (
+        None
+    )
     approvals_reviewer: Annotated[
         ApprovalsReviewer | None,
         Field(
@@ -6525,10 +6588,13 @@ class ThreadForkParams(BaseModel):
     base_instructions: Annotated[str | None, Field(alias="baseInstructions")] = None
     config: dict[str, Any] | None = None
     cwd: str | None = None
-    developer_instructions: Annotated[str | None, Field(alias="developerInstructions")] = None
+    developer_instructions: Annotated[
+        str | None, Field(alias="developerInstructions")
+    ] = None
     ephemeral: bool | None = None
     model: Annotated[
-        str | None, Field(description="Configuration overrides for the forked thread, if any.")
+        str | None,
+        Field(description="Configuration overrides for the forked thread, if any."),
     ] = None
     model_provider: Annotated[str | None, Field(alias="modelProvider")] = None
     sandbox: SandboxMode | None = None
@@ -6858,9 +6924,9 @@ class ThreadStartParams(BaseModel):
     sandbox: SandboxMode | None = None
     service_name: Annotated[str | None, Field(alias="serviceName")] = None
     service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
-    session_start_source: Annotated[ThreadStartSource | None, Field(alias="sessionStartSource")] = (
-        None
-    )
+    session_start_source: Annotated[
+        ThreadStartSource | None, Field(alias="sessionStartSource")
+    ] = None
     thread_source: Annotated[
         ThreadSource | None,
         Field(
@@ -7403,7 +7469,9 @@ class PluginShareContext(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    creator_account_user_id: Annotated[str | None, Field(alias="creatorAccountUserId")] = None
+    creator_account_user_id: Annotated[
+        str | None, Field(alias="creatorAccountUserId")
+    ] = None
     creator_name: Annotated[str | None, Field(alias="creatorName")] = None
     discoverability: PluginShareDiscoverability | None = None
     remote_plugin_id: Annotated[str, Field(alias="remotePluginId")]
@@ -7427,7 +7495,9 @@ class PluginShareSaveParams(BaseModel):
     discoverability: PluginShareDiscoverability | None = None
     plugin_path: Annotated[AbsolutePathBuf, Field(alias="pluginPath")]
     remote_plugin_id: Annotated[str | None, Field(alias="remotePluginId")] = None
-    share_targets: Annotated[list[PluginShareTarget] | None, Field(alias="shareTargets")] = None
+    share_targets: Annotated[
+        list[PluginShareTarget] | None, Field(alias="shareTargets")
+    ] = None
 
 
 class PluginSummary(BaseModel):
@@ -7695,7 +7765,8 @@ class Turn(BaseModel):
     ] = None
     id: str
     items: Annotated[
-        list[ThreadItem], Field(description="Thread items currently included in this turn payload.")
+        list[ThreadItem],
+        Field(description="Thread items currently included in this turn payload."),
     ]
     items_view: Annotated[
         TurnItemsView | None,
@@ -7748,7 +7819,9 @@ class PluginShareSaveRequest(BaseModel):
         populate_by_name=True,
     )
     id: RequestId
-    method: Annotated[Literal["plugin/share/save"], Field(title="Plugin/share/saveRequestMethod")]
+    method: Annotated[
+        Literal["plugin/share/save"], Field(title="Plugin/share/saveRequestMethod")
+    ]
     params: PluginShareSaveParams
 
 
@@ -7882,7 +7955,9 @@ class PluginDetail(BaseModel):
     description: str | None = None
     hooks: list[PluginHookSummary]
     marketplace_name: Annotated[str, Field(alias="marketplaceName")]
-    marketplace_path: Annotated[AbsolutePathBuf | None, Field(alias="marketplacePath")] = None
+    marketplace_path: Annotated[
+        AbsolutePathBuf | None, Field(alias="marketplacePath")
+    ] = None
     mcp_servers: Annotated[list[str], Field(alias="mcpServers")]
     skills: list[SkillSummary]
     summary: PluginSummary
@@ -7914,7 +7989,9 @@ class PluginShareListItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    local_plugin_path: Annotated[AbsolutePathBuf | None, Field(alias="localPluginPath")] = None
+    local_plugin_path: Annotated[
+        AbsolutePathBuf | None, Field(alias="localPluginPath")
+    ] = None
     plugin: PluginSummary
 
 
@@ -8062,13 +8139,22 @@ class Thread(BaseModel):
             description="Session id shared by threads that belong to the same session tree.",
         ),
     ]
+    session_id: Annotated[
+        str,
+        Field(
+            alias="sessionId",
+            description="Session id shared by threads that belong to the same session tree.",
+        ),
+    ]
     source: Annotated[
         SessionSource,
         Field(
             description="Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.)."
         ),
     ]
-    status: Annotated[ThreadStatus, Field(description="Current runtime status for the thread.")]
+    status: Annotated[
+        ThreadStatus, Field(description="Current runtime status for the thread.")
+    ]
     thread_source: Annotated[
         ThreadSource | None,
         Field(
@@ -8283,6 +8369,7 @@ class ClientRequest(
         | ThreadGoalSetRequest
         | ThreadGoalGetRequest
         | ThreadGoalClearRequest
+        | ThreadMcpServerActivateRequest
         | ThreadMetadataUpdateRequest
         | ThreadUnarchiveRequest
         | ThreadCompactStartRequest
@@ -8371,6 +8458,7 @@ class ClientRequest(
         | ThreadGoalSetRequest
         | ThreadGoalGetRequest
         | ThreadGoalClearRequest
+        | ThreadMcpServerActivateRequest
         | ThreadMetadataUpdateRequest
         | ThreadUnarchiveRequest
         | ThreadCompactStartRequest
@@ -8461,7 +8549,9 @@ class PluginListResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    featured_plugin_ids: Annotated[list[str] | None, Field(alias="featuredPluginIds")] = []
+    featured_plugin_ids: Annotated[
+        list[str] | None, Field(alias="featuredPluginIds")
+    ] = []
     marketplace_load_errors: Annotated[
         list[MarketplaceLoadErrorInfo] | None, Field(alias="marketplaceLoadErrors")
     ] = []

@@ -128,7 +128,6 @@ pub struct TurnContext {
     pub(crate) exec_command_timeout_ms: u64,
     pub(crate) unified_exec_yield_time_ms: u64,
     pub(crate) unified_exec_write_stdin_yield_time_ms: u64,
-    pub(crate) tools_config: ToolsConfig,
     pub features: ManagedFeatures,
     pub(crate) ghost_snapshot: GhostSnapshotConfig,
     pub(crate) final_output_json_schema: Option<Value>,
@@ -302,7 +301,6 @@ impl TurnContext {
             exec_command_timeout_ms: self.exec_command_timeout_ms,
             unified_exec_yield_time_ms: self.unified_exec_yield_time_ms,
             unified_exec_write_stdin_yield_time_ms: self.unified_exec_write_stdin_yield_time_ms,
-            tools_config,
             features,
             ghost_snapshot: self.ghost_snapshot.clone(),
             final_output_json_schema: self.final_output_json_schema.clone(),
@@ -611,7 +609,6 @@ impl Session {
             unified_exec_yield_time_ms: per_turn_config.unified_exec_yield_time_ms,
             unified_exec_write_stdin_yield_time_ms: per_turn_config
                 .unified_exec_write_stdin_yield_time_ms,
-            tools_config,
             features: per_turn_config.features.clone(),
             ghost_snapshot: per_turn_config.ghost_snapshot.clone(),
             final_output_json_schema: None,

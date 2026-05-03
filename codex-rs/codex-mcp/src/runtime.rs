@@ -139,6 +139,7 @@ mod tests {
             },
             environment_id: environment_id.to_string(),
             enabled: true,
+            allow_implicit_invocation: true,
             required: false,
             supports_parallel_tool_calls: false,
             disabled_reason: None,

@@ -5,6 +5,8 @@ use crate::config::ConstraintError;
 use crate::skills::SkillError;
 use crate::state::ActiveTurn;
 use codex_extension_api::ExtensionDataInit;
+use codex_mcp::EffectiveMcpServer;
+use codex_mcp::ToolInfo as McpToolInfo;
 use codex_protocol::SessionId;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
@@ -14,6 +16,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 
@@ -34,10 +37,20 @@ pub(crate) struct Session {
     /// session.
     pub(super) features: ManagedFeatures,
     pub(super) multi_agent_version: OnceLock<MultiAgentVersion>,
+    /// Effective MCP server visibility captured at the session-start exposure boundary.
+    ///
+    /// MCP reloads may update live server runtime state, but normal turns must not
+    /// rederive the default model-visible MCP contract from later config because
+    /// adding/removing default tool specs would invalidate the cached session prefix.
+    pub(super) session_start_mcp_servers: HashMap<String, EffectiveMcpServer>,
+    pub(super) session_start_mcp_tools: Mutex<HashMap<String, McpToolInfo>>,
+    pub(super) session_start_direct_mcp_servers: StdMutex<Option<HashSet<String>>>,
+    pub(super) session_start_direct_mcp_tools: Mutex<Option<HashMap<String, McpToolInfo>>>,
     pub(super) pending_mcp_server_refresh_config: Mutex<Option<McpServerRefreshConfig>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) input_queue: InputQueue,
+    pub(super) idle_pending_mcp_server_use: Mutex<Vec<String>>,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
     pub(super) next_internal_sub_id: AtomicU64,
@@ -177,7 +190,6 @@ impl SessionConfiguration {
         ThreadConfigSnapshot {
             model: self.collaboration_mode.model().to_string(),
             model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
-            active_profile: self.original_config_do_not_use.active_profile.clone(),
             service_tier: self.service_tier.clone(),
             approval_policy: self.approval_policy.value(),
             approvals_reviewer: self.approvals_reviewer,
@@ -1054,10 +1066,15 @@ impl Session {
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
                 multi_agent_version,
+                session_start_mcp_servers: mcp_servers.clone(),
+                session_start_mcp_tools: Mutex::new(HashMap::new()),
+                session_start_direct_mcp_servers: StdMutex::new(None),
+                session_start_direct_mcp_tools: Mutex::new(None),
                 pending_mcp_server_refresh_config: Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 active_turn: Mutex::new(None),
                 input_queue: InputQueue::new(),
+                idle_pending_mcp_server_use: Mutex::new(Vec::new()),
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
                 next_internal_sub_id: AtomicU64::new(0),
@@ -1172,6 +1189,17 @@ impl Session {
             sess.services
                 .install_mcp_connection_manager(mcp_connection_manager)
                 .await?;
+            {
+                let manager = sess.services.mcp_connection_manager.load_full();
+                let tools = manager
+                    .list_all_tools()
+                    .await
+                    .into_iter()
+                    .map(|tool| (tool.canonical_tool_name().to_string(), tool))
+                    .collect();
+                let mut session_start_mcp_tools = sess.session_start_mcp_tools.lock().await;
+                *session_start_mcp_tools = tools;
+            }
             sess.schedule_startup_prewarm(session_configuration.base_instructions.clone())
                 .await;
             let session_start_source = match &initial_history {
