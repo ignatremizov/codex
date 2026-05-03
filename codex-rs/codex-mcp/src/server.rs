@@ -41,6 +41,12 @@ impl EffectiveMcpServer {
             McpServerLaunch::Configured(config) => config.required,
         }
     }
+
+    pub fn allow_implicit_invocation(&self) -> bool {
+        match &self.launch {
+            McpServerLaunch::Configured(config) => config.allow_implicit_invocation,
+        }
+    }
 }
 
 /// Transport origin retained for metrics and diagnostics after server launch.

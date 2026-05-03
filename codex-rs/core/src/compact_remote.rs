@@ -190,6 +190,8 @@ async fn run_remote_compact_task_inner_impl(
         .await;
     let mut history = sess.clone_history().await;
     let base_instructions = sess.get_base_instructions().await;
+    let explicit_mcp_context =
+        crate::compact::collect_mcp_server_use_context_items(history.raw_items());
     let (rewritten_outputs, estimated_deleted_tokens) =
         trim_function_call_history_to_fit_context_window(
             &mut history,
@@ -222,6 +224,7 @@ async fn run_remote_compact_task_inner_impl(
     let tool_router = built_tools(
         sess.as_ref(),
         turn_context.as_ref(),
+        &prompt_input,
         &CancellationToken::new(),
     )
     .await?;
@@ -287,6 +290,10 @@ async fn run_remote_compact_task_inner_impl(
     )
     .await;
 
+    new_history = crate::compact::insert_mcp_server_use_context_items_at_compaction_boundary(
+        new_history,
+        explicit_mcp_context,
+    );
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage => Some(turn_context.to_turn_context_item()),
@@ -303,12 +310,13 @@ async fn run_remote_compact_task_inner_impl(
     // Install is the semantic boundary where the compact endpoint's output becomes live
     // thread history. Keep it distinct from the later inference request so the reducer can
     // still represent repeated developer/context prefix items exactly as the model saw them.
+    let final_history = sess
+        .replace_compacted_history(new_history, reference_context_item, compacted_item)
+        .await;
     compaction_trace.record_installed(&CompactionCheckpointTracePayload {
         input_history: &trace_input_history,
-        replacement_history: &new_history,
+        replacement_history: &final_history,
     });
-    sess.replace_compacted_history(new_history, reference_context_item, compacted_item)
-        .await;
     sess.recompute_token_usage(turn_context).await;
 
     context_compaction_item.summary = summary.clone();

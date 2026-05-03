@@ -685,15 +685,17 @@ impl App {
                         .on_plugin_enabled_set(cwd, plugin_id, enabled, result);
                 }
             }
-            AppEvent::FetchMcpInventory { detail, thread_id } => {
-                self.fetch_mcp_inventory(app_server, detail, thread_id);
+            AppEvent::FetchMcpInventory { thread_id, detail } => {
+                self.fetch_mcp_inventory(app_server, thread_id, detail);
             }
             AppEvent::McpInventoryLoaded {
+                thread_id,
+                request_seq,
                 result,
                 detail,
-                thread_id,
             } => {
-                self.handle_mcp_inventory_result(result, detail, thread_id);
+                self.handle_mcp_inventory_result(thread_id, request_seq, result, detail)
+                    .await;
             }
             AppEvent::SkillsListLoaded { result } => {
                 self.handle_skills_list_result(

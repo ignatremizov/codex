@@ -403,6 +403,30 @@
             },
             "method": {
               "enum": [
+                "thread/mcpServer/activate"
+              ],
+              "title": "Thread/mcpServer/activateRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadMcpServerActivateParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/mcpServer/activateRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/goal/set"
               ],
               "title": "Thread/goal/setRequestMethod",
@@ -10822,6 +10846,7 @@
             ]
           },
           "threadId": {
+            "description": "Optional loaded thread whose effective MCP config should be inspected.",
             "type": [
               "string",
               "null"
@@ -11550,6 +11575,9 @@
       },
       "McpServerStatus": {
         "properties": {
+          "allowImplicitInvocation": {
+            "type": "boolean"
+          },
           "authStatus": {
             "$ref": "#/definitions/v2/McpAuthStatus"
           },
@@ -11586,6 +11614,7 @@
           }
         },
         "required": [
+          "allowImplicitInvocation",
           "authStatus",
           "name",
           "resourceTemplates",
@@ -17533,6 +17562,44 @@
           "data"
         ],
         "title": "ThreadLoadedListResponse",
+        "type": "object"
+      },
+      "ThreadMcpServerActivateOutcome": {
+        "enum": [
+          "activated",
+          "alreadyActivated",
+          "alreadyImplicitlyAvailable"
+        ],
+        "type": "string"
+      },
+      "ThreadMcpServerActivateParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "serverName": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "serverName",
+          "threadId"
+        ],
+        "title": "ThreadMcpServerActivateParams",
+        "type": "object"
+      },
+      "ThreadMcpServerActivateResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "outcome": {
+            "$ref": "#/definitions/v2/ThreadMcpServerActivateOutcome"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "ThreadMcpServerActivateResponse",
         "type": "object"
       },
       "ThreadMemoryMode": {

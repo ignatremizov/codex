@@ -341,6 +341,36 @@ async fn write_value_supports_custom_mcp_server_default_tool_approval_mode() -> 
 }
 
 #[tokio::test]
+async fn write_value_supports_quoted_key_path_segments() -> Result<()> {
+    let tmp = tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join(CONFIG_TOML_FILE),
+        r#"
+[mcp_servers."work.dot"]
+command = "true"
+"#,
+    )?;
+
+    let service = ConfigManager::without_managed_config_for_tests(tmp.path().to_path_buf());
+    service
+        .write_value(ConfigValueWriteParams {
+            file_path: Some(tmp.path().join(CONFIG_TOML_FILE).display().to_string()),
+            key_path: "mcp_servers.\"work.dot\".default_tools_approval_mode".to_string(),
+            value: serde_json::json!("approve"),
+            merge_strategy: MergeStrategy::Replace,
+            expected_version: None,
+        })
+        .await
+        .expect("quoted MCP server write succeeds");
+
+    let contents = std::fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE))?;
+    assert!(contents.contains("[mcp_servers.\"work.dot\"]"));
+    assert!(contents.contains("default_tools_approval_mode = \"approve\""));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn read_includes_origins_and_layers() {
     let tmp = tempdir().expect("tempdir");
     let user_path = tmp.path().join(CONFIG_TOML_FILE);

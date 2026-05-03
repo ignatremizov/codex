@@ -135,6 +135,14 @@ impl ChatWidget {
         if self.connectors_enabled() {
             self.prefetch_connectors();
         }
+        if let Some(thread_id) = self.thread_id {
+            while let Some(server_name) = self.pending_mcp_server_uses.pop_front() {
+                self.app_event_tx.send(AppEvent::SubmitThreadOp {
+                    thread_id,
+                    op: AppCommand::activate_mcp_server(server_name),
+                });
+            }
+        }
         self.submit_initial_user_message_if_pending();
         if display == SessionConfiguredDisplay::Normal
             && let Some(forked_from_id) = forked_from_id

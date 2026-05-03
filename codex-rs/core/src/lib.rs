@@ -74,6 +74,7 @@ pub(crate) mod plugins;
 pub(crate) mod prompt_debug;
 #[doc(hidden)]
 pub use prompt_debug::build_prompt_input;
+pub(crate) mod unavailable_tool;
 pub(crate) mod mentions {
     pub(crate) use crate::plugins::build_connector_slug_counts;
     pub(crate) use crate::plugins::build_skill_name_counts;
