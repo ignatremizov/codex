@@ -300,6 +300,9 @@ impl ChatWidget {
             SlashCommand::Agent | SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
+            SlashCommand::Approvals => {
+                self.open_permissions_popup();
+            }
             SlashCommand::Permissions => {
                 self.open_permissions_popup();
                 self.defer_input_until_settings_applied();
@@ -1078,6 +1081,7 @@ impl ChatWidget {
             | SlashCommand::Keymap
             | SlashCommand::Agent
             | SlashCommand::MultiAgents
+            | SlashCommand::Approvals
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox
             | SlashCommand::SandboxReadRoot
