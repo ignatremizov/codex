@@ -414,7 +414,7 @@ impl ChatWidget {
             SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
-            SlashCommand::Permissions => {
+            SlashCommand::Approvals | SlashCommand::Permissions => {
                 // Hold queued prompts while the app checks whether it can open the menu.
                 self.set_queue_autosend_suppressed(/*suppressed*/ true);
                 self.permission_popup_pending = true;
@@ -1345,6 +1345,7 @@ impl ChatWidget {
             | SlashCommand::Keymap
             | SlashCommand::Agents
             | SlashCommand::MultiAgents
+            | SlashCommand::Approvals
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox
             | SlashCommand::Experimental
