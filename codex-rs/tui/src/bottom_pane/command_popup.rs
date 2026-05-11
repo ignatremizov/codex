@@ -336,6 +336,26 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
+    fn approval_prefix_distinguishes_permission_settings_from_auto_review() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/approv".to_string());
+        let commands = popup
+            .filtered_items()
+            .iter()
+            .map(|item| format!("/{} - {}", item.command(), item.description()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(commands, @"
+        /approvals - choose what Codex is allowed to do
+        /approve - approve one retry of a recent auto-review denial
+        ");
+        assert_eq!(
+            popup.selected_item(),
+            Some(CommandItem::Builtin(SlashCommand::Approvals))
+        );
+    }
+
+    #[test]
     fn unavailable_side_conversation_command_is_shown_only_when_searched() {
         let mut popup = CommandPopup::new(
             CommandPopupFlags {
