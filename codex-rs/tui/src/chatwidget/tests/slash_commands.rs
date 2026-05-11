@@ -411,6 +411,143 @@ async fn queued_slash_menu_cancel_drains_next_input() {
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
     )
     .await;
+    for cancel_key in [
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    ] {
+        assert_cancelled_queued_menu_drains_next_input(
+            "/approvals",
+            "Update Model Permissions",
+            cancel_key,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn approvals_and_permissions_open_local_settings_and_defer_input() {
+    for command in ["/approvals", "/permissions"] {
+        for explicit_profiles in [false, true] {
+            let (mut chat, mut events, mut ops) =
+                make_chatwidget_manual(/*model_override*/ None).await;
+            chat.thread_id = Some(ThreadId::new());
+            chat.config.explicit_permission_profile_mode = explicit_profiles;
+            // Settings remain available during a turn; aliases must share the busy-state policy.
+            handle_turn_started(&mut chat, "active-turn");
+            chat.bottom_pane
+                .set_composer_text(command.into(), Vec::new(), Vec::new());
+            chat.handle_key_event(KeyCode::Enter.into());
+
+            assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Update Model Permissions"));
+            assert!(chat.input_queue.suppress_queue_autosend);
+            assert_no_submit_op(&mut ops);
+            let profile_requests = std::iter::from_fn(|| events.try_recv().ok())
+                .filter(|event| matches!(event, AppEvent::FetchPermissionProfiles { .. }))
+                .count();
+            assert_eq!(profile_requests, usize::from(explicit_profiles));
+        }
+    }
+}
+
+#[tokio::test]
+async fn approvals_and_permissions_preserve_remote_and_windows_routing() {
+    for command in [SlashCommand::Approvals, SlashCommand::Permissions] {
+        for route in [
+            "remote",
+            "windows-local-unknown",
+            "windows-local-known",
+            "windows-remote",
+        ] {
+            let (mut chat, mut events, mut ops) =
+                make_chatwidget_manual(/*model_override*/ None).await;
+            chat.config.explicit_permission_profile_mode = false;
+            if route == "remote" {
+                let target = crate::AppServerTarget::Remote {
+                    endpoint: crate::resolve_remote_addr("ws://127.0.0.1:4500").unwrap(),
+                };
+                chat.remote_connection =
+                    crate::status::remote_connection::remote_connection_status_value(
+                        &target, /*server_version*/ None,
+                    );
+            } else {
+                chat.windows_sandbox_local_server = true;
+                chat.windows_sandbox_host = if route == "windows-remote" {
+                    crate::app::WindowsSandboxHost::Remote
+                } else {
+                    crate::app::WindowsSandboxHost::Local
+                };
+                if route != "windows-local-known" {
+                    chat.windows_sandbox_config.requirements = None;
+                }
+            }
+
+            chat.dispatch_command(command);
+
+            let routed = matches!(route, "remote" | "windows-local-unknown");
+            let popup_events = std::iter::from_fn(|| events.try_recv().ok())
+                .filter(|event| matches!(event, AppEvent::OpenPermissionsPopup))
+                .count();
+            assert_eq!(popup_events, usize::from(routed), "{route}");
+            assert_eq!(chat.bottom_pane.has_active_view(), !routed, "{route}");
+            // Routed popups open asynchronously in App; do not infer immediate deferral there.
+            if !routed {
+                assert!(chat.input_queue.suppress_queue_autosend, "{route}");
+            }
+            assert_no_submit_op(&mut ops);
+        }
+    }
+}
+
+#[tokio::test]
+async fn approve_exact_completion_keeps_auto_review_dispatch() {
+    let (mut chat, mut events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane
+        .set_composer_text("/approve".into(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyCode::Enter.into());
+
+    assert!(!chat.bottom_pane.has_active_view());
+    assert_no_submit_op(&mut ops);
+    assert!(
+        drain_insert_history(&mut events)
+            .iter()
+            .flatten()
+            .any(|line| {
+                line.to_string()
+                    .contains("No recent auto-review denials in this thread.")
+            })
+    );
+}
+
+#[tokio::test]
+async fn approvals_and_permissions_preserve_restricted_input_guards() {
+    for command in ["/approvals", "/permissions"] {
+        for restriction in ["side", "disconnected", "external-writer"] {
+            let (mut chat, mut events, mut ops) =
+                make_chatwidget_manual(/*model_override*/ None).await;
+            chat.thread_id = Some(ThreadId::new());
+            match restriction {
+                "side" => chat.set_side_conversation_active(/*active*/ true),
+                "disconnected" => chat.pause_for_disconnect(),
+                "external-writer" => chat.show_external_writer_thread(),
+                _ => unreachable!(),
+            }
+            chat.bottom_pane
+                .set_composer_text(command.into(), Vec::new(), Vec::new());
+            chat.handle_key_event(KeyCode::Enter.into());
+
+            assert!(
+                !chat.bottom_pane.has_active_view(),
+                "{command}: {restriction}"
+            );
+            assert_no_submit_op(&mut ops);
+            assert!(
+                !std::iter::from_fn(|| events.try_recv().ok()).any(|event| matches!(
+                    event,
+                    AppEvent::OpenPermissionsPopup | AppEvent::FetchPermissionProfiles { .. }
+                ))
+            );
+        }
+    }
 }
 
 #[tokio::test]

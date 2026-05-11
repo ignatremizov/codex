@@ -14,6 +14,7 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     Ide,
+    Approvals,
     Permissions,
     Keymap,
     Vim,
@@ -140,6 +141,7 @@ impl SlashCommand {
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
             }
+            SlashCommand::Approvals => "choose what Codex is allowed to do",
             SlashCommand::Permissions => "choose what Codex is allowed to do",
             SlashCommand::Keymap => "remap TUI shortcuts",
             SlashCommand::Vim => "toggle Vim mode for the composer",
@@ -264,6 +266,7 @@ impl SlashCommand {
             SlashCommand::Diff
             | SlashCommand::Resume
             | SlashCommand::Model
+            | SlashCommand::Approvals
             | SlashCommand::Permissions
             | SlashCommand::Copy
             | SlashCommand::Raw
@@ -361,6 +364,18 @@ mod tests {
         assert_eq!(
             SlashCommand::from_str("approve"),
             Ok(SlashCommand::AutoReview)
+        );
+    }
+
+    #[test]
+    fn approvals_alias_parses_to_permissions_popup_command() {
+        assert_eq!(
+            ["approvals", "permissions", "approve"].map(SlashCommand::from_str),
+            [
+                Ok(SlashCommand::Approvals),
+                Ok(SlashCommand::Permissions),
+                Ok(SlashCommand::AutoReview),
+            ]
         );
     }
 }

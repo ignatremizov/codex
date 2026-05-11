@@ -370,7 +370,7 @@ impl ChatWidget {
             SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
-            SlashCommand::Permissions => {
+            SlashCommand::Approvals | SlashCommand::Permissions => {
                 if self.remote_connection.is_some()
                     || self.windows_sandbox_local_server
                         && self.windows_sandbox_host != WindowsSandboxHost::Remote
@@ -1253,6 +1253,7 @@ impl ChatWidget {
             | SlashCommand::Keymap
             | SlashCommand::Agents
             | SlashCommand::MultiAgents
+            | SlashCommand::Approvals
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox
             | SlashCommand::Experimental
