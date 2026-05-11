@@ -150,7 +150,16 @@ async fn cancelled_permissions_command_does_not_apply_after_later_modal() {
 }
 
 #[tokio::test]
-async fn permissions_command_preserves_full_access_confirmation() {
+async fn permissions_command_preserves_full_access_confirmation_permissions() {
+    permissions_command_preserves_full_access_confirmation(SlashCommand::Permissions).await
+}
+
+#[tokio::test]
+async fn permissions_command_preserves_full_access_confirmation_approvals() {
+    permissions_command_preserves_full_access_confirmation(SlashCommand::Approvals).await
+}
+
+async fn permissions_command_preserves_full_access_confirmation(command: SlashCommand) {
     let (mut chat, mut events, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.set_feature_enabled(Feature::GuardianApproval, /*enabled*/ true);
@@ -160,7 +169,7 @@ async fn permissions_command_preserves_full_access_confirmation() {
         .push_back(UserMessage::from("follow-up").into());
 
     chat.dispatch_command_with_args(
-        SlashCommand::Permissions,
+        command,
         format!("{BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS} --reviewer=auto_review"),
         Vec::new(),
     );
@@ -196,7 +205,16 @@ async fn permissions_command_preserves_full_access_confirmation() {
 }
 
 #[tokio::test]
-async fn permissions_command_rejects_disabled_profile() {
+async fn permissions_command_rejects_disabled_profile_permissions() {
+    permissions_command_rejects_disabled_profile(SlashCommand::Permissions).await
+}
+
+#[tokio::test]
+async fn permissions_command_rejects_disabled_profile_approvals() {
+    permissions_command_rejects_disabled_profile(SlashCommand::Approvals).await
+}
+
+async fn permissions_command_rejects_disabled_profile(command: SlashCommand) {
     let (mut chat, mut events, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let mut discovery = Discovery::local(&chat.config);
     discovery.requirements = Some(
@@ -211,7 +229,7 @@ async fn permissions_command_rejects_disabled_profile() {
         .push_back(UserMessage::from("follow-up").into());
 
     chat.dispatch_command_with_args(
-        SlashCommand::Permissions,
+        command,
         BUILT_IN_PERMISSION_PROFILE_READ_ONLY.to_string(),
         Vec::new(),
     );
@@ -226,15 +244,20 @@ async fn permissions_command_rejects_disabled_profile() {
 }
 
 #[tokio::test]
-async fn permissions_command_rejects_unknown_profile() {
+async fn permissions_command_rejects_unknown_profile_permissions() {
+    permissions_command_rejects_unknown_profile(SlashCommand::Permissions).await
+}
+
+#[tokio::test]
+async fn permissions_command_rejects_unknown_profile_approvals() {
+    permissions_command_rejects_unknown_profile(SlashCommand::Approvals).await
+}
+
+async fn permissions_command_rejects_unknown_profile(command: SlashCommand) {
     let (mut chat, mut events, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.permission_discovery = Some(Discovery::local(&chat.config));
 
-    chat.dispatch_command_with_args(
-        SlashCommand::Permissions,
-        "unknown-profile".to_string(),
-        Vec::new(),
-    );
+    chat.dispatch_command_with_args(command, "unknown-profile".to_string(), Vec::new());
 
     let cell = assert_matches!(events.try_recv(), Ok(AppEvent::InsertHistoryCell(cell)) => cell);
     insta::assert_snapshot!(
@@ -1905,4 +1928,38 @@ async fn windows_sandbox_unelevated_policy_hides_admin_setup() {
         rx.try_recv(),
         Ok(AppEvent::BeginWindowsSandboxLegacySetup { .. })
     ));
+}
+
+#[tokio::test]
+async fn permission_alias_inline_composer_input_uses_server_catalog() {
+    for command in ["approvals", "permissions"] {
+        let (mut chat, mut events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.thread_id = Some(ThreadId::new());
+        chat.windows_sandbox_local_server = false;
+        chat.permission_discovery = None;
+        chat.bottom_pane.set_composer_text(
+            format!("/{command} {BUILT_IN_PERMISSION_PROFILE_READ_ONLY}"),
+            Vec::new(),
+            Vec::new(),
+        );
+        chat.handle_key_event(KeyCode::Enter.into());
+        let request_id = std::iter::from_fn(|| events.try_recv().ok())
+            .find_map(|event| match event {
+                AppEvent::FetchPermissionProfiles { request_id, .. } => Some(request_id),
+                _ => None,
+            })
+            .expect("inline permission selection must load the server catalog");
+        assert!(chat.inline_permission_profile_selection_pending());
+        assert!(chat.input_queue.suppress_queue_autosend);
+        assert_no_submit_op(&mut ops);
+        chat.on_permission_profiles_loaded(request_id, Ok(Discovery::local(&chat.config)));
+        let selections = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event {
+                AppEvent::SelectPermissionProfile(selection) => Some(selection.profile_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(selections, vec![BUILT_IN_PERMISSION_PROFILE_READ_ONLY]);
+        assert_no_submit_op(&mut ops);
+    }
 }

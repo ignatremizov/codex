@@ -411,7 +411,7 @@ impl ChatWidget {
             SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
-            SlashCommand::Permissions => {
+            SlashCommand::Approvals | SlashCommand::Permissions => {
                 // Hold queued prompts while the app checks whether it can open the menu.
                 self.set_queue_autosend_suppressed(/*suppressed*/ true);
                 self.permission_popup_pending = true;
@@ -814,7 +814,7 @@ impl ChatWidget {
                 self.handle_status_line_command_args(trimmed);
                 self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
             }
-            SlashCommand::Permissions
+            SlashCommand::Approvals | SlashCommand::Permissions
                 if self.windows_sandbox_local_server
                     && self.windows_sandbox_host != WindowsSandboxHost::Remote
                     && self.windows_sandbox_config.requirements.is_none() =>
@@ -824,7 +824,9 @@ impl ChatWidget {
                     profile_id: trimmed.to_string(),
                 });
             }
-            SlashCommand::Permissions => self.select_permission_profile(trimmed),
+            SlashCommand::Approvals | SlashCommand::Permissions => {
+                self.select_permission_profile(trimmed);
+            }
             SlashCommand::Export => {
                 self.set_queue_autosend_suppressed(/*suppressed*/ true);
                 self.app_event_tx.send(AppEvent::ExportTranscript {
@@ -1344,6 +1346,7 @@ impl ChatWidget {
             | SlashCommand::Keymap
             | SlashCommand::Agents
             | SlashCommand::MultiAgents
+            | SlashCommand::Approvals
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox
             | SlashCommand::Experimental
