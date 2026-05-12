@@ -80,6 +80,16 @@ fn project_layers_for_cwd(cwd: &Path) -> Vec<ConfigLayerEntry> {
 }
 
 async fn make_config_for_cwd(codex_home: &TempDir, cwd: PathBuf) -> TestConfig {
+    make_config_for_cwd_with_project_root_markers(codex_home, cwd, None).await
+}
+
+async fn make_config_for_cwd_with_project_root_markers(
+    codex_home: &TempDir,
+    cwd: PathBuf,
+    project_root_markers: Option<Vec<&str>>,
+) -> TestConfig {
+    let project_root_detection_disabled =
+        matches!(&project_root_markers, Some(markers) if markers.is_empty());
     let user_config_path = codex_home.path().join(CONFIG_TOML_FILE);
     let system_config_path = codex_home.path().join("etc/codex/config.toml");
     fs::create_dir_all(
@@ -104,7 +114,25 @@ async fn make_config_for_cwd(codex_home: &TempDir, cwd: PathBuf) -> TestConfig {
             TomlValue::Table(toml::map::Map::new()),
         ),
     ];
-    layers.extend(project_layers_for_cwd(&cwd));
+    if let Some(project_root_markers) = project_root_markers {
+        let mut session_config = toml::map::Map::new();
+        session_config.insert(
+            "project_root_markers".to_string(),
+            TomlValue::Array(
+                project_root_markers
+                    .into_iter()
+                    .map(|marker| TomlValue::String(marker.to_string()))
+                    .collect(),
+            ),
+        );
+        layers.push(ConfigLayerEntry::new(
+            ConfigLayerSource::SessionFlags,
+            TomlValue::Table(session_config),
+        ));
+    }
+    if !project_root_detection_disabled {
+        layers.extend(project_layers_for_cwd(&cwd));
+    }
 
     let cwd_abs = cwd.abs();
     TestConfig {
@@ -1926,7 +1954,9 @@ async fn non_git_repo_skills_search_does_not_walk_parents() {
         "from outer",
     );
 
-    let cfg = make_config_for_cwd(&codex_home, nested_dir).await;
+    let cfg =
+        make_config_for_cwd_with_project_root_markers(&codex_home, nested_dir, Some(Vec::new()))
+            .await;
 
     let outcome = load_skills_for_test(&cfg).await;
     assert!(
@@ -1971,7 +2001,12 @@ async fn loads_skills_from_system_cache_when_present() {
 #[tokio::test]
 async fn skill_roots_include_admin_with_lowest_priority() {
     let codex_home = tempfile::tempdir().expect("tempdir");
-    let cfg = make_config(&codex_home).await;
+    let cfg = make_config_for_cwd_with_project_root_markers(
+        &codex_home,
+        codex_home.path().to_path_buf(),
+        Some(Vec::new()),
+    )
+    .await;
 
     let scopes: Vec<SkillScope> = super::skill_roots(
         Some(Arc::clone(&LOCAL_FS)),
