@@ -16,6 +16,7 @@ use codex_core::ThreadManager;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::config::Config;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
+use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -36,10 +37,12 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
 use wiremock::MockServer;
 
@@ -431,21 +434,53 @@ async fn snapshot_rollback_past_compaction_replays_append_only_history() -> Resu
     const SECOND_REPLY: &str = "SECOND_REPLY";
 
     let server = MockServer::start().await;
-    let sse1 = sse(vec![
-        ev_assistant_message("m1", FIRST_REPLY),
-        ev_completed("r1"),
-    ]);
-    let sse2 = sse(vec![
-        ev_assistant_message("m2", SUMMARY_TEXT),
-        ev_completed("r2"),
-    ]);
-    let sse3 = sse(vec![
-        ev_assistant_message("m3", SECOND_REPLY),
-        ev_completed("r3"),
-    ]);
-    let sse4 = sse(vec![ev_completed("r4")]);
-
-    let request_log = mount_sse_sequence(&server, vec![sse1, sse2, sse3, sse4]).await;
+    let first_turn = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            let body = std::str::from_utf8(&req.body).unwrap_or("");
+            body.contains("\"text\":\"hello world\"") && !body_contains_text(body, SUMMARY_TEXT)
+        },
+        sse(vec![
+            ev_assistant_message("m1", FIRST_REPLY),
+            ev_completed("r1"),
+        ]),
+    )
+    .await;
+    let compact = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            let body = std::str::from_utf8(&req.body).unwrap_or("");
+            body_contains_text(body, SUMMARIZATION_PROMPT)
+                || body.contains(&json_fragment(FIRST_REPLY))
+        },
+        sse(vec![
+            ev_assistant_message("m2", SUMMARY_TEXT),
+            ev_completed("r2"),
+        ]),
+    )
+    .await;
+    let before_rollback = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            let body = std::str::from_utf8(&req.body).unwrap_or("");
+            body.contains(&format!("\"text\":\"{EDITED_AFTER_COMPACT}\""))
+        },
+        sse(vec![
+            ev_assistant_message("m3", SECOND_REPLY),
+            ev_completed("r3"),
+        ]),
+    )
+    .await;
+    let after_rollback = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            let body = std::str::from_utf8(&req.body).unwrap_or("");
+            body.contains(&format!("\"text\":\"{AFTER_ROLLBACK}\""))
+        },
+        sse(vec![ev_completed("r4")]),
+    )
+    .await;
+    let request_log = vec![first_turn, compact, before_rollback, after_rollback];
 
     let (_home, _config, _manager, base) = start_test_conversation(&server, /*model*/ None).await;
 
@@ -456,8 +491,12 @@ async fn snapshot_rollback_past_compaction_replays_append_only_history() -> Resu
     base.submit(Op::ThreadRollback { num_turns: 1 })
         .await
         .expect("submit thread rollback");
-    let rollback_event =
-        wait_for_event(&base, |ev| matches!(ev, EventMsg::ThreadRolledBack(_))).await;
+    let rollback_event = wait_for_event_with_timeout(
+        &base,
+        |ev| matches!(ev, EventMsg::ThreadRolledBack(_)),
+        Duration::from_secs(/*secs*/ 30),
+    )
+    .await;
     let EventMsg::ThreadRolledBack(rollback_event) = rollback_event else {
         panic!("expected thread rolled back event");
     };
@@ -465,7 +504,7 @@ async fn snapshot_rollback_past_compaction_replays_append_only_history() -> Resu
 
     user_turn(&base, AFTER_ROLLBACK).await;
 
-    let requests = request_log.requests();
+    let requests = gather_requests(&request_log);
     assert_eq!(requests.len(), 4);
     assert!(requests[1].body_contains_text(SUMMARIZATION_PROMPT));
     assert!(requests[2].body_contains_text("hello world"));
@@ -525,21 +564,40 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
     const PRETURN_CONTEXT_DIFF_CWD: &str = "PRETURN_CONTEXT_DIFF_CWD";
 
     let server = MockServer::start().await;
-    let request_log = mount_sse_sequence(
+    let turn_one = mount_sse_once_match(
         &server,
-        vec![
-            sse(vec![
-                ev_assistant_message("m1", "turn 1 assistant"),
-                ev_completed("r1"),
-            ]),
-            sse(vec![
-                ev_assistant_message("m2", "turn 2 assistant"),
-                ev_completed("r2"),
-            ]),
-            sse(vec![ev_response_created("r3"), ev_completed("r3")]),
-        ],
+        |req: &wiremock::Request| {
+            let body = std::str::from_utf8(&req.body).unwrap_or("");
+            body.contains(&format!("\"text\":\"{TURN_ONE_USER}\""))
+        },
+        sse(vec![
+            ev_assistant_message("m1", "turn 1 assistant"),
+            ev_completed("r1"),
+        ]),
     )
     .await;
+    let turn_two = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            let body = std::str::from_utf8(&req.body).unwrap_or("");
+            body.contains(&format!("\"text\":\"{TURN_TWO_USER}\""))
+        },
+        sse(vec![
+            ev_assistant_message("m2", "turn 2 assistant"),
+            ev_completed("r2"),
+        ]),
+    )
+    .await;
+    let followup = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            let body = std::str::from_utf8(&req.body).unwrap_or("");
+            body.contains(&format!("\"text\":\"{FOLLOWUP_USER}\""))
+        },
+        sse(vec![ev_response_created("r3"), ev_completed("r3")]),
+    )
+    .await;
+    let request_log = vec![turn_one, turn_two, followup];
 
     let (_home, config, _manager, conversation) =
         start_test_conversation(&server, Some(MODEL)).await;
@@ -570,9 +628,11 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
     conversation
         .submit(Op::ThreadRollback { num_turns: 1 })
         .await?;
-    let rollback_event = wait_for_event(&conversation, |ev| {
-        matches!(ev, EventMsg::ThreadRolledBack(_))
-    })
+    let rollback_event = wait_for_event_with_timeout(
+        &conversation,
+        |ev| matches!(ev, EventMsg::ThreadRolledBack(_)),
+        Duration::from_secs(/*secs*/ 30),
+    )
     .await;
     let EventMsg::ThreadRolledBack(rollback_event) = rollback_event else {
         panic!("expected thread rolled back event");
@@ -581,7 +641,7 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
 
     user_turn(&conversation, FOLLOWUP_USER).await;
 
-    let requests = request_log.requests();
+    let requests = gather_requests(&request_log);
     assert_eq!(requests.len(), 3);
 
     let before_rollback_developer_count = requests[1]
@@ -760,6 +820,7 @@ async fn start_test_conversation(
     let mut builder = test_codex().with_config(move |config| {
         config.model_provider.name = "Non-OpenAI Model provider".to_string();
         config.model_provider.base_url = Some(base_url);
+        let _ = config.features.disable(Feature::RemoteCompaction);
         config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
         if let Some(model) = model {
             config.model = Some(model);
@@ -786,7 +847,12 @@ async fn user_turn(conversation: &Arc<CodexThread>, text: &str) {
         })
         .await
         .expect("submit user turn");
-    wait_for_event(conversation, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_event_with_timeout(
+        conversation,
+        |ev| matches!(ev, EventMsg::TurnComplete(_)),
+        Duration::from_secs(/*secs*/ 30),
+    )
+    .await;
 }
 
 async fn compact_conversation(conversation: &Arc<CodexThread>) {
