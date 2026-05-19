@@ -903,6 +903,10 @@ async fn apply_patch_cli_preserves_existing_hard_link_outside_workspace() -> Res
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_patch_cli_rejects_move_path_traversal_outside_workspace() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "remote executor bwrap setup can fail on protected metadata mount targets before this move-traversal assertion runs"
+    );
 
     let harness = apply_patch_harness().await?;
 
