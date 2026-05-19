@@ -7791,7 +7791,6 @@ async fn legacy_profile_selection_is_rejected() -> std::io::Result<()> {
             ..Default::default()
         },
         fixture.codex_home(),
-    )
     .await
     .expect_err("legacy profile selection should be rejected");
 
