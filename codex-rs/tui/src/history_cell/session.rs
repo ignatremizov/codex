@@ -152,7 +152,7 @@ pub(crate) fn new_session_info(
         session.reasoning_effort,
         show_fast_status,
         config.cwd.to_path_buf(),
-        CODEX_CLI_VERSION,
+        crate::version::CODEX_CLI_VERSION_FOR_DISPLAY,
     )
     .with_yolo_mode(has_yolo_permissions(
         session.approval_policy,

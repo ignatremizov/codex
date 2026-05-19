@@ -577,7 +577,9 @@ async fn session_info_availability_nux_tooltip_snapshot() {
         /*show_fast_status*/ false,
     );
 
-    let rendered = render_transcript(&cell).join("\n");
+    let rendered = render_transcript(&cell)
+        .join("\n")
+        .replace(crate::version::CODEX_CLI_VERSION_FOR_DISPLAY, "[[ver]]");
     insta::assert_snapshot!(rendered);
 }
 

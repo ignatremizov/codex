@@ -148,7 +148,10 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
                 rebuilt.push_str(suffix);
                 rebuilt
             } else {
-                line
+                line.replace(
+                    &format!("v{}", crate::version::CODEX_CLI_VERSION_FOR_DISPLAY),
+                    "v[[ver]]",
+                )
             }
         })
         .collect()
