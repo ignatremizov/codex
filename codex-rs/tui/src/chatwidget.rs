@@ -298,6 +298,7 @@ use crate::collaboration_modes;
 use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
+use crate::exec_cell::OutputPreviewLineLimits;
 use crate::exec_cell::new_active_exec_command;
 use crate::exec_command::split_command_string;
 use crate::exec_command::strip_bash_lc_and_escape;
@@ -1489,7 +1490,10 @@ impl ChatWidget {
                 recent_chunks: process.recent_chunks.clone(),
             })
             .collect();
-        self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
+        self.add_to_history(history_cell::new_unified_exec_processes_output_with_limit(
+            processes,
+            self.config.tui_command_output_preview_lines,
+        ));
     }
 
     fn clean_background_terminals(&mut self) {

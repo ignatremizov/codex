@@ -225,6 +225,8 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         tui_terminal_title: None,
         tui_theme: None,
         tui_raw_output_mode: false,
+        tui_command_output_preview_lines: 30,
+        tui_user_shell_output_preview_lines: 50,
         tui_pet: None,
         tui_pet_anchor: TuiPetAnchor::Composer,
         show_compact_summary: true,
