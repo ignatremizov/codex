@@ -741,6 +741,55 @@ async fn unified_exec_empty_poll_for_finished_process_does_not_show_waiting_stat
 }
 
 #[tokio::test]
+async fn ps_output_zero_preview_lines_retains_all_background_terminal_lines() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_command_output_preview_lines = 0;
+    chat.unified_exec_processes.push(UnifiedExecProcessSummary {
+        key: "proc-1".to_string(),
+        call_id: "call-1".to_string(),
+        command_display: "tail -f app.log".to_string(),
+        recent_chunks: Vec::new(),
+    });
+
+    for idx in 1..=35 {
+        chat.track_unified_exec_output_chunk("call-1", format!("line {idx:02}\n").as_bytes());
+    }
+
+    assert_eq!(
+        chat.unified_exec_processes[0].recent_chunks,
+        (1..=35)
+            .map(|idx| format!("line {idx:02}"))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn ps_output_retains_configured_background_terminal_preview_lines() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_command_output_preview_lines = 4;
+    chat.unified_exec_processes.push(UnifiedExecProcessSummary {
+        key: "proc-1".to_string(),
+        call_id: "call-1".to_string(),
+        command_display: "tail -f app.log".to_string(),
+        recent_chunks: Vec::new(),
+    });
+
+    for line in ["one\n", "two\n", "three\n", "four\n", "five\n"] {
+        chat.track_unified_exec_output_chunk("call-1", line.as_bytes());
+    }
+
+    assert_eq!(
+        chat.unified_exec_processes[0].recent_chunks,
+        vec![
+            "two".to_string(),
+            "three".to_string(),
+            "four".to_string(),
+            "five".to_string(),
+        ],
+    );
+}
+
+#[tokio::test]
 async fn unified_exec_waiting_multiple_empty_snapshots() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();
