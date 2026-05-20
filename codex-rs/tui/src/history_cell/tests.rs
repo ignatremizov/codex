@@ -1885,6 +1885,54 @@ fn stderr_tail_more_than_five_lines_snapshot() {
 }
 
 #[test]
+fn command_output_preview_lines_controls_inline_history_rows() {
+    let call_id = "c_output_preview".to_string();
+    let mut cell = ExecCell::new(
+        ExecCall {
+            call_id: call_id.clone(),
+            command: vec!["bash".into(), "-lc".into(), "seq 1 8".into()],
+            parsed: Vec::new(),
+            output: None,
+            source: ExecCommandSource::Agent,
+            start_time: Some(Instant::now()),
+            duration: None,
+            interaction_input: None,
+        },
+        /*animations_enabled*/ true,
+    )
+    .with_output_preview_line_limits(crate::exec_cell::OutputPreviewLineLimits {
+        command: 3,
+        user_shell: codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
+    });
+    cell.complete_call(
+        &call_id,
+        CommandOutput {
+            exit_code: 0,
+            formatted_output: String::new(),
+            aggregated_output: (1..=8)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        },
+        Duration::from_millis(1),
+    );
+
+    let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
+    let output_rows = rendered
+        .lines()
+        .filter(|line| line.starts_with("  └ ") || line.starts_with("    "))
+        .count();
+    assert!(
+        output_rows <= 3,
+        "expected at most 3 output preview rows, got {output_rows}:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("ctrl + t to view transcript"),
+        "expected inline output to honor configured preview cap, got:\n{rendered}"
+    );
+}
+
+#[test]
 fn ran_cell_multiline_with_stderr_snapshot() {
     // Build an exec cell that completes (so it renders as "Ran") with a
     // command long enough that it must render on its own line under the

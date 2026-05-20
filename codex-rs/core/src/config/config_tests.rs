@@ -579,6 +579,10 @@ fn config_toml_deserializes_model_availability_nux() {
             show_tooltips: true,
             vim_mode_default: false,
             raw_output_mode: false,
+            command_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+            user_shell_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
             show_compact_summary: true,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
@@ -857,6 +861,27 @@ async fn runtime_config_uses_tui_raw_output_mode() {
     .expect("load config");
 
     assert!(cfg.tui_raw_output_mode);
+}
+
+#[tokio::test]
+async fn runtime_config_uses_tui_command_output_preview_lines() {
+    let toml = r#"
+        [tui]
+        command_output_preview_lines = 42
+        user_shell_output_preview_lines = 77
+    "#;
+    let cfg_toml =
+        toml::from_str::<ConfigToml>(toml).expect("deserialize output preview line caps");
+    let cfg = Config::load_from_base_config_with_overrides(
+        cfg_toml,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(cfg.tui_command_output_preview_lines, 42);
+    assert_eq!(cfg.tui_user_shell_output_preview_lines, 77);
 }
 
 #[test]
@@ -2966,6 +2991,10 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             show_tooltips: true,
             vim_mode_default: false,
             raw_output_mode: false,
+            command_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+            user_shell_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
             show_compact_summary: true,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
@@ -7980,6 +8009,10 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             show_tooltips: true,
             tui_vim_mode_default: false,
             tui_raw_output_mode: false,
+            tui_command_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+            tui_user_shell_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
             tui_keymap: TuiKeymap::default(),
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
             terminal_resize_reflow: TerminalResizeReflowConfig::default(),
@@ -8444,6 +8477,10 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         show_tooltips: true,
         tui_vim_mode_default: false,
         tui_raw_output_mode: false,
+        tui_command_output_preview_lines:
+            codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+        tui_user_shell_output_preview_lines:
+            codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
         tui_keymap: TuiKeymap::default(),
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         terminal_resize_reflow: TerminalResizeReflowConfig::default(),
@@ -8622,6 +8659,10 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         show_tooltips: true,
         tui_vim_mode_default: false,
         tui_raw_output_mode: false,
+        tui_command_output_preview_lines:
+            codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+        tui_user_shell_output_preview_lines:
+            codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
         tui_keymap: TuiKeymap::default(),
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         terminal_resize_reflow: TerminalResizeReflowConfig::default(),
@@ -8785,6 +8826,10 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         show_tooltips: true,
         tui_vim_mode_default: false,
         tui_raw_output_mode: false,
+        tui_command_output_preview_lines:
+            codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+        tui_user_shell_output_preview_lines:
+            codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
         tui_keymap: TuiKeymap::default(),
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         terminal_resize_reflow: TerminalResizeReflowConfig::default(),

@@ -3,6 +3,7 @@ use std::time::Instant;
 use super::model::CommandOutput;
 use super::model::ExecCall;
 use super::model::ExecCell;
+use super::model::OutputPreviewLineLimits;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::plain_lines;
@@ -30,7 +31,6 @@ use textwrap::WordSplitter;
 use unicode_width::UnicodeWidthStr;
 
 pub(crate) const TOOL_CALL_MAX_LINES: usize = 5;
-const USER_SHELL_TOOL_CALL_MAX_LINES: usize = 50;
 const MAX_INTERACTION_PREVIEW_CHARS: usize = 80;
 const TRANSCRIPT_HINT: &str = "ctrl + t to view transcript";
 
@@ -48,6 +48,7 @@ pub(crate) fn new_active_exec_command(
     source: ExecCommandSource,
     interaction_input: Option<String>,
     animations_enabled: bool,
+    output_preview_line_limits: OutputPreviewLineLimits,
 ) -> ExecCell {
     ExecCell::new(
         ExecCall {
@@ -62,6 +63,7 @@ pub(crate) fn new_active_exec_command(
         },
         animations_enabled,
     )
+    .with_output_preview_line_limits(output_preview_line_limits)
 }
 
 fn format_unified_exec_interaction(command: &[String], input: Option<&str>) -> String {
@@ -440,11 +442,7 @@ impl ExecCell {
         }
 
         if let Some(output) = call.output.as_ref() {
-            let line_limit = if call.is_user_shell_command() {
-                USER_SHELL_TOOL_CALL_MAX_LINES
-            } else {
-                TOOL_CALL_MAX_LINES
-            };
+            let line_limit = self.output_preview_lines(call.source);
             let raw_output = output_lines(
                 Some(output),
                 OutputLinesParams {
@@ -454,11 +452,7 @@ impl ExecCell {
                     include_prefix: false,
                 },
             );
-            let display_limit = if call.is_user_shell_command() {
-                USER_SHELL_TOOL_CALL_MAX_LINES
-            } else {
-                layout.output_max_lines
-            };
+            let display_limit = self.output_preview_lines(call.source);
 
             if raw_output.lines.is_empty() {
                 if !call.is_unified_exec_interaction() {
@@ -684,7 +678,6 @@ struct ExecDisplayLayout {
     command_continuation: PrefixedBlock,
     command_continuation_max_lines: usize,
     output_block: PrefixedBlock,
-    output_max_lines: usize,
 }
 
 impl ExecDisplayLayout {
@@ -692,13 +685,11 @@ impl ExecDisplayLayout {
         command_continuation: PrefixedBlock,
         command_continuation_max_lines: usize,
         output_block: PrefixedBlock,
-        output_max_lines: usize,
     ) -> Self {
         Self {
             command_continuation,
             command_continuation_max_lines,
             output_block,
-            output_max_lines,
         }
     }
 }
@@ -707,7 +698,6 @@ const EXEC_DISPLAY_LAYOUT: ExecDisplayLayout = ExecDisplayLayout::new(
     PrefixedBlock::new("  │ ", "  │ "),
     /*command_continuation_max_lines*/ 2,
     PrefixedBlock::new("  └ ", "    "),
-    /*output_max_lines*/ 5,
 );
 
 #[cfg(test)]
@@ -715,6 +705,8 @@ mod tests {
     use super::*;
     use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
     use pretty_assertions::assert_eq;
+
+    const USER_SHELL_TOOL_CALL_MAX_LINES: usize = 50;
 
     fn render_line_text(line: &Line<'static>) -> String {
         line.spans
