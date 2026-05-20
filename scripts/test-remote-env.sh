@@ -62,7 +62,7 @@ setup_remote_env() {
     -v "${REPO_ROOT}:${REPO_ROOT}:ro" \
     -v /tmp:/tmp \
     ubuntu:24.04 sleep infinity >/dev/null
-  if ! docker exec "${container_name}" sh -lc "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash python3 zsh bubblewrap"; then
+  if ! docker exec "${container_name}" sh -lc "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash python3 zsh bubblewrap libasound2t64"; then
     docker rm -f "${container_name}" >/dev/null 2>&1 || true
     return 1
   fi
@@ -78,7 +78,10 @@ setup_remote_env() {
       docker exec "${container_name}" sh -lc \
         "rm -f ${remote_exec_server_stdout_path}; nohup ${remote_codex_path} exec-server --listen ws://0.0.0.0:${remote_exec_server_port} > ${remote_exec_server_stdout_path} 2>&1 & echo \$!"
     )"
-    wait_for_remote_exec_server "${container_name}" "${remote_exec_server_pid}" "${remote_exec_server_stdout_path}"
+    if ! wait_for_remote_exec_server "${container_name}" "${remote_exec_server_pid}" "${remote_exec_server_stdout_path}"; then
+      docker rm -f "${container_name}" >/dev/null 2>&1 || true
+      return 1
+    fi
     export CODEX_TEST_REMOTE_EXEC_SERVER_PID="${remote_exec_server_pid}"
     export CODEX_TEST_REMOTE_EXEC_SERVER_URL="ws://127.0.0.1:${remote_exec_server_port}"
     export CODEX_TEST_REMOTE_CODEX_PATH="${remote_codex_path}"

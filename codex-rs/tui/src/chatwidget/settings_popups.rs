@@ -122,7 +122,6 @@ impl ChatWidget {
         });
     }
 
-    #[cfg(not(target_os = "linux"))]
     pub(crate) fn open_realtime_audio_device_selection(&mut self, kind: RealtimeAudioDeviceKind) {
         match list_realtime_audio_device_names(kind) {
             Ok(device_names) => {
@@ -137,12 +136,6 @@ impl ChatWidget {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) fn open_realtime_audio_device_selection(&mut self, kind: RealtimeAudioDeviceKind) {
-        let _ = kind;
-    }
-
-    #[cfg(not(target_os = "linux"))]
     pub(super) fn open_realtime_audio_device_selection_with_names(
         &mut self,
         kind: RealtimeAudioDeviceKind,
