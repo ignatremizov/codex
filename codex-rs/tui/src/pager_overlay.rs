@@ -1220,6 +1220,10 @@ mod tests {
             ExecCommandSource::Agent,
             /*interaction_input*/ None,
             /*animations_enabled*/ true,
+            crate::exec_cell::OutputPreviewLineLimits {
+                command: codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+                user_shell: codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
+            },
         );
         exec_cell.complete_call(
             "exec-1",
