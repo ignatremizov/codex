@@ -101,7 +101,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::error;
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use url::Url;
 
@@ -302,19 +301,11 @@ impl Renderable for Box<dyn HistoryCell> {
         let hyperlink_lines = self.display_hyperlink_lines(area.width);
         let lines = visible_lines(hyperlink_lines.clone());
         let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-        let y = if area.height == 0 {
-            0
-        } else {
-            let overflow = paragraph
-                .line_count(area.width)
-                .saturating_sub(usize::from(area.height));
-            u16::try_from(overflow).unwrap_or(u16::MAX)
-        };
         // Active-cell content can reflow dramatically during resize/stream updates. Clear the
         // entire draw area first so stale glyphs from previous frames never linger.
         Clear.render(area, buf);
-        paragraph.scroll((y, 0)).render(area, buf);
-        mark_buffer_hyperlinks(buf, area, &hyperlink_lines, usize::from(y));
+        paragraph.render(area, buf);
+        mark_buffer_hyperlinks(buf, area, &hyperlink_lines, /*scroll_offset*/ 0);
     }
     fn desired_height(&self, width: u16) -> u16 {
         HistoryCell::desired_height(self.as_ref(), width)
