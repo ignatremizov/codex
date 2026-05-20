@@ -194,18 +194,6 @@ back to these environment variables.
 
 ## TUI
 
-Configure main-transcript multi-agent previews:
-
-```toml
-[tui]
-agent_prompt_preview_lines = 50
-agent_response_preview_lines = 0
-```
-
-Set either value to `0` to show all retained output for that category in the main TUI. Agent prompt
-previews apply to rendered rows from subagent spawn/input prompts, and agent response previews apply
-to rendered rows from subagent output shown after a multi-agent wait completes.
-
 Hide the compacted prompt output after `/compact`:
 
 ```toml
@@ -214,6 +202,20 @@ show_compact_summary = false
 ```
 
 When unset, the transcript includes the compacted prompt when available (otherwise just the summary).
+
+Configure main-transcript command output previews:
+
+```toml
+[tui]
+command_output_preview_lines = 30
+user_shell_output_preview_lines = 50
+agent_prompt_preview_lines = 50
+agent_response_preview_lines = 0
+```
+
+Set any value to `0` to show all retained output for that category in the main TUI. Agent prompt
+previews apply to rendered rows from subagent spawn/input prompts, and agent response previews apply
+to rendered rows from subagent output shown after a multi-agent wait completes.
 
 ## Notices
 
