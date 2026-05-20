@@ -19,22 +19,6 @@ use textwrap::WordSplitter;
 const PREVIEW_LINES: usize = 3;
 const MAX_PREVIEW_LINE_BYTES: usize = 16 * 1024;
 
-/// Render a bounded preview with source ranges retained for transcript selection and copying.
-pub(crate) fn tool_output_hyperlink_preview<'a>(
-    lines: impl IntoIterator<Item = Line<'a>>,
-    width: usize,
-    total_lines: usize,
-) -> Vec<HyperlinkLine> {
-    let mut preview = ToolOutputPreview::new(width, /*omitted*/ 0);
-    let mut consumed = 0;
-    for line in lines.into_iter().take(PREVIEW_LINES) {
-        preview.push_line(line);
-        consumed += 1;
-    }
-    preview.omitted += total_lines.saturating_sub(consumed);
-    preview.finish_hyperlink_lines()
-}
-
 pub(crate) struct ToolOutputPreview {
     lines: Vec<HyperlinkLine>,
     width: usize,
