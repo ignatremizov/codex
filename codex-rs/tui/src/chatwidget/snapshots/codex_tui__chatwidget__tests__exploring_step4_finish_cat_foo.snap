@@ -2,6 +2,7 @@
 source: tui/src/chatwidget/tests.rs
 expression: active_blob(&chat)
 ---
-• Explored
-  └ List ls -la
-    Read foo.txt
+• Ran ls -la
+  └ (no output)
+• Ran cat foo.txt
+  └ hello from foo
