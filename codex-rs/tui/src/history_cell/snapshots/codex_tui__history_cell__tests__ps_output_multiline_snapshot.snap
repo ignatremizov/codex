@@ -6,7 +6,8 @@ expression: rendered
 
 Background terminals
 
-  • echo hello [...]
+  • echo hello
+    and then some extra text
     ↳ hello
       done
   • rg "foo" src

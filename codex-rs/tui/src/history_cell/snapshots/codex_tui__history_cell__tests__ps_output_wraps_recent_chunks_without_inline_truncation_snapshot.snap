@@ -1,0 +1,12 @@
+---
+source: tui/src/history_cell.rs
+expression: rendered
+---
+/ps
+
+Background terminals
+
+  • tail -f app.log
+    ↳ alpha beta gamma delta
+      epsilon zeta eta theta
+      iota kappa lambda omega

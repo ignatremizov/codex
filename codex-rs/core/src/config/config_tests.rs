@@ -1229,6 +1229,10 @@ fn config_toml_deserializes_model_availability_nux() {
             disable_paste_burst: None,
             vim_mode_default: false,
             raw_output_mode: false,
+            command_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+            user_shell_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
             show_compact_summary: true,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
@@ -1434,6 +1438,27 @@ async fn tui_auto_recap_defaults_and_cli_overrides() -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn runtime_config_uses_tui_command_output_preview_lines() {
+    let toml = r#"
+        [tui]
+        command_output_preview_lines = 42
+        user_shell_output_preview_lines = 77
+    "#;
+    let cfg_toml =
+        toml::from_str::<ConfigToml>(toml).expect("deserialize output preview line caps");
+    let cfg = Config::load_from_base_config_with_overrides(
+        cfg_toml,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(cfg.tui_command_output_preview_lines, 42);
+    assert_eq!(cfg.tui_user_shell_output_preview_lines, 77);
 }
 
 #[test]
@@ -4314,6 +4339,10 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             disable_paste_burst: None,
             vim_mode_default: false,
             raw_output_mode: false,
+            command_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+            user_shell_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
             show_compact_summary: true,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
@@ -10005,6 +10034,7 @@ async fn fast_default_opt_out_notice_config_is_respected() -> std::io::Result<()
 }
 
 #[tokio::test]
+
 async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() -> anyhow::Result<()>
 {
     let fixture = create_test_fixture()?;
