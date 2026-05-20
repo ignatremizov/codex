@@ -2,11 +2,15 @@
 source: tui/src/chatwidget/tests/exec_flow.rs
 expression: active_blob(&chat)
 ---
-• Explored
-  └ Read first.txt
-    Read missing.txt (exit 1)
-    Read later.txt
-    Search absent in . (exit 1)
-    Search text in missing.txt (exit 2)
-    Read existing.txt
-    Search absent in . (command exit 1)
+• Ran cat first.txt
+  └ (no output)
+• Ran cat missing.txt (exit 1)
+  └ (no output)
+• Ran cat later.txt
+  └ (no output)
+• Ran rg absent . (exit 1)
+  └ (no output)
+• Ran rg text missing.txt (exit 2)
+  └ (no output)
+• Ran cat existing.txt && rg absent . (command exit 1)
+  └ (no output)

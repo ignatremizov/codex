@@ -3,12 +3,13 @@
 use std::collections::HashSet;
 
 use super::AppServerSession;
+use crate::exec_cell::OutputPreviewLineLimits;
 use crate::history_cell::HistoryRenderMode;
 use crate::legacy_core::config::Config;
 use crate::local_settings::LocalSettings;
 use crate::resize_reflow_cap::resize_reflow_max_rows;
 use crate::thread_transcript::RawReasoningVisibility;
-use crate::thread_transcript::thread_items_to_transcript_cells;
+use crate::thread_transcript::thread_items_to_transcript_cells_with_output_preview_line_limits;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
@@ -423,12 +424,16 @@ fn rendered_history_rows(
     } else {
         HistoryRenderMode::Rich
     };
-    thread_items_to_transcript_cells(
+    thread_items_to_transcript_cells_with_output_preview_line_limits(
         Some(thread_id),
         &thread.cwd,
         items,
         visibility,
         Some(config),
+        OutputPreviewLineLimits {
+            command: local_settings.tui.command_output_preview_lines,
+            user_shell: local_settings.tui.user_shell_output_preview_lines,
+        },
     )
     .into_iter()
     .fold(rendered_rows, |rows, cell| {

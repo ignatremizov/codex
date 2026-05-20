@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::HistoryHydrationScope;
+use crate::exec_cell::OutputPreviewLineLimits;
 use crate::git_action_directives::parse_assistant_markdown;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::HistoryCell;
@@ -128,6 +129,31 @@ pub(crate) fn thread_items_to_transcript_cells(
     raw_reasoning_visibility: RawReasoningVisibility,
     config: Option<&Config>,
 ) -> TranscriptCells {
+    let output_preview_line_limits =
+        config.map_or_else(OutputPreviewLineLimits::default, |config| {
+            OutputPreviewLineLimits {
+                command: config.tui_command_output_preview_lines,
+                user_shell: config.tui_user_shell_output_preview_lines,
+            }
+        });
+    thread_items_to_transcript_cells_with_output_preview_line_limits(
+        thread_id,
+        cwd,
+        items,
+        raw_reasoning_visibility,
+        config,
+        output_preview_line_limits,
+    )
+}
+
+pub(crate) fn thread_items_to_transcript_cells_with_output_preview_line_limits(
+    thread_id: Option<ThreadId>,
+    cwd: &AbsolutePathBuf,
+    items: impl IntoIterator<Item = ThreadItem>,
+    raw_reasoning_visibility: RawReasoningVisibility,
+    config: Option<&Config>,
+    output_preview_line_limits: OutputPreviewLineLimits,
+) -> TranscriptCells {
     let inline_visualization_context = config.and_then(|config| {
         thread_id.and_then(|thread_id| InlineVisualizationContext::from_config(config, thread_id))
     });
@@ -144,6 +170,7 @@ pub(crate) fn thread_items_to_transcript_cells(
                 raw_reasoning_visibility,
                 inline_visualization_context.clone(),
                 show_compact_summary,
+                output_preview_line_limits,
             ) {
                 match group {
                     PendingActivity::Computer(group) => group.group.push_detail(cell),
@@ -186,7 +213,7 @@ pub(crate) fn thread_items_to_transcript_cells(
                     PendingActivity::flush(&mut pending, &mut cells);
                 }
                 if let Some(command) = tools::CommandHistory::from_item(item) {
-                    let newer = command.into_cell();
+                    let newer = command.into_cell(output_preview_line_limits);
                     if let Some(PendingActivity::Exploration(group)) = &mut pending {
                         if let Err(newer) = group.append_completed(newer) {
                             PendingActivity::flush(&mut pending, &mut cells);
@@ -209,6 +236,7 @@ pub(crate) fn thread_items_to_transcript_cells(
                     raw_reasoning_visibility,
                     inline_visualization_context.clone(),
                     show_compact_summary,
+                    output_preview_line_limits,
                 );
                 if !projected.is_empty() {
                     PendingActivity::flush(&mut pending, &mut cells);
@@ -228,6 +256,7 @@ fn item_to_cells(
     raw_reasoning_visibility: RawReasoningVisibility,
     inline_visualization_context: Option<InlineVisualizationContext>,
     show_compact_summary: bool,
+    output_preview_line_limits: OutputPreviewLineLimits,
 ) -> TranscriptCells {
     let mut cells: TranscriptCells = Vec::new();
     match item {
@@ -335,7 +364,7 @@ fn item_to_cells(
         }
         item @ ThreadItem::CommandExecution { .. } => {
             if let Some(command) = tools::CommandHistory::from_item(item) {
-                cells.push(Arc::new(command.into_cell()));
+                cells.push(Arc::new(command.into_cell(output_preview_line_limits)));
             }
         }
         other => cells.extend(other_items::cells(other, cwd, show_compact_summary)),

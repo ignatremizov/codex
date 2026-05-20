@@ -177,6 +177,12 @@ Completed compaction records also expose the skill names in the latest model-vis
 
 Remote V2 rollout checkpoints retain the service's reported output-token count as optional `compaction_summary_tokens` metadata. This is the compaction response's usage, not the display decoder's usage or an estimate of the visible text. Older checkpoints, local compaction, and responses without usage leave it absent; it does not affect model context.
 
+## Command output previews
+
+`tui.command_output_preview_lines` limits inline agent/tool command output and `/ps` previews to 30 screen rows by default. `tui.user_shell_output_preview_lines` independently limits user-shell output to 50 rows. Truncated previews retain a head and tail where space permits, with an omission row; command text is not shortened.
+
+Set either value to `0` to display all retained output. These are client-local presentation settings: they do not change command execution, captured output, or the existing bounded live-output storage. The detailed transcript retains all available output and reports any storage-level omissions separately from omitted display rows.
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.

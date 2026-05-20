@@ -3,7 +3,21 @@ source: tui/src/chatwidget/tests/exec_flow.rs
 assertion_line: 175
 expression: "chat.transcript.active_cell.as_ref().unwrap().compact_hyperlink_lines(24).iter().map(|line|\nline.line.to_string()).collect::<Vec<_>>().join(\"\\n\")"
 ---
-• Explored · 4 failed
-  └ Read first.txt
-    Read missing.txt (e…
-         1)
+• Ran cat first.txt
+  └ (no output)
+• Ran cat missing.txt
+  │ (exit 1)
+  └ (no output)
+• Ran cat later.txt
+  └ (no output)
+• Ran rg absent . (exit
+  │ 1)
+  └ (no output)
+• Ran rg text
+  │ missing.txt (exit
+  │ 2)
+  └ (no output)
+• Ran cat existing.txt
+  │ && rg absent .
+  │ (command exit 1)
+  └ (no output)

@@ -3,20 +3,21 @@ source: tui/src/chatwidget/tests/exec_flow.rs
 expression: "renders[0]"
 ---
 Compact:
-• Explored
-  └ List missing (exit 1)
-    Read index.html
+• Ran ls missing (exit 1)
+  └ list output
+• Ran cat index.html
+  └ read output
 
 • Ran echo boundary
   └ run output
 
-• Explored
-  └ Read later.txt
+• Ran cat later.txt
+  └ later output
 
 • Checking one more file.
 
-• Explored
-  └ Read final.txt
+• Ran cat final.txt
+  └ after-message output
 
 Expanded:
 $ ls missing

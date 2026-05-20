@@ -143,17 +143,25 @@ async fn failed_exploration_keeps_overlapping_commands_active_until_all_finish()
 
     assert!(drain_insert_history(&mut rx).is_empty());
     insta::assert_snapshot!(active_blob(&chat), @r"
-• Explored
-  └ List missing (exit 1)
-    Read foo.txt, bar.txt
+• Ran ls missing (exit 1)
+  └ missing
+• Ran cat foo.txt
+  └ finished
+• Ran cat bar.txt
+  └ followup
 ");
 
     let later = begin_exec(&mut chat, "call-after-failure", "cat later.txt");
     end_exec(&mut chat, later, "later\n", "", /*exit_code*/ 0);
     insta::assert_snapshot!(active_blob(&chat), @r"
-• Explored
-  └ List missing (exit 1)
-    Read foo.txt, bar.txt, later.txt
+• Ran ls missing (exit 1)
+  └ missing
+• Ran cat foo.txt
+  └ finished
+• Ran cat bar.txt
+  └ followup
+• Ran cat later.txt
+  └ later
 ");
 }
 
@@ -876,12 +884,8 @@ async fn exec_end_without_begin_flushes_completed_unrelated_exploring_cell() {
     let first = lines_to_single_string(&cells[0]);
     let second = lines_to_single_string(&cells[1]);
     assert!(
-        first.contains("• Explored"),
-        "expected flushed exploring cell: {first:?}"
-    );
-    assert!(
-        first.contains("List ls -la"),
-        "expected flushed exploring cell: {first:?}"
+        first.contains("• Ran ls -la\n  └ (no output)"),
+        "expected the completed exploration command and its output: {first:?}"
     );
     assert!(
         second.contains("• Ran echo after"),
@@ -972,7 +976,7 @@ async fn exec_history_shows_unified_exec_tool_calls() {
     end_exec(&mut chat, begin, "", "", /*exit_code*/ 0);
 
     let blob = active_blob(&chat);
-    assert_eq!(blob, "• Explored\n  └ List ls\n");
+    assert_eq!(blob, "• Ran ls\n  └ (no output)\n");
 }
 
 #[tokio::test]
@@ -1143,7 +1147,7 @@ async fn unified_exec_wait_status_header_updates_on_late_command_display() {
         key: "proc-1".to_string(),
         call_id: "call-1".to_string(),
         command_display: "sleep 5".to_string(),
-        recent_chunks: Vec::new(),
+        recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
     });
 
     terminal_interaction(&mut chat, "call-1", "proc-1", "");

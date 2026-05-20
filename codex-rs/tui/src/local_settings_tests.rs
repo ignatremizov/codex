@@ -6,6 +6,47 @@ use codex_config::types::SessionPickerViewMode;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn command_preview_preferences_load_and_reload_locally() -> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let mut previous: Option<LocalSettings> = None;
+    for (toml, expected) in [
+        ("", (30, 50)),
+        ("[tui]\n", (30, 50)),
+        (
+            "[tui]\ncommand_output_preview_lines = 0\nuser_shell_output_preview_lines = 2\n",
+            (0, 2),
+        ),
+        (
+            "[tui]\ncommand_output_preview_lines = 42\nuser_shell_output_preview_lines = 77\n",
+            (42, 77),
+        ),
+    ] {
+        std::fs::write(home.path().join("config.toml"), toml)?;
+        let config = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .loader_overrides(LoaderOverrides {
+                ignore_project_config: true,
+                ..LoaderOverrides::without_managed_config_for_tests()
+            })
+            .build()
+            .await?;
+        let local = previous.as_ref().map_or_else(
+            || LocalSettings::from(&config),
+            |previous| previous.reloaded(&config),
+        );
+        assert_eq!(
+            (
+                local.tui.command_output_preview_lines,
+                local.tui.user_shell_output_preview_lines
+            ),
+            expected,
+        );
+        previous = Some(local);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn dictation_preference_changes_only_on_local_reload() -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
     let mut config = ConfigBuilder::default()

@@ -238,6 +238,8 @@ mod backend_banners_tests;
 mod bedrock_catalog_tests;
 #[path = "tests/collaboration_catalog_tests.rs"]
 mod collaboration_catalog_tests;
+#[path = "tests/command_preview_tests.rs"]
+mod command_preview_tests;
 #[path = "tests/compaction_tests.rs"]
 mod compaction_tests;
 #[path = "tests/completion_styling_tests.rs"]

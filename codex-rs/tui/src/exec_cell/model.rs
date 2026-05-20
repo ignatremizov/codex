@@ -79,6 +79,23 @@ pub(crate) struct ExecCall {
 pub(crate) struct ExecCell {
     pub(crate) group: ActivityGroup<ExecCall>,
     animations_enabled: bool,
+    output_preview_lines: usize,
+    user_shell_output_preview_lines: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OutputPreviewLineLimits {
+    pub(crate) command: usize,
+    pub(crate) user_shell: usize,
+}
+
+impl Default for OutputPreviewLineLimits {
+    fn default() -> Self {
+        Self {
+            command: codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+            user_shell: codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
+        }
+    }
 }
 
 impl ExecCell {
@@ -86,7 +103,19 @@ impl ExecCell {
         Self {
             group: ActivityGroup::new(vec![call]),
             animations_enabled,
+            output_preview_lines: codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+            user_shell_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
         }
+    }
+
+    pub(crate) fn with_output_preview_line_limits(
+        mut self,
+        limits: OutputPreviewLineLimits,
+    ) -> Self {
+        self.output_preview_lines = limits.command;
+        self.user_shell_output_preview_lines = limits.user_shell;
+        self
     }
 
     pub(crate) fn add_call(
@@ -203,6 +232,21 @@ impl ExecCell {
 
     pub(crate) fn freeze_snapshot(&mut self) {
         self.animations_enabled = false;
+    }
+
+    pub(super) fn output_preview_lines(&self, source: ExecCommandSource) -> usize {
+        if source == ExecCommandSource::UserShell {
+            self.user_shell_output_preview_lines
+        } else {
+            self.output_preview_lines
+        }
+    }
+
+    pub(crate) fn output_preview_line_limits(&self) -> OutputPreviewLineLimits {
+        OutputPreviewLineLimits {
+            command: self.output_preview_lines,
+            user_shell: self.user_shell_output_preview_lines,
+        }
     }
 
     pub(crate) fn iter_calls(&self) -> impl Iterator<Item = &ExecCall> {

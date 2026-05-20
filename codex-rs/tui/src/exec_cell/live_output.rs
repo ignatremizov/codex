@@ -15,8 +15,8 @@ const LIVE_COMMAND_OUTPUT_LINE_TAIL_BYTES: usize =
 /// All output is retained until the byte budget is exceeded. Once truncated, the first and last
 /// 50 completed lines and any in-progress line are retained, and each line independently keeps a
 /// prefix and suffix so commands that never emit a newline cannot grow the active cell without bound.
-#[derive(Debug, Default)]
-pub(super) struct LiveCommandOutput {
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LiveCommandOutput {
     full_output: String,
     truncated: bool,
     head: Vec<String>,
@@ -29,7 +29,7 @@ pub(super) struct LiveCommandOutput {
 
 impl LiveCommandOutput {
     /// Appends a delta, preserving `str::lines` semantics across arbitrary chunk boundaries.
-    pub(super) fn push_str(&mut self, chunk: &str) {
+    pub(crate) fn push_str(&mut self, chunk: &str) {
         if !self.truncated {
             if self.full_output.len().saturating_add(chunk.len()) <= LIVE_COMMAND_OUTPUT_MAX_BYTES {
                 self.full_output.push_str(chunk);
@@ -96,12 +96,12 @@ impl LiveCommandOutput {
         }
     }
 
-    pub(super) fn total_lines(&self) -> usize {
+    pub(crate) fn total_lines(&self) -> usize {
         self.completed_lines
             .saturating_add(usize::from(self.has_partial_line))
     }
 
-    pub(super) fn retained_lines(&self) -> usize {
+    pub(crate) fn retained_lines(&self) -> usize {
         if self.truncated {
             self.head
                 .len()
@@ -139,7 +139,7 @@ impl LiveCommandOutput {
     }
 
     /// Returns lossless transcript lines until truncated, then inserts the omitted-line marker.
-    pub(super) fn transcript_lines(&self) -> impl Iterator<Item = Cow<'_, str>> {
+    pub(crate) fn transcript_lines(&self) -> impl Iterator<Item = Cow<'_, str>> {
         let omitted = self.total_lines().saturating_sub(self.retained_lines());
         if self.truncated {
             Either::Left(
@@ -170,7 +170,7 @@ impl LiveCommandOutput {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct LiveCommandOutputLine {
     head: String,
     tail: String,

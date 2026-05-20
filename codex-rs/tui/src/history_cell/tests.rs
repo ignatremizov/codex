@@ -875,11 +875,11 @@ fn ps_output_multiline_snapshot() {
     let cell = new_unified_exec_processes_output(vec![
         UnifiedExecProcessDetails {
             command_display: "echo hello\nand then some extra text".to_string(),
-            recent_chunks: vec!["hello".to_string(), "done".to_string()],
+            recent_chunks: process_output("hello\ndone"),
         },
         UnifiedExecProcessDetails {
             command_display: "rg \"foo\" src".to_string(),
-            recent_chunks: vec!["src/main.rs:12:foo".to_string()],
+            recent_chunks: process_output("src/main.rs:12:foo"),
         },
     ]);
     let rendered = render_lines(&cell.display_lines(/*width*/ 40)).join("\n");
@@ -927,7 +927,7 @@ fn ps_output_long_command_snapshot() {
         command_display: String::from(
             "rg \"foo\" src --glob '**/*.rs' --max-count 1000 --no-ignore --hidden --follow --glob '!target/**'",
         ),
-        recent_chunks: vec!["searching...".to_string()],
+        recent_chunks: process_output("searching..."),
     }]);
     let rendered = render_lines(&cell.display_lines(/*width*/ 36)).join("\n");
     insta::assert_snapshot!(rendered);
@@ -937,9 +937,26 @@ fn ps_output_long_command_snapshot() {
 fn ps_output_halfwidth_sound_marks_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
         command_display: "echo ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ".to_string(),
-        recent_chunks: vec!["output ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ".to_string()],
+        recent_chunks: process_output("output ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ"),
     }]);
     let rendered = render_lines(&cell.display_lines(/*width*/ 24)).join("\n");
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn ps_output_preserves_full_multiline_command_snapshot() {
+    let command_display = std::iter::once("sleep 600".to_string())
+        .chain((1..=12).map(|idx| format!("echo line {idx:02}")))
+        .chain(std::iter::once(
+            "wc -l /tmp/codex_multiline_pty_test.txt".to_string(),
+        ))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        command_display,
+        recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
+    }]);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
     insta::assert_snapshot!(rendered);
 }
 
@@ -949,7 +966,7 @@ fn ps_output_many_sessions_snapshot() {
         (0..20)
             .map(|idx| UnifiedExecProcessDetails {
                 command_display: format!("command {idx}"),
-                recent_chunks: Vec::new(),
+                recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
             })
             .collect(),
     );
@@ -961,13 +978,60 @@ fn ps_output_many_sessions_snapshot() {
 fn ps_output_chunk_leading_whitespace_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
         command_display: "just fix".to_string(),
-        recent_chunks: vec![
-            "  indented first".to_string(),
-            "    more indented".to_string(),
-        ],
+        recent_chunks: process_output("  indented first\n    more indented"),
     }]);
     let rendered = render_lines(&cell.display_lines(/*width*/ 60)).join("\n");
     insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn ps_output_wraps_recent_chunks_without_inline_truncation_snapshot() {
+    let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        command_display: "tail -f app.log".to_string(),
+        recent_chunks: process_output(
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega",
+        ),
+    }]);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 32)).join("\n");
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn ps_output_caps_only_display_rows_and_keeps_complete_transcript() {
+    let output = (1..=8)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut transcripts = Vec::new();
+    for limit in [0, 1, 2, 5, 8] {
+        let cell = new_unified_exec_processes_output_with_limit(
+            vec![UnifiedExecProcessDetails {
+                command_display: "tail -f app.log".to_string(),
+                recent_chunks: process_output(&output),
+            }],
+            limit,
+        );
+        let rendered = render_lines(&cell.display_lines(/*width*/ 80));
+        let output_rows = rendered
+            .iter()
+            .filter(|line| line.starts_with("    ↳ ") || line.starts_with("      "))
+            .count();
+        assert_eq!(output_rows, if limit == 0 { 8 } else { limit });
+        assert_eq!(rendered.join("\n").contains("… +"), limit != 0 && limit < 8,);
+        transcripts.push(render_lines(&cell.transcript_lines(/*width*/ 80)).join("\n"));
+    }
+    let expected = concat!(
+        "/ps\n\nBackground terminals\n\n  • tail -f app.log\n",
+        "    ↳ line 1\n      line 2\n      line 3\n      line 4\n",
+        "      line 5\n      line 6\n      line 7\n      line 8",
+    );
+    assert_eq!(transcripts, vec![expected.to_string(); 5]);
+}
+
+fn process_output(text: &str) -> crate::exec_cell::LiveCommandOutput {
+    let mut output = crate::exec_cell::LiveCommandOutput::default();
+    output.push_str(text);
+    output
 }
 
 #[test]
@@ -2151,9 +2215,13 @@ fn coalesces_sequential_reads_within_one_call() {
             duration: None,
             interaction_input: None,
         },
-        /*animations_enabled*/ true,
+        /*animations_enabled*/ false,
     );
-    // Mark call complete so markers are ✓
+    assert_eq!(
+        render_lines(&cell.display_lines(/*width*/ 80)).join("\n"),
+        "• Exploring\n  └ Search shimmer_spans\n    Read shimmer.rs\n    Read status_indicator_widget.rs",
+    );
+    // Completed calls show the actual command and output instead of the active summary.
     cell.complete_call(&call_id, CommandOutput::default(), Duration::from_millis(1));
 
     let lines = cell.display_lines(/*width*/ 80);
@@ -2178,7 +2246,7 @@ fn coalesces_reads_across_multiple_calls() {
             duration: None,
             interaction_input: None,
         },
-        /*animations_enabled*/ true,
+        /*animations_enabled*/ false,
     );
     // Call 1: Search only
     cell.complete_call("c1", CommandOutput::default(), Duration::from_millis(1));
@@ -2207,6 +2275,10 @@ fn coalesces_reads_across_multiple_calls() {
         ExecCommandSource::Agent,
         /*interaction_input*/ None,
     ));
+    assert_eq!(
+        render_lines(&cell.display_lines(/*width*/ 80)).join("\n"),
+        "• Exploring\n  └ Search shimmer_spans\n    Read shimmer.rs, status_indicator_widget.rs",
+    );
     cell.complete_call("c3", CommandOutput::default(), Duration::from_millis(1));
 
     let lines = cell.display_lines(/*width*/ 80);
@@ -2243,7 +2315,11 @@ fn coalesced_reads_dedupe_names() {
             duration: None,
             interaction_input: None,
         },
-        /*animations_enabled*/ true,
+        /*animations_enabled*/ false,
+    );
+    assert_eq!(
+        render_lines(&cell.display_lines(/*width*/ 80)).join("\n"),
+        "• Exploring\n  └ Read auth.rs, shimmer.rs",
     );
     cell.complete_call("c1", CommandOutput::default(), Duration::from_millis(1));
     let lines = cell.display_lines(/*width*/ 80);
@@ -2329,6 +2405,16 @@ fn single_line_command_wraps_with_four_space_continuation() {
 fn single_line_command_over_highlight_limit_uses_plain_text_fallback() {
     let call_id = "c1".to_string();
     let base64_like = "A".repeat(MAX_HIGHLIGHT_LINE_BYTES + 1);
+    let mut expected_lines = textwrap::wrap(&base64_like, textwrap::Options::new(/*width*/ 18))
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let prefix = if index == 0 { "• Ran " } else { "  │ " };
+            format!("{prefix}{line}")
+        })
+        .collect::<Vec<_>>();
+    expected_lines.push("  └ (no output)".to_string());
+    let expected = expected_lines.join("\n");
     let mut cell = ExecCell::new(
         ExecCall {
             call_id: call_id.clone(),
@@ -2346,7 +2432,7 @@ fn single_line_command_over_highlight_limit_uses_plain_text_fallback() {
 
     let rendered = render_lines(&cell.display_lines(/*width*/ 24)).join("\n");
 
-    insta::assert_snapshot!(rendered);
+    assert_eq!(rendered, expected);
 }
 
 #[test]
@@ -2399,7 +2485,7 @@ fn multiline_command_both_lines_wrap_with_correct_prefixes() {
 #[test]
 fn stderr_tail_more_than_five_lines_snapshot() {
     // Build an exec cell with a non-zero exit and 10 lines on stderr to exercise
-    // the three-line preview, hidden-line count, and gutter prefixes.
+    // the default preview retaining all ten lines, exit status, and gutter prefixes.
     let call_id = "c_err".to_string();
     let mut cell = ExecCell::new(
         ExecCall {
