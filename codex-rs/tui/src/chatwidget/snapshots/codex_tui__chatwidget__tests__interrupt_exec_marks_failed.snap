@@ -1,6 +1,7 @@
 ---
-source: tui/src/chatwidget/tests.rs
+source: tui/src/chatwidget/tests/review_mode.rs
+assertion_line: 1225
 expression: exec_blob
 ---
-• Ran sleep 1
+• Ran sleep 1 (exit 1)
   └ (no output)

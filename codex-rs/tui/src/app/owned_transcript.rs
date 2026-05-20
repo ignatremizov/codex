@@ -600,6 +600,10 @@ pub(super) mod tests;
 mod code_mode_history_tests;
 
 #[cfg(test)]
+#[path = "command_output_history_tests.rs"]
+mod command_output_history_tests;
+
+#[cfg(test)]
 #[path = "empty_state_animation_tests.rs"]
 mod empty_state_animation_tests;
 

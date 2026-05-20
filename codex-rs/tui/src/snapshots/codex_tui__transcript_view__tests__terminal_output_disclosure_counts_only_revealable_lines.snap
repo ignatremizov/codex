@@ -1,5 +1,6 @@
 ---
 source: tui/src/transcript_view_tests.rs
+assertion_line: 232
 expression: "frames.join(\"\\n\\n\")"
 ---
 three visible
@@ -10,24 +11,24 @@ three visible
 
 one hidden
 • Ran echo
-  └ b
-    c
+  └ a
+    … +2 rows (ctrl+t to view transcript)
     d
-    + 1 line (ctrl+t to expand)
+    + Show details
 
 clipped line
 • Ran echo
-  └ abcdefghijklmno…
-    + 1 line
+  └ abcdefghijklmnop
+    qrstuvwxyz
 
 command only
-• Ran echo a …
+• Ran echo a
+  │ echo b
   └ (no output)
-    + Show details
 
 storage truncated
 • Running echo
   └ x
+    … +99 rows; 529900 lines not retained (ctrl+t to view trans…
     x
-    x
-    + 97 lines (ctrl+t to expand)
+    + Show details

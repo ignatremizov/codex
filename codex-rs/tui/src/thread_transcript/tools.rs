@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
+use crate::exec_cell::OutputPreviewLineLimits;
 use crate::exec_cell::new_active_exec_command;
 use crate::history_cell::McpInvocation;
 use crate::history_cell::McpToolCallCell;
@@ -168,7 +169,7 @@ impl CommandHistory {
         })
     }
 
-    pub(crate) fn into_cell(self) -> ExecCell {
+    pub(crate) fn into_cell(self, output_preview_line_limits: OutputPreviewLineLimits) -> ExecCell {
         let output = CommandOutput::new(self.exit_code, self.aggregated_output);
         let mut cell = new_active_exec_command(
             self.id.clone(),
@@ -177,7 +178,8 @@ impl CommandHistory {
             self.source,
             /*interaction_input*/ None,
             /*animations_enabled*/ false,
-        );
+        )
+        .with_output_preview_line_limits(output_preview_line_limits);
         let completed = cell.complete_call(&self.id, output, self.duration);
         debug_assert!(completed, "new exec cell should contain {}", self.id);
         cell

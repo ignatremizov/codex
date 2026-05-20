@@ -8,11 +8,14 @@ history:
   └ first
     second
     third
-    +2 lines (ctrl+t to view transcript)
+    fourth
+    fifth
 
 compact:
 • Ran echo output
-  └ third
+  └ first
+    second
+    third
     fourth
     fifth
 

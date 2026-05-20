@@ -1,9 +1,14 @@
 ---
 source: tui/src/history_cell/tests.rs
+assertion_line: 1011
 expression: rendered
 ---
 /ps
 
 Background terminals
 
-  • (↵  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [...]
+  • (
+    
+    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    xxxx
+    )
