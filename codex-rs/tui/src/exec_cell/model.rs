@@ -36,6 +36,14 @@ pub(crate) struct ExecCall {
 pub(crate) struct ExecCell {
     pub(crate) calls: Vec<ExecCall>,
     animations_enabled: bool,
+    output_preview_lines: usize,
+    user_shell_output_preview_lines: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OutputPreviewLineLimits {
+    pub(crate) command: usize,
+    pub(crate) user_shell: usize,
 }
 
 impl ExecCell {
@@ -43,7 +51,19 @@ impl ExecCell {
         Self {
             calls: vec![call],
             animations_enabled,
+            output_preview_lines: codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+            user_shell_output_preview_lines:
+                codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
         }
+    }
+
+    pub(crate) fn with_output_preview_line_limits(
+        mut self,
+        limits: OutputPreviewLineLimits,
+    ) -> Self {
+        self.output_preview_lines = limits.command;
+        self.user_shell_output_preview_lines = limits.user_shell;
+        self
     }
 
     pub(crate) fn with_added_call(
@@ -68,6 +88,8 @@ impl ExecCell {
             Some(Self {
                 calls: [self.calls.clone(), vec![call]].concat(),
                 animations_enabled: self.animations_enabled,
+                output_preview_lines: self.output_preview_lines,
+                user_shell_output_preview_lines: self.user_shell_output_preview_lines,
             })
         } else {
             None
@@ -133,6 +155,14 @@ impl ExecCell {
 
     pub(crate) fn animations_enabled(&self) -> bool {
         self.animations_enabled
+    }
+
+    pub(crate) fn output_preview_lines(&self, source: ExecCommandSource) -> usize {
+        if source == ExecCommandSource::UserShell {
+            self.user_shell_output_preview_lines
+        } else {
+            self.output_preview_lines
+        }
     }
 
     pub(crate) fn iter_calls(&self) -> impl Iterator<Item = &ExecCall> {

@@ -180,6 +180,16 @@ show_compact_summary = false
 
 When unset, the transcript includes the compacted prompt when available (otherwise just the summary).
 
+Configure main-transcript command output previews:
+
+```toml
+[tui]
+command_output_preview_lines = 30
+user_shell_output_preview_lines = 50
+```
+
+Set either value to `0` to show all retained output for that category in the main TUI.
+
 Configure diff add/remove line backgrounds:
 
 ```toml
