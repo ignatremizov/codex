@@ -4,8 +4,10 @@ assertion_line: 142
 expression: "format!(\"compact:\\n{}\\ndetailed:\\n{}\",\nlines_to_single_string(&exploration.display_lines(40)),\nlines_to_single_string(&exploration.transcript_lines(40)),)"
 ---
 compact:
-• Explored
-  └ Read one.rs, two.rs
+• Ran cat one.rs
+  └ fn main() {}
+• Ran cat two.rs
+  └ fn main() {}
 
 detailed:
 $ cat one.rs

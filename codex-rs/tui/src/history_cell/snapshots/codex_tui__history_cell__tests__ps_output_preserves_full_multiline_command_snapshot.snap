@@ -1,0 +1,22 @@
+---
+source: tui/src/history_cell.rs
+expression: rendered
+---
+/ps
+
+Background terminals
+
+  • sleep 600
+    echo line 01
+    echo line 02
+    echo line 03
+    echo line 04
+    echo line 05
+    echo line 06
+    echo line 07
+    echo line 08
+    echo line 09
+    echo line 10
+    echo line 11
+    echo line 12
+    wc -l /tmp/codex_multiline_pty_test.txt

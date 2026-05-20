@@ -6,12 +6,13 @@ use std::ops::Range;
 use super::*;
 use crate::app_server_session::HISTORY_ITEM_PAGE_LIMIT;
 use crate::app_server_session::thread_items_page_params;
+use crate::exec_cell::OutputPreviewLineLimits;
 use crate::history_cell::SessionHeaderHistoryCell;
 use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::thread_transcript::RawReasoningVisibility;
-use crate::thread_transcript::thread_items_to_transcript_cells;
+use crate::thread_transcript::thread_items_to_transcript_cells_with_output_preview_line_limits;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ThreadItemsListResponse;
 
@@ -160,12 +161,17 @@ impl App {
             .filter(|item| matches!(item, ThreadItem::UserMessage { .. }))
             .map(|item| (item.id().to_string(), item.clone()))
             .collect::<Vec<_>>();
-        let projected_user_cells = thread_items_to_transcript_cells(
+        let output_preview_line_limits = OutputPreviewLineLimits {
+            command: self.local_settings.tui.command_output_preview_lines,
+            user_shell: self.local_settings.tui.user_shell_output_preview_lines,
+        };
+        let projected_user_cells = thread_items_to_transcript_cells_with_output_preview_line_limits(
             Some(thread_id),
             cwd,
             user_items.iter().map(|(_, item)| item.clone()),
             visibility,
             Some(&self.config),
+            output_preview_line_limits,
         );
         let persisted_user_cells = user_items
             .into_iter()
@@ -226,16 +232,23 @@ impl App {
         visibility: RawReasoningVisibility,
     ) -> Vec<Arc<dyn HistoryCell>> {
         let mut cells = Vec::new();
+        let output_preview_line_limits = OutputPreviewLineLimits {
+            command: self.local_settings.tui.command_output_preview_lines,
+            user_shell: self.local_settings.tui.user_shell_output_preview_lines,
+        };
         for (items, completed_turn) in completion::group_completed_turn_items(items, turns) {
             // Internal prompts stay invisible, but still separate adjacent tool groups.
             for visible in items.split(|item| hidden_item_ids.contains(item.id())) {
-                cells.extend(thread_items_to_transcript_cells(
-                    Some(thread_id),
-                    cwd,
-                    visible.iter().cloned(),
-                    visibility,
-                    Some(&self.config),
-                ));
+                cells.extend(
+                    thread_items_to_transcript_cells_with_output_preview_line_limits(
+                        Some(thread_id),
+                        cwd,
+                        visible.iter().cloned(),
+                        visibility,
+                        Some(&self.config),
+                        output_preview_line_limits,
+                    ),
+                );
             }
             if let Some(turn) = completed_turn
                 && let Some(completion) = self

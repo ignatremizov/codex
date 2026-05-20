@@ -1,10 +1,15 @@
 use super::*;
+use crate::exec_cell::OutputPreviewLineLimits;
 use crate::test_support::PathBufExt;
 use crate::test_support::test_path_buf;
 use crate::thread_transcript::RawReasoningVisibility;
+use crate::thread_transcript::join_exploration_groups;
 use crate::thread_transcript::thread_items_to_transcript_cells;
+use crate::thread_transcript::thread_items_to_transcript_cells_with_output_preview_line_limits;
 use codex_app_server_protocol::CommandAction;
 use codex_app_server_protocol::McpToolCallResult;
+use codex_app_server_protocol::TurnItemsView;
+use codex_app_server_protocol::TurnStatus;
 use codex_utils_path_uri::LegacyAppPathString;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -93,6 +98,150 @@ fn completed_tools_keep_compact_and_detailed_presentations() {
         .collect::<Vec<_>>()
         .join("\n\n");
     insta::assert_snapshot!("completed_tool_presentations", rendered);
+}
+
+#[test]
+fn replayed_commands_keep_explicit_preview_limits_including_zero() {
+    let cwd = test_path_buf("/workspace").abs();
+    for (limits, expected) in [
+        (
+            OutputPreviewLineLimits {
+                command: 2,
+                user_shell: 4,
+            },
+            vec![
+                "• Ran cargo check",
+                "  └ output line 1",
+                "    … +11 rows (ctrl+t to view transcript)",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>(),
+        ),
+        (
+            OutputPreviewLineLimits {
+                command: 0,
+                user_shell: 0,
+            },
+            std::iter::once("• Ran cargo check".to_owned())
+                .chain((1..=12).map(|line| {
+                    if line == 1 {
+                        format!("  └ output line {line}")
+                    } else {
+                        format!("    output line {line}")
+                    }
+                }))
+                .collect::<Vec<_>>(),
+        ),
+    ] {
+        let cells = thread_items_to_transcript_cells_with_output_preview_line_limits(
+            /*thread_id*/ None,
+            &cwd,
+            [command_item(CommandExecutionStatus::Completed)],
+            RawReasoningVisibility::Hidden,
+            /*config*/ None,
+            limits,
+        );
+        let cell = cells[0].as_any().downcast_ref::<ExecCell>().unwrap();
+        assert_eq!(cell.output_preview_line_limits(), limits);
+        assert_eq!(
+            cell.display_lines(/*width*/ 80)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            expected,
+        );
+        assert_eq!(
+            cell.compact_hyperlink_lines(/*width*/ 80),
+            cell.display_hyperlink_lines(/*width*/ 80),
+        );
+        assert_eq!(
+            cell.transcript_lines(/*width*/ 80)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            std::iter::once("$ cargo check".to_owned())
+                .chain((1..=12).map(|line| format!("output line {line}")))
+                .chain(std::iter::once("✓ • 0ms".to_owned()))
+                .collect::<Vec<_>>(),
+        );
+    }
+}
+
+#[test]
+fn split_exploration_replay_join_preserves_preview_rendering() {
+    let cwd = test_path_buf("/workspace").abs();
+    let limits = OutputPreviewLineLimits {
+        command: 2,
+        user_shell: 4,
+    };
+    let items = ["older", "newer"]
+        .into_iter()
+        .map(|id| {
+            let mut item = command_item(CommandExecutionStatus::Completed);
+            if let ThreadItem::CommandExecution {
+                id: item_id,
+                command,
+                command_actions,
+                ..
+            } = &mut item
+            {
+                *item_id = id.to_owned();
+                *command = format!("cat {id}.rs");
+                *command_actions = vec![CommandAction::Read {
+                    command: command.clone(),
+                    name: format!("{id}.rs"),
+                    path: LegacyAppPathString::from_string(format!("/workspace/{id}.rs")),
+                }];
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    let turn = codex_app_server_protocol::Turn {
+        id: "turn".to_owned(),
+        items: items.clone(),
+        items_view: TurnItemsView::Full,
+        status: TurnStatus::Completed,
+        error: None,
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
+    };
+    let project = |items: Vec<ThreadItem>| {
+        thread_items_to_transcript_cells_with_output_preview_line_limits(
+            /*thread_id*/ None,
+            &cwd,
+            items,
+            RawReasoningVisibility::Hidden,
+            /*config*/ None,
+            limits,
+        )
+    };
+    let older = project(vec![items[0].clone()]).remove(/*index*/ 0);
+    let newer = project(vec![items[1].clone()]).remove(/*index*/ 0);
+    let joined = join_exploration_groups(&older, &newer, std::slice::from_ref(&turn))
+        .expect("split exploration groups should join");
+    let expected = project(items).remove(/*index*/ 0);
+    assert_eq!(
+        joined
+            .as_any()
+            .downcast_ref::<ExecCell>()
+            .unwrap()
+            .output_preview_line_limits(),
+        limits
+    );
+    assert_eq!(
+        joined.display_lines(/*width*/ 80),
+        expected.display_lines(/*width*/ 80),
+    );
+    assert_eq!(
+        joined.compact_hyperlink_lines(/*width*/ 80),
+        expected.compact_hyperlink_lines(/*width*/ 80),
+    );
+    assert_eq!(
+        joined.transcript_lines(/*width*/ 80),
+        expected.transcript_lines(/*width*/ 80),
+    );
 }
 
 #[test]

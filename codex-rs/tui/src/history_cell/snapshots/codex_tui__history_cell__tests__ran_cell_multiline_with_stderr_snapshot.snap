@@ -5,8 +5,9 @@ expression: rendered
 • Ran echo
   │ this_is_a_very_long_si
   │ ngle_token_that_will_w
-  │ … +2 lines
+  │ rap_across_the_availab
+  │ le_width (exit 1)
   └ error: first line on
     stderr
     error: second line on
-    +1 line (ctrl+t to view…
+    stderr

@@ -18,11 +18,9 @@ use crate::style::accent_color;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::LogicalLineSource;
 use crate::terminal_hyperlinks::adaptive_wrap_hyperlink_lines;
-use crate::terminal_hyperlinks::plain_hyperlink_lines;
 use crate::terminal_hyperlinks::prefix_hyperlink_lines;
 use crate::terminal_hyperlinks::remap_source_wrapped_line;
 use crate::terminal_hyperlinks::visible_lines;
-use crate::tool_output::tool_output_hyperlink_preview;
 use crate::ui_consts::TRANSCRIPT_HINT;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line_with_source;
@@ -34,12 +32,11 @@ use itertools::Itertools;
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
 use ratatui::style::Stylize;
-use ratatui::widgets::Paragraph;
-use ratatui::widgets::Wrap;
 use textwrap::WordSplitter;
 use unicode_width::UnicodeWidthStr;
 
 pub(crate) const TOOL_CALL_MAX_LINES: usize = 5;
+#[cfg(test)]
 const USER_SHELL_TOOL_CALL_MAX_LINES: usize = 50;
 const MAX_INTERACTION_PREVIEW_CHARS: usize = 80;
 
@@ -111,6 +108,7 @@ fn summarize_interaction_input(input: &str) -> String {
 #[derive(Clone)]
 pub(crate) struct OutputLines {
     pub(crate) lines: Vec<Line<'static>>,
+    #[cfg(test)]
     pub(crate) omitted: Option<usize>,
 }
 
@@ -128,6 +126,7 @@ pub(crate) fn output_lines(
         Some(output) if only_err && output.exit_code == 0 => {
             return OutputLines {
                 lines: Vec::new(),
+                #[cfg(test)]
                 omitted: None,
             };
         }
@@ -135,6 +134,7 @@ pub(crate) fn output_lines(
         None => {
             return OutputLines {
                 lines: Vec::new(),
+                #[cfg(test)]
                 omitted: None,
             };
         }
@@ -178,6 +178,7 @@ pub(crate) fn output_lines(
 
     OutputLines {
         lines: out,
+        #[cfg(test)]
         omitted,
     }
 }
@@ -190,12 +191,27 @@ fn dimmed_output_line(raw: &str) -> Line<'static> {
     line
 }
 
-fn output_preview_lines(output: &CommandOutput, width: usize) -> Vec<HyperlinkLine> {
-    let (total, _) = output.line_counts();
-    tool_output_hyperlink_preview(
-        output.lines().map(|raw| dimmed_output_line(raw.as_ref())),
-        width,
-        total,
+fn command_exit_status(call: &ExecCall, code: i32) -> Option<Span<'static>> {
+    if code == 0 {
+        return None;
+    }
+    let status = if call.parsed.len() > 1 {
+        format!(" (command exit {code})")
+    } else {
+        format!(" (exit {code})")
+    };
+    // A search returning 1 can mean no matches; compound commands have one shared exit code.
+    Some(
+        if code == 1
+            && call
+                .parsed
+                .iter()
+                .any(|p| matches!(p, ParsedCommand::Search { .. }))
+        {
+            status.dim()
+        } else {
+            status.red()
+        },
     )
 }
 
@@ -219,24 +235,14 @@ impl HistoryCell for ExecCell {
     }
 
     fn has_hidden_activity_details(&self, width: u16) -> bool {
-        if self.is_exploring_cell() {
-            return true;
-        }
-        if self.group.calls.iter().any(ExecCall::is_user_shell_command) {
-            // User-shell previews already retain wrapped commands and up to fifty output rows.
-            // Reuse its actual truncation decision instead of comparing differently styled text.
-            return self
+        (self.is_exploring_cell() && self.is_active())
+            || self
                 .command_display_lines_with_hidden_details(width)
-                .hidden_details;
-        }
-        self.command_has_hidden_details(width)
+                .hidden_details
     }
 
     fn compact_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        if self.group.calls.iter().any(ExecCall::is_user_shell_command) {
-            return self.display_hyperlink_lines(width);
-        }
-        if self.is_exploring_cell() {
+        if self.is_exploring_cell() && self.is_active() {
             let mut lines = self.exploring_display_lines(width);
             lines.truncate(1 + crate::history_cell::activity_preview::DETAIL_PREVIEW_LINES);
             let failures = self
@@ -261,7 +267,7 @@ impl HistoryCell for ExecCell {
                 .map(|line| crate::history_cell::activity_preview::clipped_line(line.line, width))
                 .collect()
         } else {
-            self.compact_command_lines(width)
+            self.display_hyperlink_lines(width)
         }
     }
 
@@ -270,7 +276,7 @@ impl HistoryCell for ExecCell {
     }
 
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        if self.is_exploring_cell() {
+        if self.is_exploring_cell() && self.is_active() {
             self.exploring_display_lines(width)
         } else {
             self.command_display_lines(width)
@@ -403,26 +409,9 @@ impl ExecCell {
             for (index, (title, mut line)) in call_lines.into_iter().enumerate() {
                 if let Some(code) = exit_code
                     && index + 1 == line_count
+                    && let Some(status) = command_exit_status(call, code)
                 {
-                    // A compound command has one exit code, not an outcome for each parsed action.
-                    let status = if call.parsed.len() > 1 {
-                        format!(" (command exit {code})")
-                    } else {
-                        format!(" (exit {code})")
-                    };
-                    // Search exit 1 can mean no matches; report the code without calling it a failure.
-                    line.push(
-                        if code == 1
-                            && call
-                                .parsed
-                                .iter()
-                                .any(|p| matches!(p, ParsedCommand::Search { .. }))
-                        {
-                            status.dim()
-                        } else {
-                            status.red()
-                        },
-                    );
+                    line.push(status);
                 }
                 let line = Line::from(line);
                 let initial_indent = Line::from(vec![title.fg(accent_color()), " ".into()]);
@@ -450,9 +439,24 @@ impl ExecCell {
     }
 
     fn command_display_lines_with_hidden_details(&self, width: u16) -> CommandDisplay {
-        let [call] = &self.group.calls.as_slice() else {
-            panic!("Expected exactly one call in a command display cell");
+        let mut result = CommandDisplay {
+            lines: Vec::new(),
+            hidden_details: false,
         };
+        for (index, call) in self.iter_calls().enumerate() {
+            let display = self.call_display_lines(call, width);
+            result.lines.extend(display.lines);
+            result.hidden_details |= display.hidden_details;
+            result.hidden_details |= !self
+                .group
+                .details
+                .lines_after(index + 1, width, HistoryRenderMode::Rich)
+                .is_empty();
+        }
+        result
+    }
+
+    fn call_display_lines(&self, call: &ExecCall, width: u16) -> CommandDisplay {
         let layout = EXEC_DISPLAY_LAYOUT;
         let success = call
             .duration
@@ -486,7 +490,14 @@ impl ExecCell {
         } else {
             strip_bash_lc_and_escape(&call.command)
         };
-        let highlighted_lines = highlight_bash_to_lines(&cmd_display);
+        let mut highlighted_lines = highlight_bash_to_lines(&cmd_display);
+        if let Some(output) = call.output.as_ref()
+            && call.duration.is_some()
+            && let Some(status) = command_exit_status(call, output.exit_code)
+            && let Some(line) = highlighted_lines.last_mut()
+        {
+            line.push_span(status);
+        }
 
         let continuation_wrap_width = layout.command_continuation.wrap_width(width);
         let continuation_opts =
@@ -537,11 +548,7 @@ impl ExecCell {
 
         let mut lines: Vec<HyperlinkLine> = vec![header];
 
-        let mut hidden_details = continuation_lines.len() > layout.command_continuation_max_lines;
-        let continuation_lines = Self::limit_lines_from_start(
-            &continuation_lines,
-            layout.command_continuation_max_lines,
-        );
+        let mut hidden_details = false;
         if !continuation_lines.is_empty() {
             lines.extend(prefix_hyperlink_lines(
                 continuation_lines,
@@ -551,237 +558,32 @@ impl ExecCell {
         }
 
         if let Some(output) = call.output.as_ref() {
-            if !call.is_user_shell_command() {
-                let preview = output_preview_lines(output, layout.output_block.wrap_width(width));
-                let preview = if preview.is_empty() && !call.is_unified_exec_interaction() {
-                    vec![Line::from("(no output)".dim()).into()]
-                } else {
-                    preview
-                };
-                // Only the omission hint lacks source provenance; visible output rows retain it.
-                hidden_details |=
-                    preview.iter().any(|line| line.source.is_none()) && output.line_counts().0 > 0;
-                lines.extend(prefix_hyperlink_lines(
-                    preview,
-                    Span::from(layout.output_block.initial_prefix).dim(),
-                    Span::from(layout.output_block.subsequent_prefix),
-                ));
-                return CommandDisplay {
-                    lines,
-                    hidden_details,
-                };
-            }
-            let raw_output = output_lines(
-                Some(output),
-                OutputLinesParams {
-                    line_limit: USER_SHELL_TOOL_CALL_MAX_LINES,
-                    only_err: false,
-                    include_angle_pipe: false,
-                    include_prefix: false,
-                },
+            let (total, retained) = output.line_counts();
+            let preview = super::preview::output_preview(
+                output
+                    .transcript_lines()
+                    .map(|raw| dimmed_output_line(raw.as_ref()).into()),
+                layout.output_block.wrap_width(width),
+                self.output_preview_lines(call.source),
+                total.saturating_sub(retained),
             );
-
-            if raw_output.lines.is_empty() {
-                if !call.is_unified_exec_interaction() {
-                    lines.extend(prefix_hyperlink_lines(
-                        vec![Line::from("(no output)".dim()).into()],
-                        Span::from(layout.output_block.initial_prefix).dim(),
-                        Span::from(layout.output_block.subsequent_prefix),
-                    ));
-                }
+            hidden_details |= preview.hidden;
+            let output_lines = if preview.lines.is_empty() && !call.is_unified_exec_interaction() {
+                vec![Line::from("(no output)".dim()).into()]
             } else {
-                // Wrap first so that truncation is applied to on-screen lines
-                // rather than logical lines. This ensures that a small number
-                // of very long lines cannot flood the viewport.
-
-                let output_wrap_width = layout.output_block.wrap_width(width);
-                let output_opts =
-                    RtOptions::new(output_wrap_width).word_splitter(WordSplitter::NoHyphenation);
-                let wrapped_output = adaptive_wrap_hyperlink_lines(
-                    &plain_hyperlink_lines(raw_output.lines),
-                    output_opts,
-                );
-
-                let prefixed_output = prefix_hyperlink_lines(
-                    wrapped_output,
-                    Span::from(layout.output_block.initial_prefix).dim(),
-                    Span::from(layout.output_block.subsequent_prefix),
-                );
-                let trimmed_output = Self::truncate_lines_middle(
-                    &prefixed_output,
-                    USER_SHELL_TOOL_CALL_MAX_LINES,
-                    width,
-                    raw_output.omitted,
-                    Some(Line::from(
-                        Span::from(layout.output_block.subsequent_prefix).dim(),
-                    )),
-                );
-                // Source-backed output rows retain provenance through prefixing and wrapping.
-                // Middle truncation inserts an unbacked omission row only when output is hidden.
-                hidden_details |= trimmed_output.iter().any(|line| line.source.is_none());
-
-                if !trimmed_output.is_empty() {
-                    lines.extend(trimmed_output);
-                }
-            }
+                preview.lines
+            };
+            lines.extend(prefix_hyperlink_lines(
+                output_lines,
+                Span::from(layout.output_block.initial_prefix).dim(),
+                Span::from(layout.output_block.subsequent_prefix),
+            ));
         }
 
         CommandDisplay {
             lines,
             hidden_details,
         }
-    }
-
-    fn limit_lines_from_start(lines: &[HyperlinkLine], keep: usize) -> Vec<HyperlinkLine> {
-        if lines.len() <= keep {
-            return lines.to_vec();
-        }
-        if keep == 0 {
-            return vec![Self::ellipsis_line(lines.len()).into()];
-        }
-
-        let mut out: Vec<HyperlinkLine> = lines[..keep].to_vec();
-        out.push(Self::ellipsis_line(lines.len() - keep).into());
-        out
-    }
-
-    /// Truncates a list of lines to fit within `max_rows` viewport rows,
-    /// keeping a head portion and a tail portion with an ellipsis line
-    /// in between.
-    ///
-    /// `max_rows` is measured in viewport rows (the actual space a line
-    /// occupies after `Paragraph::wrap`), not logical lines. Each line's
-    /// row cost is computed via `Paragraph::line_count` at the given
-    /// `width`. This ensures that a single logical line containing a
-    /// long URL (which wraps to several viewport rows) is properly
-    /// accounted for.
-    ///
-    /// The ellipsis message reports the number of omitted *lines*
-    /// (logical, not rows) to keep the count stable across terminal
-    /// widths. `omitted_hint` carries forward any previously reported
-    /// omitted count (from upstream truncation); `ellipsis_prefix`
-    /// prepends the output gutter prefix to the ellipsis line.
-    fn truncate_lines_middle(
-        lines: &[HyperlinkLine],
-        max_rows: usize,
-        width: u16,
-        omitted_hint: Option<usize>,
-        ellipsis_prefix: Option<Line<'static>>,
-    ) -> Vec<HyperlinkLine> {
-        let width = width.max(/*other*/ 1);
-        if max_rows == 0 {
-            return Vec::new();
-        }
-        let line_rows: Vec<usize> = lines
-            .iter()
-            .map(|line| {
-                let is_whitespace_only = line
-                    .line
-                    .spans
-                    .iter()
-                    .all(|span| span.content.chars().all(char::is_whitespace));
-                if is_whitespace_only {
-                    line.width().div_ceil(usize::from(width)).max(/*other*/ 1)
-                } else {
-                    Paragraph::new(Text::from(vec![line.line.clone()]))
-                        .wrap(Wrap { trim: false })
-                        .line_count(width)
-                        .max(/*other*/ 1)
-                }
-            })
-            .collect();
-        let total_rows: usize = line_rows.iter().sum();
-        if total_rows <= max_rows {
-            return lines.to_vec();
-        }
-        // Reserve space for the transcript hint itself so the returned output
-        // still respects the row budget on narrow terminals.
-        let estimated_omitted = omitted_hint.unwrap_or(/*default*/ 0)
-            + lines
-                .len()
-                .saturating_sub(usize::from(omitted_hint.is_some()));
-        let ellipsis_rows =
-            Self::output_ellipsis_row_count(estimated_omitted, width, ellipsis_prefix.as_ref());
-        if ellipsis_rows >= max_rows {
-            return vec![
-                Self::output_ellipsis_line_with_prefix(estimated_omitted, ellipsis_prefix.as_ref())
-                    .into(),
-            ];
-        }
-
-        let available_rows = max_rows - ellipsis_rows;
-        let head_budget = available_rows / 2;
-        let tail_budget = available_rows - head_budget;
-        let mut head_lines: Vec<HyperlinkLine> = Vec::new();
-        let mut head_rows = 0usize;
-        let mut head_end = 0usize;
-        while head_end < lines.len() {
-            let line_row_count = line_rows[head_end];
-            if head_rows + line_row_count > head_budget {
-                break;
-            }
-            head_rows += line_row_count;
-            head_lines.push(lines[head_end].clone());
-            head_end += 1;
-        }
-
-        let mut tail_lines_reversed: Vec<HyperlinkLine> = Vec::new();
-        let mut tail_rows = 0usize;
-        let mut tail_start = lines.len();
-        while tail_start > head_end {
-            let idx = tail_start - 1;
-            let line_row_count = line_rows[idx];
-            if tail_rows + line_row_count > tail_budget {
-                break;
-            }
-            tail_rows += line_row_count;
-            tail_lines_reversed.push(lines[idx].clone());
-            tail_start -= 1;
-        }
-
-        let mut out = head_lines;
-        let base = omitted_hint.unwrap_or(/*default*/ 0);
-        let additional = lines
-            .len()
-            .saturating_sub(out.len() + tail_lines_reversed.len())
-            .saturating_sub(usize::from(omitted_hint.is_some()));
-        out.push(
-            Self::output_ellipsis_line_with_prefix(base + additional, ellipsis_prefix.as_ref())
-                .into(),
-        );
-
-        out.extend(tail_lines_reversed.into_iter().rev());
-
-        out
-    }
-
-    fn ellipsis_line(omitted: usize) -> Line<'static> {
-        let noun = if omitted == 1 { "line" } else { "lines" };
-        Line::from(vec![format!("… +{omitted} {noun}").dim()])
-    }
-
-    fn output_ellipsis_row_count(
-        omitted: usize,
-        width: u16,
-        prefix: Option<&Line<'static>>,
-    ) -> usize {
-        Paragraph::new(Text::from(vec![Self::output_ellipsis_line_with_prefix(
-            omitted, prefix,
-        )]))
-        .wrap(Wrap { trim: false })
-        .line_count(width)
-        .max(1)
-    }
-
-    /// Builds an output ellipsis line (`… +N lines (ctrl+t to view transcript)`)
-    /// with an optional leading prefix so the ellipsis aligns with the output gutter.
-    fn output_ellipsis_line_with_prefix(
-        omitted: usize,
-        prefix: Option<&Line<'static>>,
-    ) -> Line<'static> {
-        let mut line = prefix.cloned().unwrap_or_default();
-        line.push_span(Self::output_ellipsis_text(omitted).dim());
-        line
     }
 }
 
@@ -809,19 +611,13 @@ impl PrefixedBlock {
 #[derive(Clone, Copy)]
 struct ExecDisplayLayout {
     command_continuation: PrefixedBlock,
-    command_continuation_max_lines: usize,
     output_block: PrefixedBlock,
 }
 
 impl ExecDisplayLayout {
-    const fn new(
-        command_continuation: PrefixedBlock,
-        command_continuation_max_lines: usize,
-        output_block: PrefixedBlock,
-    ) -> Self {
+    const fn new(command_continuation: PrefixedBlock, output_block: PrefixedBlock) -> Self {
         Self {
             command_continuation,
-            command_continuation_max_lines,
             output_block,
         }
     }
@@ -829,7 +625,6 @@ impl ExecDisplayLayout {
 
 const EXEC_DISPLAY_LAYOUT: ExecDisplayLayout = ExecDisplayLayout::new(
     PrefixedBlock::new("  │ ", "  │ "),
-    /*command_continuation_max_lines*/ 2,
     PrefixedBlock::new("  └ ", "    "),
 );
 
@@ -841,6 +636,8 @@ mod tests {
     use crate::wrapping::adaptive_wrap_line;
     use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
     use pretty_assertions::assert_eq;
+    use ratatui::widgets::Paragraph;
+    use ratatui::widgets::Wrap;
 
     fn render_line_text(line: &Line<'static>) -> String {
         line.spans
@@ -945,40 +742,8 @@ mod tests {
             .split_whitespace()
             .join(" ");
         assert!(
-            normalized.contains(TRANSCRIPT_HINT),
-            "expected truncated output to advertise transcript shortcut, got {normalized}"
-        );
-    }
-
-    #[test]
-    fn truncate_lines_middle_keeps_omitted_count_in_line_units() {
-        let lines = vec![
-            Line::from("  └ short"),
-            Line::from("    this-is-a-very-long-token-that-wraps-many-rows"),
-            Line::from(format!(
-                "    {}",
-                ExecCell::output_ellipsis_text(/*omitted*/ 4)
-            )),
-            Line::from("    tail"),
-        ];
-
-        let truncated = ExecCell::truncate_lines_middle(
-            &plain_hyperlink_lines(lines),
-            /*max_rows*/ 2,
-            /*width*/ 80,
-            Some(4),
-            Some(Line::from("    ".dim())),
-        );
-        let rendered: Vec<String> = visible_lines(truncated)
-            .iter()
-            .map(render_line_text)
-            .collect();
-
-        assert!(
-            rendered
-                .iter()
-                .any(|line| line.contains("… +6 lines (ctrl+t to view transcript)")),
-            "expected omitted hint to count hidden lines (not wrapped rows), got: {rendered:?}"
+            normalized.contains("… +"),
+            "expected narrow truncated output to show an omission marker, got {normalized}"
         );
     }
 
@@ -1131,48 +896,6 @@ mod tests {
     }
 
     #[test]
-    fn command_truncation_ellipsis_does_not_include_transcript_hint() {
-        let truncated = ExecCell::limit_lines_from_start(
-            &[
-                HyperlinkLine::from("first"),
-                HyperlinkLine::from("second"),
-                HyperlinkLine::from("third"),
-            ],
-            /*keep*/ 2,
-        );
-        let rendered: Vec<String> = visible_lines(truncated)
-            .iter()
-            .map(render_line_text)
-            .collect();
-
-        assert_eq!(
-            rendered,
-            vec![
-                "first".to_string(),
-                "second".to_string(),
-                "… +1 line".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn truncate_lines_middle_does_not_truncate_blank_prefixed_output_lines() {
-        let mut lines = vec![Line::from("  └ start")];
-        lines.extend(std::iter::repeat_n(Line::from("    "), 26));
-        lines.push(Line::from("    end"));
-
-        let truncated = ExecCell::truncate_lines_middle(
-            &plain_hyperlink_lines(lines.clone()),
-            /*max_rows*/ 28,
-            /*width*/ 80,
-            /*omitted_hint*/ None,
-            /*ellipsis_prefix*/ None,
-        );
-
-        assert_eq!(visible_lines(truncated), lines);
-    }
-
-    #[test]
     fn command_display_does_not_split_long_url_token() {
         let url = "http://example.com/long-url-with-dashes-wider-than-terminal-window/blah-blah-blah-text/more-gibberish-text";
 
@@ -1276,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn output_display_does_not_split_long_url_like_token_without_scheme() {
+    fn output_display_wraps_long_url_like_token_without_losing_source() {
         let url = "example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890/artifacts/reports/performance/summary/detail/session_id=abc123def456ghi789jkl012mno345pqr678";
 
         let call = ExecCall {
@@ -1291,22 +1014,18 @@ mod tests {
         };
 
         let cell = ExecCell::new(call, /*animations_enabled*/ false);
-        let rendered: Vec<String> = cell
-            .display_lines(/*width*/ 36)
+        let rendered = cell.display_hyperlink_lines(/*width*/ 36);
+        let output = &rendered[1..];
+        assert!(output.len() > 1 && output.len() <= USER_SHELL_TOOL_CALL_MAX_LINES);
+        assert!(output.iter().all(|line| line.width() <= 36));
+        let reconstructed = output
             .iter()
             .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
+                let source = line.source.as_ref().expect("source-backed output row");
+                source.text[source.range.clone()].to_string()
             })
-            .collect();
-
-        assert_eq!(
-            rendered.iter().filter(|line| line.contains(url)).count(),
-            1,
-            "expected full URL-like token in one rendered line, got: {rendered:?}"
-        );
+            .collect::<String>();
+        assert_eq!(reconstructed, url);
     }
 
     #[test]
