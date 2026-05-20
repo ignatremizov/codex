@@ -118,6 +118,7 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
+use codex_features::Feature;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentEvent;
@@ -1449,6 +1450,12 @@ fn config_request_overrides_from_config(
     if config.bypass_hook_trust {
         overrides.insert("bypass_hook_trust".to_string(), true.into());
     }
+    if config.features.enabled(Feature::RealtimeConversation) {
+        overrides.insert(
+            "features.realtime_conversation".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
     Some(overrides)
 }
 
@@ -2476,6 +2483,28 @@ mod tests {
         assert_eq!(
             explicit_overrides.get("personality"),
             Some(&serde_json::Value::String("none".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn config_request_overrides_forward_realtime_feature_flag() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut config = build_config(&temp_dir).await;
+
+        let disabled_overrides =
+            config_request_overrides_from_config(&config).expect("config overrides");
+        assert!(!disabled_overrides.contains_key("features.realtime_conversation"));
+
+        config
+            .features
+            .enable(Feature::RealtimeConversation)
+            .expect("feature can be enabled");
+        let enabled_overrides =
+            config_request_overrides_from_config(&config).expect("config overrides");
+
+        assert_eq!(
+            enabled_overrides.get("features.realtime_conversation"),
+            Some(&serde_json::Value::Bool(true))
         );
     }
 
