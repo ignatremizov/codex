@@ -98,16 +98,8 @@ impl Renderable for TranscriptAreaRenderable<'_> {
         let area = self.child_area(area);
         let lines = self.child.display_lines(area.width);
         let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-        let y = if area.height == 0 {
-            0
-        } else {
-            let overflow = paragraph
-                .line_count(area.width)
-                .saturating_sub(usize::from(area.height));
-            u16::try_from(overflow).unwrap_or(u16::MAX)
-        };
         Clear.render(area, buf);
-        paragraph.scroll((y, 0)).render(area, buf);
+        paragraph.render(area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
@@ -145,5 +137,58 @@ impl Renderable for ChatWidget {
 
     fn cursor_style(&self, area: Rect) -> crossterm::cursor::SetCursorStyle {
         self.as_renderable().cursor_style(area)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history_cell::PlainHistoryCell;
+    use crate::render::renderable::Renderable;
+
+    fn buffer_rows(buf: &Buffer, area: Rect) -> Vec<String> {
+        let mut rendered_rows: Vec<String> = Vec::new();
+        for y in 0..area.height {
+            let mut row = String::new();
+            for x in 0..area.width {
+                row.push_str(buf.cell((x, y)).expect("cell should exist").symbol());
+            }
+            rendered_rows.push(row);
+        }
+        rendered_rows
+    }
+
+    #[test]
+    fn active_transcript_area_preserves_cell_start_instead_of_bottom_scrolling() {
+        let area = Rect::new(0, 0, 40, 4);
+        let mut buf = Buffer::empty(area);
+        let cell = PlainHistoryCell::new(vec![
+            Line::from("active line 1"),
+            Line::from("active line 2"),
+            Line::from("active line 3"),
+            Line::from("active line 4"),
+            Line::from("active line 5"),
+        ]);
+        let renderable = TranscriptAreaRenderable {
+            child: &cell,
+            top: 1,
+            right: 0,
+        };
+
+        renderable.render(area, &mut buf);
+
+        let rendered_rows = buffer_rows(&buf, area);
+        assert!(
+            rendered_rows[1].contains("active line 1")
+                && rendered_rows[2].contains("active line 2")
+                && rendered_rows[3].contains("active line 3"),
+            "expected active-cell rendering to stay top-anchored: {rendered_rows:?}",
+        );
+        assert!(
+            rendered_rows
+                .iter()
+                .all(|row| !row.contains("active line 5")),
+            "bottom-scrolled rendering would hide the command header/output prefix: {rendered_rows:?}",
+        );
     }
 }
