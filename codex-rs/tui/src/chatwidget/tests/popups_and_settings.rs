@@ -15,6 +15,96 @@ use codex_features::Stage;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn realtime_error_closes_without_followup_closed_info() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.realtime_conversation.phase = RealtimeConversationPhase::Active;
+
+    chat.on_realtime_error(ThreadRealtimeErrorNotification {
+        thread_id: ThreadId::new().to_string(),
+        message: "boom".to_string(),
+    });
+    next_realtime_close_op(&mut op_rx);
+
+    chat.on_realtime_conversation_closed(ThreadRealtimeClosedNotification {
+        thread_id: ThreadId::new().to_string(),
+        reason: Some("error".to_string()),
+    });
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>();
+    insta::assert_snapshot!(rendered.join("\n\n"), @"■ Realtime voice error: boom");
+}
+
+#[tokio::test]
+async fn realtime_start_error_before_session_started_resets_without_stop_request() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.realtime_conversation.phase = RealtimeConversationPhase::Starting;
+
+    chat.on_realtime_error(ThreadRealtimeErrorNotification {
+        thread_id: ThreadId::new().to_string(),
+        message: "startup failed".to_string(),
+    });
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(
+        chat.realtime_conversation.phase,
+        RealtimeConversationPhase::Inactive
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>();
+    insta::assert_snapshot!(rendered.join("\n\n"), @"■ Realtime voice error: startup failed");
+}
+
+#[tokio::test]
+async fn realtime_stop_during_starting_stops_when_session_later_starts() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.realtime_conversation.phase = RealtimeConversationPhase::Starting;
+
+    chat.stop_realtime_conversation_from_ui();
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(
+        chat.realtime_conversation.phase,
+        RealtimeConversationPhase::Stopping
+    );
+
+    chat.on_realtime_conversation_started(ThreadRealtimeStartedNotification {
+        thread_id: ThreadId::new().to_string(),
+        realtime_session_id: Some("rt-1".to_string()),
+        version: RealtimeConversationVersion::V2,
+    });
+
+    next_realtime_close_op(&mut op_rx);
+    assert_eq!(
+        chat.realtime_conversation.phase,
+        RealtimeConversationPhase::Stopping
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn deleted_realtime_meter_uses_shared_stop_path() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.realtime_conversation.phase = RealtimeConversationPhase::Active;
+    let placeholder_id = chat.bottom_pane.insert_recording_meter_placeholder("⠤⠤⠤⠤");
+    chat.realtime_conversation.meter_placeholder_id = Some(placeholder_id.clone());
+
+    assert!(chat.stop_realtime_conversation_for_deleted_meter(&placeholder_id));
+
+    next_realtime_close_op(&mut op_rx);
+    assert_eq!(chat.realtime_conversation.meter_placeholder_id, None);
+    assert_eq!(
+        chat.realtime_conversation.phase,
+        RealtimeConversationPhase::Stopping
+    );
+}
+
+#[tokio::test]
 async fn plugins_popup_loading_state_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Plugins, /*enabled*/ true);

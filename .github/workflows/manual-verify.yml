@@ -42,7 +42,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
-      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_CACHE_SIZE: 4G
     defaults:
       run:
         working-directory: codex-rs
@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           bash "${GITHUB_WORKSPACE}/.github/scripts/install-apt-packages.sh" \
-            pkg-config libcap-dev bubblewrap
+            pkg-config libcap-dev libasound2-dev bubblewrap
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
