@@ -10,24 +10,24 @@ three visible
 
 one hidden
 • Ran echo
-  └ b
-    c
+  └ a
+    … +2 rows (⌃t to view transcript)
     d
-    + 1 line (⌃t to expand)
+    + Show details
 
 clipped line
 • Ran echo
-  └ abcdefghijklmno…
-    + 1 line
+  └ abcdefghijklmnop
+    qrstuvwxyz
 
 command only
-• Ran echo a …
+• Ran echo a
+  │ echo b
   └ (no output)
-    + Show details
 
 storage truncated
 • Running echo
   └ x
+    … +99 rows; 529900 lines not retained (⌃t to view transcrip…
     x
-    x
-    + 97 lines (⌃t to expand)
+    + Show details

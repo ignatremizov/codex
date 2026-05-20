@@ -1,7 +1,9 @@
 ---
 source: tui/src/chatwidget/tests/status_and_layout.rs
+assertion_line: 6176
 expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 ---
+
 
 
 
@@ -31,14 +33,13 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 • I’m going to search the repo for where “Change Approved” is rendered to update
   that view.
 
-• Explored
-  └ Search Change Approved
-    Read diff_render.rs
+• Ran rg "Change Approved"
+  └ (no output)
 
 • Investigating rendering code (0s • esc to interrupt)
 
 
 › Summarize recent commits
 
-  GPT-5.6-Sol default · /tmp/project
+  gpt-5.6-sol default · /tmp/project
   tab to queue message

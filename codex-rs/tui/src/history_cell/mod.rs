@@ -22,7 +22,6 @@ use crate::exec_cell::output_lines;
 use crate::exec_command::relativize_to_home;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::legacy_core::config::Config;
-use crate::live_wrap::take_prefix_by_width;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
@@ -96,7 +95,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
-use unicode_segmentation::UnicodeSegmentation;
 use url::Url;
 
 const RAW_DIFF_SUMMARY_WIDTH: usize = 10_000;

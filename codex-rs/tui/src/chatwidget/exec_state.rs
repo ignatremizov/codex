@@ -15,7 +15,7 @@ pub(super) struct UnifiedExecProcessSummary {
     pub(super) key: String,
     pub(super) call_id: String,
     pub(super) command_display: String,
-    pub(super) recent_chunks: Vec<String>,
+    pub(super) recent_chunks: crate::exec_cell::LiveCommandOutput,
 }
 
 pub(super) struct UnifiedExecWaitState {

@@ -183,13 +183,13 @@ impl ChatWidget {
         {
             existing.call_id = call_id.to_string();
             existing.command_display = command_display;
-            existing.recent_chunks.clear();
+            existing.recent_chunks = crate::exec_cell::LiveCommandOutput::default();
         } else {
             self.unified_exec_processes.push(UnifiedExecProcessSummary {
                 key,
                 call_id: call_id.to_string(),
                 command_display,
-                recent_chunks: Vec::new(),
+                recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
             });
         }
         self.sync_unified_exec_footer();
@@ -229,7 +229,7 @@ impl ChatWidget {
                     key: terminal.process_id,
                     call_id: terminal.item_id,
                     command_display: terminal.command,
-                    recent_chunks: Vec::new(),
+                    recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
                 });
             }
         }
@@ -272,20 +272,9 @@ impl ChatWidget {
             return;
         };
 
-        let text = String::from_utf8_lossy(chunk);
-        for line in text
-            .lines()
-            .map(str::trim_end)
-            .filter(|line| !line.is_empty())
-        {
-            process.recent_chunks.push(line.to_string());
-        }
-
-        const MAX_RECENT_CHUNKS: usize = 3;
-        if process.recent_chunks.len() > MAX_RECENT_CHUNKS {
-            let drop_count = process.recent_chunks.len() - MAX_RECENT_CHUNKS;
-            process.recent_chunks.drain(0..drop_count);
-        }
+        process
+            .recent_chunks
+            .push_str(&String::from_utf8_lossy(chunk));
     }
 
     pub(crate) fn handle_command_execution_started_now(&mut self, item: ThreadItemPayload) {
@@ -348,14 +337,20 @@ impl ChatWidget {
         } else {
             self.flush_active_cell();
 
-            self.transcript.active_cell = Some(Box::new(new_active_exec_command(
-                id,
-                command,
-                parsed_cmd,
-                source,
-                /*interaction_input*/ None,
-                self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
-            )));
+            self.transcript.active_cell = Some(Box::new(
+                new_active_exec_command(
+                    id,
+                    command,
+                    parsed_cmd,
+                    source,
+                    /*interaction_input*/ None,
+                    self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
+                )
+                .with_output_preview_line_limits(OutputPreviewLineLimits {
+                    command: self.local_settings.tui.command_output_preview_lines,
+                    user_shell: self.local_settings.tui.user_shell_output_preview_lines,
+                }),
+            ));
             self.bump_active_cell_revision();
         }
 
@@ -480,7 +475,11 @@ impl ChatWidget {
                     source,
                     /*interaction_input*/ None,
                     self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
-                );
+                )
+                .with_output_preview_line_limits(OutputPreviewLineLimits {
+                    command: self.local_settings.tui.command_output_preview_lines,
+                    user_shell: self.local_settings.tui.user_shell_output_preview_lines,
+                });
                 let completed = orphan.complete_call(&id, output, duration);
                 debug_assert!(completed, "new orphan exec cell should contain {id}");
                 self.app_event_tx
@@ -495,7 +494,11 @@ impl ChatWidget {
                     source,
                     /*interaction_input*/ None,
                     self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
-                );
+                )
+                .with_output_preview_line_limits(OutputPreviewLineLimits {
+                    command: self.local_settings.tui.command_output_preview_lines,
+                    user_shell: self.local_settings.tui.user_shell_output_preview_lines,
+                });
                 let completed = cell.complete_call(&id, output, duration);
                 debug_assert!(completed, "new exec cell should contain {id}");
                 if let Some(active) = self
