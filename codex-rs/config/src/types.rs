@@ -822,6 +822,8 @@ pub struct ModelAvailabilityNuxConfig {
 
 /// Fallback resize-reflow row cap when Codex cannot identify a terminal-specific scrollback size.
 pub const DEFAULT_TERMINAL_RESIZE_REFLOW_FALLBACK_MAX_ROWS: usize = 1_000;
+pub const DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES: usize = 30;
+pub const DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES: usize = 50;
 
 /// One reusable prompt or slash command submitted through the TUI composer.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
@@ -850,7 +852,7 @@ impl QuickDial {
 }
 
 /// Collection of settings that are specific to the TUI.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct Tui {
     #[serde(default, flatten)]
@@ -936,6 +938,24 @@ pub struct Tui {
     /// This controls the fullscreen fallback, not the terminal's own paste binding.
     #[serde(default)]
     pub right_click_paste: RightClickPaste,
+
+    /// Maximum number of agent/tool command-output rows shown in the main transcript.
+    ///
+    /// Set to `0` to show all retained command output in the main TUI.
+    /// Large outputs remain available in the transcript overlay; this only controls the inline
+    /// preview used by completed command cells and `/ps`.
+    /// Defaults to `30`.
+    #[serde(default = "default_tui_command_output_preview_lines")]
+    pub command_output_preview_lines: usize,
+
+    /// Maximum number of user shell command-output rows shown in the main transcript.
+    ///
+    /// Set to `0` to show all retained user shell output in the main TUI.
+    /// User shell output is typically explicit and more likely to be read directly in the main TUI,
+    /// so its default remains larger than agent/tool output.
+    /// Defaults to `50`.
+    #[serde(default = "default_tui_user_shell_output_preview_lines")]
+    pub user_shell_output_preview_lines: usize,
 
     /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
     /// Defaults to `true`.
@@ -1026,8 +1046,57 @@ pub struct Tui {
     pub terminal_resize_reflow_max_rows: Option<usize>,
 }
 
+impl Default for Tui {
+    fn default() -> Self {
+        Self {
+            notification_settings: Default::default(),
+            animations: false,
+            screen_reader_detection_done: None,
+            effects: Default::default(),
+            rendering: Default::default(),
+            show_tooltips: false,
+            show_server_version_notice: false,
+            auto_recap: false,
+            disable_paste_burst: None,
+            vim_mode_default: false,
+            question_esc_back: false,
+            raw_output_mode: false,
+            fullscreen_transcript: false,
+            mouse_scroll_speed: None,
+            copy_on_select: Default::default(),
+            copy_on_select_clear_selection: false,
+            right_click_paste: Default::default(),
+            command_output_preview_lines: DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+            user_shell_output_preview_lines: DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
+            show_compact_summary: false,
+            alternate_screen: Default::default(),
+            status_line: None,
+            status_line_use_colors: false,
+            terminal_title: None,
+            theme: None,
+            pet: None,
+            pet_anchor: Default::default(),
+            session_picker_view: None,
+            agents_overview_grouping: Default::default(),
+            resume_cwd: None,
+            keymap: Default::default(),
+            quick_dials: Default::default(),
+            model_availability_nux: Default::default(),
+            terminal_resize_reflow_max_rows: None,
+        }
+    }
+}
+
 const fn default_true() -> bool {
     true
+}
+
+const fn default_tui_command_output_preview_lines() -> usize {
+    DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES
+}
+
+const fn default_tui_user_shell_output_preview_lines() -> usize {
+    DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES
 }
 
 /// Settings for notices we display to users via the tui and app-server clients
