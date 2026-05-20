@@ -215,6 +215,7 @@ impl ChatWidget {
 
     /// Record recent stdout/stderr lines for the unified exec footer.
     pub(super) fn track_unified_exec_output_chunk(&mut self, call_id: &str, chunk: &[u8]) {
+        let max_recent_chunks = self.config.tui_command_output_preview_lines;
         let Some(process) = self
             .unified_exec_processes
             .iter_mut()
@@ -232,9 +233,8 @@ impl ChatWidget {
             process.recent_chunks.push(line.to_string());
         }
 
-        const MAX_RECENT_CHUNKS: usize = 3;
-        if process.recent_chunks.len() > MAX_RECENT_CHUNKS {
-            let drop_count = process.recent_chunks.len() - MAX_RECENT_CHUNKS;
+        if max_recent_chunks != 0 && process.recent_chunks.len() > max_recent_chunks {
+            let drop_count = process.recent_chunks.len() - max_recent_chunks;
             process.recent_chunks.drain(0..drop_count);
         }
     }
@@ -305,6 +305,10 @@ impl ChatWidget {
                 source,
                 /*interaction_input*/ None,
                 self.config.animations,
+                OutputPreviewLineLimits {
+                    command: self.config.tui_command_output_preview_lines,
+                    user_shell: self.config.tui_user_shell_output_preview_lines,
+                },
             )));
             self.bump_active_cell_revision();
         }
@@ -421,6 +425,10 @@ impl ChatWidget {
                     source,
                     /*interaction_input*/ None,
                     self.config.animations,
+                    OutputPreviewLineLimits {
+                        command: self.config.tui_command_output_preview_lines,
+                        user_shell: self.config.tui_user_shell_output_preview_lines,
+                    },
                 );
                 let completed = orphan.complete_call(&id, output, duration);
                 debug_assert!(completed, "new orphan exec cell should contain {id}");
@@ -438,6 +446,10 @@ impl ChatWidget {
                     source,
                     /*interaction_input*/ None,
                     self.config.animations,
+                    OutputPreviewLineLimits {
+                        command: self.config.tui_command_output_preview_lines,
+                        user_shell: self.config.tui_user_shell_output_preview_lines,
+                    },
                 );
                 let completed = cell.complete_call(&id, output, duration);
                 debug_assert!(completed, "new exec cell should contain {id}");

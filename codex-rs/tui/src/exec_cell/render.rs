@@ -3,6 +3,7 @@ use std::time::Instant;
 use super::model::CommandOutput;
 use super::model::ExecCall;
 use super::model::ExecCell;
+use super::model::OutputPreviewLineLimits;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::plain_lines;
@@ -24,13 +25,10 @@ use itertools::Itertools;
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
 use ratatui::style::Stylize;
-use ratatui::widgets::Paragraph;
-use ratatui::widgets::Wrap;
 use textwrap::WordSplitter;
 use unicode_width::UnicodeWidthStr;
 
 pub(crate) const TOOL_CALL_MAX_LINES: usize = 5;
-const USER_SHELL_TOOL_CALL_MAX_LINES: usize = 50;
 const MAX_INTERACTION_PREVIEW_CHARS: usize = 80;
 const TRANSCRIPT_HINT: &str = "ctrl + t to view transcript";
 
@@ -48,6 +46,7 @@ pub(crate) fn new_active_exec_command(
     source: ExecCommandSource,
     interaction_input: Option<String>,
     animations_enabled: bool,
+    output_preview_line_limits: OutputPreviewLineLimits,
 ) -> ExecCell {
     ExecCell::new(
         ExecCall {
@@ -62,6 +61,7 @@ pub(crate) fn new_active_exec_command(
         },
         animations_enabled,
     )
+    .with_output_preview_line_limits(output_preview_line_limits)
 }
 
 fn format_unified_exec_interaction(command: &[String], input: Option<&str>) -> String {
@@ -97,7 +97,32 @@ fn summarize_interaction_input(input: &str) -> String {
 #[derive(Clone)]
 pub(crate) struct OutputLines {
     pub(crate) lines: Vec<Line<'static>>,
-    pub(crate) omitted: Option<usize>,
+}
+
+pub(crate) fn cap_output_preview_rows(
+    lines: Vec<Line<'static>>,
+    row_limit: usize,
+) -> Vec<Line<'static>> {
+    if row_limit == 0 || lines.len() <= row_limit {
+        return lines;
+    }
+
+    let visible_without_ellipsis = row_limit.saturating_sub(1);
+    let head_count = visible_without_ellipsis.div_ceil(2);
+    let tail_count = visible_without_ellipsis.saturating_sub(head_count);
+    let omitted = lines.len().saturating_sub(head_count + tail_count);
+
+    let mut out = Vec::with_capacity(row_limit);
+    out.extend(lines.iter().take(head_count).cloned());
+    out.push(ExecCell::output_ellipsis_line(omitted));
+    if tail_count > 0 {
+        out.extend(
+            lines[lines.len().saturating_sub(tail_count)..]
+                .iter()
+                .cloned(),
+        );
+    }
+    out
 }
 
 pub(crate) fn output_lines(
@@ -114,17 +139,11 @@ pub(crate) fn output_lines(
         aggregated_output, ..
     } = match output {
         Some(output) if only_err && output.exit_code == 0 => {
-            return OutputLines {
-                lines: Vec::new(),
-                omitted: None,
-            };
+            return OutputLines { lines: Vec::new() };
         }
         Some(output) => output,
         None => {
-            return OutputLines {
-                lines: Vec::new(),
-                omitted: None,
-            };
+            return OutputLines { lines: Vec::new() };
         }
     };
 
@@ -133,54 +152,58 @@ pub(crate) fn output_lines(
     let total = lines.len();
     let mut out: Vec<Line<'static>> = Vec::new();
 
-    let head_end = total.min(line_limit);
-    for (i, raw) in lines[..head_end].iter().enumerate() {
-        let mut line = ansi_escape_line(raw);
-        let prefix = if !include_prefix {
-            ""
-        } else if i == 0 && include_angle_pipe {
-            "  └ "
-        } else {
-            "    "
-        };
-        line.spans.insert(0, prefix.into());
-        line.spans.iter_mut().for_each(|span| {
-            span.style = span.style.add_modifier(Modifier::DIM);
-        });
-        out.push(line);
-    }
-
-    let show_ellipsis = total > 2 * line_limit;
-    let omitted = if show_ellipsis {
-        Some(total - 2 * line_limit)
-    } else {
-        None
-    };
-    if show_ellipsis {
-        let omitted = total - 2 * line_limit;
-        out.push(ExecCell::output_ellipsis_line(omitted));
-    }
-
-    let tail_start = if show_ellipsis {
-        total - line_limit
-    } else {
-        head_end
-    };
-    for raw in lines[tail_start..].iter() {
-        let mut line = ansi_escape_line(raw);
-        if include_prefix {
-            line.spans.insert(0, "    ".into());
+    if line_limit == 0 || total <= line_limit {
+        for (i, raw) in lines.iter().enumerate() {
+            push_output_line(&mut out, raw, i, include_prefix, include_angle_pipe);
         }
-        line.spans.iter_mut().for_each(|span| {
-            span.style = span.style.add_modifier(Modifier::DIM);
-        });
-        out.push(line);
+        return OutputLines { lines: out };
     }
 
-    OutputLines {
-        lines: out,
-        omitted,
+    let visible_without_ellipsis = line_limit.saturating_sub(1);
+    let head_count = visible_without_ellipsis.div_ceil(2);
+    let tail_count = visible_without_ellipsis.saturating_sub(head_count);
+
+    for (i, raw) in lines[..head_count].iter().enumerate() {
+        push_output_line(&mut out, raw, i, include_prefix, include_angle_pipe);
     }
+
+    let omitted = total.saturating_sub(head_count + tail_count);
+    out.push(ExecCell::output_ellipsis_line(omitted));
+
+    let tail_start = total.saturating_sub(tail_count);
+    for (i, raw) in lines[tail_start..].iter().enumerate() {
+        push_output_line(
+            &mut out,
+            raw,
+            tail_start + i,
+            include_prefix,
+            include_angle_pipe,
+        );
+    }
+
+    OutputLines { lines: out }
+}
+
+fn push_output_line(
+    out: &mut Vec<Line<'static>>,
+    raw: &str,
+    idx: usize,
+    include_prefix: bool,
+    include_angle_pipe: bool,
+) {
+    let mut line = ansi_escape_line(raw);
+    let prefix = if !include_prefix {
+        ""
+    } else if idx == 0 && include_angle_pipe {
+        "  └ "
+    } else {
+        "    "
+    };
+    line.spans.insert(0, prefix.into());
+    line.spans.iter_mut().for_each(|span| {
+        span.style = span.style.add_modifier(Modifier::DIM);
+    });
+    out.push(line);
 }
 
 fn activity_marker(start_time: Option<Instant>, animations_enabled: bool) -> Span<'static> {
@@ -427,10 +450,6 @@ impl ExecCell {
 
         let mut lines: Vec<Line<'static>> = vec![header_line];
 
-        let continuation_lines = Self::limit_lines_from_start(
-            &continuation_lines,
-            layout.command_continuation_max_lines,
-        );
         if !continuation_lines.is_empty() {
             lines.extend(prefix_lines(
                 continuation_lines,
@@ -440,11 +459,7 @@ impl ExecCell {
         }
 
         if let Some(output) = call.output.as_ref() {
-            let line_limit = if call.is_user_shell_command() {
-                USER_SHELL_TOOL_CALL_MAX_LINES
-            } else {
-                TOOL_CALL_MAX_LINES
-            };
+            let line_limit = self.output_preview_lines(call.source);
             let raw_output = output_lines(
                 Some(output),
                 OutputLinesParams {
@@ -454,12 +469,6 @@ impl ExecCell {
                     include_prefix: false,
                 },
             );
-            let display_limit = if call.is_user_shell_command() {
-                USER_SHELL_TOOL_CALL_MAX_LINES
-            } else {
-                layout.output_max_lines
-            };
-
             if raw_output.lines.is_empty() {
                 if !call.is_unified_exec_interaction() {
                     lines.extend(prefix_lines(
@@ -469,9 +478,6 @@ impl ExecCell {
                     ));
                 }
             } else {
-                // Wrap first so that truncation is applied to on-screen lines
-                // rather than logical lines. This ensures that a small number
-                // of very long lines cannot flood the viewport.
                 let mut wrapped_output: Vec<Line<'static>> = Vec::new();
                 let output_wrap_width = layout.output_block.wrap_width(width);
                 let output_opts =
@@ -482,179 +488,21 @@ impl ExecCell {
                         &mut wrapped_output,
                     );
                 }
+                let wrapped_output = cap_output_preview_rows(wrapped_output, line_limit);
 
                 let prefixed_output = prefix_lines(
                     wrapped_output,
                     Span::from(layout.output_block.initial_prefix).dim(),
                     Span::from(layout.output_block.subsequent_prefix),
                 );
-                let trimmed_output = Self::truncate_lines_middle(
-                    &prefixed_output,
-                    display_limit,
-                    width,
-                    raw_output.omitted,
-                    Some(Line::from(
-                        Span::from(layout.output_block.subsequent_prefix).dim(),
-                    )),
-                );
 
-                if !trimmed_output.is_empty() {
-                    lines.extend(trimmed_output);
+                if !prefixed_output.is_empty() {
+                    lines.extend(prefixed_output);
                 }
             }
         }
 
         lines
-    }
-
-    fn limit_lines_from_start(lines: &[Line<'static>], keep: usize) -> Vec<Line<'static>> {
-        if lines.len() <= keep {
-            return lines.to_vec();
-        }
-        if keep == 0 {
-            return vec![Self::ellipsis_line(lines.len())];
-        }
-
-        let mut out: Vec<Line<'static>> = lines[..keep].to_vec();
-        out.push(Self::ellipsis_line(lines.len() - keep));
-        out
-    }
-
-    /// Truncates a list of lines to fit within `max_rows` viewport rows,
-    /// keeping a head portion and a tail portion with an ellipsis line
-    /// in between.
-    ///
-    /// `max_rows` is measured in viewport rows (the actual space a line
-    /// occupies after `Paragraph::wrap`), not logical lines. Each line's
-    /// row cost is computed via `Paragraph::line_count` at the given
-    /// `width`. This ensures that a single logical line containing a
-    /// long URL (which wraps to several viewport rows) is properly
-    /// accounted for.
-    ///
-    /// The ellipsis message reports the number of omitted *lines*
-    /// (logical, not rows) to keep the count stable across terminal
-    /// widths. `omitted_hint` carries forward any previously reported
-    /// omitted count (from upstream truncation); `ellipsis_prefix`
-    /// prepends the output gutter prefix to the ellipsis line.
-    fn truncate_lines_middle(
-        lines: &[Line<'static>],
-        max_rows: usize,
-        width: u16,
-        omitted_hint: Option<usize>,
-        ellipsis_prefix: Option<Line<'static>>,
-    ) -> Vec<Line<'static>> {
-        let width = width.max(1);
-        if max_rows == 0 {
-            return Vec::new();
-        }
-        let line_rows: Vec<usize> = lines
-            .iter()
-            .map(|line| {
-                let is_whitespace_only = line
-                    .spans
-                    .iter()
-                    .all(|span| span.content.chars().all(char::is_whitespace));
-                if is_whitespace_only {
-                    line.width().div_ceil(usize::from(width)).max(1)
-                } else {
-                    Paragraph::new(Text::from(vec![line.clone()]))
-                        .wrap(Wrap { trim: false })
-                        .line_count(width)
-                        .max(1)
-                }
-            })
-            .collect();
-        let total_rows: usize = line_rows.iter().sum();
-        if total_rows <= max_rows {
-            return lines.to_vec();
-        }
-        // Reserve space for the transcript hint itself so the returned output
-        // still respects the row budget on narrow terminals.
-        let estimated_omitted = omitted_hint.unwrap_or(0)
-            + lines
-                .len()
-                .saturating_sub(usize::from(omitted_hint.is_some()));
-        let ellipsis_rows =
-            Self::output_ellipsis_row_count(estimated_omitted, width, ellipsis_prefix.as_ref());
-        if ellipsis_rows >= max_rows {
-            return vec![Self::output_ellipsis_line_with_prefix(
-                estimated_omitted,
-                ellipsis_prefix.as_ref(),
-            )];
-        }
-
-        let available_rows = max_rows - ellipsis_rows;
-        let head_budget = available_rows / 2;
-        let tail_budget = available_rows - head_budget;
-        let mut head_lines: Vec<Line<'static>> = Vec::new();
-        let mut head_rows = 0usize;
-        let mut head_end = 0usize;
-        while head_end < lines.len() {
-            let line_row_count = line_rows[head_end];
-            if head_rows + line_row_count > head_budget {
-                break;
-            }
-            head_rows += line_row_count;
-            head_lines.push(lines[head_end].clone());
-            head_end += 1;
-        }
-
-        let mut tail_lines_reversed: Vec<Line<'static>> = Vec::new();
-        let mut tail_rows = 0usize;
-        let mut tail_start = lines.len();
-        while tail_start > head_end {
-            let idx = tail_start - 1;
-            let line_row_count = line_rows[idx];
-            if tail_rows + line_row_count > tail_budget {
-                break;
-            }
-            tail_rows += line_row_count;
-            tail_lines_reversed.push(lines[idx].clone());
-            tail_start -= 1;
-        }
-
-        let mut out = head_lines;
-        let base = omitted_hint.unwrap_or(0);
-        let additional = lines
-            .len()
-            .saturating_sub(out.len() + tail_lines_reversed.len())
-            .saturating_sub(usize::from(omitted_hint.is_some()));
-        out.push(Self::output_ellipsis_line_with_prefix(
-            base + additional,
-            ellipsis_prefix.as_ref(),
-        ));
-
-        out.extend(tail_lines_reversed.into_iter().rev());
-
-        out
-    }
-
-    fn ellipsis_line(omitted: usize) -> Line<'static> {
-        Line::from(vec![format!("… +{omitted} lines").dim()])
-    }
-
-    fn output_ellipsis_row_count(
-        omitted: usize,
-        width: u16,
-        prefix: Option<&Line<'static>>,
-    ) -> usize {
-        Paragraph::new(Text::from(vec![Self::output_ellipsis_line_with_prefix(
-            omitted, prefix,
-        )]))
-        .wrap(Wrap { trim: false })
-        .line_count(width)
-        .max(1)
-    }
-
-    /// Builds an output ellipsis line (`… +N lines (ctrl + t to view transcript)`)
-    /// with an optional leading prefix so the ellipsis aligns with the output gutter.
-    fn output_ellipsis_line_with_prefix(
-        omitted: usize,
-        prefix: Option<&Line<'static>>,
-    ) -> Line<'static> {
-        let mut line = prefix.cloned().unwrap_or_default();
-        line.push_span(Self::output_ellipsis_text(omitted).dim());
-        line
     }
 }
 
@@ -682,32 +530,21 @@ impl PrefixedBlock {
 #[derive(Clone, Copy)]
 struct ExecDisplayLayout {
     command_continuation: PrefixedBlock,
-    command_continuation_max_lines: usize,
     output_block: PrefixedBlock,
-    output_max_lines: usize,
 }
 
 impl ExecDisplayLayout {
-    const fn new(
-        command_continuation: PrefixedBlock,
-        command_continuation_max_lines: usize,
-        output_block: PrefixedBlock,
-        output_max_lines: usize,
-    ) -> Self {
+    const fn new(command_continuation: PrefixedBlock, output_block: PrefixedBlock) -> Self {
         Self {
             command_continuation,
-            command_continuation_max_lines,
             output_block,
-            output_max_lines,
         }
     }
 }
 
 const EXEC_DISPLAY_LAYOUT: ExecDisplayLayout = ExecDisplayLayout::new(
     PrefixedBlock::new("  │ ", "  │ "),
-    /*command_continuation_max_lines*/ 2,
     PrefixedBlock::new("  └ ", "    "),
-    /*output_max_lines*/ 5,
 );
 
 #[cfg(test)]
@@ -724,65 +561,18 @@ mod tests {
     }
 
     #[test]
-    fn user_shell_output_is_limited_by_screen_lines() {
-        let long_url_like = format!(
-            "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890/{}",
-            "very-long-segment-".repeat(120),
-        );
-        let aggregated_output = format!("{long_url_like}\n{long_url_like}\n");
-
-        // Baseline: how many screen lines would we get if we simply wrapped
-        // all logical lines without any truncation?
-        let output = CommandOutput {
-            exit_code: 0,
-            aggregated_output,
-            formatted_output: String::new(),
-        };
-        let width = 20;
-        let layout = EXEC_DISPLAY_LAYOUT;
-        let raw_output = output_lines(
-            Some(&output),
-            OutputLinesParams {
-                // Large enough to include all logical lines without
-                // triggering the ellipsis in `output_lines`.
-                line_limit: 100,
-                only_err: false,
-                include_angle_pipe: false,
-                include_prefix: false,
-            },
-        );
-        let output_wrap_width = layout.output_block.wrap_width(width);
-        let output_opts =
-            RtOptions::new(output_wrap_width).word_splitter(WordSplitter::NoHyphenation);
-        let mut full_wrapped_output: Vec<Line<'static>> = Vec::new();
-        for line in &raw_output.lines {
-            push_owned_lines(
-                &adaptive_wrap_line(line, output_opts.clone()),
-                &mut full_wrapped_output,
-            );
-        }
-        let full_prefixed_output = prefix_lines(
-            full_wrapped_output,
-            Span::from(layout.output_block.initial_prefix).dim(),
-            Span::from(layout.output_block.subsequent_prefix),
-        );
-        let full_screen_lines = Paragraph::new(Text::from(full_prefixed_output))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-
-        // Sanity check: this scenario should produce more screen lines than
-        // the user shell per-call limit when no truncation is applied. If
-        // this ever fails, the test no longer exercises the regression.
-        assert!(
-            full_screen_lines > USER_SHELL_TOOL_CALL_MAX_LINES,
-            "expected unbounded wrapping to produce more than {USER_SHELL_TOOL_CALL_MAX_LINES} screen lines, got {full_screen_lines}",
-        );
-
+    fn command_output_wraps_retained_long_lines_without_inline_truncation() {
         let call = ExecCall {
             call_id: "call-id".to_string(),
             command: vec!["bash".into(), "-lc".into(), "echo long".into()],
             parsed: Vec::new(),
-            output: Some(output),
+            output: Some(CommandOutput {
+                exit_code: 0,
+                aggregated_output:
+                    "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega"
+                        .to_string(),
+                formatted_output: String::new(),
+            }),
             source: ExecCommandSource::UserShell,
             start_time: None,
             duration: None,
@@ -790,70 +580,62 @@ mod tests {
         };
 
         let cell = ExecCell::new(call, /*animations_enabled*/ false);
-
-        // Use a narrow width so each logical line wraps into many on-screen lines.
-        let lines = cell.command_display_lines(width);
-        let rendered_rows = Paragraph::new(Text::from(lines.clone()))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-        let header_rows = Paragraph::new(Text::from(vec![lines[0].clone()]))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-        let output_screen_rows = rendered_rows.saturating_sub(header_rows);
-
-        let contains_ellipsis = lines
-            .iter()
-            .any(|line| line.spans.iter().any(|span| span.content.contains("… +")));
-
-        // Regression guard: previously this scenario could render hundreds of
-        // wrapped rows because truncation happened before final viewport
-        // wrapping. The row-aware truncation now caps visible output rows.
-        assert!(
-            output_screen_rows <= USER_SHELL_TOOL_CALL_MAX_LINES,
-            "expected at most {USER_SHELL_TOOL_CALL_MAX_LINES} output rows, got {output_screen_rows} (total rows: {rendered_rows})",
-        );
-        assert!(
-            contains_ellipsis,
-            "expected truncated output to include an ellipsis line"
-        );
-        let normalized = lines
+        let rendered_text = cell
+            .command_display_lines(/*width*/ 32)
             .iter()
             .map(render_line_text)
-            .join(" ")
-            .split_whitespace()
-            .join(" ");
+            .join("\n");
+
         assert!(
-            normalized.contains(TRANSCRIPT_HINT),
-            "expected truncated output to advertise transcript shortcut, got {normalized}"
+            !rendered_text.contains("[...]") && !rendered_text.contains("ctrl + t"),
+            "expected retained output line to wrap without truncation markers, got:\n{rendered_text}"
+        );
+        assert!(
+            rendered_text.contains("omega"),
+            "expected tail of retained output line to remain visible, got:\n{rendered_text}"
         );
     }
 
     #[test]
-    fn truncate_lines_middle_keeps_omitted_count_in_line_units() {
-        let lines = vec![
-            Line::from("  └ short"),
-            Line::from("    this-is-a-very-long-token-that-wraps-many-rows"),
-            Line::from(format!(
-                "    {}",
-                ExecCell::output_ellipsis_text(/*omitted*/ 4)
-            )),
-            Line::from("    tail"),
-        ];
+    fn command_output_limit_counts_wrapped_rows() {
+        let output = (1..=12)
+            .map(|idx| {
+                format!(
+                    "line-{idx:02} alpha beta gamma delta epsilon zeta eta theta iota kappa omega"
+                )
+            })
+            .join("\n");
+        let call = ExecCall {
+            call_id: "call-id".to_string(),
+            command: vec!["bash".into(), "-lc".into(), "printf lines".into()],
+            parsed: Vec::new(),
+            output: Some(CommandOutput {
+                exit_code: 0,
+                aggregated_output: output,
+                formatted_output: String::new(),
+            }),
+            source: ExecCommandSource::Agent,
+            start_time: None,
+            duration: None,
+            interaction_input: None,
+        };
 
-        let truncated = ExecCell::truncate_lines_middle(
-            &lines,
-            /*max_rows*/ 2,
-            /*width*/ 80,
-            Some(4),
-            Some(Line::from("    ".dim())),
-        );
-        let rendered: Vec<String> = truncated.iter().map(render_line_text).collect();
+        let cell = ExecCell::new(call, /*animations_enabled*/ false)
+            .with_output_preview_line_limits(OutputPreviewLineLimits {
+                command: 6,
+                user_shell: 50,
+            });
+        let rendered = cell.command_display_lines(/*width*/ 32);
+        let rendered_text = rendered.iter().map(render_line_text).join("\n");
 
         assert!(
-            rendered
-                .iter()
-                .any(|line| line.contains("… +6 lines (ctrl + t to view transcript)")),
-            "expected omitted hint to count hidden lines (not wrapped rows), got: {rendered:?}"
+            rendered_text.contains("ctrl + t") && rendered_text.contains("… +"),
+            "expected wrapped output rows to be capped, got:\n{rendered_text}"
+        );
+        assert!(
+            rendered.len() <= 7,
+            "expected header plus six output preview rows at most, got {} rows:\n{rendered_text}",
+            rendered.len()
         );
     }
 
@@ -882,45 +664,81 @@ mod tests {
         assert!(
             rendered
                 .iter()
-                .any(|line| line.contains("… +3 lines (ctrl + t to view transcript)")),
+                .any(|line| line.contains("… +6 lines (ctrl + t to view transcript)")),
             "expected logical truncation to include transcript hint, got: {rendered:?}"
         );
     }
 
     #[test]
-    fn command_truncation_ellipsis_does_not_include_transcript_hint() {
-        let truncated = ExecCell::limit_lines_from_start(
-            &[
-                Line::from("first"),
-                Line::from("second"),
-                Line::from("third"),
-            ],
-            /*keep*/ 2,
-        );
-        let rendered: Vec<String> = truncated.iter().map(render_line_text).collect();
+    fn output_lines_zero_limit_preserves_all_lines_without_ellipsis() {
+        let output = CommandOutput {
+            exit_code: 0,
+            aggregated_output: (1..=12).map(|n| n.to_string()).join("\n"),
+            formatted_output: String::new(),
+        };
+
+        let rendered: Vec<String> = output_lines(
+            Some(&output),
+            OutputLinesParams {
+                line_limit: 0,
+                only_err: false,
+                include_angle_pipe: false,
+                include_prefix: false,
+            },
+        )
+        .lines
+        .iter()
+        .map(render_line_text)
+        .collect();
 
         assert_eq!(
             rendered,
-            vec![
-                "first".to_string(),
-                "second".to_string(),
-                "… +1 lines".to_string(),
-            ]
+            (1..=12).map(|n| n.to_string()).collect::<Vec<_>>()
         );
     }
 
     #[test]
-    fn truncate_lines_middle_does_not_truncate_blank_prefixed_output_lines() {
-        let mut lines = vec![Line::from("  └ start")];
-        lines.extend(std::iter::repeat_n(Line::from("    "), 26));
-        lines.push(Line::from("    end"));
+    fn command_display_preserves_full_multiline_command() {
+        let command = std::iter::once("set -euo pipefail".to_string())
+            .chain((1..=24).map(|idx| format!("echo setup line {idx:02}")))
+            .chain([
+                "repo=ignatremizov/codex".to_string(),
+                "parent=$(git rev-parse origin/fork)".to_string(),
+                "head=$(git rev-parse HEAD)".to_string(),
+                "gh workflow run manual-release-build.yml --repo \"$repo\" --ref fork".to_string(),
+            ])
+            .join("\n");
+        let call = ExecCall {
+            call_id: "call-id".to_string(),
+            command: vec!["bash".into(), "-lc".into(), command],
+            parsed: Vec::new(),
+            output: Some(CommandOutput {
+                exit_code: 0,
+                formatted_output: String::new(),
+                aggregated_output: String::new(),
+            }),
+            source: ExecCommandSource::Agent,
+            start_time: None,
+            duration: None,
+            interaction_input: None,
+        };
 
-        let truncated = ExecCell::truncate_lines_middle(
-            &lines, /*max_rows*/ 28, /*width*/ 80, /*omitted_hint*/ None,
-            /*ellipsis_prefix*/ None,
+        let cell = ExecCell::new(call, /*animations_enabled*/ false);
+        let rendered: Vec<String> = cell
+            .command_display_lines(/*width*/ 36)
+            .iter()
+            .map(render_line_text)
+            .collect();
+        let rendered_text = rendered.join("\n");
+
+        assert!(
+            !rendered_text.contains("… +"),
+            "expected full command without command-line ellipsis, got:\n{rendered_text}"
         );
-
-        assert_eq!(truncated, lines);
+        assert!(
+            rendered_text.contains("gh workflow run"),
+            "expected final command line to remain visible, got:\n{rendered_text}"
+        );
     }
 
     #[test]
