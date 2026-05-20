@@ -165,6 +165,27 @@ fn render_transcript(cell: &dyn HistoryCell) -> Vec<String> {
     render_lines(&cell.transcript_lines(u16::MAX))
 }
 
+fn new_unified_exec_processes_output(
+    processes: Vec<UnifiedExecProcessDetails>,
+) -> CompositeHistoryCell {
+    new_unified_exec_processes_output_with_limit(
+        processes,
+        codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+    )
+}
+
+fn buffer_rows(buf: &Buffer, area: Rect) -> Vec<String> {
+    let mut rendered_rows: Vec<String> = Vec::new();
+    for y in 0..area.height {
+        let mut row = String::new();
+        for x in 0..area.width {
+            row.push_str(buf.cell((x, y)).expect("cell should exist").symbol());
+        }
+        rendered_rows.push(row);
+    }
+    rendered_rows
+}
+
 fn assert_unstyled_lines(lines: &[Line<'static>]) {
     for line in lines {
         assert_eq!(line.style, Style::default());
@@ -814,6 +835,23 @@ fn ps_output_halfwidth_sound_marks_snapshot() {
 }
 
 #[test]
+fn ps_output_preserves_full_multiline_command_snapshot() {
+    let command_display = std::iter::once("sleep 600".to_string())
+        .chain((1..=12).map(|idx| format!("echo line {idx:02}")))
+        .chain(std::iter::once(
+            "wc -l /tmp/codex_multiline_pty_test.txt".to_string(),
+        ))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        command_display,
+        recent_chunks: Vec::new(),
+    }]);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
 fn ps_output_many_sessions_snapshot() {
     let cell = new_unified_exec_processes_output(
         (0..20)
@@ -838,6 +876,59 @@ fn ps_output_chunk_leading_whitespace_snapshot() {
     }]);
     let rendered = render_lines(&cell.display_lines(/*width*/ 60)).join("\n");
     insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn ps_output_wraps_recent_chunks_without_inline_truncation_snapshot() {
+    let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        command_display: "tail -f app.log".to_string(),
+        recent_chunks: vec![
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega".to_string(),
+        ],
+    }]);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 32)).join("\n");
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn ps_output_caps_wrapped_recent_chunk_rows() {
+    let chunk = (1..=80)
+        .map(|idx| format!("word{idx:02}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cell = new_unified_exec_processes_output_with_limit(
+        vec![UnifiedExecProcessDetails {
+            command_display: "tail -f generated.json".to_string(),
+            recent_chunks: vec![chunk],
+        }],
+        /*output_preview_lines*/ 5,
+    );
+
+    let rendered = render_lines(&cell.display_lines(/*width*/ 24));
+    let rendered_text = rendered.join("\n");
+
+    assert!(
+        rendered_text.contains("ctrl + t") && rendered_text.contains("… +"),
+        "expected wrapped /ps output rows to be capped, got:\n{rendered_text}"
+    );
+    assert!(
+        rendered.len() <= 12,
+        "expected bounded /ps output, got {} rows:\n{rendered_text}",
+        rendered.len()
+    );
+
+    let transcript = render_lines(&visible_lines(
+        cell.transcript_hyperlink_lines(/*width*/ 24),
+    ));
+    let transcript_text = transcript.join("\n");
+    assert!(
+        transcript.len() > rendered.len(),
+        "expected transcript to preserve capped /ps output, got:\n{transcript_text}"
+    );
+    assert!(
+        !transcript_text.contains("ctrl + t") && transcript_text.contains("word80"),
+        "expected transcript to expose complete retained /ps output, got:\n{transcript_text}"
+    );
 }
 
 #[test]
@@ -2065,6 +2156,16 @@ fn single_line_command_wraps_with_four_space_continuation() {
 fn single_line_command_over_highlight_limit_uses_plain_text_fallback() {
     let call_id = "c1".to_string();
     let base64_like = "A".repeat(MAX_HIGHLIGHT_LINE_BYTES + 1);
+    let mut expected_lines = textwrap::wrap(&base64_like, textwrap::Options::new(/*width*/ 18))
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let prefix = if index == 0 { "• Ran " } else { "  │ " };
+            format!("{prefix}{line}")
+        })
+        .collect::<Vec<_>>();
+    expected_lines.push("  └ (no output)".to_string());
+    let expected = expected_lines.join("\n");
     let mut cell = ExecCell::new(
         ExecCall {
             call_id: call_id.clone(),
@@ -2081,8 +2182,7 @@ fn single_line_command_over_highlight_limit_uses_plain_text_fallback() {
     cell.complete_call(&call_id, CommandOutput::default(), Duration::from_millis(1));
 
     let rendered = render_lines(&cell.display_lines(/*width*/ 24)).join("\n");
-
-    insta::assert_snapshot!(rendered);
+    assert_eq!(rendered, expected);
 }
 
 #[test]
@@ -2172,6 +2272,53 @@ fn stderr_tail_more_than_five_lines_snapshot() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn command_output_preview_lines_controls_inline_history_rows() {
+    let call_id = "c_output_preview".to_string();
+    let mut cell = ExecCell::new(
+        ExecCall {
+            call_id: call_id.clone(),
+            command: vec!["bash".into(), "-lc".into(), "seq 1 8".into()],
+            parsed: Vec::new(),
+            output: None,
+            source: ExecCommandSource::Agent,
+            start_time: Some(Instant::now()),
+            duration: None,
+            interaction_input: None,
+        },
+        /*animations_enabled*/ true,
+    )
+    .with_output_preview_line_limits(crate::exec_cell::OutputPreviewLineLimits {
+        command: 3,
+        user_shell: codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
+    });
+    cell.complete_call(
+        &call_id,
+        CommandOutput::new(
+            0,
+            (1..=8)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Duration::from_millis(1),
+    );
+
+    let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
+    let output_rows = rendered
+        .lines()
+        .filter(|line| line.starts_with("  └ ") || line.starts_with("    "))
+        .count();
+    assert!(
+        output_rows <= 3,
+        "expected at most 3 output preview rows, got {output_rows}:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("ctrl + t to view transcript"),
+        "expected inline output to honor configured preview cap, got:\n{rendered}"
+    );
 }
 
 #[test]
@@ -2940,14 +3087,7 @@ fn render_clears_area_when_cell_content_shrinks() {
     let second: Box<dyn HistoryCell> = Box::new(PlainHistoryCell::new(vec![Line::from("fresh")]));
     second.render(area, &mut buf);
 
-    let mut rendered_rows: Vec<String> = Vec::new();
-    for y in 0..area.height {
-        let mut row = String::new();
-        for x in 0..area.width {
-            row.push_str(buf.cell((x, y)).expect("cell should exist").symbol());
-        }
-        rendered_rows.push(row);
-    }
+    let rendered_rows = buffer_rows(&buf, area);
 
     assert!(
         rendered_rows.iter().all(|row| !row.contains("STALE")),
@@ -2958,6 +3098,33 @@ fn render_clears_area_when_cell_content_shrinks() {
             .first()
             .is_some_and(|row| row.contains("fresh")),
         "expected fresh content in first row: {rendered_rows:?}",
+    );
+}
+
+#[test]
+fn render_overflow_preserves_cell_start_instead_of_bottom_scrolling() {
+    let area = Rect::new(0, 0, 40, 3);
+    let mut buf = Buffer::empty(area);
+    let cell: Box<dyn HistoryCell> = Box::new(PlainHistoryCell::new(vec![
+        Line::from("line 1"),
+        Line::from("line 2"),
+        Line::from("line 3"),
+        Line::from("line 4"),
+        Line::from("line 5"),
+    ]));
+
+    cell.render(area, &mut buf);
+
+    let rendered_rows = buffer_rows(&buf, area);
+    assert!(
+        rendered_rows[0].contains("line 1")
+            && rendered_rows[1].contains("line 2")
+            && rendered_rows[2].contains("line 3"),
+        "expected clipped history-cell rendering to stay top-anchored: {rendered_rows:?}",
+    );
+    assert!(
+        rendered_rows.iter().all(|row| !row.contains("line 5")),
+        "bottom-scrolled rendering would hide the command header/output prefix: {rendered_rows:?}",
     );
 }
 

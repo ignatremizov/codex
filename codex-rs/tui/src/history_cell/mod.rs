@@ -16,6 +16,7 @@ use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::OutputLinesParams;
 use crate::exec_cell::TOOL_CALL_MAX_LINES;
+use crate::exec_cell::cap_output_preview_rows;
 use crate::exec_cell::output_lines;
 use crate::exec_command::relativize_to_home;
 use crate::exec_command::strip_bash_lc_and_escape;
@@ -290,18 +291,10 @@ impl Renderable for Box<dyn HistoryCell> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let hyperlink_lines = self.display_hyperlink_lines(area.width);
         let paragraph = HyperlinkParagraph::new(&hyperlink_lines, Style::default());
-        let y = if area.height == 0 {
-            0
-        } else {
-            let overflow = paragraph
-                .line_count(area.width)
-                .saturating_sub(usize::from(area.height));
-            u16::try_from(overflow).unwrap_or(u16::MAX)
-        };
         // Active-cell content can reflow dramatically during resize/stream updates. Clear the
         // entire draw area first so stale glyphs from previous frames never linger.
         Clear.render(area, buf);
-        paragraph.scroll(y).render(area, buf);
+        paragraph.render(area, buf);
     }
     fn desired_height(&self, width: u16) -> u16 {
         HistoryCell::desired_height(self.as_ref(), width)

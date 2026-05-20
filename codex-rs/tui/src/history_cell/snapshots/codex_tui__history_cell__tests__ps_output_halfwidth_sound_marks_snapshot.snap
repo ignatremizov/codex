@@ -6,5 +6,7 @@ expression: rendered
 
 Background terminals
 
-  • echo ｶﾞﾊﾟｶﾞﾊﾟ [...]
-    ↳ output ｶﾞﾊﾟ [...]
+  • echo ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞ
+    ﾊﾟｶﾞﾊﾟ
+    ↳ output ｶﾞﾊﾟｶﾞﾊﾟｶﾞ
+      ﾊﾟｶﾞﾊﾟｶﾞﾊﾟ
