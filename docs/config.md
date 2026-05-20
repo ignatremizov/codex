@@ -174,6 +174,20 @@ show_compact_summary = false
 
 When unset, the transcript includes the compacted prompt when available (otherwise just the summary).
 
+Configure main-transcript command output previews:
+
+```toml
+[tui]
+command_output_preview_lines = 30
+user_shell_output_preview_lines = 50
+agent_prompt_preview_lines = 50
+agent_response_preview_lines = 0
+```
+
+Set any value to `0` to show all retained output for that category in the main TUI. Agent prompt
+previews apply to rendered rows from subagent spawn/input prompts, and agent response previews apply
+to rendered rows from subagent output shown after a multi-agent wait completes.
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.

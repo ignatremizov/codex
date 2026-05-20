@@ -680,6 +680,8 @@ pub struct ModelAvailabilityNuxConfig {
 
 /// Fallback resize-reflow row cap when Codex cannot identify a terminal-specific scrollback size.
 pub const DEFAULT_TERMINAL_RESIZE_REFLOW_FALLBACK_MAX_ROWS: usize = 1_000;
+pub const DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES: usize = 30;
+pub const DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES: usize = 50;
 
 /// Collection of settings that are specific to the TUI.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
@@ -708,6 +710,23 @@ pub struct Tui {
     #[serde(default)]
     pub raw_output_mode: bool,
 
+    /// Maximum number of agent/tool command-output rows shown in the main transcript.
+    ///
+    /// Set to `0` to show all retained command output in the main TUI.
+    /// Large outputs remain available in the transcript overlay; this only controls the inline
+    /// preview used by completed command cells and `/ps`.
+    /// Defaults to `30`.
+    #[serde(default = "default_tui_command_output_preview_lines")]
+    pub command_output_preview_lines: usize,
+
+    /// Maximum number of user shell command-output rows shown in the main transcript.
+    ///
+    /// Set to `0` to show all retained user shell output in the main TUI.
+    /// User shell output is typically explicit and more likely to be read directly in the main TUI,
+    /// so its default remains larger than agent/tool output.
+    /// Defaults to `50`.
+    #[serde(default = "default_tui_user_shell_output_preview_lines")]
+    pub user_shell_output_preview_lines: usize,
     /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
     /// Defaults to `true`.
     #[serde(default = "default_true")]
@@ -785,6 +804,14 @@ pub struct Tui {
 
 const fn default_true() -> bool {
     true
+}
+
+const fn default_tui_command_output_preview_lines() -> usize {
+    DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES
+}
+
+const fn default_tui_user_shell_output_preview_lines() -> usize {
+    DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES
 }
 
 /// Settings for notices we display to users via the tui and app-server clients
