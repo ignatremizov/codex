@@ -49,7 +49,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       # Fork TUI and app-server integration futures retain more lifecycle state than upstream.
       RUST_MIN_STACK: "16777216"
-      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_CACHE_SIZE: 4G
     defaults:
       run:
         working-directory: codex-rs
