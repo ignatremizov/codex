@@ -4686,6 +4686,13 @@
           "description": "Generate automatic conversation recaps when the terminal is unfocused. Defaults to `false`. `/recap` remains available on demand.",
           "type": "boolean"
         },
+        "command_output_preview_lines": {
+          "default": 30,
+          "description": "Maximum number of agent/tool command-output rows shown in the main transcript.\n\nSet to `0` to show all retained command output in the main TUI. Large outputs remain available in the transcript overlay; this only controls the inline preview used by completed command cells and `/ps`. Defaults to `30`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "copy_on_select": {
           "allOf": [
             {
@@ -5076,6 +5083,13 @@
           "default": null,
           "description": "Syntax highlighting theme name (kebab-case).\n\nWhen set, overrides automatic light/dark theme detection. Use `/theme` in the TUI or see `$CODEX_HOME/themes` for custom themes.",
           "type": "string"
+        },
+        "user_shell_output_preview_lines": {
+          "default": 50,
+          "description": "Maximum number of user shell command-output rows shown in the main transcript.\n\nSet to `0` to show all retained user shell output in the main TUI. User shell output is typically explicit and more likely to be read directly in the main TUI, so its default remains larger than agent/tool output. Defaults to `50`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "vim_mode_default": {
           "default": false,
