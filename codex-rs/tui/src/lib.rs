@@ -110,9 +110,9 @@ mod app_server_session;
 mod approval_events;
 mod ascii_animation;
 mod backend_banners;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", target_env = "musl")))]
 mod audio_device;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "musl"))]
 #[allow(dead_code)]
 mod audio_device {
     use crate::app_event::RealtimeAudioDeviceKind;
@@ -236,14 +236,14 @@ mod updates;
 mod updates_cache;
 mod version;
 mod vim_search;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", target_env = "musl")))]
 mod voice;
 mod width;
 #[cfg(any(target_os = "windows", test))]
 mod windows_sandbox;
 mod workspace_command;
 mod workspace_messages;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "musl"))]
 #[allow(dead_code)]
 mod voice {
     use crate::app_event_sender::AppEventSender;
