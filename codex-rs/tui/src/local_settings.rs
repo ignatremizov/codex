@@ -81,6 +81,8 @@ impl LocalSettings {
                 fullscreen_transcript: config.tui_fullscreen_transcript,
                 copy_on_select: config.tui_copy_on_select,
                 right_click_paste: config.tui_right_click_paste,
+                command_output_preview_lines: config.tui_command_output_preview_lines,
+                user_shell_output_preview_lines: config.tui_user_shell_output_preview_lines,
                 show_compact_summary: config.show_compact_summary,
                 alternate_screen: config.tui_alternate_screen,
                 status_line: config.tui_status_line.clone(),

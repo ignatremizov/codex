@@ -818,6 +818,11 @@ pub struct Config {
 
     /// Right-click text paste fallback for the fullscreen TUI.
     pub tui_right_click_paste: codex_config::types::RightClickPaste,
+    /// Maximum number of command-output rows shown in the main TUI transcript.
+    pub tui_command_output_preview_lines: usize,
+
+    /// Maximum number of user shell command-output rows shown in the main TUI transcript.
+    pub tui_user_shell_output_preview_lines: usize,
 
     /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
     pub show_compact_summary: bool,
@@ -4569,6 +4574,16 @@ impl Config {
                 .map(|tui| tui.right_click_paste)
                 .unwrap_or_default(),
 
+            tui_command_output_preview_lines: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.command_output_preview_lines)
+                .unwrap_or(codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES),
+            tui_user_shell_output_preview_lines: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.user_shell_output_preview_lines)
+                .unwrap_or(codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES),
             show_compact_summary: cfg
                 .tui
                 .as_ref()

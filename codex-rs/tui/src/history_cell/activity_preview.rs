@@ -10,8 +10,6 @@ pub(crate) const DETAIL_PREVIEW_LINES: usize = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ActivityDisclosure {
     Generic,
-    /// Retained output lines not fully visible in the preview, excluding storage omissions.
-    OutputLines(usize),
 }
 
 /// Clip a preview row without teaching selection to copy text that is currently hidden.

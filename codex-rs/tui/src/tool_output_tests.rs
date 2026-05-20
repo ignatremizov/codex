@@ -9,11 +9,11 @@ fn preview_caps_wrapped_output_and_counts_hidden_logical_lines() {
         "https://example.test/a/very/long/path/that/exceeds/the/preview",
         "last",
     ];
-    let preview = visible_lines(tool_output_hyperlink_preview(
-        lines.into_iter().map(Line::from),
-        /*width*/ 16,
-        /*total_lines*/ 10,
-    ));
+    let mut preview = ToolOutputPreview::new(/*width*/ 16, /*omitted*/ 7);
+    for line in lines {
+        preview.push_line(Line::from(line));
+    }
+    let preview = visible_lines(preview.finish_hyperlink_lines());
     assert_eq!(preview.len(), PREVIEW_LINES + 1);
     assert!(
         preview[..PREVIEW_LINES]
@@ -90,13 +90,11 @@ fn preview_preserves_hyperlinks_and_original_logical_source() {
 
 #[test]
 fn preview_counts_newline_dense_output() {
-    let mut rendered = 0;
-    let preview = visible_lines(tool_output_hyperlink_preview(
-        std::iter::repeat_n(Line::default(), /*n*/ 100_000).inspect(|_| rendered += 1),
-        /*width*/ 40,
-        /*total_lines*/ 100_000,
-    ));
-    assert_eq!(rendered, PREVIEW_LINES);
+    let mut preview = ToolOutputPreview::new(/*width*/ 40, /*omitted*/ 0);
+    for line in std::iter::repeat_n(Line::default(), /*n*/ 100_000) {
+        preview.push_line(line);
+    }
+    let preview = visible_lines(preview.finish_hyperlink_lines());
     assert_eq!(
         preview.iter().map(ToString::to_string).collect::<Vec<_>>(),
         ["", "", "", "+99997 lines (ctrl+t to view transcript)"],
@@ -106,14 +104,14 @@ fn preview_counts_newline_dense_output() {
 #[test]
 fn preview_caps_combining_text_across_styled_spans() {
     let marks = "\u{301}".repeat(MAX_PREVIEW_LINE_BYTES / 4);
-    let preview = tool_output_hyperlink_preview(
-        [
-            Line::from(vec!["e".red(), marks.clone().dim(), marks.clone().blue()]),
-            "later".into(),
-        ],
-        /*width*/ 80,
-        /*total_lines*/ 2,
-    );
+    let mut preview = ToolOutputPreview::new(/*width*/ 80, /*omitted*/ 0);
+    for line in [
+        Line::from(vec!["e".red(), marks.clone().dim(), marks.clone().blue()]),
+        "later".into(),
+    ] {
+        preview.push_line(line);
+    }
+    let preview = preview.finish_hyperlink_lines();
     let expected_line = Line::from(vec![
         "e".red(),
         marks.clone().dim(),

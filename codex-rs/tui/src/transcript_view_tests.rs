@@ -66,6 +66,7 @@ pub(super) fn text(buffer: &Buffer) -> String {
 #[test]
 fn terminal_output_disclosure_follows_live_history_and_keymap() {
     use crate::exec_cell::CommandOutput;
+    use crate::exec_cell::OutputPreviewLineLimits;
     use crate::exec_cell::new_active_exec_command;
     use crate::keymap::RuntimeKeymap;
     use codex_app_server_protocol::CommandExecutionSource;
@@ -77,7 +78,11 @@ fn terminal_output_disclosure_follows_live_history_and_keymap() {
         CommandExecutionSource::Agent,
         /*interaction_input*/ None,
         /*animations_enabled*/ false,
-    );
+    )
+    .with_output_preview_line_limits(OutputPreviewLineLimits {
+        command: 3,
+        user_shell: 3,
+    });
     cell.complete_call(
         "output-test",
         CommandOutput::new(/*exit_code*/ 0, "1\n2\n3\n4\n5\n6\n7\n8\n".into()),
@@ -111,24 +116,31 @@ fn terminal_output_disclosure_follows_live_history_and_keymap() {
         &mut view, &cells, /*width*/ 72, /*height*/ 6,
     ));
     assert_eq!(live, committed);
-    let hint = " (ctrl+t to expand)";
-    assert!(live.contains(&format!("+ 5 lines{hint}")));
-    // Check where the hint is visible, so the copy/search exclusion cannot pass vacuously.
+    assert!(live.contains(&format!(
+        "… +6 rows ({})",
+        crate::ui_consts::TRANSCRIPT_HINT
+    )));
+    let control = "+ Show details";
+    assert!(live.contains(control));
+    // The preview owns its wrapped-row count; the separate control is not selectable source.
     assert!(
         !view
             .layout(&cells, /*index*/ 0)
             .unwrap()
             .text()
-            .contains(hint)
+            .contains(control)
     );
-    // Warm layouts must follow config changes, including chords and disabling the action.
+    view.handle_key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE), &cells);
+    assert!(view.is_activity_focused());
+    // Current disclosure shortcuts live in the focused footer, not in the row-count label.
+    // Warm source layouts stay unchanged while that footer follows remapping and disabling.
     for (configured, expected) in [
-        (serde_json::json!("f12"), " (f12 to expand)"),
-        (serde_json::json!("ctrl-x t"), " (ctrl+x t to expand)"),
-        (serde_json::json!([]), ""),
+        (serde_json::json!("f12"), Some("f12 details")),
+        (serde_json::json!("ctrl-x t"), Some("ctrl+x t details")),
+        (serde_json::json!([]), None),
     ] {
         let config = serde_json::from_value(serde_json::json!({
-            "global": {"open_transcript": configured}
+            "list": {"accept": configured}
         }))
         .unwrap();
         let keymap = RuntimeKeymap::from_config(&config).unwrap();
@@ -137,14 +149,24 @@ fn terminal_output_disclosure_follows_live_history_and_keymap() {
             text(&render(
                 &mut view, &cells, /*width*/ 72, /*height*/ 6,
             )),
-            live.replace(hint, expected),
+            live,
         );
+        let footer = view
+            .footer(/*width*/ 100, crate::motion::MotionMode::Reduced)
+            .expect("focused activity footer")
+            .text
+            .to_string();
+        match expected {
+            Some(hint) => assert!(footer.contains(hint), "{footer}"),
+            None => assert!(!footer.contains("details"), "{footer}"),
+        }
     }
 }
 
 #[test]
 fn terminal_output_disclosure_counts_only_revealable_lines() {
     use crate::exec_cell::CommandOutput;
+    use crate::exec_cell::OutputPreviewLineLimits;
     use crate::exec_cell::new_active_exec_command;
     use codex_app_server_protocol::CommandExecutionSource;
 
@@ -175,7 +197,11 @@ fn terminal_output_disclosure_counts_only_revealable_lines() {
             CommandExecutionSource::Agent,
             /*interaction_input*/ None,
             /*animations_enabled*/ false,
-        );
+        )
+        .with_output_preview_line_limits(OutputPreviewLineLimits {
+            command: 3,
+            user_shell: 3,
+        });
         if streamed {
             cell.append_output("output-test", &output);
         } else {
