@@ -392,7 +392,6 @@ pub(crate) struct ChatComposer {
     /// prepare their argument text without also double-recording the full command invocation.
     pending_slash_command_history: Option<HistoryEntry>,
     // Monotonically increasing identifier for textarea elements we insert.
-    #[cfg(not(target_os = "linux"))]
     next_element_id: u64,
     skills: Option<Vec<SkillMetadata>>,
     plugins: Option<Vec<PluginCapabilitySummary>>,
@@ -570,7 +569,6 @@ impl ChatComposer {
             is_task_running: false,
             queue_submissions: false,
             pending_slash_command_history: None,
-            #[cfg(not(target_os = "linux"))]
             next_element_id: 0,
             skills: None,
             plugins: None,
@@ -607,7 +605,6 @@ impl ChatComposer {
         this
     }
 
-    #[cfg(not(target_os = "linux"))]
     fn next_id(&mut self) -> String {
         let id = self.next_element_id;
         self.next_element_id = self.next_element_id.wrapping_add(1);
@@ -4084,7 +4081,6 @@ fn footer_insert_newline_key(
         .or_else(|| bindings.first().copied())
 }
 
-#[cfg(not(target_os = "linux"))]
 impl ChatComposer {
     pub fn update_recording_meter_in_place(&mut self, id: &str, text: &str) -> bool {
         self.draft.textarea.update_named_element_by_id(id, text)
@@ -4724,7 +4720,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "linux"))]
     #[test]
     fn remove_recording_meter_placeholder_clears_placeholder_text() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
