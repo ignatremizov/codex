@@ -92,6 +92,18 @@ source conversation and continue the edit on a new branch instead, enable:
 fork_prompt_edits = true
 ```
 
+## Multi-Agent V2
+
+By default, MultiAgentV2 `spawn_agent` starts subagents without copying the
+parent thread history when `fork_turns` is omitted. Set
+`default_fork_turns` to change that default while still allowing explicit
+`fork_turns` tool arguments to override it:
+
+```toml
+[features.multi_agent_v2]
+default_fork_turns = "none" # "none", "all", or a positive integer string
+```
+
 ## Notify
 
 `notify` is deprecated and will be removed in a future release. Existing configurations still work for compatibility, but new automation should use lifecycle hooks instead.
