@@ -691,12 +691,13 @@ async fn subagent_start_replaces_session_start_and_injects_context(
             write_subagent_lifecycle_hooks(home, /*stop_prompts*/ &[], "worker")
                 .expect("failed to write subagent hook fixture");
         })
-        .with_config(|config| {
+        .with_config(move |config| {
             trust_discovered_hooks(config);
             config
                 .features
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
+            config.agent_allow_history_forks = fork_context;
         })
         // Command hooks run on the host and require a host-native working directory.
         .build(&server)
@@ -1063,6 +1064,7 @@ async fn spawned_child_receives_forked_parent_context(
                 .features
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
+            config.agent_allow_history_forks = true;
             config.model = Some(INHERITED_MODEL.to_string());
             config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
             config.agent_default_subagent_model = Some(REQUESTED_MODEL.to_string());
@@ -1361,6 +1363,7 @@ async fn grandchild_full_fork_preserves_context_baseline(
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
             config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+            config.agent_allow_history_forks = true;
             config.model = Some(V2_DEFAULT_MODEL.to_string());
             config.agent_default_subagent_model = Some(V2_DEFAULT_MODEL.to_string());
             config.developer_instructions = Some(INSTRUCTIONS.to_string());
@@ -1483,8 +1486,8 @@ enum FullHistoryV2ModelSelection {
 
 #[test_case(FullHistoryV2ModelSelection::ConfiguredDefault; "configured default with omitted fork_turns")]
 #[test_case(FullHistoryV2ModelSelection::ExplicitOverride("all"); "explicit override with fork_turns all")]
-#[test_case(FullHistoryV2ModelSelection::ExplicitOverride("1"); "legacy one turn forks full history with explicit override")]
-#[test_case(FullHistoryV2ModelSelection::ExplicitOverride("3"); "legacy three turns forks full history with explicit override")]
+#[test_case(FullHistoryV2ModelSelection::ExplicitOverride("1"); "one turn fork with explicit override")]
+#[test_case(FullHistoryV2ModelSelection::ExplicitOverride("3"); "three turn fork with explicit override")]
 #[test_case(FullHistoryV2ModelSelection::WorldStateIdentity; "world state appends context window when agent identity changes")]
 #[test_case(FullHistoryV2ModelSelection::CurrentTimeReminders; "full fork appends current-time reminders after inherited notices")]
 #[test_case(FullHistoryV2ModelSelection::MultiAgentModeInstructions; "full fork appends child multi-agent mode instructions")]
@@ -1611,6 +1614,8 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             .enable(Feature::MultiAgentV2)
             .expect("test config should allow feature update");
         config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+        config.multi_agent_v2.default_fork_turns = "all".to_string();
+        config.agent_allow_history_forks = true;
         let model_catalog = config.model_catalog.get_or_insert_with(|| {
             bundled_models_response().expect("bundled models.json should parse")
         });
@@ -1785,16 +1790,68 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
     let parent_request = spawn_turn.single_request();
 
     let child_request = wait_for_request_with_model(&child_request_log, expected_model).await?;
-    assert!(child_request.body_contains_text(TURN_0_FORK_PROMPT));
-    // Models encode tool declarations and provenance differently; compare inherited messages.
+    assert_eq!(
+        child_request.body_contains_text(TURN_0_FORK_PROMPT),
+        !matches!(
+            selection,
+            FullHistoryV2ModelSelection::ExplicitOverride("1")
+        ),
+    );
     let parent_input = parent_request.inputs_of_type("message");
     let child_input = child_request.inputs_of_type("message");
-    assert_eq!(
-        strip_metadata_from_json(strip_response_item_ids_from_json(json!(
-            &child_input[..parent_input.len()]
-        ))),
-        strip_metadata_from_json(strip_response_item_ids_from_json(json!(parent_input)))
+    let bounded_fork = matches!(
+        selection,
+        FullHistoryV2ModelSelection::ExplicitOverride("1" | "3")
     );
+    if bounded_fork {
+        // Bounded forks rebuild environment context and keep only explicit answer phases.
+        let inherited_conversation = |item: &&Value| match item["role"].as_str() {
+            Some("user") => !item["content"].as_array().is_some_and(|content| {
+                content.iter().any(|part| {
+                    part["text"]
+                        .as_str()
+                        .is_some_and(|text| text.starts_with("<environment_context>"))
+                })
+            }),
+            Some("assistant") => matches!(
+                item["phase"].as_str(),
+                Some("partial_answer" | "final_answer")
+            ),
+            _ => false,
+        };
+        let mut inherited = parent_input
+            .iter()
+            .filter(inherited_conversation)
+            .cloned()
+            .collect::<Vec<_>>();
+        if matches!(
+            selection,
+            FullHistoryV2ModelSelection::ExplicitOverride("1")
+        ) {
+            let last_user = inherited
+                .iter()
+                .rposition(|item| item["role"] == "user")
+                .context("the bounded fork includes the current user turn")?;
+            inherited = inherited.split_off(last_user);
+        }
+        let child_conversation = child_input
+            .iter()
+            .filter(inherited_conversation)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            strip_metadata_from_json(strip_response_item_ids_from_json(json!(child_conversation))),
+            strip_metadata_from_json(strip_response_item_ids_from_json(json!(inherited))),
+        );
+    } else {
+        // Models encode tool declarations and provenance differently; compare inherited messages.
+        assert_eq!(
+            strip_metadata_from_json(strip_response_item_ids_from_json(json!(
+                &child_input[..parent_input.len()]
+            ))),
+            strip_metadata_from_json(strip_response_item_ids_from_json(json!(parent_input)))
+        );
+    }
     let misaligned_child_messages = child_request
         .inputs_of_type("message")
         .into_iter()
@@ -1809,8 +1866,9 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
         })
         .collect::<Vec<_>>();
     assert_eq!(misaligned_child_messages, Vec::<Value>::new());
-    // Inherited instructions stay in the prefix; child-specific guidance is appended after it.
-    let child_developer_messages = child_input[parent_input.len()..]
+    // Bounded forks rebuild their context; full forks append guidance after the prefix.
+    let inherited_prefix_len = if bounded_fork { 0 } else { parent_input.len() };
+    let child_developer_messages = child_input[inherited_prefix_len..]
         .iter()
         .filter(|item| item["role"] == "developer")
         .flat_map(|item| item["content"].as_array().into_iter().flatten())
