@@ -456,6 +456,45 @@ async fn multi_agent_v2_spawn_allows_child_model_without_v2_catalog_tag() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_omitted_fork_turns_defaults_to_no_context() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = install_role_with_model_override(&mut turn).await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_message": "inspect this repo",
+                "task_name": "default_no_context",
+                "agent_type": role_name
+            })),
+        ))
+        .await
+        .expect("omitted fork_turns should use the configured no-context default");
+    let (content, success) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(result["task_name"], "/root/default_no_context");
+    assert_eq!(success, Some(true));
+}
+
+#[tokio::test]
 async fn spawn_agent_service_tier_override_validates_the_effective_child_model() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
