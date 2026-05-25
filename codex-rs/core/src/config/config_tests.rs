@@ -8796,6 +8796,7 @@ async fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result
             max_depth: None,
             default_subagent_model: None,
             default_subagent_reasoning_effort: None,
+            allow_history_forks: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
             roles: BTreeMap::from([(
@@ -9811,6 +9812,7 @@ async fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Res
             max_depth: None,
             default_subagent_model: None,
             default_subagent_reasoning_effort: None,
+            allow_history_forks: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
             roles: BTreeMap::from([(
@@ -9857,6 +9859,7 @@ async fn load_config_rejects_empty_agent_role_nickname_candidates() -> std::io::
             max_depth: None,
             default_subagent_model: None,
             default_subagent_reasoning_effort: None,
+            allow_history_forks: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
             roles: BTreeMap::from([(
@@ -9897,6 +9900,7 @@ async fn load_config_rejects_duplicate_agent_role_nickname_candidates() -> std::
             max_depth: None,
             default_subagent_model: None,
             default_subagent_reasoning_effort: None,
+            allow_history_forks: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
             roles: BTreeMap::from([(
@@ -9937,6 +9941,7 @@ async fn load_config_rejects_unsafe_agent_role_nickname_candidates() -> std::io:
             max_depth: None,
             default_subagent_model: None,
             default_subagent_reasoning_effort: None,
+            allow_history_forks: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
             roles: BTreeMap::from([(
@@ -12115,6 +12120,7 @@ max_concurrent_threads_per_session = 5
 min_wait_timeout_ms = 2500
 max_wait_timeout_ms = 120000
 default_wait_timeout_ms = 30000
+default_fork_turns = "all"
 usage_hint_text = "Custom delegation guidance."
 root_agent_usage_hint_text = "Root guidance."
 subagent_usage_hint_text = "Subagent guidance."
@@ -12129,6 +12135,7 @@ message_delivery = "plaintext"
 
 [agents]
 max_concurrent_threads_per_session = 9
+allow_history_forks = true
 "#,
     )?;
 
@@ -12143,6 +12150,7 @@ max_concurrent_threads_per_session = 9
     assert_eq!(config.multi_agent_v2.min_wait_timeout_ms, 2500);
     assert_eq!(config.multi_agent_v2.max_wait_timeout_ms, 120000);
     assert_eq!(config.multi_agent_v2.default_wait_timeout_ms, 30000);
+    assert_eq!(config.multi_agent_v2.default_fork_turns, "all");
     assert_eq!(
         (
             config.agent_max_threads,
@@ -12150,6 +12158,7 @@ max_concurrent_threads_per_session = 9
         ),
         (Some(9), Some(4))
     );
+    assert!(config.agent_allow_history_forks);
     assert_eq!(
         config.multi_agent_v2.usage_hint_text.as_deref(),
         Some("Custom delegation guidance.")
@@ -12403,6 +12412,7 @@ subagent_developer_instructions = "  \t  "
         min_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS,
         max_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS,
         default_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS,
+        default_fork_turns: DEFAULT_MULTI_AGENT_V2_DEFAULT_FORK_TURNS.to_string(),
         usage_hint_text: None,
         root_agent_usage_hint_text: None,
         subagent_usage_hint_text: None,
@@ -12739,6 +12749,66 @@ default_wait_timeout_ms = 2500
         "features.multi_agent_v2.default_wait_timeout_ms must be at most features.multi_agent_v2.max_wait_timeout_ms"
     );
 
+    Ok(())
+}
+
+#[test_case::test_case("0"; "zero")]
+#[test_case::test_case("invalid"; "invalid")]
+#[test_case::test_case("184467440737095516160"; "overflow")]
+#[test_case::test_case(""; "empty")]
+#[tokio::test]
+async fn multi_agent_v2_rejects_invalid_default_fork_turns(value: &str) -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        format!(
+            r#"[features.multi_agent_v2]
+enabled = true
+default_fork_turns = "{value}"
+"#
+        ),
+    )?;
+
+    let err = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await
+        .expect_err("invalid default_fork_turns should fail");
+
+    assert_eq!(
+        err.to_string(),
+        "features.multi_agent_v2.default_fork_turns must be `none`, `all`, or a positive integer string"
+    );
+
+    Ok(())
+}
+
+#[test_case::test_case(" NoNe ", "NoNe"; "trimmed none")]
+#[test_case::test_case(" ALL ", "ALL"; "trimmed all")]
+#[test_case::test_case(" 2 ", "2"; "trimmed positive count")]
+#[tokio::test]
+async fn configured_fork_default_does_not_grant_history_authorization(
+    value: &str,
+    expected: &str,
+) -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        format!("[features.multi_agent_v2]\nenabled = true\ndefault_fork_turns = \"{value}\"\n"),
+    )?;
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+    assert_eq!(
+        (
+            config.multi_agent_v2.default_fork_turns.as_str(),
+            config.agent_allow_history_forks,
+        ),
+        (expected, false),
+    );
     Ok(())
 }
 

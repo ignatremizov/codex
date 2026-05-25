@@ -158,6 +158,9 @@ async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
         r#"model = "gpt-5-role-override"
 model_provider = "ollama"
 model_reasoning_effort = "minimal"
+
+[agents]
+allow_history_forks = true
 "#,
     )
     .await
@@ -346,9 +349,8 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
 }
 
 #[tokio::test]
-async fn spawn_agent_fork_context_rejects_agent_type_override() {
-    let (mut session, mut turn) = make_session_and_context().await;
-    let role_name = install_role_with_model_override(&mut turn).await;
+async fn spawn_agent_rejects_history_fork_without_user_authorization() {
+    let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -363,20 +365,67 @@ async fn spawn_agent_fork_context_rejects_agent_type_override() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
-                "agent_type": role_name,
                 "fork_context": true
             })),
         ))
         .await
         .err()
-        .expect("fork_context should reject agent_type overrides");
+        .expect("history fork should require user authorization");
 
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type; omit agent_type, or spawn without a full-history fork.".to_string(),
+            "Parent-history forks are disabled by user configuration. Spawn without inherited \
+             history, or ask the user to set `agents.allow_history_forks = true` globally or in \
+             the selected agent role config."
+                .to_string(),
         )
     );
+}
+
+#[tokio::test]
+async fn spawn_agent_history_fork_applies_authorized_role_override() {
+    #[derive(Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = install_role_with_model_override(&mut turn).await;
+    let expected_provider = turn.config.model_provider_id.clone();
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": role_name,
+                "fork_context": true
+            })),
+        ))
+        .await
+        .expect("role-authorized history fork should apply agent_type");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5-role-override");
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Minimal));
+    assert_eq!(snapshot.model_provider_id, expected_provider);
 }
 
 #[tokio::test]
@@ -705,7 +754,8 @@ async fn spawn_agent_full_history_fork_inherits_root_service_tier() {
         .await;
     let mut config = (*turn.config).clone();
     config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
-    turn.config = Arc::new(config);
+    config.agent_allow_history_forks = true;
+    set_turn_config(&mut turn, config);
     let manager = thread_manager();
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -755,6 +805,7 @@ async fn multi_agent_v2_full_history_fork_inherits_root_service_tier() {
         .await;
     let mut config = (*turn.config).clone();
     config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
+    config.agent_allow_history_forks = true;
     config
         .features
         .enable(Feature::MultiAgentV2)
@@ -778,7 +829,8 @@ async fn multi_agent_v2_full_history_fork_inherits_root_service_tier() {
             function_payload(json!({
                 "message": "inspect this repo",
                 "task_message": "inspect this repo",
-                "task_name": "fork_with_tier"
+                "task_name": "fork_with_tier",
+                "fork_turns": "all"
             })),
         ))
         .await

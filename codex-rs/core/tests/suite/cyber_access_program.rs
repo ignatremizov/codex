@@ -299,6 +299,7 @@ async fn cyber_access_program_is_inherited_by_child_turns() -> Result<()> {
                         .enable(Feature::MultiAgentV2)
                         .expect("enable v2 tools");
                     config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+                    config.agent_allow_history_forks = fork_turns == "all";
                 }
             })
             .build_with_auto_env(&server)

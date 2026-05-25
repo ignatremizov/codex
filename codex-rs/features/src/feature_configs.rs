@@ -280,6 +280,10 @@ pub struct MultiAgentV2ConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 0, max = 3600000))]
     pub default_wait_timeout_ms: Option<i64>,
+    /// Parent turns inherited when V2 spawn omits `fork_turns`; defaults to `none`.
+    /// Selecting history still requires `agents.allow_history_forks`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_fork_turns: Option<String>,
     /// Deprecated compatibility field. Its value is ignored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_hint_enabled: Option<bool>,

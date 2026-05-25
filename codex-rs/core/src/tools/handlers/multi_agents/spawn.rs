@@ -93,12 +93,13 @@ async fn handle_spawn_agent(
             }),
         )
         .await;
+    let fork_mode = args.fork_context.then_some(SpawnAgentForkMode::FullHistory);
     let prepared = prepare_agent_spawn_config(
         &session,
         step_context.as_ref(),
         SpawnConfigOptions {
             version: SpawnConfigVersion::V1,
-            full_history_fork: args.fork_context,
+            fork_mode: fork_mode.as_ref(),
             role_name,
             model: args.model.as_deref(),
             reasoning_effort: args.reasoning_effort.clone(),
@@ -119,7 +120,7 @@ async fn handle_spawn_agent(
         )?),
         SpawnAgentOptions {
             fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
-            fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
+            fork_mode,
             parent_thread_id: Some(session.thread_id),
             parent_turn_id: Some(turn.sub_id.clone()),
             root_turn_id: turn.turn_metadata_state.root_turn_id(),
