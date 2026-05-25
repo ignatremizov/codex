@@ -668,7 +668,7 @@ fn spawn_agent_common_properties_v2(
         (
             "fork_turns".to_string(),
             JsonSchema::string(Some(
-                "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns."
+                "Optional number of turns to fork. When omitted, uses `features.multi_agent_v2.default_fork_turns`, which defaults to `none`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns."
                     .to_string(),
             )),
         ),
