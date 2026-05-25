@@ -197,6 +197,7 @@ pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION: usiz
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
+pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_FORK_TURNS: &str = "none";
 const DEFAULT_MULTI_AGENT_V2_ROOT_AGENT_USAGE_HINT_TEXT: &str = r#"You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
 At the start of your turn, you are the active agent.
@@ -1093,6 +1094,7 @@ pub struct MultiAgentV2Config {
     pub min_wait_timeout_ms: i64,
     pub max_wait_timeout_ms: i64,
     pub default_wait_timeout_ms: i64,
+    pub default_fork_turns: String,
     pub usage_hint_enabled: bool,
     pub usage_hint_text: Option<String>,
     pub root_agent_usage_hint_text: Option<String>,
@@ -1109,6 +1111,7 @@ impl MultiAgentV2Config {
             min_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS,
             max_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS,
             default_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS,
+            default_fork_turns: DEFAULT_MULTI_AGENT_V2_DEFAULT_FORK_TURNS.to_string(),
             usage_hint_enabled: true,
             usage_hint_text: None,
             root_agent_usage_hint_text: Some(default_multi_agent_v2_usage_hint_text(
@@ -2419,6 +2422,10 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let default_wait_timeout_ms = base
         .and_then(|config| config.default_wait_timeout_ms)
         .unwrap_or(default.default_wait_timeout_ms);
+    let default_fork_turns = base
+        .and_then(|config| config.default_fork_turns.as_ref())
+        .map(|fork_turns| fork_turns.trim().to_string())
+        .unwrap_or(default.default_fork_turns);
     let usage_hint_enabled = base
         .and_then(|config| config.usage_hint_enabled)
         .unwrap_or(default.usage_hint_enabled);
@@ -2450,6 +2457,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         min_wait_timeout_ms,
         max_wait_timeout_ms,
         default_wait_timeout_ms,
+        default_fork_turns,
         usage_hint_enabled,
         usage_hint_text,
         root_agent_usage_hint_text,
@@ -2556,6 +2564,20 @@ fn validate_multi_agent_v2_wait_timeout(label: &str, value: i64) -> std::io::Res
         ));
     }
     Ok(())
+}
+
+fn validate_multi_agent_v2_default_fork_turns(value: &str) -> std::io::Result<()> {
+    let fork_turns = value.trim();
+    if fork_turns.eq_ignore_ascii_case("none") || fork_turns.eq_ignore_ascii_case("all") {
+        return Ok(());
+    }
+    match fork_turns.parse::<usize>() {
+        Ok(last_n_turns) if last_n_turns > 0 => Ok(()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "features.multi_agent_v2.default_fork_turns must be `none`, `all`, or a positive integer string",
+        )),
+    }
 }
 
 fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::Result<()> {
@@ -3198,6 +3220,7 @@ impl Config {
                 "features.multi_agent_v2.default_wait_timeout_ms must be at most features.multi_agent_v2.max_wait_timeout_ms",
             ));
         }
+        validate_multi_agent_v2_default_fork_turns(&multi_agent_v2.default_fork_turns)?;
         validate_multi_agent_v2_tool_namespace(multi_agent_v2.tool_namespace.as_deref())?;
         let agent_max_threads = cfg.agents.as_ref().and_then(|agents| agents.max_threads);
         if agent_max_threads == Some(0) {
