@@ -22,6 +22,10 @@ Explicit child model overrides resolve against the loaded catalog regardless of 
 
 Ownership anchors: `feat(config): select the multi-agent V2 message delivery policy` and `feat(multi-agent): separate readable audit from V2 message delivery`. `core/src/tools/handlers/multi_agents_v2/message_tool.rs` validates configured opaque/audit/plaintext payloads before target restoration; `core/src/agent/types.rs` preserves their typed representation. The local runtime's registry and captured-thread submission path serialize accepted assignments without retargeting replacement runtimes. Readable assignment metadata is volatile and separate from canonical encrypted recipient input, human authorization, and durable mailbox ownership. Runtime-aware tool-log redaction remains independent of upstream's name-only stream diagnostics. Current direct-message disablement, capacity, root-target, residency, and queue-only/no-wake gates are preserved. Executable and generated-schema qualification is still pending for this rebase.
 
+### Authorized parent-history inheritance
+
+Ownership anchor: `feat(multi-agent): require user authorization for inherited history`. Model-authored V1/V2 spawns authorize full or bounded history only after resolving the selected role. The global default is false, while a user-authored role may allow or deny that single setting. V2's configured default selects history, not permission. Entrypoints are `core/src/agent/child_config.rs`, `core/src/agent/role.rs`, and the two spawn-tool handlers. Cold restores reapply recorded role policy without replacing the current runtime's permissions, provider, or service-tier authority. Fork notification filtering changes only child context, preserving canonical parent history and marking partially retained evidence incomplete.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.

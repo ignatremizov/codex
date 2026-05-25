@@ -1,5 +1,6 @@
 use super::delivery::CapturedRecipient;
 use super::residency::is_v2_resident_session_source;
+use super::resume_role::apply_resumed_agent_role;
 use super::spawn_guard::PendingSpawn;
 use super::spawn_guard::SpawnOwner;
 use super::spawn_telemetry::SpawnMeasurements;
@@ -8,7 +9,6 @@ use super::*;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::history::load_agent_model_context;
 use crate::agent::history::prepare_forked_history;
-use crate::agent::role::apply_role_to_config;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
 use crate::agent::types::SpawnAgentOptions;
@@ -339,40 +339,7 @@ impl LocalAgentControl {
         };
         config.model_reasoning_effort = stored_reasoning_effort;
         if let Some(role_name) = session_source.get_agent_role() {
-            let runtime_approval_policy = config.permissions.approval_policy.value();
-            let runtime_approvals_reviewer = config.approvals_reviewer;
-            let runtime_cwd = config.cwd.clone();
-            let runtime_permission_profile = match config.permissions.active_permission_profile() {
-                Some(active_permission_profile) => {
-                    PermissionProfileSnapshot::active_with_profile_workspace_roots(
-                        config.permissions.permission_profile().clone(),
-                        active_permission_profile,
-                        config.permissions.profile_workspace_roots().to_vec(),
-                    )
-                }
-                None => PermissionProfileSnapshot::legacy(
-                    config.permissions.permission_profile().clone(),
-                ),
-            };
-
-            apply_role_to_config(&mut config, Some(&role_name))
-                .await
-                .map_err(CodexErr::InvalidRequest)?;
-            config
-                .permissions
-                .approval_policy
-                .set(runtime_approval_policy)
-                .map_err(|err| {
-                    CodexErr::InvalidRequest(format!("approval_policy is invalid: {err}"))
-                })?;
-            config.approvals_reviewer = runtime_approvals_reviewer;
-            config.cwd = runtime_cwd;
-            config
-                .permissions
-                .set_permission_profile_from_session_snapshot(runtime_permission_profile)
-                .map_err(|err| {
-                    CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
-                })?;
+            apply_resumed_agent_role(&mut config, &role_name).await?;
         }
         config.service_tier = self.root_service_tier();
         if let Some(model) = stored_model {
@@ -1009,7 +976,7 @@ impl LocalAgentControl {
 
     async fn resume_single_agent_from_rollout(
         &self,
-        config: Config,
+        mut config: Config,
         thread_id: ThreadId,
         session_source: SessionSource,
     ) -> CodexResult<(ThreadId, MultiAgentVersion)> {
@@ -1048,6 +1015,23 @@ impl LocalAgentControl {
                 &config,
             )
             .await;
+        if multi_agent_version == MultiAgentVersion::V1
+            && let Some(role_name) = resumed_agent_role.as_deref()
+        {
+            // V1 resumes retain the caller's model selection, unlike V2's stored-model
+            // precedence. Reapply role restrictions without changing that contract.
+            let model_settings = (
+                config.model.clone(),
+                config.model_reasoning_effort.clone(),
+                config.model_reasoning_summary,
+            );
+            apply_resumed_agent_role(&mut config, role_name).await?;
+            (
+                config.model,
+                config.model_reasoning_effort,
+                config.model_reasoning_summary,
+            ) = model_settings;
+        }
         let agent_max_threads = config.effective_agent_max_threads(multi_agent_version);
         let mut reservation = self
             .runtime
