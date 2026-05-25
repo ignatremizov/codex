@@ -151,6 +151,9 @@ async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
         r#"model = "gpt-5-role-override"
 model_provider = "ollama"
 model_reasoning_effort = "minimal"
+
+[agents]
+allow_history_forks = true
 "#,
     )
     .await
@@ -339,9 +342,8 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
 }
 
 #[tokio::test]
-async fn spawn_agent_fork_context_rejects_agent_type_override() {
-    let (mut session, mut turn) = make_session_and_context().await;
-    let role_name = install_role_with_model_override(&mut turn).await;
+async fn spawn_agent_rejects_history_fork_without_user_authorization() {
+    let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -356,20 +358,61 @@ async fn spawn_agent_fork_context_rejects_agent_type_override() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
-                "agent_type": role_name,
                 "fork_context": true
             })),
         ))
         .await
         .err()
-        .expect("fork_context should reject agent_type overrides");
+        .expect("history fork should require user authorization");
 
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type; omit agent_type, or spawn without a full-history fork.".to_string(),
+            "Parent-history forks are disabled by user configuration. Spawn without inherited \
+             history, or ask the user to set `agents.allow_history_forks = true` globally or in \
+             the selected agent role config."
+                .to_string(),
         )
     );
+}
+
+#[tokio::test]
+async fn spawn_agent_history_fork_applies_authorized_role_override() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = install_role_with_model_override(&mut turn).await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": role_name,
+                "fork_context": true
+            })),
+        ))
+        .await
+        .expect("role-authorized history fork should apply agent_type");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5-role-override");
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Minimal));
+    assert_eq!(snapshot.model_provider_id, "ollama");
 }
 
 #[tokio::test]
@@ -410,7 +453,44 @@ async fn multi_agent_v2_spawn_fork_turns_all_applies_agent_type_override() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_allows_child_model_without_v2_catalog_tag() {
+async fn multi_agent_v2_rejects_history_fork_without_user_authorization() {
+    let (session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_message": "inspect this repo",
+                "task_name": "unauthorized_history",
+                "fork_turns": "all"
+            })),
+        ))
+        .await
+        .err()
+        .expect("history fork should require user authorization");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "Parent-history forks are disabled by user configuration. Spawn without inherited \
+             history, or ask the user to set `agents.allow_history_forks = true` globally or in \
+             the selected agent role config."
+                .to_string(),
+        )
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_full_history_spawn_applies_model_overrides_without_v2_catalog_tag() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
         task_name: String,
@@ -422,6 +502,7 @@ async fn multi_agent_v2_spawn_allows_child_model_without_v2_catalog_tag() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
+    config.agent_allow_history_forks = true;
     set_turn_config(&mut turn, config);
     let manager = thread_manager();
     let root = manager
@@ -441,13 +522,14 @@ async fn multi_agent_v2_spawn_allows_child_model_without_v2_catalog_tag() {
             function_payload(json!({
                 "message": "inspect this repo",
                 "task_message": "inspect this repo",
-                "task_name": "catalog_model_without_v2_tag",
+                "task_name": "full_history_model_override",
                 "model": "gpt-5.4",
-                "fork_turns": "none"
+                "reasoning_effort": "high",
+                "fork_turns": "all"
             })),
         ))
         .await
-        .expect("model without a v2 multi-agent catalog tag should be accepted");
+        .expect("full-history fork should accept model and reasoning overrides");
     let (content, _) = expect_text_output(output);
     let result: SpawnAgentResult =
         serde_json::from_str(&content).expect("spawn_agent result should be json");
@@ -469,6 +551,7 @@ async fn multi_agent_v2_spawn_allows_child_model_without_v2_catalog_tag() {
         .await;
 
     assert_eq!(snapshot.model, "gpt-5.4");
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::High));
 }
 
 #[tokio::test]
@@ -518,6 +601,110 @@ async fn multi_agent_v2_spawn_rejects_model_missing_from_catalog() {
             "Unknown model `{requested_model}` for spawn_agent. Available models: {available_model_names}"
         ))
     );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_omitted_fork_turns_defaults_to_no_context() {
+    const PARENT_ONLY_CONTEXT: &str = "parent-only context sentinel";
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let configured_role = install_role_with_model_override(&mut turn).await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let parent_turn = root.thread.session.new_default_turn().await;
+    let parent_only_item = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: PARENT_ONLY_CONTEXT.to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    root.thread
+        .session
+        .record_conversation_items(&parent_turn, std::slice::from_ref(&parent_only_item))
+        .await;
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    for (task_name, agent_type) in [
+        ("default_no_context", None),
+        ("built_in_role_no_context", Some("explorer")),
+        ("configured_role_no_context", Some(configured_role.as_str())),
+    ] {
+        let mut args = json!({
+            "message": format!("encrypted task for {task_name}"),
+            "task_message": format!("auditable task for {task_name}"),
+            "task_name": task_name
+        });
+        if let Some(agent_type) = agent_type {
+            args["agent_type"] = json!(agent_type);
+        }
+
+        let output = SpawnAgentHandlerV2::default()
+            .handle(invocation(
+                Arc::clone(&session),
+                Arc::clone(&turn),
+                "spawn_agent",
+                function_payload(args),
+            ))
+            .await
+            .expect("omitted fork_turns should use the configured no-context default");
+        let (content, success) = expect_text_output(output);
+        let result: serde_json::Value =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let expected_task_name = format!("/root/{task_name}");
+        assert_eq!(
+            result["task_name"].as_str(),
+            Some(expected_task_name.as_str())
+        );
+        assert_eq!(success, Some(true));
+
+        let child_thread_id = session
+            .services
+            .agent_control
+            .resolve_agent_reference(session.thread_id, &turn.session_source, task_name)
+            .await
+            .expect("spawned task should resolve");
+        let child_thread = manager
+            .get_thread(child_thread_id)
+            .await
+            .expect("spawned child thread should exist");
+        assert!(
+            !child_thread
+                .session
+                .clone_history()
+                .await
+                .raw_items()
+                .iter()
+                .any(|item| {
+                    matches!(
+                        item,
+                        ResponseItem::Message { content, .. }
+                            if content.iter().any(|content| {
+                                matches!(
+                                    content,
+                                    ContentItem::InputText { text }
+                                        if text == PARENT_ONLY_CONTEXT
+                                )
+                            })
+                    )
+                }),
+            "omitted fork_turns must not inherit parent context for task {task_name}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -782,7 +969,8 @@ async fn spawn_agent_full_history_fork_inherits_root_service_tier() {
         .await;
     let mut config = (*turn.config).clone();
     config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
-    turn.config = Arc::new(config);
+    config.agent_allow_history_forks = true;
+    set_turn_config(&mut turn, config);
     let manager = thread_manager();
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))

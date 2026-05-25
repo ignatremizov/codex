@@ -9,6 +9,8 @@ use crate::context::DeveloperInstructions;
 use crate::context::ManagedDeveloperInstructions;
 use crate::context::MultiAgentModeInstructions;
 use crate::context::MultiAgentRoleInstructions;
+use crate::context::SubagentCommentary;
+use crate::context::SubagentNotification;
 use crate::context::world_state::PersistentModeState;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::tools::handlers::multi_agents_common::build_agent_resume_config;
@@ -118,6 +120,8 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
         let text_trimmed = text.trim_start();
         if text_trimmed.starts_with("<codex_internal_context source=\"goal\">")
             || text_trimmed.starts_with("<goal_context>")
+            || SubagentNotification::matches_text(text)
+            || SubagentCommentary::matches_text(text)
         {
             return false;
         }

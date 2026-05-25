@@ -92,9 +92,6 @@ async fn handle_spawn_agent(
         .await;
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
-    if args.fork_context {
-        reject_full_fork_agent_type_override(role_name)?;
-    }
     apply_requested_spawn_agent_model_overrides(
         &session,
         turn.as_ref(),
@@ -103,8 +100,9 @@ async fn handle_spawn_agent(
         args.reasoning_effort.clone(),
     )
     .await?;
-    if !args.fork_context {
-        apply_spawn_agent_role(&session, &mut config, role_name).await?;
+    apply_spawn_agent_role(&session, &mut config, role_name).await?;
+    if args.fork_context {
+        ensure_model_history_fork_allowed(&config)?;
     }
     apply_spawn_agent_service_tier(&session, &mut config).await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;

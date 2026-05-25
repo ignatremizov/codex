@@ -376,7 +376,7 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
             "developer_instructions = {PARENT_INSTRUCTIONS:?}\nmodel_context_window = 10000\nmodel_auto_compact_token_limit = 9000\ncompact_prompt = {COMPACT_PROMPT:?}"
         ))
         .with_extra_config(&format!(
-            "[features.multi_agent_v2]\nenabled = true\nsubagent_developer_instructions = {CHILD_INSTRUCTIONS:?}"
+            "[features.multi_agent_v2]\nenabled = true\nsubagent_developer_instructions = {CHILD_INSTRUCTIONS:?}\n\n[agents]\nallow_history_forks = true"
         ))
         .write(codex_home.path())?;
     write_models_cache(codex_home.path())?;

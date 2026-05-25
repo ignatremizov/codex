@@ -695,6 +695,9 @@ pub struct AgentsToml {
     pub default_subagent_model: Option<String>,
     /// Default reasoning effort for spawned subagents when the spawn call does not select one.
     pub default_subagent_reasoning_effort: Option<ReasoningEffort>,
+    /// Whether model-authored spawn calls may inherit parent thread history.
+    /// Defaults to false. A role config file may enable this for that role.
+    pub allow_history_forks: Option<bool>,
     /// Removed agent-job setting retained as a no-op for compatibility.
     #[schemars(skip)]
     pub job_max_runtime_seconds: Option<u64>,
