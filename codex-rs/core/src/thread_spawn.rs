@@ -90,7 +90,7 @@ pub(crate) async fn spawn(
         step_context,
         SpawnConfigOptions {
             version: SpawnConfigVersion::V2,
-            full_history_fork: matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)),
+            fork_mode: fork_mode.as_ref(),
             role_name,
             model: model.as_deref(),
             reasoning_effort,

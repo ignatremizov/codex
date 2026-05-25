@@ -1,13 +1,14 @@
 use super::delivery::CapturedRecipient;
 use super::residency::is_v2_resident_session_source;
+use super::resume_role::apply_resumed_agent_role;
 use super::spawn_guard::PendingSpawn;
 use super::spawn_telemetry::SpawnMeasurements;
 use super::spawn_telemetry::record_spawn_success;
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
-use crate::agent::role::apply_role_to_config;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
+use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::agents_md_manager::SessionInstructions;
 use crate::codex_thread::CodexThread;
@@ -29,6 +30,7 @@ use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::thread_manager::ForkSnapshot;
 use crate::thread_manager::StartThreadOptions;
 use crate::thread_manager::fork_history_from_snapshot;
+use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_features::Feature;
@@ -417,40 +419,7 @@ impl LocalAgentControl {
         };
         config.model_reasoning_effort = stored_reasoning_effort;
         if let Some(role_name) = session_source.get_agent_role() {
-            let runtime_approval_policy = config.permissions.approval_policy.value();
-            let runtime_approvals_reviewer = config.approvals_reviewer;
-            let runtime_cwd = config.cwd.clone();
-            let runtime_permission_profile = match config.permissions.active_permission_profile() {
-                Some(active_permission_profile) => {
-                    PermissionProfileSnapshot::active_with_profile_workspace_roots(
-                        config.permissions.permission_profile().clone(),
-                        active_permission_profile,
-                        config.permissions.profile_workspace_roots().to_vec(),
-                    )
-                }
-                None => PermissionProfileSnapshot::legacy(
-                    config.permissions.permission_profile().clone(),
-                ),
-            };
-
-            apply_role_to_config(&mut config, Some(&role_name))
-                .await
-                .map_err(CodexErr::InvalidRequest)?;
-            config
-                .permissions
-                .approval_policy
-                .set(runtime_approval_policy)
-                .map_err(|err| {
-                    CodexErr::InvalidRequest(format!("approval_policy is invalid: {err}"))
-                })?;
-            config.approvals_reviewer = runtime_approvals_reviewer;
-            config.cwd = runtime_cwd;
-            config
-                .permissions
-                .set_permission_profile_from_session_snapshot(runtime_permission_profile)
-                .map_err(|err| {
-                    CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
-                })?;
+            apply_resumed_agent_role(&mut config, &role_name).await?;
         }
         config.service_tier = self.root_service_tier();
         if let Some(model) = stored_model {
@@ -1032,11 +1001,11 @@ impl LocalAgentControl {
                 "spawn_agent fork requires a parent spawn call id".to_string(),
             ));
         }
-        if options.fork_mode.is_none() {
+        let Some(fork_mode) = options.fork_mode.as_ref() else {
             return Err(CodexErr::Fatal(
                 "spawn_agent fork requires a fork mode".to_string(),
             ));
-        }
+        };
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
         }) = session_source
@@ -1094,6 +1063,10 @@ impl LocalAgentControl {
                 })?
                 .items;
 
+        if let SpawnAgentForkMode::LastNTurns(last_n_turns) = fork_mode {
+            forked_rollout_items =
+                truncate_rollout_to_last_n_fork_turns(forked_rollout_items, *last_n_turns);
+        }
         let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
             if multi_agent_version == MultiAgentVersion::V2 {
                 let parent_config = parent_thread.session.get_config().await;
@@ -1110,17 +1083,18 @@ impl LocalAgentControl {
             } else {
                 Vec::new()
             };
-        let mut preserve_context_baselines = true;
-        for item in forked_rollout_items.iter().rev() {
-            let RolloutItem::Compacted(compacted) = item else {
-                continue;
-            };
-            // Legacy checkpoints force the child to rebuild context regardless of the
-            // live parent's reference baseline; an older superseded checkpoint does not.
-            if compacted.replacement_history.is_none() {
-                preserve_context_baselines = false;
+        let mut preserve_context_baselines = matches!(fork_mode, SpawnAgentForkMode::FullHistory);
+        if preserve_context_baselines {
+            for item in forked_rollout_items.iter().rev() {
+                let RolloutItem::Compacted(compacted) = item else {
+                    continue;
+                };
+                // A surviving legacy checkpoint requires a fresh child context baseline.
+                if compacted.replacement_history.is_none() {
+                    preserve_context_baselines = false;
+                }
+                break;
             }
-            break;
         }
         let mut replaced_parent_developer_instructions = false;
         let preserve_fork_prefix = multi_agent_version == MultiAgentVersion::V2
@@ -1138,6 +1112,9 @@ impl LocalAgentControl {
         }
         let retain_forked_item = |envelope: &mut ResponseItemEnvelope, replaced: &mut bool| {
             if !super::fork_goal_context::retain_without_goal_context(envelope) {
+                return false;
+            }
+            if !super::fork_notification_context::retain_without_notification_context(envelope) {
                 return false;
             }
             if multi_agent_version == MultiAgentVersion::V2
@@ -1427,7 +1404,7 @@ impl LocalAgentControl {
 
     async fn resume_single_agent_from_rollout(
         &self,
-        config: Config,
+        mut config: Config,
         thread_id: ThreadId,
         session_source: SessionSource,
     ) -> CodexResult<(ThreadId, MultiAgentVersion)> {
@@ -1466,6 +1443,23 @@ impl LocalAgentControl {
                 &config,
             )
             .await;
+        if multi_agent_version == MultiAgentVersion::V1
+            && let Some(role_name) = resumed_agent_role.as_deref()
+        {
+            // V1 resumes retain the caller's model selection, unlike V2's stored-model
+            // precedence. Reapply role restrictions without changing that contract.
+            let model_settings = (
+                config.model.clone(),
+                config.model_reasoning_effort.clone(),
+                config.model_reasoning_summary,
+            );
+            apply_resumed_agent_role(&mut config, role_name).await?;
+            (
+                config.model,
+                config.model_reasoning_effort,
+                config.model_reasoning_summary,
+            ) = model_settings;
+        }
         let agent_max_threads = config.effective_agent_max_threads(multi_agent_version);
         let mut reservation = self
             .runtime

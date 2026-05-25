@@ -783,6 +783,8 @@ async fn run_guardian_subagent_review(
                     .expect("enable multi-agent feature");
             }
             config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+            // This scenario contrasts inherited instructions with later root-only authority.
+            config.agent_allow_history_forks = true;
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config
@@ -838,7 +840,12 @@ async fn run_guardian_subagent_review(
                 SPAWN_CALL_ID,
                 "collaboration",
                 "spawn_agent",
-                &json!({ "message": INITIAL_TASK, "task_name": "worker" }).to_string(),
+                &json!({
+                    "message": INITIAL_TASK,
+                    "task_name": "worker",
+                    "fork_turns": "all",
+                })
+                .to_string(),
             ),
             ev_completed("root-spawn-response"),
         ]),

@@ -32,8 +32,10 @@ use wiremock::matchers::path;
 /// Both capability roots and the parent's plugin choices apply regardless of copied history.
 #[test_case("none", false; "no history enabled")]
 #[test_case("all", false; "full history enabled")]
+#[test_case("1", false; "one turn enabled")]
 #[test_case("none", true; "no history disabled")]
 #[test_case("all", true; "full history disabled")]
+#[test_case("1", true; "one turn disabled")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawned_agent_inherits_selected_executor_skill(
     fork_turns: &str,
@@ -42,9 +44,10 @@ async fn spawned_agent_inherits_selected_executor_skill(
     let server = responses::start_mock_server().await;
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
-        .with_extra_config(
-            "[features.multi_agent_v2]\nenabled = true\n\n[skills]\ninclude_instructions = true\n",
-        )
+        .with_extra_config(&format!(
+            "[features.multi_agent_v2]\nenabled = true\n\n[skills]\ninclude_instructions = true\n\n[agents]\nallow_history_forks = {}\n",
+            fork_turns != "none",
+        ))
         .write(codex_home.path())?;
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())

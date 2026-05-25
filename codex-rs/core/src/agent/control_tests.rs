@@ -3675,6 +3675,16 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
     let parent_thread = new_thread.thread;
     let turn_context = parent_thread.session.new_default_turn().await;
     let parent_spawn_call_id = "spawn-call-compacted-usage-hints".to_string();
+    let compacted_notification = ContextualUserFragment::into(SubagentNotification::new(
+        "/root/older-worker",
+        AgentStatus::Completed(Some("compacted runtime notification".to_string())),
+    ));
+    let suffix_notification = ContextualUserFragment::into(SubagentNotification::new(
+        "/root/recent-worker",
+        AgentStatus::Completed(Some("suffix runtime notification".to_string())),
+    ));
+    let quoted_notification =
+        "<subagent_notification>literal user quotation</subagent_notification>";
     let catalog_role = |base: &str| MultiAgentRoleInstructions::Composed {
         base: base.to_string(),
         marked,
@@ -3701,6 +3711,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
     let replacement_history = vec![
         tools_update.clone(),
         tool_declarations.clone(),
+        compacted_notification,
         ContextualUserFragment::into(crate::context::GuardianApprovedAction::new("parent-private-release".to_owned())),
         ResponseItem::Message {
             status: None,
@@ -3708,7 +3719,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
             id: None,
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
-                text: "compacted parent summary".to_string(),
+                text: format!("compacted parent summary\n{quoted_notification}"),
             }],
             phase: None,
             internal_chat_message_metadata_passthrough: None,
@@ -3804,6 +3815,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
                 ..Default::default()
             }),
             RolloutItem::RetainedContext(answer_event),
+            rollout_response_item(suffix_notification),
             RolloutItem::ResponseItem(delivery),
             RolloutItem::TurnContext(turn_context.to_turn_context_item()),
             rollout_response_item(spawn_agent_call(&parent_spawn_call_id)),
@@ -3819,6 +3831,10 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         .await
         .expect("parent rollout should flush");
 
+    let parent_rollout_path = parent_thread.rollout_path().expect("parent rollout");
+    let parent_audit_before = tokio::fs::read(&parent_rollout_path)
+        .await
+        .expect("read original parent audit");
     let child_thread_id = harness
         .control
         .spawn_agent_with_metadata(
@@ -3845,6 +3861,10 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         .expect("forked spawn should sanitize compacted usage hints")
         .thread_id;
 
+    let parent_audit_after = tokio::fs::read(&parent_rollout_path)
+        .await
+        .expect("read preserved parent audit");
+    assert!(parent_audit_after.starts_with(&parent_audit_before));
     let child_thread = harness
         .manager
         .get_thread(child_thread_id)
@@ -3868,6 +3888,14 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         ),
         vec![tools_update, tool_declarations],
         "full-history forks must retain tool update notices with declarations embedded in compaction checkpoints"
+    );
+    assert_eq!(
+        (
+            history_contains_text(history.raw_items(), "compacted runtime notification"),
+            history_contains_text(history.raw_items(), "suffix runtime notification"),
+            history_contains_text(history.raw_items(), quoted_notification),
+        ),
+        (false, false, true),
     );
     assert!(
         !history_contains_text(

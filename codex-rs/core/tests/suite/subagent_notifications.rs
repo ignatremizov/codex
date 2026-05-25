@@ -688,12 +688,13 @@ async fn subagent_start_replaces_session_start_and_injects_context(
             write_subagent_lifecycle_hooks(home, /*stop_prompts*/ &[], "worker")
                 .expect("failed to write subagent hook fixture");
         })
-        .with_config(|config| {
+        .with_config(move |config| {
             trust_discovered_hooks(config);
             config
                 .features
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
+            config.agent_allow_history_forks = fork_context;
         })
         // Command hooks run on the host and require a host-native working directory.
         .build(&server)
@@ -1060,6 +1061,7 @@ async fn spawned_child_receives_forked_parent_context(
                 .features
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
+            config.agent_allow_history_forks = true;
             config.model = Some(INHERITED_MODEL.to_string());
             config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
             config.agent_default_subagent_model = Some(REQUESTED_MODEL.to_string());
@@ -1357,6 +1359,7 @@ async fn grandchild_full_fork_preserves_context_baseline(
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
             config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+            config.agent_allow_history_forks = true;
             config.model = Some(V2_DEFAULT_MODEL.to_string());
             config.agent_default_subagent_model = Some(V2_DEFAULT_MODEL.to_string());
             config.developer_instructions = Some(INSTRUCTIONS.to_string());
@@ -1464,8 +1467,8 @@ enum FullHistoryV2ModelSelection {
 
 #[test_case(FullHistoryV2ModelSelection::ConfiguredDefault; "configured default with omitted fork_turns")]
 #[test_case(FullHistoryV2ModelSelection::ExplicitOverride("all"); "explicit override with fork_turns all")]
-#[test_case(FullHistoryV2ModelSelection::ExplicitOverride("1"); "legacy one turn forks full history with explicit override")]
-#[test_case(FullHistoryV2ModelSelection::ExplicitOverride("3"); "legacy three turns forks full history with explicit override")]
+#[test_case(FullHistoryV2ModelSelection::ExplicitOverride("1"); "one turn fork with explicit override")]
+#[test_case(FullHistoryV2ModelSelection::ExplicitOverride("3"); "three turn fork with explicit override")]
 #[test_case(FullHistoryV2ModelSelection::WorldStateIdentity; "world state appends context window when agent identity changes")]
 #[test_case(FullHistoryV2ModelSelection::CurrentTimeReminders; "full fork drops inherited current-time reminders")]
 #[test_case(FullHistoryV2ModelSelection::MultiAgentModeInstructions; "full fork drops inherited multi-agent mode instructions")]
@@ -1589,6 +1592,8 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             .enable(Feature::MultiAgentV2)
             .expect("test config should allow feature update");
         config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+        config.multi_agent_v2.default_fork_turns = "all".to_string();
+        config.agent_allow_history_forks = true;
         let model_catalog = config.model_catalog.get_or_insert_with(|| {
             bundled_models_response().expect("bundled models.json should parse")
         });
@@ -1763,7 +1768,13 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
     let parent_request = spawn_turn.single_request();
 
     let child_request = wait_for_request_with_model(&child_request_log, expected_model).await?;
-    assert!(child_request.body_contains_text(TURN_0_FORK_PROMPT));
+    assert_eq!(
+        child_request.body_contains_text(TURN_0_FORK_PROMPT),
+        !matches!(
+            selection,
+            FullHistoryV2ModelSelection::ExplicitOverride("1")
+        ),
+    );
     let misaligned_child_messages = child_request
         .inputs_of_type("message")
         .into_iter()
