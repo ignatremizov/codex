@@ -235,6 +235,7 @@ pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION: usiz
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
+pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_FORK_TURNS: &str = "none";
 const DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "collaboration";
 
 pub(crate) const HARD_MIN_MULTI_AGENT_V2_TIMEOUT_MS: i64 = 0;
@@ -925,6 +926,9 @@ pub struct Config {
     /// Default reasoning effort for spawned subagents when the spawn call does not select one.
     pub agent_default_subagent_reasoning_effort: Option<ReasoningEffort>,
 
+    /// Whether model-authored spawn calls may inherit parent thread history.
+    pub agent_allow_history_forks: bool,
+
     /// Whether to record a model-visible message when an agent turn is interrupted.
     pub agent_interrupt_message_enabled: bool,
 
@@ -1312,6 +1316,7 @@ pub struct MultiAgentV2Config {
     pub min_wait_timeout_ms: i64,
     pub max_wait_timeout_ms: i64,
     pub default_wait_timeout_ms: i64,
+    pub default_fork_turns: String,
     pub usage_hint_text: Option<String>,
     pub root_agent_usage_hint_text: Option<String>,
     pub subagent_usage_hint_text: Option<String>,
@@ -1332,6 +1337,7 @@ impl MultiAgentV2Config {
             min_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS,
             max_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS,
             default_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS,
+            default_fork_turns: DEFAULT_MULTI_AGENT_V2_DEFAULT_FORK_TURNS.to_string(),
             usage_hint_text: None,
             root_agent_usage_hint_text: None,
             subagent_usage_hint_text: None,
@@ -2766,6 +2772,10 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let default_wait_timeout_ms = base
         .and_then(|config| config.default_wait_timeout_ms)
         .unwrap_or(default.default_wait_timeout_ms);
+    let default_fork_turns = base
+        .and_then(|config| config.default_fork_turns.as_ref())
+        .map(|fork_turns| fork_turns.trim().to_string())
+        .unwrap_or(default.default_fork_turns);
     let usage_hint_text = base
         .and_then(|config| config.usage_hint_text.as_ref())
         .cloned()
@@ -2808,6 +2818,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         min_wait_timeout_ms,
         max_wait_timeout_ms,
         default_wait_timeout_ms,
+        default_fork_turns,
         usage_hint_text,
         root_agent_usage_hint_text,
         subagent_usage_hint_text,
@@ -3116,6 +3127,20 @@ fn validate_multi_agent_v2_wait_timeout(label: &str, value: i64) -> std::io::Res
         ));
     }
     Ok(())
+}
+
+fn validate_multi_agent_v2_default_fork_turns(value: &str) -> std::io::Result<()> {
+    let fork_turns = value.trim();
+    if fork_turns.eq_ignore_ascii_case("none") || fork_turns.eq_ignore_ascii_case("all") {
+        return Ok(());
+    }
+    match fork_turns.parse::<usize>() {
+        Ok(last_n_turns) if last_n_turns > 0 => Ok(()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "features.multi_agent_v2.default_fork_turns must be `none`, `all`, or a positive integer string",
+        )),
+    }
 }
 
 fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::Result<()> {
@@ -3842,6 +3867,7 @@ impl Config {
                 "features.multi_agent_v2.default_wait_timeout_ms must be at most features.multi_agent_v2.max_wait_timeout_ms",
             ));
         }
+        validate_multi_agent_v2_default_fork_turns(&multi_agent_v2.default_fork_turns)?;
         validate_multi_agent_v2_tool_namespace(multi_agent_v2.tool_namespace.as_deref())?;
         let agents_enabled = cfg
             .agents
@@ -3871,6 +3897,11 @@ impl Config {
             .agents
             .as_ref()
             .and_then(|agents| agents.default_subagent_reasoning_effort.clone());
+        let agent_allow_history_forks = cfg
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.allow_history_forks)
+            .unwrap_or(false);
         let agent_interrupt_message_enabled = cfg
             .agents
             .as_ref()
@@ -4290,6 +4321,7 @@ impl Config {
             agent_max_threads,
             agent_default_subagent_model,
             agent_default_subagent_reasoning_effort,
+            agent_allow_history_forks,
             agent_max_depth,
             agent_roles,
             max_goal_token_budget: cfg

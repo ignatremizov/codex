@@ -207,12 +207,13 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     Ok(config)
 }
 
-pub(crate) fn reject_full_fork_agent_type_override(
-    agent_type: Option<&str>,
-) -> Result<(), FunctionCallError> {
-    if agent_type.is_some() {
+pub(crate) fn ensure_model_history_fork_allowed(config: &Config) -> Result<(), FunctionCallError> {
+    if !config.agent_allow_history_forks {
         return Err(FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type; omit agent_type, or spawn without a full-history fork.".to_string(),
+            "Parent-history forks are disabled by user configuration. Spawn without inherited \
+             history, or ask the user to set `agents.allow_history_forks = true` globally or in \
+             the selected agent role config."
+                .to_string(),
         ));
     }
     Ok(())

@@ -114,7 +114,7 @@ async fn handle_spawn_agent(
     let turn = &step_context.turn;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
-    let fork_mode = args.fork_mode()?;
+    let fork_mode = args.fork_mode(&turn.config.multi_agent_v2.default_fork_turns)?;
     let prepared_message =
         PreparedAgentMessage::from_tool_args(args.message, args.task_message, message_delivery)?;
     let role_name = args
@@ -136,13 +136,14 @@ async fn handle_spawn_agent(
         args.reasoning_effort.clone(),
     )
     .await?;
-    if !is_full_history_fork || role_name.is_some() {
-        apply_spawn_agent_role(&session, &mut config, role_name).await?;
-        if is_full_history_fork && config.developer_instructions.is_none() {
-            config
-                .developer_instructions
-                .clone_from(&turn.developer_instructions);
-        }
+    apply_spawn_agent_role(&session, &mut config, role_name).await?;
+    if fork_mode.is_some() {
+        ensure_model_history_fork_allowed(&config)?;
+    }
+    if is_full_history_fork && config.developer_instructions.is_none() {
+        config
+            .developer_instructions
+            .clone_from(&turn.developer_instructions);
     }
     apply_spawn_agent_service_tier(&session, &mut config).await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
@@ -287,7 +288,10 @@ struct SpawnAgentArgs {
 }
 
 impl SpawnAgentArgs {
-    fn fork_mode(&self) -> Result<Option<SpawnAgentForkMode>, FunctionCallError> {
+    fn fork_mode(
+        &self,
+        default_fork_turns: &str,
+    ) -> Result<Option<SpawnAgentForkMode>, FunctionCallError> {
         if self.fork_context.is_some() {
             return Err(FunctionCallError::RespondToModel(
                 "fork_context is not supported in MultiAgentV2; use fork_turns instead".to_string(),
@@ -299,7 +303,7 @@ impl SpawnAgentArgs {
             .as_deref()
             .map(str::trim)
             .filter(|fork_turns| !fork_turns.is_empty())
-            .unwrap_or("all");
+            .unwrap_or(default_fork_turns);
 
         if fork_turns.eq_ignore_ascii_case("none") {
             return Ok(None);

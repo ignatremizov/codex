@@ -1666,6 +1666,7 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
                 Some(FULL_HISTORY_SHARED_USAGE_HINT.to_string());
         }
         config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Plaintext;
+        config.multi_agent_v2.default_fork_turns = "all".to_string();
         config.model = Some(INHERITED_MODEL.to_string());
         config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
         config.agent_default_subagent_model = Some(V2_DEFAULT_MODEL.to_string());
@@ -1732,6 +1733,30 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             "restored parent policy should require an explicit delegation request"
         );
     }
+    test.codex
+        .inject_response_items(vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "<subagent_notification>{\"status\":\"completed\"}</subagent_notification>"
+                        .to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "<subagent_commentary>{\"message\":\"parent-only commentary\"}</subagent_commentary>"
+                        .to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ])
+        .await?;
     test.submit_turn(TURN_1_PROMPT).await?;
     let parent_request = spawn_turn.single_request();
 
@@ -1838,6 +1863,8 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
         assert_eq!(reminder_count(&parent_request), 2);
         assert_eq!(reminder_count(&child_request), 1);
     }
+    assert!(!child_request.body_contains_text("<subagent_notification>"));
+    assert!(!child_request.body_contains_text("<subagent_commentary>"));
     let child_body = child_request.body_json();
     if matches!(selection, FullHistoryV2ModelSelection::WorldStateIdentity) {
         let child_thread_id = ThreadId::from_string(
