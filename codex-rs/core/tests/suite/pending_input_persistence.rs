@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use anyhow::Context;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
@@ -570,6 +571,8 @@ async fn cancelled_spawn_discards_provisional_child() -> anyhow::Result<()> {
         .with_history_mode(ThreadHistoryMode::Legacy)
         .with_config(|config| {
             config.agent_max_depth = 1;
+            // This fixture must reach fork preparation before exercising cancellation.
+            config.agent_allow_history_forks = true;
             config
                 .features
                 .enable(Feature::Collab)
@@ -599,7 +602,8 @@ async fn cancelled_spawn_discards_provisional_child() -> anyhow::Result<()> {
         }]))
         .await?;
     let checkpoint = timeout(Duration::from_secs(10), checkpoint_requests.recv())
-        .await?
+        .await
+        .context("authorized child did not reach its durability checkpoint")?
         .expect("child history should reach its durability barrier");
     let child = test.thread_manager.get_thread(checkpoint.thread_id).await?;
     let state_db = codex_core::init_state_db(&test.config)
@@ -611,7 +615,9 @@ async fn cancelled_spawn_discards_provisional_child() -> anyhow::Result<()> {
         matches!(event, EventMsg::TurnAborted(_))
     })
     .await;
-    timeout(Duration::from_secs(10), child.wait_until_terminated()).await?;
+    timeout(Duration::from_secs(10), child.wait_until_terminated())
+        .await
+        .context("cancelled provisional child did not terminate")?;
     timeout(Duration::from_secs(10), async {
         while test
             .thread_manager
@@ -622,7 +628,8 @@ async fn cancelled_spawn_discards_provisional_child() -> anyhow::Result<()> {
             tokio::task::yield_now().await;
         }
     })
-    .await?;
+    .await
+    .context("terminated provisional child remained registered")?;
     timeout(Duration::from_secs(10), async {
         loop {
             let open_children = state_db
@@ -643,7 +650,8 @@ async fn cancelled_spawn_discards_provisional_child() -> anyhow::Result<()> {
             tokio::task::yield_now().await;
         }
     })
-    .await??;
+    .await
+    .context("cancelled spawn did not settle its graph closure")??;
 
     test.codex.shutdown_and_wait().await?;
     Ok(())
