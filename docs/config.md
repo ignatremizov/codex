@@ -25,6 +25,43 @@ The combined `message` and `task_message` payload is limited to 8192 UTF-8 bytes
 
 For children, `list_agents` exposes the latest accepted readable assignment as `last_task_message`, or `null` when unavailable; the root entry uses `"Main thread"`. A rejected send does not replace the child's assignment; an accepted opaque assignment clears it, and a completion result does not overwrite it. This is current registry metadata, not a promise that the field itself survives a process restart.
 
+## Subagent history inheritance
+
+Model-authored spawns start fresh by default: V1 omits or sets `fork_context = false`,
+and V2 omits `fork_turns` or uses `"none"`. V2's omitted (or blank) argument uses
+`features.multi_agent_v2.default_fork_turns`, which defaults to `"none"`. Its
+configured value accepts `"none"`, `"all"`, or a positive integer string such as
+`"2"`; surrounding whitespace is trimmed and the words are case-insensitive.
+An explicit nonblank `fork_turns` takes precedence.
+
+Inheriting full or bounded parent history requires user authorization:
+
+```toml
+[agents]
+allow_history_forks = true
+
+[features.multi_agent_v2]
+default_fork_turns = "none"
+```
+
+`allow_history_forks` defaults to false. A selected role's config file can set
+the same `[agents]` key to true or false; omission inherits the parent setting.
+The configured `default` role also applies when `agent_type` is omitted.
+Authorization is checked after that role is resolved, so a role can explicitly
+deny an otherwise globally allowed fork. This role-local exception projects
+only `allow_history_forks`, not arbitrary agent settings or provider/permission
+overrides. Configured default-role identity is retained for cold reload, and V1
+and V2 restores reapply the saved role's authorization without replacing live
+runtime permissions or service-tier authority. V1 restore keeps its existing
+caller-model precedence; V2 keeps its existing stored-model precedence.
+
+Use V1 `fork_context = true` for full history, or V2 `fork_turns = "all"` or a
+positive integer string for full or recent-turn context. Selecting a history
+default does not grant authorization. These controls apply to model-authored
+spawn tools, not explicit user control-plane forks, and do not select Legacy
+versus Paginated storage. Child context drops parent-owned runtime notification
+fragments while preserving literal user text and the parent's canonical audit.
+
 ## Unified exec yield windows
 
 The optional `unified_exec_yield_time_ms` and `unified_exec_write_stdin_yield_time_ms` settings control the default time before unified-exec returns an output snapshot when the individual tool call does not provide `yield_time_ms`:

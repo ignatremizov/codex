@@ -63,13 +63,16 @@ const ROLE_INSTRUCTIONS: &str = "configured role developer instructions";
 #[test_case("full history configured role"; "full history configured role")]
 #[test_case("implicit configured default"; "implicit configured default")]
 #[test_case("bounded implicit configured default"; "bounded implicit configured default")]
-#[test_case("full fork skips default role"; "full fork skips default role")]
+#[test_case("full fork applies default role"; "full fork applies default role")]
 #[tokio::test]
 async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     case: &str,
 ) -> Result<()> {
     let fork_turns = match case {
         "bounded history" | "bounded implicit configured default" => Some("1"),
+        "full history" | "full history configured role" | "full fork applies default role" => {
+            Some("all")
+        }
         "no history" | "explicit configured role" | "implicit configured default" => Some("none"),
         _ => None,
     };
@@ -100,7 +103,7 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
             | "full history configured role"
             | "implicit configured default"
             | "bounded implicit configured default"
-            | "full fork skips default role"
+            | "full fork applies default role"
     );
     let role_has_instructions = matches!(
         case,
@@ -108,7 +111,7 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
             | "full history configured role"
             | "implicit configured default"
             | "bounded implicit configured default"
-            | "full fork skips default role"
+            | "full fork applies default role"
     );
     let expected = match case {
         "unset override" | "configured role without instructions" => Some(PARENT_INSTRUCTIONS),
@@ -116,7 +119,8 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
         "explicit configured role"
         | "full history configured role"
         | "implicit configured default"
-        | "bounded implicit configured default" => Some(ROLE_INSTRUCTIONS),
+        | "bounded implicit configured default"
+        | "full fork applies default role" => Some(ROLE_INSTRUCTIONS),
         _ => Some(CHILD_INSTRUCTIONS),
     };
     const PARENT_PROMPT: &str = "spawn the instruction override worker";
@@ -180,6 +184,9 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
         feature_config.push_str(&format!(
             "\nsubagent_developer_instructions = {configured_override:?}"
         ));
+    }
+    if matches!(fork_turns, Some("all" | "1")) {
+        feature_config.push_str("\n\n[agents]\nallow_history_forks = true");
     }
     if configured_roles {
         feature_config.push_str(
@@ -339,6 +346,7 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
                 &serde_json::to_string(&json!({
                     "message": CHILD_PROMPT,
                     "task_name": "compacted_worker",
+                    "fork_turns": "all",
                 }))?,
             ),
             responses::ev_completed("parent-spawn-after-compaction"),
@@ -378,7 +386,7 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
             "developer_instructions = {PARENT_INSTRUCTIONS:?}\nmodel_context_window = 10000\nmodel_auto_compact_token_limit = 9000\ncompact_prompt = {COMPACT_PROMPT:?}"
         ))
         .with_extra_config(&format!(
-            "[features.multi_agent_v2]\nenabled = true\nmessage_delivery = \"encrypted\"\nsubagent_developer_instructions = {CHILD_INSTRUCTIONS:?}"
+            "[features.multi_agent_v2]\nenabled = true\nmessage_delivery = \"encrypted\"\nsubagent_developer_instructions = {CHILD_INSTRUCTIONS:?}\n\n[agents]\nallow_history_forks = true"
         ))
         .write(codex_home.path())?;
     write_models_cache(codex_home.path()).await?;

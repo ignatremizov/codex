@@ -1,7 +1,8 @@
 //! Applies bounded agent-role overrides to an existing session config.
 //!
 //! Roles may customize the child or reduce its capabilities, but never replace the parent
-//! session's authority. A projected layer keeps existing layer-based consumers in sync.
+//! session's authority, except for explicit user-authored history-fork authorization.
+//! A projected layer keeps existing layer-based consumers in sync.
 
 use crate::config::AgentRoleConfig;
 use crate::config::Config;
@@ -45,6 +46,13 @@ struct AgentRoleOverrides {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     features: BTreeMap<String, bool>,
     skills: Option<SkillsConfig>,
+    agents: Option<AgentRoleHistoryOverrides>,
+}
+
+/// The single role-local agent setting allowed to authorize inherited context.
+#[derive(Serialize)]
+struct AgentRoleHistoryOverrides {
+    allow_history_forks: bool,
 }
 
 /// Applies typed role overrides to the existing parent-derived configuration.
@@ -85,6 +93,13 @@ async fn apply_role_to_config_inner(
         model_verbosity: role_config.model_verbosity,
         personality: role_config.personality,
         service_tier: role_config.service_tier,
+        agents: role_config
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.allow_history_forks)
+            .map(|allow_history_forks| AgentRoleHistoryOverrides {
+                allow_history_forks,
+            }),
         ..Default::default()
     };
 
@@ -181,6 +196,9 @@ mod role_overrides {
     ) -> anyhow::Result<Config> {
         let mut next_config = config.clone();
         next_config.config_layer_stack = build_config_layer_stack(config, &role_layer_toml)?;
+        if let Some(agents) = &overrides.agents {
+            next_config.agent_allow_history_forks = agents.allow_history_forks;
+        }
         if let Some(model) = &overrides.model {
             next_config.model = Some(model.clone());
         }

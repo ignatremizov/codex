@@ -812,6 +812,7 @@ async fn standalone_fork_retains_inherited_user_instructions(
                     .expect("enable test feature");
             }
             config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+            config.agent_allow_history_forks = true;
         })
         .build_with_auto_env(&server)
         .await?;
@@ -1012,6 +1013,7 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
                     .expect("enable test feature");
             }
             config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+            config.agent_allow_history_forks = true;
         })
         .build_with_auto_env(&server)
         .await?;
@@ -1224,6 +1226,7 @@ async fn retained_answers_cross_real_session_boundaries(
                     .expect("enable test feature");
             }
             config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+            config.agent_allow_history_forks = true;
         })
         .build_with_auto_env(&server)
         .await?;
