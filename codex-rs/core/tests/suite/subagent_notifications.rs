@@ -681,12 +681,13 @@ async fn subagent_start_replaces_session_start_and_injects_context(
             write_subagent_lifecycle_hooks(home, /*stop_prompts*/ &[], "worker")
                 .expect("failed to write subagent hook fixture");
         })
-        .with_config(|config| {
+        .with_config(move |config| {
             trust_discovered_hooks(config);
             config
                 .features
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
+            config.agent_allow_history_forks = fork_context;
         })
         // Command hooks run on the host and require a host-native working directory.
         .build(&server)
@@ -1053,6 +1054,7 @@ async fn spawned_child_receives_forked_parent_context(
                 .features
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
+            config.agent_allow_history_forks = true;
             config.model = Some(INHERITED_MODEL.to_string());
             config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
             config.agent_default_subagent_model = Some(REQUESTED_MODEL.to_string());
@@ -1345,6 +1347,7 @@ async fn grandchild_full_fork_preserves_context_baseline(
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
             config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+            config.agent_allow_history_forks = true;
             config.model = Some(V2_DEFAULT_MODEL.to_string());
             config.agent_default_subagent_model = Some(V2_DEFAULT_MODEL.to_string());
             config.developer_instructions = Some(INSTRUCTIONS.to_string());
@@ -1575,6 +1578,8 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             .enable(Feature::MultiAgentV2)
             .expect("test config should allow feature update");
         config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+        config.multi_agent_v2.default_fork_turns = "all".to_string();
+        config.agent_allow_history_forks = true;
         let model_catalog = config.model_catalog.get_or_insert_with(|| {
             bundled_models_response().expect("bundled models.json should parse")
         });

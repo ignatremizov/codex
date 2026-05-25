@@ -1,10 +1,11 @@
 //! Prepares child configuration from captured step settings and requested overrides.
 //!
-//! Spawn and reload share live runtime policy; role and model precedence, full-history
-//! inheritance, and validation messages remain the same for each multi-agent version.
+//! Spawn and reload share live runtime policy. Model-authored history inheritance is
+//! authorized only after the selected role has been applied.
 
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_config;
+use crate::agent::types::SpawnAgentForkMode;
 use crate::config::Config;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
@@ -17,7 +18,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::MultiAgentVersion;
 
-/// Selects the existing spawn tool's role-inheritance rules.
+/// Selects the existing spawn tool's developer-instruction inheritance rules.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpawnConfigVersion {
     V1,
@@ -26,7 +27,7 @@ pub(crate) enum SpawnConfigVersion {
 
 pub(crate) struct SpawnConfigOptions<'a> {
     pub(crate) version: SpawnConfigVersion,
-    pub(crate) full_history_fork: bool,
+    pub(crate) fork_mode: Option<&'a SpawnAgentForkMode>,
     pub(crate) role_name: Option<&'a str>,
     pub(crate) model: Option<&'a str>,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
@@ -46,9 +47,6 @@ pub(crate) async fn prepare_agent_spawn_config(
     let turn = step_context.turn.as_ref();
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, step_context)?;
-    if options.version == SpawnConfigVersion::V1 && options.full_history_fork {
-        reject_full_fork_agent_type_override(options.role_name)?;
-    }
     apply_requested_spawn_agent_model_overrides(
         session,
         step_context,
@@ -57,18 +55,22 @@ pub(crate) async fn prepare_agent_spawn_config(
         options.reasoning_effort,
     )
     .await?;
-    if !options.full_history_fork
-        || (options.version == SpawnConfigVersion::V2 && options.role_name.is_some())
+    apply_spawn_agent_role(session, &mut config, options.role_name).await?;
+    if options.fork_mode.is_some() && !config.agent_allow_history_forks {
+        return Err(
+            "Parent-history forks are disabled by user configuration. Spawn without inherited \
+             history, or ask the user to set `agents.allow_history_forks = true` globally or in \
+             the selected agent role config."
+                .to_string(),
+        );
+    }
+    if options.version == SpawnConfigVersion::V2
+        && matches!(options.fork_mode, Some(SpawnAgentForkMode::FullHistory))
+        && config.developer_instructions.is_none()
     {
-        apply_spawn_agent_role(session, &mut config, options.role_name).await?;
-        if options.version == SpawnConfigVersion::V2
-            && options.full_history_fork
-            && config.developer_instructions.is_none()
-        {
-            config
-                .developer_instructions
-                .clone_from(&turn.developer_instructions);
-        }
+        config
+            .developer_instructions
+            .clone_from(&turn.developer_instructions);
     }
     apply_spawn_agent_service_tier(session, &mut config).await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
@@ -77,13 +79,11 @@ pub(crate) async fn prepare_agent_spawn_config(
     let role_name = options
         .role_name
         .or_else(|| {
-            (options.version == SpawnConfigVersion::V2
-                && !options.full_history_fork
-                && config
-                    .agent_roles
-                    .get(DEFAULT_ROLE_NAME)
-                    .is_some_and(|role| role.config_file.is_some()))
-            .then_some(DEFAULT_ROLE_NAME)
+            config
+                .agent_roles
+                .get(DEFAULT_ROLE_NAME)
+                .is_some_and(|role| role.config_file.is_some())
+                .then_some(DEFAULT_ROLE_NAME)
         })
         .map(str::to_owned);
     Ok(PreparedSpawnConfig { config, role_name })
@@ -144,14 +144,6 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     Ok(config)
-}
-
-fn reject_full_fork_agent_type_override(agent_type: Option<&str>) -> Result<(), String> {
-    if agent_type.is_some() {
-        return Err(
-            "Full-history forked agents inherit the parent agent type; omit agent_type, or spawn without a full-history fork.".to_string());
-    }
-    Ok(())
 }
 
 /// Copies runtime-only turn state onto a child config before it is handed to `LocalAgentControl`.

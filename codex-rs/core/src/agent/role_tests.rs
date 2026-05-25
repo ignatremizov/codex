@@ -47,6 +47,67 @@ fn session_flags_layer_count(config: &Config) -> usize {
 }
 
 #[tokio::test]
+async fn role_history_authorization_projects_only_the_selected_agent_setting() {
+    for (global, role_value, expected) in [
+        (false, Some(true), true),
+        (true, Some(false), false),
+        (true, None, true),
+        (false, None, false),
+    ] {
+        let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+        config.agent_allow_history_forks = global;
+        let authorization = role_value
+            .map(|value| format!("allow_history_forks = {value}\n"))
+            .unwrap_or_default();
+        let role_path = write_role_config(
+            &home,
+            "history-role.toml",
+            &format!(
+                "developer_instructions = \"Stay focused\"\n\
+                 model_provider = \"ollama\"\n\
+                 [agents]\n{authorization}\
+                 max_depth = 99\n\
+                 default_subagent_model = \"untrusted-default\"\n"
+            ),
+        )
+        .await;
+        config.agent_roles.insert(
+            "custom".to_string(),
+            AgentRoleConfig {
+                description: None,
+                config_file: Some(role_path),
+                nickname_candidates: None,
+            },
+        );
+        let parent = config.clone();
+        apply_role_to_config(&mut config, Some("custom"))
+            .await
+            .expect("role should apply");
+        let projected = &config
+            .config_layer_stack
+            .all_layers_low_to_high()
+            .rfind(|layer| layer.name == ConfigLayerSource::SessionFlags)
+            .expect("projected role layer")
+            .config;
+        let mut expected_layer = toml::toml! {
+            developer_instructions = "Stay focused"
+        };
+        if let Some(value) = role_value {
+            expected_layer.insert(
+                "agents".to_string(),
+                TomlValue::Table(toml::toml! { allow_history_forks = value }),
+            );
+        }
+        assert_eq!(projected, &TomlValue::Table(expected_layer));
+        let mut expected_config = parent;
+        expected_config.agent_allow_history_forks = expected;
+        expected_config.developer_instructions = Some("Stay focused".to_string());
+        expected_config.config_layer_stack = config.config_layer_stack.clone();
+        assert_eq!(config, expected_config);
+    }
+}
+
+#[tokio::test]
 async fn apply_role_defaults_to_default_and_leaves_config_unchanged() {
     let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     let before = config.clone();

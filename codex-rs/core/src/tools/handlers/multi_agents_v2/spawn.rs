@@ -127,7 +127,7 @@ async fn handle_spawn_agent(
     let turn = &step_context.turn;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
-    let fork_mode = args.fork_mode()?;
+    let fork_mode = args.fork_mode(&turn.config.multi_agent_v2.default_fork_turns)?;
     let prepared_message =
         prepare_agent_message(args.message, args.task_message, message_delivery, &source)?;
     let role_name = args
@@ -143,7 +143,7 @@ async fn handle_spawn_agent(
         step_context.as_ref(),
         SpawnConfigOptions {
             version: SpawnConfigVersion::V2,
-            full_history_fork: matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)),
+            fork_mode: fork_mode.as_ref(),
             role_name,
             model: args.model.as_deref(),
             reasoning_effort: args.reasoning_effort.clone(),
@@ -293,7 +293,10 @@ struct SpawnAgentArgs {
 }
 
 impl SpawnAgentArgs {
-    fn fork_mode(&self) -> Result<Option<SpawnAgentForkMode>, FunctionCallError> {
+    fn fork_mode(
+        &self,
+        default_fork_turns: &str,
+    ) -> Result<Option<SpawnAgentForkMode>, FunctionCallError> {
         if self.fork_context.is_some() {
             return Err(FunctionCallError::RespondToModel(
                 "fork_context is not supported in MultiAgentV2; use fork_turns instead".to_string(),
@@ -305,7 +308,7 @@ impl SpawnAgentArgs {
             .as_deref()
             .map(str::trim)
             .filter(|fork_turns| !fork_turns.is_empty())
-            .unwrap_or("all");
+            .unwrap_or(default_fork_turns);
 
         if fork_turns.eq_ignore_ascii_case("none") {
             return Ok(None);

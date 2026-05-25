@@ -726,6 +726,7 @@ max_concurrent_threads_per_session = 4
 min_wait_timeout_ms = 2500
 max_wait_timeout_ms = 120000
 default_wait_timeout_ms = 30000
+default_fork_turns = "none"
 usage_hint_enabled = false
 usage_hint_text = "Custom delegation guidance."
 root_agent_usage_hint_text = "Root guidance."
@@ -754,6 +755,7 @@ message_delivery = "plaintext"
             min_wait_timeout_ms: Some(2500),
             max_wait_timeout_ms: Some(120000),
             default_wait_timeout_ms: Some(30000),
+            default_fork_turns: Some("none".to_string()),
             usage_hint_enabled: Some(false),
             usage_hint_text: Some("Custom delegation guidance.".to_string()),
             root_agent_usage_hint_text: Some("Root guidance.".to_string()),

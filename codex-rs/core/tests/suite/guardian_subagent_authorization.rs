@@ -315,6 +315,8 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization(
                     .expect("enable multi-agent feature");
             }
             config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
+            // This scenario contrasts inherited instructions with later root-only authority.
+            config.agent_allow_history_forks = true;
             config
                 .features
                 .set_enabled(Feature::GuardianThreadContext, retained_context_enabled)
@@ -366,7 +368,12 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization(
                 SPAWN_CALL_ID,
                 "collaboration",
                 "spawn_agent",
-                &json!({ "message": INITIAL_TASK, "task_name": "worker" }).to_string(),
+                &json!({
+                    "message": INITIAL_TASK,
+                    "task_name": "worker",
+                    "fork_turns": "all",
+                })
+                .to_string(),
             ),
             ev_completed("root-spawn-response"),
         ]),
