@@ -1,5 +1,6 @@
 //! Loads stored agent context and prepares the history a child inherits when it forks.
 
+use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::config::Config;
 use crate::context::BaseInstructionsFragment;
@@ -20,6 +21,7 @@ use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::thread_manager::ForkSnapshot;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_manager::fork_history_from_snapshot;
+use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_history::InitialHistory;
@@ -171,11 +173,11 @@ pub(super) async fn prepare_forked_history(
             "spawn_agent fork requires a parent spawn call id".to_string(),
         ));
     }
-    if options.fork_mode.is_none() {
+    let Some(fork_mode) = options.fork_mode.as_ref() else {
         return Err(CodexErr::Fatal(
             "spawn_agent fork requires a fork mode".to_string(),
         ));
-    }
+    };
     let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id, ..
     }) = session_source
@@ -234,6 +236,10 @@ pub(super) async fn prepare_forked_history(
             })?
             .items;
 
+    if let SpawnAgentForkMode::LastNTurns(last_n_turns) = fork_mode {
+        forked_rollout_items =
+            truncate_rollout_to_last_n_fork_turns(forked_rollout_items, *last_n_turns);
+    }
     let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
         if multi_agent_version == MultiAgentVersion::V2 {
             let parent_config = parent_thread.session.get_config().await;
@@ -250,17 +256,18 @@ pub(super) async fn prepare_forked_history(
         } else {
             Vec::new()
         };
-    let mut preserve_context_baselines = true;
-    for item in forked_rollout_items.iter().rev() {
-        let RolloutItem::Compacted(compacted) = item else {
-            continue;
-        };
-        // Legacy checkpoints force the child to rebuild context regardless of the
-        // live parent's reference baseline; an older superseded checkpoint does not.
-        if compacted.replacement_history.is_none() {
-            preserve_context_baselines = false;
+    let mut preserve_context_baselines = matches!(fork_mode, SpawnAgentForkMode::FullHistory);
+    if preserve_context_baselines {
+        for item in forked_rollout_items.iter().rev() {
+            let RolloutItem::Compacted(compacted) = item else {
+                continue;
+            };
+            // A surviving legacy checkpoint requires a fresh child context baseline.
+            if compacted.replacement_history.is_none() {
+                preserve_context_baselines = false;
+            }
+            break;
         }
-        break;
     }
     let mut replaced_parent_developer_instructions = false;
     let preserve_fork_prefix = multi_agent_version == MultiAgentVersion::V2
@@ -278,6 +285,10 @@ pub(super) async fn prepare_forked_history(
     }
     let retain_forked_item = |envelope: &mut ResponseItemEnvelope, replaced: &mut bool| {
         if !super::control::fork_goal_context::retain_without_goal_context(envelope) {
+            return false;
+        }
+        if !super::control::fork_notification_context::retain_without_notification_context(envelope)
+        {
             return false;
         }
         if multi_agent_version == MultiAgentVersion::V2

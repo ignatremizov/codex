@@ -65,6 +65,10 @@ pub(crate) async fn pending_subagent_scenario(
     let test = test_codex_with_wait_for_environment()
         .with_config(move |config| {
             config.project_doc_max_bytes = 0;
+            if v1 {
+                // This case deliberately requests a parent-history fork, not the default policy.
+                config.agent_allow_history_forks = true;
+            }
             for (feature, enabled) in [
                 (Feature::DeferredExecutor, true),
                 (Feature::Collab, true),

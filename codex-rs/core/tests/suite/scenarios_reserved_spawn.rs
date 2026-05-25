@@ -189,8 +189,9 @@ async fn same_manager_creation_preserves_live_bindings_and_attachments(
                 ));
                 Arc::new(extensions.build())
             })
-            .with_config(|config| {
+            .with_config(move |config| {
                 config.allow_persistent_dynamic_tool_updates = true;
+                config.agent_allow_history_forks = fork_history;
                 config.service_tier = Some("flex".into());
                 config
                     .features
@@ -372,7 +373,9 @@ async fn cancelled_creation_cleans_registered_child() -> Result<()> {
     extensions.thread_lifecycle_contributor(gate.clone());
     let (test, parent, controller) = host_spawn_fixture(
         &server,
-        test_codex().with_extensions(Arc::new(extensions.build())),
+        test_codex()
+            .with_config(|config| config.agent_allow_history_forks = true)
+            .with_extensions(Arc::new(extensions.build())),
         NetworkPolicy::unmanaged(),
         /*thread_instructions_provider*/ None,
     )
