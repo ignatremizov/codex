@@ -644,6 +644,7 @@ max_concurrent_threads_per_session = 4
 min_wait_timeout_ms = 2500
 max_wait_timeout_ms = 120000
 default_wait_timeout_ms = 30000
+default_fork_turns = "none"
 usage_hint_enabled = false
 usage_hint_text = "Custom delegation guidance."
 root_agent_usage_hint_text = "Root guidance."
@@ -670,6 +671,7 @@ message_delivery = "plaintext"
             min_wait_timeout_ms: Some(2500),
             max_wait_timeout_ms: Some(120000),
             default_wait_timeout_ms: Some(30000),
+            default_fork_turns: Some("none".to_string()),
             usage_hint_enabled: Some(false),
             usage_hint_text: Some("Custom delegation guidance.".to_string()),
             root_agent_usage_hint_text: Some("Root guidance.".to_string()),
@@ -680,6 +682,49 @@ message_delivery = "plaintext"
             expose_spawn_agent_model_overrides: Some(true),
             non_code_mode_only: Some(true),
             message_delivery: Some(crate::MultiAgentMessageDelivery::Plaintext),
+        }))
+    );
+}
+
+#[test]
+fn multi_agent_v2_feature_config_usage_hint_enabled_does_not_enable_feature() {
+    let features_toml: FeaturesToml = toml::from_str(
+        r#"
+[multi_agent_v2]
+usage_hint_enabled = false
+"#,
+    )
+    .expect("features table should deserialize");
+    let features = Features::from_sources(
+        FeatureConfigSource {
+            features: Some(&features_toml),
+            ..Default::default()
+        },
+        FeatureConfigSource::default(),
+        FeatureOverrides::default(),
+    );
+
+    assert_eq!(features.enabled(Feature::MultiAgentV2), false);
+    assert_eq!(features_toml.entries(), BTreeMap::new());
+    assert_eq!(
+        features_toml.multi_agent_v2,
+        Some(crate::FeatureToml::Config(crate::MultiAgentV2ConfigToml {
+            enabled: None,
+            max_concurrent_threads_per_session: None,
+            min_wait_timeout_ms: None,
+            max_wait_timeout_ms: None,
+            default_wait_timeout_ms: None,
+            default_fork_turns: None,
+            usage_hint_enabled: Some(false),
+            usage_hint_text: None,
+            root_agent_usage_hint_text: None,
+            subagent_usage_hint_text: None,
+            multi_agent_mode_hint_text: None,
+            tool_namespace: None,
+            hide_spawn_agent_metadata: None,
+            expose_spawn_agent_model_overrides: None,
+            non_code_mode_only: None,
+            message_delivery: None,
         }))
     );
 }
