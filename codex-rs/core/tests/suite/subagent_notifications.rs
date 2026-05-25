@@ -1334,9 +1334,6 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         "type": "agent_message",
         "author": "/root",
         "recipient": "/root/worker",
-        "metadata": {
-            "source_call_id": SPAWN_CALL_ID,
-        },
         "content": [
             {
                 "type": "input_text",

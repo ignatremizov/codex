@@ -8,7 +8,6 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::AgentPath;
-use codex_protocol::models::ResponseItemMetadata;
 use codex_protocol::protocol::Op;
 use codex_tools::ToolSpec;
 
@@ -49,7 +48,7 @@ async fn handle_spawn_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
-    let fork_mode = args.fork_mode()?;
+    let fork_mode = args.fork_mode(&turn.config.multi_agent_v2.default_fork_turns)?;
     let role_name = args
         .agent_type
         .as_deref()
@@ -130,10 +129,6 @@ async fn handle_spawn_agent(
                         encrypted_message,
                     );
                     communication.content = task_message;
-                    communication
-                        .metadata
-                        .get_or_insert_with(ResponseItemMetadata::default)
-                        .source_call_id = Some(call_id.clone());
                     Op::InterAgentCommunication { communication }
                 }
                 initial_operation => initial_operation,
@@ -212,7 +207,10 @@ struct SpawnAgentArgs {
 }
 
 impl SpawnAgentArgs {
-    fn fork_mode(&self) -> Result<Option<SpawnAgentForkMode>, FunctionCallError> {
+    fn fork_mode(
+        &self,
+        default_fork_turns: &str,
+    ) -> Result<Option<SpawnAgentForkMode>, FunctionCallError> {
         if self.fork_context.is_some() {
             return Err(FunctionCallError::RespondToModel(
                 "fork_context is not supported in MultiAgentV2; use fork_turns instead".to_string(),
@@ -224,7 +222,7 @@ impl SpawnAgentArgs {
             .as_deref()
             .map(str::trim)
             .filter(|fork_turns| !fork_turns.is_empty())
-            .unwrap_or("all");
+            .unwrap_or(default_fork_turns);
 
         if fork_turns.eq_ignore_ascii_case("none") {
             return Ok(None);
