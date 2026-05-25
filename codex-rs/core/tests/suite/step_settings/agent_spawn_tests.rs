@@ -305,6 +305,8 @@ async fn spawn_inherits_captured_settings_after_a_turn_update(
     mount_sse_once(&server, sse_completed("resp-child-notification")).await;
     let test = step_settings_test()
         .with_config(move |config| {
+            config.agent_allow_history_forks =
+                matches!(inheritance, EnvironmentInheritanceCase::Fork);
             if !matches!(inheritance, EnvironmentInheritanceCase::Legacy) {
                 config
                     .features

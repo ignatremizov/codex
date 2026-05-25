@@ -45,6 +45,10 @@
         "$ref": "#/definitions/AgentRoleToml"
       },
       "properties": {
+        "allow_history_forks": {
+          "description": "Whether model-authored spawn calls may inherit parent thread history. Defaults to false. A role config file may enable this for that role.",
+          "type": "boolean"
+        },
         "default_subagent_model": {
           "description": "Default model for spawned subagents when the spawn call does not select one.",
           "type": "string"
@@ -3058,6 +3062,10 @@
     "MultiAgentV2ConfigToml": {
       "additionalProperties": false,
       "properties": {
+        "default_fork_turns": {
+          "description": "Parent turns inherited when V2 spawn omits `fork_turns`; defaults to `none`. Selecting history still requires `agents.allow_history_forks`.",
+          "type": "string"
+        },
         "default_wait_timeout_ms": {
           "format": "int64",
           "maximum": 3600000.0,
