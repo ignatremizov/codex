@@ -61,6 +61,7 @@ In the codex-rs folder where the rust code lives:
   - Avoid adding new standalone methods to `codex-rs/tui/src/chatwidget.rs` unless the change is
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
 - When running Rust commands (e.g. `just fix` or `just test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
+- For large GitHub Actions artifacts, prefer downloading the artifact ZIP directly with `gh api repos/<owner>/<repo>/actions/artifacts/<artifact_id>/zip > artifact.zip`. `gh run download` can stay quiet for 20+ minutes while still making progress, so do not assume it is stuck or kill it solely because there is no terminal output.
 
 Run `just fmt` (in the `codex-rs` directory) automatically after you have finished making code changes anywhere in this repository; do not ask for approval to run it. Additionally, run the tests:
 
