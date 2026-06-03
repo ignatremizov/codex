@@ -2,6 +2,7 @@ use super::*;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
 use codex_core_skills::HostSkillsSnapshot;
+use codex_core_skills::SkillLoadOutcome;
 use codex_file_system::FileSystemSandboxContext;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
@@ -213,6 +214,13 @@ impl TurnContext {
             .features
             .apps_enabled_for_auth(uses_codex_backend)
             && self.config.orchestrator_mcp_enabled
+    }
+
+    pub(crate) fn is_compact_subagent(&self) -> bool {
+        matches!(
+            &self.session_source,
+            SessionSource::SubAgent(SubAgentSource::Compact)
+        )
     }
 
     pub(crate) async fn with_model(
@@ -737,26 +745,33 @@ impl Session {
                 .or(model_info.multi_agent_version)
                 .unwrap_or_else(|| per_turn_config.multi_agent_version_from_features()),
         };
-        let plugins_input = per_turn_config.plugins_config_input();
-        let plugin_outcome = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&plugins_input)
-            .await;
-        let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
-        let plugin_skill_snapshots = self
-            .services
-            .plugins_manager
-            .plugin_skill_snapshots_for_config(&plugins_input);
-        let skills_input = skills_load_input_from_config(&per_turn_config, effective_skill_roots)
-            .with_plugin_skill_snapshots(plugin_skill_snapshots);
-        let fs = primary_turn_environment
-            .map(|turn_environment| turn_environment.environment.get_filesystem());
-        let skills_snapshot = self
-            .services
-            .skills_service
-            .snapshot_for_config(&skills_input, fs)
-            .await;
+        let skills_snapshot = if matches!(
+            &session_configuration.session_source,
+            SessionSource::SubAgent(SubAgentSource::Compact)
+        ) {
+            HostSkillsSnapshot::new(Arc::new(SkillLoadOutcome::default()))
+        } else {
+            let plugins_input = per_turn_config.plugins_config_input();
+            let plugin_outcome = self
+                .services
+                .plugins_manager
+                .plugins_for_config(&plugins_input)
+                .await;
+            let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
+            let plugin_skill_snapshots = self
+                .services
+                .plugins_manager
+                .plugin_skill_snapshots_for_config(&plugins_input);
+            let skills_input =
+                skills_load_input_from_config(&per_turn_config, effective_skill_roots)
+                    .with_plugin_skill_snapshots(plugin_skill_snapshots);
+            let fs = primary_turn_environment
+                .map(|turn_environment| turn_environment.environment.get_filesystem());
+            self.services
+                .skills_service
+                .snapshot_for_config(&skills_input, fs)
+                .await
+        };
         let mut turn_context: TurnContext = Self::make_turn_context(
             self.thread_id(),
             self.session_id(),

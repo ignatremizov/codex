@@ -490,7 +490,7 @@ pub async fn queue_mcp_server_use_context(sess: &Session, server_name: String) {
             role: "developer".to_string(),
             content: vec![ContentItem::InputText { text }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         };
         let has_active_turn = sess.active_turn.lock().await.is_some();
         if has_active_turn
