@@ -19,6 +19,7 @@ pub use responses_metadata::CodexResponsesMetadata;
 pub use session::SteerInputError;
 pub use turn_metadata::detached_memory_responses_metadata;
 mod codex_thread;
+mod compact_handoff_summary;
 mod compact_remote;
 mod compact_remote_v2;
 mod config_lock;

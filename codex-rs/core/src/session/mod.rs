@@ -535,10 +535,15 @@ impl Codex {
             load_project_instructions(&mut config, user_instructions, &environment_selections)
                 .await;
 
-        let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source) {
-            // Guardian review should rely on the built-in shell safety checks,
-            // not on caller-provided exec-policy rules that could shape the
-            // reviewer or silently auto-approve commands.
+        let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source)
+            || matches!(
+                &session_source,
+                SessionSource::SubAgent(SubAgentSource::Compact)
+            ) {
+            // Guardian review and compact handoff helpers should rely on the
+            // built-in shell safety checks, not on caller-provided exec-policy
+            // rules that could shape the subagent or silently auto-approve
+            // commands.
             Arc::new(ExecPolicyManager::default())
         } else if let Some(exec_policy) = &inherited_exec_policy {
             Arc::clone(exec_policy)
@@ -3304,6 +3309,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
     ) -> Vec<ResponseItem> {
+        let compact_subagent = turn_context.is_compact_subagent();
         let mut developer_sections = Vec::<String>::with_capacity(8);
         let mut contextual_user_sections = Vec::<String>::with_capacity(2);
         let mut separate_developer_sections = Vec::<String>::new();
@@ -3430,34 +3436,38 @@ impl Session {
                 developer_sections.push(skills_instructions.render());
             }
         }
-        let loaded_plugins = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&turn_context.config.plugins_config_input())
-            .await;
-        if let Some(plugin_instructions) =
-            AvailablePluginsInstructions::from_plugins(loaded_plugins.capability_summaries())
-        {
-            developer_sections.push(plugin_instructions.render());
-        }
-        let context_contributors = self.services.extensions.context_contributors().to_vec();
-        for contributor in context_contributors {
-            for fragment in contributor
-                .contribute(
-                    &self.services.session_extension_data,
-                    &self.services.thread_extension_data,
-                )
-                .await
+        if !compact_subagent {
+            let loaded_plugins = self
+                .services
+                .plugins_manager
+                .plugins_for_config(&turn_context.config.plugins_config_input())
+                .await;
+            if let Some(plugin_instructions) =
+                AvailablePluginsInstructions::from_plugins(loaded_plugins.capability_summaries())
             {
-                match fragment.slot() {
-                    PromptSlot::DeveloperPolicy | PromptSlot::DeveloperCapabilities => {
-                        developer_sections.push(fragment.text().to_string());
-                    }
-                    PromptSlot::ContextualUser => {
-                        contextual_user_sections.push(fragment.text().to_string());
-                    }
-                    PromptSlot::SeparateDeveloper => {
-                        separate_developer_sections.push(fragment.text().to_string());
+                developer_sections.push(plugin_instructions.render());
+            }
+        }
+        if !compact_subagent {
+            let context_contributors = self.services.extensions.context_contributors().to_vec();
+            for contributor in context_contributors {
+                for fragment in contributor
+                    .contribute(
+                        &self.services.session_extension_data,
+                        &self.services.thread_extension_data,
+                    )
+                    .await
+                {
+                    match fragment.slot() {
+                        PromptSlot::DeveloperPolicy | PromptSlot::DeveloperCapabilities => {
+                            developer_sections.push(fragment.text().to_string());
+                        }
+                        PromptSlot::ContextualUser => {
+                            contextual_user_sections.push(fragment.text().to_string());
+                        }
+                        PromptSlot::SeparateDeveloper => {
+                            separate_developer_sections.push(fragment.text().to_string());
+                        }
                     }
                 }
             }
