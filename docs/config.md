@@ -136,6 +136,16 @@ the model context window. Local summaries also retain bounded session metadata, 
 session ID, rollout path, user-turn count, and recent-turn coverage. These limits describe local
 compaction only; remote V2 compaction has its own server-side behavior.
 
+## Remote compaction handoff
+
+Remote compaction installs its authoritative replacement history before an isolated helper decodes the handoff for display. The decoded text is presentation metadata: it does not replace the installed history, change the main agent's instructions, or become its next input. A decoder failure does not undo successful compaction.
+
+Set the top-level `remote_compaction_handoff_model` to choose the decoder model. When unset, Codex uses `gpt-5.3-codex-spark` if it is present in the available catalog, otherwise the current turn's model. Set `remote_compaction_handoff_fallback_model` to choose a fallback after a decoder failure. Its default is `gpt-5.6-luna` when available and different from the primary model. Setting both options to the same model disables fallback.
+
+Each attempt has its own 15-minute startup and inference deadline. Cleanup can take longer: fallback does not begin until the previous helper's session actor has terminated. Cancellation does not start a fallback. The helper prefers low reasoning when supported, disables reasoning summaries, and has no tool, extension, or environment access. These are decoder settings, not changes to the main agent's model or reasoning policy.
+
+Completed compaction records also expose the skill names in the latest model-visible inventory in the installed history. This is descriptive metadata, not a new skill activation or discovery mechanism. Older records without the inventory decode as an empty list. `tui.show_compact_summary` controls presentation of the decoded text as it does local compacted output.
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.

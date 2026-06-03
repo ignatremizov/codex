@@ -2148,6 +2148,9 @@ pub struct ContextCompactedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub message: Option<String>,
+    /// Skill names in the model-visible inventory installed after this compaction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_skills: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -6331,12 +6334,15 @@ mod tests {
 
     #[test]
     fn serialize_context_compacted_event_with_summary() -> Result<()> {
+        let item = crate::items::ContextCompactionItem {
+            id: "compact-1".to_string(),
+            summary: Some("summary text".to_string()),
+            message: Some("full prompt text".to_string()),
+            available_skills: vec!["test-tui".to_string()],
+        };
         let event = Event {
             id: "compact-1".to_string(),
-            msg: EventMsg::ContextCompacted(ContextCompactedEvent {
-                summary: Some("summary text".to_string()),
-                message: Some("full prompt text".to_string()),
-            }),
+            msg: item.as_legacy_event(),
         };
 
         let expected = json!({
@@ -6345,6 +6351,7 @@ mod tests {
                 "type": "context_compacted",
                 "summary": "summary text",
                 "message": "full prompt text",
+                "available_skills": ["test-tui"],
             }
         });
 
@@ -6359,6 +6366,7 @@ mod tests {
             msg: EventMsg::ContextCompacted(ContextCompactedEvent {
                 summary: None,
                 message: None,
+                available_skills: Vec::new(),
             }),
         };
 

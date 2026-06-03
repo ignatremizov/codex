@@ -38,6 +38,8 @@ use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::turn_input::TurnStartOptions;
 
+pub(crate) mod compaction;
+
 #[cfg(test)]
 use crate::session::completed_session_loop_termination;
 

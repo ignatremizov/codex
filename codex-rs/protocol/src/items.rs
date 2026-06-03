@@ -514,6 +514,9 @@ pub struct ContextCompactionItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub message: Option<String>,
+    /// Skill names in the model-visible inventory installed after this compaction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_skills: Vec<String>,
 }
 
 fn new_item_id() -> String {
@@ -526,6 +529,7 @@ impl ContextCompactionItem {
             id: new_item_id(),
             summary: None,
             message: None,
+            available_skills: Vec::new(),
         }
     }
 }

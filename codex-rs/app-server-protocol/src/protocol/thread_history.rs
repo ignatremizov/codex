@@ -367,6 +367,7 @@ impl ThreadHistoryBuilder {
                 if let Some(completed) = self.pending_compaction_legacy_event.take()
                     && completed.summary == legacy.summary
                     && completed.message == legacy.message
+                    && completed.available_skills == legacy.available_skills
                 {
                     return;
                 }
@@ -664,6 +665,7 @@ impl ThreadHistoryBuilder {
             self.pending_compaction_legacy_event = Some(ContextCompactedEvent {
                 summary: item.summary.clone(),
                 message: item.message.clone(),
+                available_skills: item.available_skills.clone(),
             });
             return;
         }
@@ -1226,6 +1228,7 @@ impl ThreadHistoryBuilder {
             id,
             summary: payload.summary.clone(),
             message: payload.message.clone(),
+            available_skills: payload.available_skills.clone(),
         });
     }
 
@@ -4604,6 +4607,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::ContextCompacted(ContextCompactedEvent {
                 summary: Some("Compact summary".into()),
                 message: Some("Full compacted prompt".into()),
+                available_skills: vec!["test-tui".into()],
             })),
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
@@ -4637,6 +4641,7 @@ mod tests {
                 id: "item-1".into(),
                 summary: Some("Compact summary".into()),
                 message: Some("Full compacted prompt".into()),
+                available_skills: vec!["test-tui".into()],
             }]
         );
     }
@@ -5557,6 +5562,7 @@ mod tests {
             id: "compact-1".to_string(),
             summary: Some("summary".to_string()),
             message: Some("complete compacted prompt".to_string()),
+            available_skills: vec!["test-tui".to_string()],
         };
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
@@ -5573,6 +5579,7 @@ mod tests {
                 id: item.id.clone(),
                 summary: None,
                 message: None,
+                available_skills: Vec::new(),
             }),
             started_at_ms: 100,
         }));
@@ -5601,6 +5608,7 @@ mod tests {
         let legacy = EventMsg::ContextCompacted(ContextCompactedEvent {
             summary: item.summary.clone(),
             message: item.message.clone(),
+            available_skills: item.available_skills.clone(),
         });
         builder.handle_event(&legacy);
         assert_eq!(
@@ -5617,7 +5625,52 @@ mod tests {
                 id: items[1].id().to_string(),
                 summary: Some("summary".to_string()),
                 message: Some("complete compacted prompt".to_string()),
+                available_skills: vec!["test-tui".to_string()],
             }
+        );
+    }
+
+    #[test]
+    fn compaction_legacy_with_different_inventory_is_not_suppressed() {
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            root_turn_id: None,
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        }));
+        let item = ContextCompactionItem {
+            id: "compact-1".to_string(),
+            summary: Some("summary".to_string()),
+            message: Some("prompt".to_string()),
+            available_skills: vec!["test-tui".to_string()],
+        };
+        builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".to_string(),
+            item: CoreTurnItem::ContextCompaction(item.clone()),
+            started_at_ms: Some(100),
+            completed_at_ms: 123,
+        }));
+        builder.handle_event(&EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: item.summary.clone(),
+            message: item.message.clone(),
+            available_skills: vec!["remote-tests".to_string()],
+        }));
+        let items = builder.finish().remove(0).items;
+        assert_eq!(
+            items,
+            vec![
+                ThreadItem::from(CoreTurnItem::ContextCompaction(item)),
+                ThreadItem::ContextCompaction {
+                    id: items[1].id().to_string(),
+                    summary: Some("summary".to_string()),
+                    message: Some("prompt".to_string()),
+                    available_skills: vec!["remote-tests".to_string()],
+                },
+            ]
         );
     }
 }

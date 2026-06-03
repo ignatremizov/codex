@@ -630,8 +630,8 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
     )
     .await?;
     let codex = &harness.test().codex;
-    // Each original-detail image costs 10,000 estimated patch tokens.
-    let image_inputs = (1..=8)
+    // Thirteen original-detail images at 10,000 tokens each exceed the 128,000-token budget.
+    let image_inputs = (1..=14)
         .map(|number| {
             if image_field == "file_id" {
                 return Ok(UserInput::Image {
@@ -659,7 +659,7 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut input = image_inputs[..7].to_vec();
+    let mut input = image_inputs[..13].to_vec();
     input.push(UserInput::Text {
         text: "Compare these images".to_string(),
         text_elements: Vec::new(),
@@ -695,7 +695,7 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
                 .to_owned()
         })
         .collect::<Vec<_>>();
-    assert_eq!(prepared_images.len(), 7);
+    assert_eq!(prepared_images.len(), 13);
 
     for cycle in 1..=2 {
         let compact_mock = mount_sse_once(
@@ -745,7 +745,7 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
         };
         let mut expected_images = prepared_images[dropped..].to_vec();
         if cycle == 2 {
-            let UserInput::Image { image, .. } = &image_inputs[7] else {
+            let UserInput::Image { image, .. } = &image_inputs[13] else {
                 unreachable!()
             };
             expected_images.push(match image {
@@ -789,7 +789,7 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
             )
             .await;
             codex
-                .start_or_steer_turn(TurnInputRequest::user_input(vec![image_inputs[7].clone()]))
+                .start_or_steer_turn(TurnInputRequest::user_input(vec![image_inputs[13].clone()]))
                 .await?;
             wait_for_turn_complete(codex).await;
             let _ = append_mock.single_request();

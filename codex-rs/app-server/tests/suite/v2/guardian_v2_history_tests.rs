@@ -189,7 +189,18 @@ async fn guardians_retain_evidence_after_compaction_and_resume(
                     let compact_requests = Arc::clone(&compact_requests);
                     let checkpoint = checkpoint.clone();
                     async move {
-                        let events = if request["input"].as_array().is_some_and(|input| {
+                        let events = if request["client_metadata"]["x-openai-subagent"] == "compact" {
+                            // Keep presentation decoding out of parent/reviewer request accounting.
+                            assert_eq!(request["tools"], json!([]));
+                            assert_eq!(
+                                request["instructions"],
+                                "Repeat the compacted handoff content verbatim. Do not summarize, explain, or add any text."
+                            );
+                            vec![
+                                responses::ev_assistant_message("decoded-handoff", SUMMARY),
+                                responses::ev_completed("decoded-handoff"),
+                            ]
+                        } else if request["input"].as_array().is_some_and(|input| {
                             input
                                 .iter()
                                 .any(|item| item["type"] == "compaction_trigger")

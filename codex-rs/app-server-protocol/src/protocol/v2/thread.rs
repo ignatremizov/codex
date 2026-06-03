@@ -2028,4 +2028,6 @@ pub struct ContextCompactedNotification {
     pub turn_id: String,
     pub summary: Option<String>,
     pub message: Option<String>,
+    #[serde(default)]
+    pub available_skills: Vec<String>,
 }

@@ -1368,6 +1368,55 @@ async fn runtime_config_uses_tui_raw_output_mode() {
 }
 
 #[tokio::test]
+async fn runtime_config_resolves_remote_compaction_handoff_models() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    for (toml, expected_handoff, expected_fallback) in [
+        (
+            r#"
+model = "gpt-5.4"
+model_reasoning_effort = "medium"
+"#,
+            None,
+            None,
+        ),
+        (
+            r#"
+model = "gpt-5.4"
+model_reasoning_effort = "medium"
+remote_compaction_handoff_model = "handoff-primary"
+remote_compaction_handoff_fallback_model = "handoff-fallback"
+"#,
+            Some("handoff-primary"),
+            Some("handoff-fallback"),
+        ),
+    ] {
+        let config = Config::load_from_base_config_with_overrides(
+            toml::from_str(toml)?,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+        assert_eq!(
+            (
+                config.remote_compaction_handoff_model.as_deref(),
+                config.remote_compaction_handoff_fallback_model.as_deref(),
+                config.remote_compaction_handoff_enabled,
+                config.model.as_deref(),
+                config.model_reasoning_effort,
+            ),
+            (
+                expected_handoff,
+                expected_fallback,
+                true,
+                Some("gpt-5.4"),
+                Some(ReasoningEffort::Medium),
+            )
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn runtime_config_uses_compact_summary_default_and_explicit_override() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     for (toml, expected) in [

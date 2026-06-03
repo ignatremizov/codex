@@ -69,6 +69,7 @@ fn compaction_preserves_complete_output_without_replacing_the_final_answer() {
                 id: "compact-1".to_string(),
                 summary: Some("summary".to_string()),
                 message: Some(message.to_string()),
+                available_skills: vec!["test-tui".to_string()],
             },
         });
         let compatibility = ServerNotification::ContextCompacted(ContextCompactedNotification {
@@ -76,6 +77,7 @@ fn compaction_preserves_complete_output_without_replacing_the_final_answer() {
             turn_id: "turn-1".to_string(),
             summary: Some("summary".to_string()),
             message: Some(message.to_string()),
+            available_skills: vec!["test-tui".to_string()],
         });
         assert_eq!(
             [

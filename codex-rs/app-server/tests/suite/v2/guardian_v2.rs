@@ -384,7 +384,18 @@ async fn parent_response(
     State(state): State<Arc<MockResponsesState>>,
     Json(request): Json<Value>,
 ) -> impl IntoResponse {
-    let events = if request["input"].as_array().is_some_and(|input| {
+    let events = if request["client_metadata"]["x-openai-subagent"] == "compact" {
+        // Presentation decoding is a separate isolated request, not parent or Guardian work.
+        assert_eq!(request["tools"], json!([]));
+        assert_eq!(
+            request["instructions"],
+            "Repeat the compacted handoff content verbatim. Do not summarize, explain, or add any text."
+        );
+        vec![
+            responses::ev_assistant_message("decoded-handoff", "Decoded root summary."),
+            responses::ev_completed("decoded-handoff"),
+        ]
+    } else if request["input"].as_array().is_some_and(|input| {
         input
             .last()
             .is_some_and(|item| item["type"] == "compaction_trigger")

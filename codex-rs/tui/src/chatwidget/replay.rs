@@ -430,6 +430,7 @@ impl ChatWidget {
                 id,
                 summary,
                 message,
+                ..
             } => {
                 self.on_context_compaction_completed(&id, from_replay, summary, message);
             }

@@ -29,6 +29,7 @@ fn projects_completed_compaction_payload_and_timestamps() {
         id: "compaction-1".to_string(),
         summary: Some("summary".to_string()),
         message: Some("full compacted prompt".to_string()),
+        available_skills: vec!["test-tui".to_string()],
     });
     assert_eq!(
         project(item_completed(ThreadId::new(), "turn-1", item.clone())),
