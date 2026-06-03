@@ -316,7 +316,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         update_plan_enabled: true,
         tool_registry: Default::default(),
         code_mode: Default::default(),
-        background_terminal_max_timeout: 300_000,
+        background_terminal_max_timeout: Some(300_000),
         thread_unload_delay: std::time::Duration::from_secs(60),
         ghost_snapshot: GhostSnapshotConfig::default(),
         multi_agent_v2: MultiAgentV2Config::default(),

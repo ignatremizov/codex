@@ -1425,6 +1425,37 @@ async fn config_defaults_unified_exec_yield_times_when_configured_zero() -> std:
     Ok(())
 }
 
+#[tokio::test]
+async fn background_terminal_poll_caps_resolve_without_changing_default_yield()
+-> std::io::Result<()> {
+    for (configured, expected) in [
+        ("", None),
+        ("background_terminal_max_timeout = 0", Some(5_000)),
+        ("background_terminal_max_timeout = 1", Some(5_000)),
+        ("background_terminal_max_timeout = 120000", Some(120_000)),
+        (
+            "background_terminal_max_timeout = 9223372036854775807",
+            Some(i64::MAX as u64),
+        ),
+    ] {
+        let codex_home = TempDir::new()?;
+        create_config_toml(codex_home.path(), configured)?;
+        let config = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await?;
+        assert_eq!(
+            (
+                config.background_terminal_max_timeout,
+                config.unified_exec_write_stdin_yield_time_ms,
+            ),
+            (expected, 250),
+            "{configured}",
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn test_tui_vim_mode_default_true() {
     let toml = r#"

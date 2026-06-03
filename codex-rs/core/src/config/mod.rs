@@ -2,7 +2,6 @@ use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::context::world_state::validate_managed_developer_instructions;
 use crate::path_utils::normalize_for_native_workdir;
-use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
 use crate::windows_sandbox::resolve_windows_sandbox_mode;
@@ -1081,9 +1080,9 @@ pub struct Config {
     /// Configuration for the experimental code-mode tool surface.
     pub code_mode: CodeModeConfig,
 
-    /// Maximum poll window for background terminal output (`write_stdin`), in milliseconds.
-    /// Default: `300000` (5 minutes).
-    pub background_terminal_max_timeout: u64,
+    /// Maximum empty-poll window for background terminal output (`write_stdin`), in milliseconds.
+    /// `None` leaves requested empty-poll windows uncapped, not their default wait.
+    pub background_terminal_max_timeout: Option<u64>,
 
     /// Idle timeout for unsubscribed app-server threads, resolved at server startup.
     pub thread_unload_delay: Duration,
@@ -3866,8 +3865,7 @@ impl Config {
             .unwrap_or(true);
         let background_terminal_max_timeout = cfg
             .background_terminal_max_timeout
-            .unwrap_or(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS)
-            .max(MIN_EMPTY_YIELD_TIME_MS);
+            .map(|timeout_ms| timeout_ms.max(MIN_EMPTY_YIELD_TIME_MS));
         let thread_unload_delay =
             Duration::from_secs(cfg.thread_unload_delay_secs.unwrap_or(/*default*/ 60));
         if std::time::Instant::now()
