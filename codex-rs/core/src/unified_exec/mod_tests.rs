@@ -155,7 +155,7 @@ async fn exec_command_with_tty(
         output_closed_notify,
         cancellation_token,
     } = process.output_handles();
-    let deadline = started_at + Duration::from_millis(yield_time_ms);
+    let deadline = started_at.checked_add(Duration::from_millis(yield_time_ms));
     let collected_output = UnifiedExecProcessManager::collect_output_until_deadline(
         &output_buffer,
         &output_notify,
@@ -876,7 +876,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
         &output_closed_notify,
         &cancellation_token,
         /*pause_state*/ None,
-        Instant::now() + Duration::from_millis(2_500),
+        Instant::now().checked_add(Duration::from_millis(2_500)),
     )
     .await
     .to_bytes_with_omission_marker();
