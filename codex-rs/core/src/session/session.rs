@@ -455,8 +455,16 @@ async fn warm_plugins_and_skills_for_session_init(
     config: Arc<Config>,
     plugins_manager: Arc<PluginsManager>,
     skills_service: Arc<SkillsService>,
+    session_source: &SessionSource,
     turn_environments: &TurnEnvironmentSnapshot,
 ) -> Vec<SkillError> {
+    if matches!(
+        session_source,
+        SessionSource::SubAgent(SubAgentSource::Compact)
+    ) {
+        return Vec::new();
+    }
+
     let fs = turn_environments.primary_filesystem();
     let plugins_input = config.plugins_config_input();
     let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
@@ -920,13 +928,19 @@ impl Session {
             turn_environments.update_selections(session_configuration.environment_selections());
             let resolved_environments = turn_environments.snapshot().await;
             let agents_md_manager = Arc::new(AgentsMdManager::new(user_instructions));
-            agents_md_manager
-                .refresh(config.as_ref(), &resolved_environments)
-                .await;
+            if !matches!(
+                session_configuration.session_source,
+                SessionSource::SubAgent(SubAgentSource::Compact)
+            ) {
+                agents_md_manager
+                    .refresh(config.as_ref(), &resolved_environments)
+                    .await;
+            }
             let plugin_skill_errors = warm_plugins_and_skills_for_session_init(
                 Arc::clone(&config),
                 Arc::clone(&plugins_manager),
                 Arc::clone(&skills_service),
+                &session_configuration.session_source,
                 &resolved_environments,
             )
             .instrument(info_span!(
