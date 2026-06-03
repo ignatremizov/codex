@@ -42,9 +42,9 @@ use crate::tools::runtimes::unified_exec::UnifiedExecRuntime;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
+use crate::turn_timing::now_unix_timestamp_ms;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
-use crate::unified_exec::MAX_YIELD_TIME_MS;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::unified_exec::MIN_YIELD_TIME_MS;
 use crate::unified_exec::ProcessEntry;
@@ -102,6 +102,16 @@ const NETWORK_ACCESS_DENIED_MESSAGE: &str =
     "Network access was denied by the Codex sandbox network proxy.";
 const LATE_NETWORK_DENIAL_GRACE_PERIOD: Duration = Duration::from_millis(100);
 const INTERRUPT: &str = "\u{3}";
+
+fn deadline_after(start: Instant, timeout_ms: u64) -> Option<Instant> {
+    start.checked_add(Duration::from_millis(timeout_ms))
+}
+
+fn extend_deadline(deadline: &mut Option<Instant>, extension: Duration) {
+    if let Some(current_deadline) = *deadline {
+        *deadline = current_deadline.checked_add(extension);
+    }
+}
 
 /// Test-only override for deterministic unified exec process IDs.
 ///
@@ -598,9 +608,11 @@ impl UnifiedExecProcessManager {
             || Duration::from_millis(yield_time_ms),
             |completion| completion.timeout,
         );
-        let deadline = start
-            .checked_add(wait)
-            .ok_or_else(|| UnifiedExecError::process_failed("timeout_ms is too large".into()))?;
+        let deadline = Some(
+            start
+                .checked_add(wait)
+                .ok_or_else(|| UnifiedExecError::process_failed("timeout_ms is too large".into()))?,
+        );
         let collected_output = Self::collect_output_until_deadline(
             process.output_handles(),
             Some(context.session.subscribe_elicitation_pause_state()),
@@ -931,18 +943,10 @@ impl UnifiedExecProcessManager {
             }
         }
 
-        let yield_time_ms = {
-            // Empty polls use configurable background timeout bounds. Non-empty
-            // writes keep a fixed max cap so interactive stdin remains responsive.
-            let time_ms = request.yield_time_ms.max(MIN_YIELD_TIME_MS);
-            if request.input.is_empty() {
-                time_ms.clamp(MIN_EMPTY_YIELD_TIME_MS, self.max_write_stdin_yield_time_ms)
-            } else {
-                time_ms.min(MAX_YIELD_TIME_MS)
-            }
-        };
+        let yield_time_ms =
+            self.effective_write_stdin_yield_time_ms(request.input, request.yield_time_ms);
         let start = Instant::now();
-        let deadline = start + Duration::from_millis(yield_time_ms);
+        let deadline = deadline_after(start, yield_time_ms);
         let collected_output =
             Self::collect_output_until_deadline(&output, pause_state, deadline).await;
         let wall_time = Instant::now().saturating_duration_since(start);
@@ -1104,6 +1108,33 @@ impl UnifiedExecProcessManager {
             process_id: entry.process_id,
             tty: entry.tty,
         })
+    }
+
+    pub(crate) fn effective_write_stdin_yield_time_ms(
+        &self,
+        input: &str,
+        yield_time_ms: u64,
+    ) -> u64 {
+        let time_ms = yield_time_ms.max(MIN_YIELD_TIME_MS);
+        if input.is_empty() {
+            let time_ms = time_ms.max(MIN_EMPTY_YIELD_TIME_MS);
+            return self
+                .max_write_stdin_yield_time_ms
+                .map_or(time_ms, |max_timeout_ms| time_ms.min(max_timeout_ms));
+        }
+        time_ms
+    }
+
+    pub(crate) async fn process_event_metadata(
+        &self,
+        process_id: i32,
+    ) -> Result<(i32, String), UnifiedExecError> {
+        let store = self.process_store.lock().await;
+        let entry = store
+            .processes
+            .get(&process_id)
+            .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
+        Ok((entry.process_id, entry.call_id.clone()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1458,7 +1489,7 @@ impl UnifiedExecProcessManager {
     pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
         output: &OutputHandles<MAX_BYTES>,
         mut pause_state: Option<watch::Receiver<bool>>,
-        mut deadline: Instant,
+        mut deadline: Option<Instant>,
     ) -> HeadTailBuffer<MAX_BYTES> {
         const POST_EXIT_CLOSE_WAIT_CAP: Duration = Duration::from_secs(1);
 
@@ -1502,7 +1533,9 @@ impl UnifiedExecProcessManager {
 
                 let now = Instant::now();
                 let close_wait_deadline = *post_exit_deadline.get_or_insert_with(|| {
-                    let remaining = deadline.saturating_duration_since(now);
+                    let remaining = deadline
+                        .map(|deadline| deadline.saturating_duration_since(now))
+                        .unwrap_or(POST_EXIT_CLOSE_WAIT_CAP);
                     now + if remaining == Duration::ZERO {
                         POST_EXIT_CLOSE_WAIT_CAP
                     } else {
@@ -1530,26 +1563,33 @@ impl UnifiedExecProcessManager {
             }
 
             if has_drained_output {
-                if Instant::now() >= deadline {
+                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     break;
                 }
                 continue;
-            }
-
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining == Duration::ZERO {
-                break;
             }
 
             let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
             tokio::pin!(notified);
             let exit_notified = cancellation_token.cancelled();
             tokio::pin!(exit_notified);
-            tokio::select! {
-                _ = &mut notified => {}
-                _ = &mut exit_notified => exit_signal_received = true,
-                _ = tokio::time::sleep(remaining) => break,
-                _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
+            if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining == Duration::ZERO {
+                    break;
+                }
+                tokio::select! {
+                    _ = &mut notified => {}
+                    _ = &mut exit_notified => exit_signal_received = true,
+                    _ = tokio::time::sleep(remaining) => break,
+                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
+                }
+            } else {
+                tokio::select! {
+                    _ = &mut notified => {}
+                    _ = &mut exit_notified => exit_signal_received = true,
+                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
+                }
             }
         }
 
@@ -1563,7 +1603,7 @@ impl UnifiedExecProcessManager {
 
     async fn extend_deadlines_while_paused(
         pause_state: &mut Option<watch::Receiver<bool>>,
-        deadline: &mut Instant,
+        deadline: &mut Option<Instant>,
         post_exit_deadline: &mut Option<Instant>,
     ) {
         let Some(receiver) = pause_state.as_mut() else {
@@ -1581,9 +1621,11 @@ impl UnifiedExecProcessManager {
         }
 
         let paused_for = paused_at.elapsed();
-        *deadline += paused_for;
-        if let Some(post_exit_deadline) = post_exit_deadline.as_mut() {
-            *post_exit_deadline += paused_for;
+        extend_deadline(deadline, paused_for);
+        if let Some(post_exit_deadline) = post_exit_deadline.as_mut()
+            && let Some(extended_deadline) = post_exit_deadline.checked_add(paused_for)
+        {
+            *post_exit_deadline = extended_deadline;
         }
     }
 
