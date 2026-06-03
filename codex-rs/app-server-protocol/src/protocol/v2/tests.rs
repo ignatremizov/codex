@@ -61,6 +61,63 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[test]
+fn historical_compaction_defaults_missing_inventory() {
+    let item: ThreadItem = serde_json::from_value(json!({
+        "type": "contextCompaction",
+        "id": "old-item",
+        "summary": "summary",
+        "message": null,
+    }))
+    .expect("historical compaction item");
+    assert_eq!(
+        item,
+        ThreadItem::ContextCompaction {
+            id: "old-item".into(),
+            summary: Some("summary".into()),
+            message: None,
+            available_skills: Vec::new(),
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(item).expect("serialize item"),
+        json!({
+            "type": "contextCompaction",
+            "id": "old-item",
+            "summary": "summary",
+            "message": null,
+            "availableSkills": [],
+        })
+    );
+    let notification: ContextCompactedNotification = serde_json::from_value(json!({
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "summary": null,
+        "message": null,
+    }))
+    .expect("historical compatibility notification");
+    assert_eq!(
+        notification,
+        ContextCompactedNotification {
+            thread_id: "thread-1".into(),
+            turn_id: "turn-1".into(),
+            summary: None,
+            message: None,
+            available_skills: Vec::new(),
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(notification).expect("serialize compatibility notification"),
+        json!({
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "summary": null,
+            "message": null,
+            "availableSkills": [],
+        })
+    );
+}
+
 fn absolute_path_string(path: &str) -> String {
     let path = format!("/{}", path.trim_start_matches('/'));
     test_path_buf(&path).display().to_string()
@@ -422,6 +479,7 @@ fn thread_items_list_round_trips() {
                 id: "item_1".to_string(),
                 summary: Some("compact summary".to_string()),
                 message: Some("full compacted prompt".to_string()),
+                available_skills: vec!["test-tui".to_string()],
             },
         }],
         next_cursor: None,
@@ -438,6 +496,7 @@ fn thread_items_list_round_trips() {
                     "id": "item_1",
                     "summary": "compact summary",
                     "message": "full compacted prompt",
+                    "availableSkills": ["test-tui"],
                 },
             }],
             "nextCursor": null,

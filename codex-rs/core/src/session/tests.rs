@@ -10999,6 +10999,7 @@ async fn make_remote_compaction_session(
         move |config| {
             config.model = Some("gpt-5.2".to_string());
             config.model_provider = provider;
+            config.remote_compaction_handoff_enabled = false;
             let _ = config.features.disable(Feature::TokenBudget);
         },
     )
@@ -11079,8 +11080,11 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
         Some(Arc::clone(&fallback)),
         &mut client_session,
         InitialContextInjection::DoNotInject,
-        CompactionReason::ModelDownshift,
-        CompactionPhase::PreTurn,
+        crate::compact_remote_v2::AutoCompactRun {
+            reason: CompactionReason::ModelDownshift,
+            phase: CompactionPhase::PreTurn,
+            cancellation: &CancellationToken::new(),
+        },
     )
     .await
     .expect("compaction succeeds");

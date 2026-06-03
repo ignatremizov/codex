@@ -167,11 +167,16 @@ these values rather than message text. Native diagnostic payloads stay private.
 
 ## Completed context compaction
 
-Completed `contextCompaction` items include nullable `summary` and `message` fields.
-The summary is the compacted text when available; the message is the complete
-compacted prompt installed in history. Started items and older saved history can
-have null payloads. Render the canonical `item/completed` item once; the deprecated
-`thread/compacted` notification is not a second completion.
+Completed `contextCompaction` items include nullable `summary` and `message` fields
+and an `availableSkills` string array. The summary is the compacted text when
+available. For local compaction, the message is the complete compacted prompt;
+for remote compaction, it is the display-only decoding of the installed handoff.
+Decoded text never replaces the authoritative model history. Started items and
+older saved history can have null text payloads; an omitted historical
+`availableSkills` defaults to an empty list. The inventory describes the latest
+model-visible skill names in the installed history, not newly activated skills.
+Render the canonical `item/completed` item once; the deprecated `thread/compacted`
+notification is not a second completion.
 
 Local compaction uses a 15-minute response deadline, an output limit of half the
 model context window when known, and bounded session metadata appended to its

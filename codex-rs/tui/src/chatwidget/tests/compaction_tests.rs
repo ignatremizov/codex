@@ -17,6 +17,7 @@ fn compaction_started(id: &str) -> ServerNotification {
             id: id.to_string(),
             summary: None,
             message: None,
+            available_skills: Vec::new(),
         },
     })
 }
@@ -30,6 +31,7 @@ fn compaction_completed(id: &str) -> ServerNotification {
             id: id.to_string(),
             summary: None,
             message: None,
+            available_skills: Vec::new(),
         },
     })
 }
@@ -48,6 +50,7 @@ async fn compaction_payload_keeps_live_duration_and_full_detail() {
         id: "compact-1".into(),
         summary: Some("Short summary".into()),
         message: Some("Full prompt\n\nLast line".into()),
+        available_skills: vec!["test-tui".into()],
     };
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(completed),
@@ -77,6 +80,7 @@ async fn compaction_empty_message_falls_back_to_summary() {
         id: "old".into(),
         summary: Some("Retained summary".into()),
         message: Some(" \n ".into()),
+        available_skills: Vec::new(),
     };
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(completed),

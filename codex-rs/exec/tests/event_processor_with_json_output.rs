@@ -177,6 +177,7 @@ fn context_compaction_item_emits_context_compacted_event() {
                 id: "compact-1".to_string(),
                 summary: Some("short summary".to_string()),
                 message: Some("compacted prompt".to_string()),
+                available_skills: vec!["test-tui".to_string()],
             },
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -190,6 +191,7 @@ fn context_compaction_item_emits_context_compacted_event() {
             events: vec![ThreadEvent::ContextCompacted(ExecContextCompactedEvent {
                 summary: Some("short summary".to_string()),
                 message: Some("compacted prompt".to_string()),
+                available_skills: vec!["test-tui".to_string()],
             })],
             status: CodexStatus::Running,
         }
@@ -203,6 +205,7 @@ fn context_compaction_item_emits_context_compacted_event() {
             turn_id: "turn-1".to_string(),
             summary: Some("short summary".to_string()),
             message: Some("compacted prompt".to_string()),
+            available_skills: vec!["test-tui".to_string()],
         },
     ));
     assert_eq!(
@@ -243,6 +246,31 @@ fn context_compaction_item_emits_context_compacted_event() {
         }
     );
     assert_eq!(processor.final_message(), Some("final answer"));
+}
+
+#[test]
+fn historical_context_compacted_jsonl_defaults_missing_inventory() {
+    let event: ExecContextCompactedEvent = serde_json::from_value(serde_json::json!({
+        "summary": "summary",
+        "message": "prompt",
+    }))
+    .expect("historical JSONL compaction");
+    assert_eq!(
+        event,
+        ExecContextCompactedEvent {
+            summary: Some("summary".into()),
+            message: Some("prompt".into()),
+            available_skills: Vec::new(),
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(event).expect("serialize compaction"),
+        serde_json::json!({
+            "summary": "summary",
+            "message": "prompt",
+            "available_skills": [],
+        })
+    );
 }
 
 #[test]

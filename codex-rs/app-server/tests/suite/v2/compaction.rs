@@ -87,14 +87,23 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
         responses::ev_assistant_message("m4", "FINAL_REPLY"),
         responses::ev_completed_with_tokens("r4", /*total_tokens*/ 120),
     ]);
-    let requests = responses::mount_sse_sequence(&server, vec![sse1, sse2, sse3, sse4]).await;
+    let mut replies = vec![sse1, sse2, sse3];
+    if let CompactionRoute::Remote = route {
+        replies.push(responses::sse(vec![
+            responses::ev_assistant_message("decoded", "DECODED_HANDOFF"),
+            responses::ev_completed("decoder-response"),
+        ]));
+    }
+    replies.push(sse4);
+    let requests = responses::mount_sse_sequence(&server, replies).await;
 
     let codex_home = TempDir::new()?;
     let mut config = compaction_config(&server.uri(), /*auto_compact_limit*/ 200_000);
     if let CompactionRoute::Remote = route {
         config = config
             .with_provider_name("OpenAI")
-            .with_provider_config("requires_openai_auth = true");
+            .with_provider_config("requires_openai_auth = true")
+            .with_root_config("remote_compaction_handoff_model = \"mock-model\"\nremote_compaction_handoff_fallback_model = \"mock-model\"");
         write_chatgpt_auth(
             codex_home.path(),
             ChatGptAuthFixture::new("access-chatgpt").plan_type("pro"),
@@ -121,6 +130,7 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
         id: started_id,
         summary: started_summary,
         message: started_message,
+        available_skills: started_skills,
     } = started.item
     else {
         unreachable!("started item should be context compaction");
@@ -129,6 +139,7 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
         id: completed_id,
         summary: completed_summary,
         message: completed_message,
+        available_skills: completed_skills,
     } = completed.item
     else {
         unreachable!("completed item should be context compaction");
@@ -139,6 +150,7 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
     assert_eq!(started_id, completed_id);
     assert_eq!(started_summary, None);
     assert_eq!(started_message, None);
+    assert_eq!(started_skills, Vec::<String>::new());
     match route {
         CompactionRoute::Local => {
             assert_eq!(completed_summary, Some("LOCAL_SUMMARY".to_string()));
@@ -147,12 +159,21 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
             assert!(message.contains("\nLOCAL_SUMMARY\n\n[SESSION_METADATA]\n"));
         }
         CompactionRoute::Remote => {
-            assert_eq!((completed_summary, completed_message), (None, None));
+            assert_eq!(
+                (completed_summary, completed_message),
+                (None, Some("DECODED_HANDOFF".to_string()))
+            );
         }
     }
 
     let requests = requests.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests.len(),
+        match route {
+            CompactionRoute::Local => 4,
+            CompactionRoute::Remote => 5,
+        }
+    );
     let compact_request = &requests[2];
     assert_eq!(compact_request.path(), "/v1/responses");
     match route {
@@ -165,14 +186,26 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
             assert!(compact_request.body_contains_text(COMPACT_PROMPT));
         }
         CompactionRoute::Remote => {
+            let decoder = &requests[3];
+            let body = decoder.body_json();
+            assert_eq!(body["client_metadata"]["x-openai-subagent"], "compact");
+            assert_eq!(body["tools"], serde_json::json!([]));
+            assert_eq!(
+                body["instructions"],
+                "Repeat the compacted handoff content verbatim. Do not summarize, explain, or add any text."
+            );
+            assert!(!decoder.body_contains_text("<environment_context>"));
+            // This fixture installs no skills inventory; decoder prose cannot invent one.
+            assert_eq!(completed_skills, Vec::<String>::new());
             assert_eq!(
                 compact_request.inputs_of_type("compaction_trigger").len(),
                 1
             );
             assert_eq!(
-                requests[3].inputs_of_type("compaction")[0]["encrypted_content"],
+                requests[4].inputs_of_type("compaction")[0]["encrypted_content"],
                 "ENCRYPTED_COMPACTION_SUMMARY"
             );
+            assert!(!requests[4].body_contains_text("DECODED_HANDOFF"));
         }
     }
 
@@ -265,6 +298,7 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         id: started_id,
         summary: started_summary,
         message: started_message,
+        ..
     } = started.item
     else {
         unreachable!("started item should be context compaction");
@@ -273,6 +307,7 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         id: completed_id,
         summary: completed_summary,
         message: completed_message,
+        ..
     } = completed.item
     else {
         unreachable!("completed item should be context compaction");

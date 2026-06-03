@@ -897,6 +897,9 @@ impl TestCodexBuilder {
         // Keep generic tests stable when the bundled catalog default changes. Tests that need a
         // specific model can still override this with a config mutator.
         config.model = Some("gpt-5.5".to_string());
+        // Ordinary response fixtures do not include the presentation-only decoder request.
+        // Decoder integration tests opt in through their normal config mutator.
+        config.remote_compaction_handoff_enabled = false;
         config.cwd = cwd_override;
         config.model_provider = model_provider;
         if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex") {
