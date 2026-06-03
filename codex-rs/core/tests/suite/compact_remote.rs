@@ -2270,7 +2270,11 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
-        test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config.remote_compaction_handoff_enabled = true;
+            }),
     )
     .await?;
     let codex = harness.test().codex.clone();
@@ -2304,14 +2308,26 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
         .await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
+    let helper_mock = mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_assistant_message("handoff", "DECODED_REMOTE_HANDOFF"),
+            responses::ev_completed("resp-handoff"),
+        ]),
+    )
+    .await;
+
     codex.submit(Op::Compact).await?;
 
     let mut started_item = None;
     let mut completed_item = None;
-    let mut legacy_event = false;
+    let mut legacy_message = None;
     let mut saw_turn_complete = false;
 
-    while !saw_turn_complete || started_item.is_none() || completed_item.is_none() || !legacy_event
+    while !saw_turn_complete
+        || started_item.is_none()
+        || completed_item.is_none()
+        || legacy_message.is_none()
     {
         let event = codex.next_event().await.unwrap();
         match event.msg {
@@ -2327,8 +2343,8 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
             }) => {
                 completed_item = Some(item);
             }
-            EventMsg::ContextCompacted(_) => {
-                legacy_event = true;
+            EventMsg::ContextCompacted(event) => {
+                legacy_message = Some(event.message);
             }
             EventMsg::TurnComplete(_) => {
                 saw_turn_complete = true;
@@ -2340,8 +2356,38 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
     let started_item = started_item.expect("context compaction item started");
     let completed_item = completed_item.expect("context compaction item completed");
     assert_eq!(started_item.id, completed_item.id);
-    assert!(legacy_event);
+    assert_eq!(
+        completed_item.message.as_deref(),
+        Some("DECODED_REMOTE_HANDOFF")
+    );
+    assert_eq!(
+        legacy_message.expect("context compacted event").as_deref(),
+        Some("DECODED_REMOTE_HANDOFF")
+    );
     assert_eq!(compact_mock.requests().len(), 1);
+    let helper_request = helper_mock.single_request();
+    let handoff_prompt = "Repeat the compacted handoff content verbatim. Do not summarize, explain, or add any text.";
+    assert!(helper_request.instructions_text().contains(handoff_prompt));
+    assert!(
+        !helper_request
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text == handoff_prompt),
+        "handoff instruction should not be appended as user-visible helper input"
+    );
+    let helper_input = helper_request.input();
+    let summary_position = helper_input
+        .iter()
+        .position(|item| item.to_string().contains("REMOTE_COMPACTED_SUMMARY"))
+        .expect("helper request should be seeded with post-compaction history");
+    let prompt_position = helper_input
+        .iter()
+        .rposition(|item| item.to_string().contains(handoff_prompt))
+        .expect("helper request should append trailing handoff instruction");
+    assert!(
+        prompt_position > summary_position,
+        "handoff instruction should be after post-compaction history"
+    );
 
     Ok(())
 }
