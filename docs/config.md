@@ -160,6 +160,13 @@ unified_exec_write_stdin_yield_time_ms = 250 # write_stdin polling window
 If unset, Codex uses the built-in defaults (10,000 ms initial snapshot window for `exec_command`,
 250 ms polling window for `write_stdin`).
 
+Empty `write_stdin` calls are background terminal polls. By default, their `yield_time_ms` wait is
+not capped. To impose a maximum poll window:
+
+```toml
+background_terminal_max_timeout = 300000
+```
+
 ## SQLite State DB
 
 Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the
