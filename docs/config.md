@@ -119,6 +119,13 @@ output. The setting governs newly emitted messages; resumed and forked history r
 persisted agent message's encrypted or plaintext representation. Config-lock exports include the
 resolved setting.
 
+## Remote Compaction Handoff
+
+Set `remote_compaction_handoff_model` to override the model used to decode
+remote compaction handoff text for display. When unset, Codex uses
+`gpt-5.3-codex-spark` if that model is available in the catalog, otherwise it
+falls back to the current turn model.
+
 ## SQLite State DB
 
 Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the
