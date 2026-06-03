@@ -771,6 +771,9 @@ impl TestCodexBuilder {
         config.model = Some("gpt-5.5".to_string());
         config.cwd = cwd_override;
         config.model_provider = model_provider;
+        // Most remote-compaction tests use ordered `/responses` mocks for the main agent.
+        // Opt into the helper explicitly in tests that assert handoff decoding.
+        config.remote_compaction_handoff_enabled = false;
         if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex") {
             config.codex_self_exe = Some(path);
         } else if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex-exec") {

@@ -197,6 +197,8 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         explicit_permission_profile_mode: false,
         custom_permission_profiles: Vec::new(),
         approvals_reviewer: ApprovalsReviewer::User,
+        remote_compaction_handoff_model: None,
+        remote_compaction_handoff_enabled: true,
         enforce_residency: Constrained::allow_any(/*initial_value*/ None),
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
