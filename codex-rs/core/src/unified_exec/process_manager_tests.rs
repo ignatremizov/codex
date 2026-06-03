@@ -211,7 +211,7 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
 #[cfg(windows)]
 #[test]
 fn initial_exec_yield_time_uses_windows_floor() {
-    let above_max_yield_time_ms = crate::unified_exec::MAX_YIELD_TIME_MS + 1;
+    let above_max_yield_time_ms = crate::unified_exec::MAX_INITIAL_EXEC_YIELD_TIME_MS + 1;
 
     assert_eq!(
         clamp_yield_time(/*yield_time_ms*/ 1_000),
@@ -220,7 +220,7 @@ fn initial_exec_yield_time_uses_windows_floor() {
     assert_eq!(clamp_yield_time(/*yield_time_ms*/ 10_000), 10_000);
     assert_eq!(
         clamp_yield_time(/*yield_time_ms*/ above_max_yield_time_ms),
-        crate::unified_exec::MAX_YIELD_TIME_MS
+        crate::unified_exec::MAX_INITIAL_EXEC_YIELD_TIME_MS
     );
 }
 
@@ -249,7 +249,7 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         &output_closed_notify,
         &cancellation_token,
         /*pause_state*/ None,
-        Instant::now() + Duration::from_secs(5),
+        Some(Instant::now() + Duration::from_secs(5)),
     );
     let produce = async {
         for byte in [b'a', b'b', b'c'] {
@@ -314,7 +314,7 @@ async fn output_collection_preserves_omissions_from_drained_buffer() {
         &output_closed_notify,
         &cancellation_token,
         /*pause_state*/ None,
-        Instant::now() + Duration::from_secs(1),
+        Some(Instant::now() + Duration::from_secs(1)),
     )
     .await;
 
@@ -376,11 +376,56 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
         &output_closed_notify,
         &cancellation_token,
         /*pause_state*/ None,
-        Instant::now(),
+        Some(Instant::now()),
     )
     .await;
 
-    assert_eq!(collected, b"late output");
+    let mut expected = HeadTailBuffer::default();
+    expected.push_chunk(b"late output".to_vec());
+    assert_eq!(collected, expected);
+}
+
+#[tokio::test]
+async fn collect_output_without_deadline_waits_until_output_closes() {
+    let output_buffer = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+    let output_notify = Arc::new(Notify::new());
+    let output_closed = Arc::new(AtomicBool::new(false));
+    let output_closed_notify = Arc::new(Notify::new());
+    let cancellation_token = CancellationToken::new();
+
+    {
+        let output_buffer = Arc::clone(&output_buffer);
+        let output_notify = Arc::clone(&output_notify);
+        let output_closed = Arc::clone(&output_closed);
+        let output_closed_notify = Arc::clone(&output_closed_notify);
+        let cancellation_token = cancellation_token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            output_buffer
+                .lock()
+                .await
+                .push_chunk(b"unbounded output".to_vec());
+            output_notify.notify_waiters();
+            output_closed.store(true, Ordering::Release);
+            output_closed_notify.notify_waiters();
+            cancellation_token.cancel();
+        });
+    }
+
+    let collected = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output_buffer,
+        &output_notify,
+        &output_closed,
+        &output_closed_notify,
+        &cancellation_token,
+        /*pause_state*/ None,
+        /*deadline*/ None,
+    )
+    .await;
+
+    let mut expected = HeadTailBuffer::default();
+    expected.push_chunk(b"unbounded output".to_vec());
+    assert_eq!(collected, expected);
 }
 
 #[tokio::test]
