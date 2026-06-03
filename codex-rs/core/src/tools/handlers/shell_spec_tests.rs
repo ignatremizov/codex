@@ -29,11 +29,7 @@ fn exec_command_tool_matches_expected_spec() {
         "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
             .to_string()
     };
-    let yield_time_ms_description = if cfg!(windows) {
-        "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use configured unified_exec_yield_time_ms (10000 ms when unset). Effective range on Windows is 10000-30000 ms."
-    } else {
-        "Wait before yielding output. Defaults to configured unified_exec_yield_time_ms (10000 ms when unset); effective range is 250-30000 ms."
-    };
+    let yield_time_ms_description = "Initial wait for exec_command before returning a session ID for a still-running command. Commands that finish sooner return immediately. Omit this parameter to use configured unified_exec_yield_time_ms (10000 ms when unset). Effective range is 5000-30000 ms for POSIX targets and 10000-30000 ms for Windows targets. Later waits use write_stdin.";
 
     let mut properties = BTreeMap::from([
         (
@@ -116,7 +112,8 @@ fn exec_command_tool_can_hide_shell_parameter() {
 
 #[test]
 fn write_stdin_tool_matches_expected_spec() {
-    let tool = create_write_stdin_tool();
+    let default_yield_time_ms = 60_000;
+    let tool = create_write_stdin_tool(default_yield_time_ms);
 
     let properties = BTreeMap::from([
         (
@@ -134,7 +131,7 @@ fn write_stdin_tool_matches_expected_spec() {
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                "Wait before yielding output. Non-empty writes default to configured unified_exec_write_stdin_yield_time_ms (250 ms when unset) and cap at 30000 ms; empty polls wait at least 5000 ms and are uncapped by default.".to_string(),
+                "Maximum poll wait in uint64 ms, independent of exec_command’s initial wait. Omit for default 60000 ms".to_string(),
             )),
         ),
         (
@@ -149,9 +146,7 @@ fn write_stdin_tool_matches_expected_spec() {
         tool,
         ToolSpec::Function(ResponsesApiTool {
             name: "write_stdin".to_string(),
-            description:
-                "Writes characters to an existing unified exec session and returns recent output."
-                    .to_string(),
+            description: "Writes chars to or polls an exec session, returning recent output. Polls return immediately on process exit; prefer long yield_time_ms values to repeated polls.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(

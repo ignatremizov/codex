@@ -1054,7 +1054,9 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
                         context.environments,
                     ),
                 }));
-                registry.add(WriteStdinHandler);
+                registry.add(WriteStdinHandler::new(
+                    turn_context.unified_exec_write_stdin_yield_time_ms,
+                ));
             }
             if turn_context.config.features.enabled(Feature::ViewImage) {
                 registry.add(ViewImageHandler::new(ViewImageToolOptions {
@@ -1145,7 +1147,9 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
     };
     if features.enabled(Feature::UnifiedExec) {
         registry.add(ExecCommandHandler::new(options));
-        registry.add(WriteStdinHandler);
+        registry.add(WriteStdinHandler::new(
+            turn_context.unified_exec_write_stdin_yield_time_ms,
+        ));
     } else {
         // Managed requirements are the only configuration path that can keep
         // unified exec disabled. Preserve command execution without exposing a
