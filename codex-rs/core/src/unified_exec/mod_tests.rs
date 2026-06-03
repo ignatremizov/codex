@@ -170,7 +170,7 @@ async fn exec_command_with_tty(
             .insert(process_id, entry);
     }
 
-    let deadline = started_at + Duration::from_millis(yield_time_ms);
+    let deadline = started_at.checked_add(Duration::from_millis(yield_time_ms));
     let collected_output = UnifiedExecProcessManager::collect_output_until_deadline(
         process.output_handles(),
         Some(session.subscribe_elicitation_pause_state()),
@@ -684,7 +684,7 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Result<()> {
+async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyhow::Result<()> {
     let (session, turn) = test_session_and_turn().await;
     let manager = &session.services.unified_exec_manager;
     let process_id = manager.allocate_process_id().await;
@@ -732,7 +732,11 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
         let turn = Arc::clone(&turn);
         async move {
             write_stdin(
-                &session, &turn, process_id, "", /*yield_time_ms*/ 60_000,
+                &session,
+                &turn,
+                process_id,
+                "",
+                /*yield_time_ms*/ u64::MAX,
             )
             .await
         }
@@ -754,6 +758,55 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
     })
     .await
     .expect("poll should clone process handles");
+
+    poll_task.abort();
+    let cancelled = tokio::time::timeout(Duration::from_secs(2), poll_task)
+        .await
+        .expect("cancelling a poll should not wait for the process to exit")
+        .expect_err("the polling task should be cancelled");
+    assert!(cancelled.is_cancelled());
+    assert!(!process.has_exited());
+    assert!(process.interaction_lock().try_lock_owned().is_ok());
+    manager
+        .process_store
+        .lock()
+        .await
+        .processes
+        .get_mut(&process_id)
+        .expect("cancelling a poll should retain the process")
+        .last_used = last_used;
+
+    let poll_task = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn = Arc::clone(&turn);
+        async move {
+            write_stdin(
+                &session,
+                &turn,
+                process_id,
+                "",
+                /*yield_time_ms*/ u64::MAX,
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let poll_started = manager
+                .process_store
+                .lock()
+                .await
+                .processes
+                .get(&process_id)
+                .is_some_and(|entry| entry.last_used != last_used);
+            if poll_started {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a later poll should acquire the released lock and clone process handles");
 
     manager.release_process_id(process_id).await;
     allow_terminate.notify_one();
@@ -844,7 +897,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
     let collected = UnifiedExecProcessManager::collect_output_until_deadline(
         process.output_handles(),
         /*pause_state*/ None,
-        Instant::now() + Duration::from_millis(2_500),
+        Instant::now().checked_add(Duration::from_millis(2_500)),
     )
     .await
     .to_bytes_with_omission_marker();
