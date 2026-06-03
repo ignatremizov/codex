@@ -24,6 +24,7 @@ use crate::compact::CompactedHistoryMetadata;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::context::ApprovedCommandPrefixSaved;
+use crate::context::AvailablePluginsInstructions;
 use crate::context::AvailableSkillsInstructions;
 use crate::context::ContextualUserFragment;
 use crate::context::ModelSwitchInstructions;
@@ -571,10 +572,15 @@ impl Session {
         config
             .startup_warnings
             .extend(user_instruction_provider_warnings);
-        let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source) {
-            // Guardian review should rely on the built-in shell safety checks,
-            // not on caller-provided exec-policy rules that could shape the
-            // reviewer or silently auto-approve commands.
+        let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source)
+            || matches!(
+                &session_source,
+                SessionSource::SubAgent(SubAgentSource::Compact)
+            ) {
+            // Guardian review and compact handoff helpers should rely on the
+            // built-in shell safety checks, not on caller-provided exec-policy
+            // rules that could shape the subagent or silently auto-approve
+            // commands.
             Arc::new(ExecPolicyManager::default())
         } else if let Some(exec_policy) = &inherited_exec_policy {
             Arc::clone(exec_policy)
@@ -3366,6 +3372,18 @@ impl Session {
         turn_context: &TurnContext,
         world_state: &WorldState,
     ) -> Vec<ResponseItem> {
+        let mcp = self.services.latest_mcp_runtime();
+        self.build_initial_context_with_world_state_and_mcp(turn_context, world_state, &mcp)
+            .await
+    }
+
+    async fn build_initial_context_with_world_state_and_mcp(
+        &self,
+        turn_context: &TurnContext,
+        world_state: &WorldState,
+        mcp: &McpRuntimeSnapshot,
+    ) -> Vec<ResponseItem> {
+        let compact_subagent = turn_context.is_compact_subagent();
         let mut developer_sections = Vec::<String>::with_capacity(8);
         let mut contextual_user_sections = Vec::<String>::with_capacity(2);
         let mut separate_developer_sections = Vec::<String>::new();
@@ -3417,82 +3435,85 @@ impl Session {
                 developer_sections.push(skills_instructions.render());
             }
         }
-        let loaded_plugins = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&turn_context.config.plugins_config_input())
-            .await;
-        let features = turn_context.config.features.get();
-        let recommended_plugin_candidates = if features.enabled(Feature::Apps)
-            && features.enabled(Feature::Plugins)
-            && (features.enabled(Feature::ToolSuggest)
-                || features.enabled(Feature::RecommendedPlugins))
-        {
-            let auth = self.services.auth_manager.auth().await;
-            let plugins_config = turn_context.config.plugins_config_input();
-            self.services
+        if !compact_subagent {
+            let loaded_plugins = self
+                .services
                 .plugins_manager
-                .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
-                    plugins_config: &plugins_config,
-                    loaded_plugins: &loaded_plugins,
-                    auth: auth.as_ref(),
-                    disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
-                    app_server_client_name: turn_context.app_server_client_name.as_deref(),
-                })
-                .await
-        } else {
-            None
-        };
-        if let Some(recommended_plugins) = recommended_plugin_candidates
-            .as_deref()
-            .and_then(RecommendedPluginsInstructions::from_plugins)
-        {
-            contextual_user_sections.push(recommended_plugins.render());
-        }
-        let context_contributors = self.services.extensions.context_contributors().to_vec();
-        for contributor in &context_contributors {
-            for fragment in contributor
-                .contribute_thread_context(
-                    &self.services.session_extension_data,
-                    &self.services.thread_extension_data,
-                )
-                .await
+                .plugins_for_config(&turn_context.config.plugins_config_input())
+                .await;
+            let features = turn_context.config.features.get();
+            let recommended_plugin_candidates = if features.enabled(Feature::Apps)
+                && features.enabled(Feature::Plugins)
+                && (features.enabled(Feature::ToolSuggest)
+                    || features.enabled(Feature::RecommendedPlugins))
             {
-                push_prompt_fragment(
-                    fragment,
-                    &mut developer_sections,
-                    &mut contextual_user_sections,
-                    &mut separate_developer_sections,
-                );
+                let auth = self.services.auth_manager.auth().await;
+                let plugins_config = turn_context.config.plugins_config_input();
+                self.services
+                    .plugins_manager
+                    .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
+                        plugins_config: &plugins_config,
+                        loaded_plugins: &loaded_plugins,
+                        auth: auth.as_ref(),
+                        disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
+                        app_server_client_name: turn_context.app_server_client_name.as_deref(),
+                    })
+                    .await
+            } else {
+                None
+            };
+            if let Some(recommended_plugins) = recommended_plugin_candidates
+                .as_deref()
+                .and_then(RecommendedPluginsInstructions::from_plugins)
+            {
+                contextual_user_sections.push(recommended_plugins.render());
             }
-        }
-        for contributor in &context_contributors {
-            for fragment in contributor
-                .contribute_turn_context(TurnContextContributionInput {
-                    thread_id: self.thread_id(),
-                    turn_id: turn_context.sub_id.as_str(),
-                    session_store: &self.services.session_extension_data,
-                    thread_store: &self.services.thread_extension_data,
-                    turn_store: turn_context.extension_data.as_ref(),
-                    model_context_window: turn_context.model_context_window(),
-                })
-                .await
-            {
-                push_prompt_fragment(
-                    fragment,
-                    &mut developer_sections,
-                    &mut contextual_user_sections,
-                    &mut separate_developer_sections,
-                );
+            if !loaded_plugins.capability_summaries().is_empty() {
+                developer_sections.push(AvailablePluginsInstructions.render());
+            }
+            let context_contributors = self.services.extensions.context_contributors().to_vec();
+            for contributor in &context_contributors {
+                for fragment in contributor
+                    .contribute_thread_context(
+                        &self.services.session_extension_data,
+                        &self.services.thread_extension_data,
+                    )
+                    .await
+                {
+                    push_prompt_fragment(
+                        fragment,
+                        &mut developer_sections,
+                        &mut contextual_user_sections,
+                        &mut separate_developer_sections,
+                    );
+                }
+            }
+            for contributor in &context_contributors {
+                for fragment in contributor
+                    .contribute_turn_context(TurnContextContributionInput {
+                        thread_id: self.thread_id(),
+                        turn_id: turn_context.sub_id.as_str(),
+                        session_store: &self.services.session_extension_data,
+                        thread_store: &self.services.thread_extension_data,
+                        turn_store: turn_context.extension_data.as_ref(),
+                        model_context_window: turn_context.model_context_window(),
+                    })
+                    .await
+                {
+                    push_prompt_fragment(
+                        fragment,
+                        &mut developer_sections,
+                        &mut contextual_user_sections,
+                        &mut separate_developer_sections,
+                    );
+                }
             }
         }
         // This is full-context metadata. Steady-state context diffs should not re-emit it.
         if turn_context.config.features.enabled(Feature::TokenBudget)
             && turn_context.model_context_window().is_some()
         {
-            let mcp_result = self
-                .services
-                .mcp_runtime
+            let mcp_result = mcp
                 .latest_call_tool(
                     "notes",
                     "thread_hint",
