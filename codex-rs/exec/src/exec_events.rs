@@ -101,6 +101,8 @@ pub struct ThreadErrorEvent {
 pub struct ContextCompactedEvent {
     pub summary: Option<String>,
     pub message: Option<String>,
+    pub decode_error: Option<String>,
+    pub available_skills: Vec<String>,
 }
 
 /// Canonical representation of a thread item and its domain-specific payload.

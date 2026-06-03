@@ -165,6 +165,7 @@ pub(crate) async fn run_compact_task(
         started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
         model_context_window: turn_context.model_context_window(),
         collaboration_mode_kind: turn_context.mode(),
+        agent_queue: None,
     });
     sess.send_event(&turn_context, start_event).await;
     run_compact_task_inner(

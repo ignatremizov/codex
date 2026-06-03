@@ -26,6 +26,7 @@ use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::AgentPath;
 use codex_protocol::account::PlanType as AccountPlanType;
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
@@ -71,6 +72,8 @@ use core_test_support::test_path_buf;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
+use image::ImageBuffer;
+use image::Rgba;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -1844,15 +1847,15 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
         follow_up_request
             .inputs_of_type("agent_message")
             .iter()
-            .all(|item| !item.to_string().contains("child progress")),
-        "expected v2 follow-up request to omit the child progress update"
+            .any(|item| item.to_string().contains("child progress")),
+        "expected v2 follow-up request to retain the child progress update"
     );
     assert!(
         follow_up_request
             .inputs_of_type("agent_message")
             .iter()
-            .all(|item| !item.to_string().contains("child completion")),
-        "expected v2 follow-up request to omit the child completion"
+            .any(|item| item.to_string().contains("child completion")),
+        "expected v2 follow-up request to retain the child completion"
     );
     let follow_up_body = follow_up_request.body_json().to_string();
     assert!(
@@ -1884,6 +1887,210 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
         !follow_up_body.contains(tool_notice),
         "expected v2 compaction to drop the resize notice with its tool output"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_v2_expires_prior_window_images_after_one_checkpoint() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+    const IMAGE_DIMENSION: u32 = 512;
+    let image = ImageBuffer::from_fn(IMAGE_DIMENSION, IMAGE_DIMENSION, |x, y| {
+        let mixed =
+            x.wrapping_mul(0x9E37_79B9).rotate_left(y % u32::BITS) ^ y.wrapping_mul(0x85EB_CA6B);
+        let [red, green, blue, _] = mixed.to_le_bytes();
+        Rgba([red, green, blue, u8::MAX])
+    });
+    let local_image_path = harness.test().cwd.path().join("compaction-context.png");
+    image.save(&local_image_path)?;
+    let local_image_path_text = local_image_path.display().to_string();
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REPLY"),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "FIRST_COMPACTION",
+                    }
+                }),
+                responses::ev_completed("resp-compact-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m2", "SECOND_REPLY"),
+                responses::ev_completed("resp-2"),
+            ]),
+            responses::sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "SECOND_COMPACTION",
+                    }
+                }),
+                responses::ev_completed("resp-compact-2"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "FINAL_REPLY"),
+                responses::ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![
+                UserInput::LocalImage {
+                    path: local_image_path.clone(),
+                    detail: None,
+                },
+                UserInput::Text {
+                    text: "inspect this image".to_string(),
+                    text_elements: Vec::new(),
+                },
+            ],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "after first compaction".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "after second compaction".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    let requests = responses_mock.requests();
+    assert_eq!(requests.len(), 5);
+    let first_compaction_image_urls = requests[1].message_input_image_urls("user");
+    assert_eq!(
+        first_compaction_image_urls.len(),
+        1,
+        "the first compactor must see the current-window image"
+    );
+    for request in &requests[2..] {
+        assert!(
+            request.message_input_image_urls("user").is_empty(),
+            "post-compaction requests must not replay prior-window image bytes"
+        );
+    }
+    assert!(
+        requests[2]
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains(local_image_path_text.as_str())),
+        "the first checkpoint should retain the current-window image path"
+    );
+    assert!(
+        requests[3]
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains(local_image_path_text.as_str())),
+        "the next compactor should get one final opportunity to use the inherited image path"
+    );
+    assert!(
+        requests[4]
+            .message_input_texts("user")
+            .iter()
+            .all(|text| !text.contains(local_image_path_text.as_str())),
+        "the second checkpoint should expire the inherited image path"
+    );
+    assert!(
+        requests[4]
+            .message_input_texts("user")
+            .iter()
+            .all(|text| !text.contains("<compacted_image_omission>")),
+        "a window without new images should not inherit the prior omission marker"
+    );
+    let rollout_path = codex.rollout_path().expect("rollout path");
+    let rollout = fs::read_to_string(rollout_path)?;
+    let compacted_lines = rollout
+        .lines()
+        .filter_map(|line| {
+            let parsed = serde_json::from_str::<RolloutLine>(line).ok()?;
+            matches!(&parsed.item, RolloutItem::Compacted(_)).then_some((line, parsed.item))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(compacted_lines.len(), 2);
+    for (index, (line, item)) in compacted_lines.into_iter().enumerate() {
+        let RolloutItem::Compacted(compacted) = item else {
+            unreachable!("filtered to compacted rollout items");
+        };
+        let replacement_history = compacted
+            .replacement_history
+            .expect("compacted replacement history");
+        assert!(
+            replacement_history.iter().all(|item| {
+                !matches!(
+                    &item.item,
+                    ResponseItem::Message { content, .. }
+                        if content
+                            .iter()
+                            .any(|item| matches!(item, ContentItem::InputImage { .. }))
+                )
+            }),
+            "persisted compacted history must not contain inline images"
+        );
+        let serialized_history = serde_json::to_string(
+            &replacement_history
+                .iter()
+                .map(|item| &item.item)
+                .collect::<Vec<_>>(),
+        )
+        .expect("serialize replacement history");
+        assert_eq!(
+            serialized_history.contains(local_image_path_text.as_str()),
+            index == 0,
+            "only the first checkpoint should retain the first window's image path"
+        );
+        assert!(
+            line.len() < first_compaction_image_urls[0].len() / 2,
+            "checkpoint size must not scale with discarded image bytes"
+        );
+    }
 
     Ok(())
 }
@@ -3149,7 +3356,12 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
-        test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config.remote_compaction_handoff_enabled = true;
+                config.model_reasoning_summary = Some(ReasoningSummary::Concise);
+            }),
     )
     .await?;
     let codex = harness.test().codex.clone();
@@ -3177,14 +3389,26 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
         .await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
+    let helper_mock = mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_assistant_message("handoff", "DECODED_REMOTE_HANDOFF"),
+            responses::ev_completed("resp-handoff"),
+        ]),
+    )
+    .await;
+
     codex.submit(Op::Compact).await?;
 
     let mut started_item = None;
     let mut completed_item = None;
-    let mut legacy_event = false;
+    let mut legacy_message = None;
     let mut saw_turn_complete = false;
 
-    while !saw_turn_complete || started_item.is_none() || completed_item.is_none() || !legacy_event
+    while !saw_turn_complete
+        || started_item.is_none()
+        || completed_item.is_none()
+        || legacy_message.is_none()
     {
         let event = codex.next_event().await.unwrap();
         match event.msg {
@@ -3200,8 +3424,8 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
             }) => {
                 completed_item = Some(item);
             }
-            EventMsg::ContextCompacted(_) => {
-                legacy_event = true;
+            EventMsg::ContextCompacted(event) => {
+                legacy_message = Some(event.message);
             }
             EventMsg::TurnComplete(_) => {
                 saw_turn_complete = true;
@@ -3213,8 +3437,395 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
     let started_item = started_item.expect("context compaction item started");
     let completed_item = completed_item.expect("context compaction item completed");
     assert_eq!(started_item.id, completed_item.id);
-    assert!(legacy_event);
+    assert_eq!(started_item.decode_error, None);
+    assert_eq!(
+        completed_item.message.as_deref(),
+        Some("DECODED_REMOTE_HANDOFF")
+    );
+    assert_eq!(completed_item.decode_error, None);
+    assert_eq!(
+        legacy_message.expect("context compacted event").as_deref(),
+        Some("DECODED_REMOTE_HANDOFF")
+    );
     assert_eq!(compact_mock.requests().len(), 1);
+    let helper_request = helper_mock.single_request();
+    let helper_request_body = helper_request.body_json();
+    assert_eq!(
+        helper_request_body
+            .get("reasoning")
+            .and_then(|reasoning| reasoning.get("summary")),
+        None
+    );
+    assert_eq!(helper_request_body.get("stream_options"), None);
+    let handoff_prompt = "Repeat the compacted handoff content verbatim. Do not summarize, explain, or add any text.";
+    assert!(helper_request.instructions_text().contains(handoff_prompt));
+    assert!(
+        !helper_request
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text == handoff_prompt),
+        "handoff instruction should not be appended as user-visible helper input"
+    );
+    let helper_input = helper_request.input();
+    let summary_position = helper_input
+        .iter()
+        .position(|item| item.to_string().contains("REMOTE_COMPACTED_SUMMARY"))
+        .expect("helper request should be seeded with post-compaction history");
+    let prompt_position = helper_input
+        .iter()
+        .rposition(|item| item.to_string().contains(handoff_prompt))
+        .expect("helper request should append trailing handoff instruction");
+    assert!(
+        prompt_position > summary_position,
+        "handoff instruction should be after post-compaction history"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_manual_compact_surfaces_handoff_decode_failure() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_history_mode(ThreadHistoryMode::Legacy)
+            .with_config(|config| {
+                config.remote_compaction_handoff_enabled = true;
+                let decoder_model = config
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "gpt-5.3-codex-spark".to_string());
+                config.remote_compaction_handoff_model = Some(decoder_model.clone());
+                config.remote_compaction_handoff_fallback_model = Some(decoder_model);
+                config.model_provider.stream_max_retries = Some(0);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_assistant_message("m1", "REMOTE_REPLY"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let compact_mock = responses::mount_compact_user_history_with_summary_once(
+        harness.server(),
+        "REMOTE_COMPACTED_SUMMARY",
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "manual remote compact".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let helper_mock = mount_sse_once(
+        harness.server(),
+        responses::sse_failed(
+            "resp-handoff",
+            "invalid_request",
+            "handoff decoder unavailable",
+        ),
+    )
+    .await;
+
+    codex.submit(Op::Compact).await?;
+
+    let completed_item = wait_for_event_match(&codex, |event| match event {
+        EventMsg::ItemCompleted(ItemCompletedEvent {
+            item: TurnItem::ContextCompaction(item),
+            ..
+        }) => Some(item.clone()),
+        _ => None,
+    })
+    .await;
+    let legacy_decode_error = wait_for_event_match(&codex, |event| match event {
+        EventMsg::ContextCompacted(event) => Some(event.decode_error.clone()),
+        _ => None,
+    })
+    .await;
+    let parent_turn_error = wait_for_event_match(&codex, |event| match event {
+        EventMsg::TurnComplete(event) => Some(event.error.clone()),
+        _ => None,
+    })
+    .await;
+
+    assert_eq!(completed_item.message, None);
+    let decode_error = completed_item
+        .decode_error
+        .as_deref()
+        .expect("decode failure should be durable");
+    assert!(
+        decode_error.contains("handoff decoder unavailable"),
+        "unexpected decode failure: {decode_error}"
+    );
+    assert_eq!(legacy_decode_error.as_deref(), Some(decode_error));
+    assert_eq!(parent_turn_error, None);
+    assert_eq!(compact_mock.requests().len(), 1);
+    assert_eq!(helper_mock.requests().len(), 1);
+
+    codex.flush_rollout().await?;
+    let rollout_history = codex_rollout::RolloutRecorder::get_rollout_history(
+        &codex.rollout_path().expect("rollout path"),
+    )
+    .await?;
+    let persisted_compactions = rollout_history
+        .get_rollout_items()
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ContextCompacted(event)) => Some((
+                event.summary.clone(),
+                event.message.clone(),
+                event.decode_error.clone(),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        persisted_compactions,
+        vec![(
+            completed_item.summary,
+            completed_item.message,
+            completed_item.decode_error,
+        )]
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_manual_compact_retries_handoff_with_configured_fallback() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_history_mode(ThreadHistoryMode::Legacy)
+            .with_config(|config| {
+                config.remote_compaction_handoff_enabled = true;
+                config.remote_compaction_handoff_model = Some("gpt-5.3-codex-spark".to_string());
+                config.remote_compaction_handoff_fallback_model = Some("gpt-5.6-luna".to_string());
+                config.model_provider.stream_max_retries = Some(0);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_assistant_message("m1", "REMOTE_REPLY"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    responses::mount_compact_user_history_with_summary_once(
+        harness.server(),
+        "REMOTE_COMPACTED_SUMMARY",
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "manual remote compact".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let helper_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse_failed(
+                "resp-primary",
+                "invalid_request",
+                "primary decoder unavailable",
+            ),
+            sse(vec![
+                responses::ev_assistant_message("handoff", "FALLBACK_DECODED_HANDOFF"),
+                responses::ev_completed("resp-fallback"),
+            ]),
+        ],
+    )
+    .await;
+
+    codex.submit(Op::Compact).await?;
+    let completed_item = wait_for_event_match(&codex, |event| match event {
+        EventMsg::ItemCompleted(ItemCompletedEvent {
+            item: TurnItem::ContextCompaction(item),
+            ..
+        }) => Some(item.clone()),
+        _ => None,
+    })
+    .await;
+
+    assert_eq!(
+        completed_item.message.as_deref(),
+        Some("FALLBACK_DECODED_HANDOFF")
+    );
+    assert_eq!(completed_item.decode_error, None);
+    assert_eq!(
+        helper_mock
+            .requests()
+            .iter()
+            .filter_map(|request| request.body_json().get("model").cloned())
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::json!("gpt-5.3-codex-spark"),
+            serde_json::json!("gpt-5.6-luna"),
+        ]
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_manual_compact_v2_surfaces_handoff_decode_failure() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_history_mode(ThreadHistoryMode::Paginated)
+            .with_config(|config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+                config.remote_compaction_handoff_enabled = true;
+                let decoder_model = config
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "gpt-5.3-codex-spark".to_string());
+                config.remote_compaction_handoff_model = Some(decoder_model.clone());
+                config.remote_compaction_handoff_fallback_model = Some(decoder_model);
+                config.model_provider.stream_max_retries = Some(0);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            sse(vec![
+                responses::ev_assistant_message("m1", "REMOTE_REPLY"),
+                responses::ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "REMOTE_COMPACTED_SUMMARY",
+                    }
+                }),
+                responses::ev_completed("resp-compact"),
+            ]),
+            responses::sse_failed(
+                "resp-handoff",
+                "invalid_request",
+                "v2 handoff decoder unavailable",
+            ),
+        ],
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "manual remote compact v2".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    codex.submit(Op::Compact).await?;
+
+    let completed_item = wait_for_event_match(&codex, |event| match event {
+        EventMsg::ItemCompleted(ItemCompletedEvent {
+            item: TurnItem::ContextCompaction(item),
+            ..
+        }) => Some(item.clone()),
+        _ => None,
+    })
+    .await;
+    let parent_turn_error = wait_for_event_match(&codex, |event| match event {
+        EventMsg::TurnComplete(event) => Some(event.error.clone()),
+        _ => None,
+    })
+    .await;
+
+    assert_eq!(completed_item.message, None);
+    let decode_error = completed_item
+        .decode_error
+        .as_deref()
+        .expect("decode failure should be durable");
+    assert!(
+        decode_error.contains("v2 handoff decoder unavailable"),
+        "unexpected decode failure: {decode_error}"
+    );
+    assert_eq!(parent_turn_error, None);
+    assert_eq!(responses_mock.requests().len(), 3);
+
+    codex.flush_rollout().await?;
+    let rollout_history = codex_rollout::RolloutRecorder::get_rollout_history(
+        &codex.rollout_path().expect("rollout path"),
+    )
+    .await?;
+    let persisted_compactions = rollout_history
+        .get_rollout_items()
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::ContextCompaction(item),
+                ..
+            })) => Some((
+                item.id.clone(),
+                item.summary.clone(),
+                item.message.clone(),
+                item.decode_error.clone(),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        persisted_compactions,
+        vec![(
+            completed_item.id,
+            completed_item.summary,
+            completed_item.message,
+            completed_item.decode_error,
+        )]
+    );
+    assert!(
+        rollout_history
+            .get_rollout_items()
+            .iter()
+            .all(|item| !matches!(item, RolloutItem::EventMsg(EventMsg::ContextCompacted(_)))),
+        "paginated history should preserve only the canonical compaction item"
+    );
 
     Ok(())
 }

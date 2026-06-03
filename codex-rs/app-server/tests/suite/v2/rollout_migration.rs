@@ -5,24 +5,40 @@ use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use codex_app_server_protocol::ExperimentalFeatureEnablementSetParams;
 use codex_app_server_protocol::ExperimentalFeatureEnablementSetResponse;
-use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::SortDirection;
+use codex_app_server_protocol::ThreadHistoryMode;
+use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::ThreadTurnsListParams;
+use codex_app_server_protocol::ThreadTurnsListResponse;
+use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::UserInput;
+use codex_protocol::protocol::ContextCompactedEvent;
+use codex_protocol::protocol::EventMsg;
+use codex_rollout::RolloutItem;
+use codex_rollout::RolloutLine;
+use codex_thread_store::LocalThreadStore;
+use codex_thread_store::LocalThreadStoreConfig;
+use codex_thread_store::RolloutMigrationMode;
+use codex_thread_store::RolloutMigrationOptions;
+use codex_thread_store::RolloutMigrationStatus;
+use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
+use std::io::Write;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[tokio::test]
-async fn runtime_enabled_legacy_migration_preserves_cold_resume_model_context() -> Result<()> {
+async fn runtime_enabled_legacy_migration_preserves_model_context_and_decode_error() -> Result<()> {
     let server = responses::start_mock_server().await;
     let response_mock = responses::mount_sse_sequence(
         &server,
@@ -55,6 +71,7 @@ async fn runtime_enabled_legacy_migration_preserves_cold_resume_model_context() 
         .await?;
     let ThreadStartResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, primary.read_response(start_id)).await??;
+    let rollout_path = thread.path.clone().expect("materialized rollout path");
     timeout(
         DEFAULT_READ_TIMEOUT,
         primary.start_turn_and_wait_for_completion(TurnStartParams {
@@ -68,6 +85,21 @@ async fn runtime_enabled_legacy_migration_preserves_cold_resume_model_context() 
     )
     .await??;
     timeout(DEFAULT_READ_TIMEOUT, primary.shutdown_gracefully()).await??;
+    let mut rollout = std::fs::OpenOptions::new()
+        .append(true)
+        .open(rollout_path)?;
+    let line = RolloutLine {
+        timestamp: "2025-01-05T12:00:01Z".to_string(),
+        ordinal: None,
+        item: RolloutItem::EventMsg(EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: None,
+            message: None,
+            decode_error: Some("handoff decoder unavailable".to_string()),
+            available_skills: Vec::new(),
+        })),
+    };
+    writeln!(rollout, "{}", serde_json::to_string(&line)?)?;
+    drop(rollout);
 
     let mut secondary = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -111,6 +143,35 @@ async fn runtime_enabled_legacy_migration_preserves_cold_resume_model_context() 
         thread: resumed, ..
     } = timeout(DEFAULT_READ_TIMEOUT, secondary.read_response(resume_id)).await??;
     assert_eq!(resumed.history_mode, ThreadHistoryMode::Paginated);
+
+    let turns_id = secondary
+        .send_thread_turns_list_request(ThreadTurnsListParams {
+            thread_id: thread.id.clone(),
+            cursor: None,
+            limit: Some(10),
+            sort_direction: Some(SortDirection::Asc),
+            items_view: Some(TurnItemsView::Full),
+        })
+        .await?;
+    let ThreadTurnsListResponse { data, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, secondary.read_response(turns_id)).await??;
+    let compactions = data
+        .into_iter()
+        .flat_map(|turn| turn.items)
+        .filter_map(|item| match item {
+            ThreadItem::ContextCompaction {
+                summary,
+                message,
+                decode_error,
+                ..
+            } => Some((summary, message, decode_error)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        compactions,
+        vec![(None, None, Some("handoff decoder unavailable".to_string()))]
+    );
 
     timeout(
         DEFAULT_READ_TIMEOUT,

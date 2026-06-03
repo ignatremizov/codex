@@ -175,6 +175,7 @@ fn parse_agent_message(
         memory_citation: None,
         delivery: None,
         questions: None,
+        sub_agent_completion: None,
     }
 }
 

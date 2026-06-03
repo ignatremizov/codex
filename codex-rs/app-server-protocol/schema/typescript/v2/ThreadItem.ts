@@ -9,8 +9,10 @@ import type { ReasoningEffort } from "../ReasoningEffort";
 import type { SleepItem } from "../SleepItem";
 import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
+import type { AgentFinalResponseHandling } from "./AgentFinalResponseHandling";
 import type { AgentMessageDelivery } from "./AgentMessageDelivery";
 import type { AsyncUserInputQuestion } from "./AsyncUserInputQuestion";
+import type { CollabAgentRef } from "./CollabAgentRef";
 import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
 import type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
@@ -28,6 +30,9 @@ import type { McpToolCallStatus } from "./McpToolCallStatus";
 import type { MemoryCitation } from "./MemoryCitation";
 import type { PatchApplyStatus } from "./PatchApplyStatus";
 import type { SubAgentActivityKind } from "./SubAgentActivityKind";
+import type { UserAgentControlAction } from "./UserAgentControlAction";
+import type { UserAgentControlStatus } from "./UserAgentControlStatus";
+import type { UserAgentForkMode } from "./UserAgentForkMode";
 import type { UserInput } from "./UserInput";
 
 export type ThreadItem = { "type": "userMessage", id: string, clientId: string | null, content: Array<UserInput>, } | { "type": "hookPrompt", id: string, fragments: Array<HookPromptFragment>, } | { "type": "agentMessage", id: string, text: string, phase: MessagePhase | null, memoryCitation: MemoryCitation | null, delivery: AgentMessageDelivery | null, questions: Array<AsyncUserInputQuestion> | null, } | { "type": "functionCallOutput", id: string, name: string, namespace: string | null, output: FunctionCallOutputBody, } | { "type": "plan", id: string, text: string, } | { "type": "reasoning", id: string, summary: Array<string>, content: Array<string>, } | { "type": "commandExecution", id: string,
@@ -94,6 +99,24 @@ tool: CollabAgentTool,
  */
 status: CollabAgentToolCallStatus,
 /**
+ * Whether this V1 lifecycle call requested the target turn's first commentary response.
+ * `null` means the tool does not expose V1 response observation.
+ */
+observeCommentary: boolean | null,
+/**
+ * Whether this V1 lifecycle call requested an idle wake when its target turn completes.
+ * `null` means the tool does not expose V1 response observation.
+ */
+wakeOnCompletion: boolean | null,
+/**
+ * Whether this V1 lifecycle call granted the target an exact-turn reply route.
+ */
+targetMessages: boolean | null,
+/**
+ * Whether this V1 send was queued as a distinct future target turn.
+ */
+queueInput: boolean | null,
+/**
  * Thread ID of the agent issuing the collab request.
  */
 senderThreadId: string,
@@ -102,6 +125,10 @@ senderThreadId: string,
  * this corresponds to the newly spawned agent.
  */
 receiverThreadIds: Array<string>,
+/**
+ * Known display metadata for receiving agents.
+ */
+receiverAgents: Array<CollabAgentRef>,
 /**
  * Prompt text sent as part of the collab tool call, when available.
  */
@@ -117,4 +144,16 @@ reasoningEffort: ReasoningEffort | null,
 /**
  * Last known status of the target agents, when available.
  */
-agentsStates: { [key in string]?: CollabAgentState }, } | { "type": "subAgentActivity", id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, summary: string | null, message: string | null, };
+agentsStates: { [key in string]?: CollabAgentState }, } | { "type": "subAgentActivity", id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string,
+/**
+ * Plaintext or audited task text, when available.
+ */
+prompt: string | null, } | { "type": "userAgentControl", id: string, action: UserAgentControlAction, authoredSelector: string | null, targetThreadId: string | null, previousOwnerSessionId: string | null, newOwnerSessionId: string | null, agentRef: string | null, nickname: string | null, role: string | null, promptPreview: string | null, resumedTarget: boolean, forkMode: UserAgentForkMode | null, observeCommentary: boolean | null, finalResponse: AgentFinalResponseHandling | null, targetMessages: boolean | null, queueInput: boolean | null, status: UserAgentControlStatus, error: string | null, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, summary: string | null, message: string | null,
+/**
+ * User-facing reason compacted-prompt decoding failed; compaction itself may still have succeeded.
+ */
+decodeError: string | null,
+/**
+ * Skill names in the model-visible inventory installed after this compaction.
+ */
+availableSkills: Array<string>, };

@@ -28,6 +28,7 @@ use codex_app_server_protocol::TokenUsageBreakdown;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_features::Feature;
@@ -93,6 +94,8 @@ async fn auto_compaction_local_emits_started_and_completed_items() -> Result<()>
         id: started_id,
         summary: started_summary,
         message: started_message,
+        decode_error: started_decode_error,
+        ..
     } = started.item
     else {
         unreachable!("started item should be context compaction");
@@ -101,6 +104,8 @@ async fn auto_compaction_local_emits_started_and_completed_items() -> Result<()>
         id: completed_id,
         summary: completed_summary,
         message: completed_message,
+        decode_error: completed_decode_error,
+        ..
     } = completed.item
     else {
         unreachable!("completed item should be context compaction");
@@ -111,8 +116,10 @@ async fn auto_compaction_local_emits_started_and_completed_items() -> Result<()>
     assert_eq!(started_id, completed_id);
     assert_eq!(started_summary, None);
     assert_eq!(started_message, None);
+    assert_eq!(started_decode_error, None);
     assert_eq!(completed_summary, Some("LOCAL_SUMMARY".to_string()));
     assert!(completed_message.is_some());
+    assert_eq!(completed_decode_error, None);
 
     Ok(())
 }
@@ -135,27 +142,16 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         responses::ev_assistant_message("m3", "FINAL_REPLY"),
         responses::ev_completed_with_tokens("r3", /*total_tokens*/ 120),
     ]);
-    let responses_log = responses::mount_sse_sequence(&server, vec![sse1, sse2, sse3]).await;
+    let sse_handoff = responses::sse(vec![
+        responses::ev_assistant_message("handoff", "DECODED_REMOTE_HANDOFF"),
+        responses::ev_completed("resp-handoff"),
+    ]);
+    let responses_log =
+        responses::mount_sse_sequence(&server, vec![sse1, sse2, sse_handoff, sse3]).await;
 
-    let compacted_history = vec![
-        ResponseItem::Message {
-            id: None,
-            role: "assistant".to_string(),
-            content: vec![ContentItem::OutputText {
-                text: "REMOTE_COMPACT_SUMMARY".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
-        ResponseItem::Compaction {
-            id: None,
-            encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
-            internal_chat_message_metadata_passthrough: None,
-        },
-    ];
     let compact_mock = responses::mount_compact_json_once(
         &server,
-        serde_json::json!({ "output": compacted_history }),
+        serde_json::json!({ "output": remote_compacted_history() }),
     )
     .await;
 
@@ -189,6 +185,8 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         id: started_id,
         summary: started_summary,
         message: started_message,
+        decode_error: started_decode_error,
+        ..
     } = started.item
     else {
         unreachable!("started item should be context compaction");
@@ -197,6 +195,8 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         id: completed_id,
         summary: completed_summary,
         message: completed_message,
+        decode_error: completed_decode_error,
+        ..
     } = completed.item
     else {
         unreachable!("completed item should be context compaction");
@@ -207,18 +207,33 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
     assert_eq!(started_id, completed_id);
     assert_eq!(started_summary, None);
     assert_eq!(started_message, None);
+    assert_eq!(started_decode_error, None);
     assert_eq!(
         completed_summary,
         Some("REMOTE_COMPACT_SUMMARY".to_string())
     );
-    assert_eq!(completed_message, None);
+    assert_eq!(
+        completed_message,
+        Some("DECODED_REMOTE_HANDOFF".to_string())
+    );
+    assert_eq!(completed_decode_error, None);
 
     let compact_requests = compact_mock.requests();
     assert_eq!(compact_requests.len(), 1);
     assert_eq!(compact_requests[0].path(), "/v1/responses/compact");
 
     let response_requests = responses_log.requests();
-    assert_eq!(response_requests.len(), 3);
+    assert_eq!(response_requests.len(), 4);
+    assert_eq!(
+        response_requests[2].header("x-openai-subagent").as_deref(),
+        Some("compact")
+    );
+    assert!(
+        response_requests[2].body_contains_text(
+            "Repeat the compacted handoff content verbatim. Do not summarize, explain, or add any text."
+        ),
+        "handoff helper should receive the strict verbatim prompt"
+    );
     let turn_metadata = response_requests
         .iter()
         .map(|request| {
@@ -243,6 +258,15 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         );
         assert!(metadata.get("compaction").is_none());
     }
+    assert_eq!(turn_metadata[2]["subagent_kind"].as_str(), Some("compact"));
+    assert!(
+        turn_metadata[2]
+            .get("parent_thread_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "handoff helper should carry parent thread lineage"
+    );
+    assert!(turn_metadata[3].get("subagent_kind").is_none());
 
     let compact_metadata = compact_requests[0]
         .header("x-codex-turn-metadata")
@@ -264,13 +288,126 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         })
     );
     assert_eq!(
-        compact_metadata["turn_id"], turn_metadata[2]["turn_id"],
+        compact_metadata["turn_id"], turn_metadata[3]["turn_id"],
         "pre-turn compaction should carry the current turn id"
     );
     assert_eq!(
         compact_metadata["window_id"].as_str(),
         compact_requests[0].header("x-codex-window-id").as_deref()
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_compaction_remote_surfaces_decode_failure_through_canonical_item() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    const REMOTE_AUTO_COMPACT_LIMIT: i64 = 200_000;
+
+    let server = responses::start_mock_server().await;
+    let responses_log = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REPLY"),
+                responses::ev_completed_with_tokens("r1", /*total_tokens*/ 70_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m2", "SECOND_REPLY"),
+                responses::ev_completed_with_tokens("r2", /*total_tokens*/ 330_000),
+            ]),
+            responses::sse_failed(
+                "resp-handoff",
+                "invalid_request",
+                "handoff decoder unavailable",
+            ),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "FINAL_REPLY"),
+                responses::ev_completed_with_tokens("r3", /*total_tokens*/ 120),
+            ]),
+        ],
+    )
+    .await;
+    let compact_mock = responses::mount_compact_json_once(
+        &server,
+        serde_json::json!({ "output": remote_compacted_history() }),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    compaction_config(&server.uri(), REMOTE_AUTO_COMPACT_LIMIT)
+        .disable_feature(Feature::RemoteCompactionV2)
+        .with_root_config("remote_compaction_handoff_fallback_model = \"mock-model\"")
+        .with_provider_name("OpenAI")
+        .with_provider_config("requires_openai_auth = true")
+        .write(codex_home.path())?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("access-chatgpt").plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    let thread_id = start_thread(&mut mcp).await?;
+    send_turn_and_wait(&mut mcp, &thread_id, "first").await?;
+    send_turn_and_wait(&mut mcp, &thread_id, "second").await?;
+    let parent_completion = send_turn_and_wait(&mut mcp, &thread_id, "third").await?;
+    let started = wait_for_context_compaction_started(&mut mcp).await?;
+    let completed = wait_for_context_compaction_completed(&mut mcp).await?;
+
+    let ThreadItem::ContextCompaction {
+        id: started_id,
+        summary: started_summary,
+        message: started_message,
+        decode_error: started_decode_error,
+        ..
+    } = started.item
+    else {
+        unreachable!("started item should be context compaction");
+    };
+    let ThreadItem::ContextCompaction {
+        id: completed_id,
+        summary: completed_summary,
+        message: completed_message,
+        decode_error: completed_decode_error,
+        ..
+    } = completed.item
+    else {
+        unreachable!("completed item should be context compaction");
+    };
+
+    assert_eq!(started.thread_id, thread_id);
+    assert_eq!(completed.thread_id, thread_id);
+    assert_eq!(started_id, completed_id);
+    assert_eq!(started_summary, None);
+    assert_eq!(started_message, None);
+    assert_eq!(started_decode_error, None);
+    assert_eq!(
+        completed_summary,
+        Some("REMOTE_COMPACT_SUMMARY".to_string())
+    );
+    assert_eq!(completed_message, None);
+    assert!(
+        completed_decode_error
+            .as_deref()
+            .is_some_and(|error| error.contains("handoff decoder unavailable")),
+        "expected canonical decode failure, got {completed_decode_error:?}"
+    );
+    assert_eq!(parent_completion.turn.status, TurnStatus::Completed);
+    assert_eq!(parent_completion.turn.error, None);
+    assert!(
+        !mcp.pending_notification_methods()
+            .iter()
+            .any(|method| method == "thread/compacted"),
+        "deprecated thread/compacted notification must remain suppressed"
+    );
+    assert_eq!(compact_mock.requests().len(), 1);
+    assert_eq!(responses_log.requests().len(), 4);
 
     Ok(())
 }
@@ -358,6 +495,8 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         id: started_id,
         summary: started_summary,
         message: started_message,
+        decode_error: started_decode_error,
+        ..
     } = started.item
     else {
         unreachable!("started item should be context compaction");
@@ -366,6 +505,8 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         id: completed_id,
         summary: completed_summary,
         message: completed_message,
+        decode_error: completed_decode_error,
+        ..
     } = completed.item
     else {
         unreachable!("completed item should be context compaction");
@@ -376,11 +517,13 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     assert_eq!(started_id, completed_id);
     assert_eq!(started_summary, None);
     assert_eq!(started_message, None);
+    assert_eq!(started_decode_error, None);
     assert_eq!(
         completed_summary,
         Some("MANUAL_COMPACT_SUMMARY".to_string())
     );
     assert!(completed_message.is_some());
+    assert_eq!(completed_decode_error, None);
     assert_eq!(
         raw_completed,
         RawResponseCompletedNotification {
@@ -502,7 +645,7 @@ async fn send_turn_and_wait(
     mcp: &mut TestAppServer,
     thread_id: &str,
     text: &str,
-) -> Result<String> {
+) -> Result<TurnCompletedNotification> {
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread_id.to_string(),
@@ -516,11 +659,13 @@ async fn send_turn_and_wait(
         .await?;
     let TurnStartResponse { turn } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(turn_id)).await??;
-    wait_for_turn_completed(mcp, &turn.id).await?;
-    Ok(turn.id)
+    wait_for_turn_completed(mcp, &turn.id).await
 }
 
-async fn wait_for_turn_completed(mcp: &mut TestAppServer, turn_id: &str) -> Result<()> {
+async fn wait_for_turn_completed(
+    mcp: &mut TestAppServer,
+    turn_id: &str,
+) -> Result<TurnCompletedNotification> {
     loop {
         let completed: TurnCompletedNotification = timeout(
             DEFAULT_READ_TIMEOUT,
@@ -528,7 +673,7 @@ async fn wait_for_turn_completed(mcp: &mut TestAppServer, turn_id: &str) -> Resu
         )
         .await??;
         if completed.turn.id == turn_id {
-            return Ok(());
+            return Ok(completed);
         }
     }
 }
@@ -562,6 +707,25 @@ async fn wait_for_context_compaction_completed(
 
 fn parse_json_header(value: &str) -> serde_json::Value {
     serde_json::from_str(value).expect("turn metadata should be JSON")
+}
+
+fn remote_compacted_history() -> Vec<ResponseItem> {
+    vec![
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "REMOTE_COMPACT_SUMMARY".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ]
 }
 
 fn compaction_config(server_uri: &str, auto_compact_limit: i64) -> MockResponsesConfig {

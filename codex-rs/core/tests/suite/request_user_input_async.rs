@@ -231,6 +231,7 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
             memory_citation: None,
             delivery: Some(AgentMessageDelivery::Async),
             questions: Some(questions),
+            sub_agent_completion: None,
         })?
     );
 

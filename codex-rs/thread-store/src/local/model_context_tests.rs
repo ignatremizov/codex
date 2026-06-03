@@ -659,6 +659,7 @@ fn turn_started(turn_id: &str) -> RolloutItem {
         started_at: None,
         model_context_window: Some(128_000),
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }))
 }
 

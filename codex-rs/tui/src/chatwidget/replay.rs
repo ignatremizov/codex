@@ -122,6 +122,7 @@ impl ChatWidget {
                         }),
                         delivery,
                         questions,
+                        sub_agent_completion: None,
                     },
                     &turn_id,
                     from_replay,

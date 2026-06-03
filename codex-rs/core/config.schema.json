@@ -36,6 +36,10 @@
         "$ref": "#/definitions/AgentRoleToml"
       },
       "properties": {
+        "allow_history_forks": {
+          "description": "Whether model-authored spawn calls may inherit parent thread history. Defaults to false. A role config file may enable this for that role.",
+          "type": "boolean"
+        },
         "default_subagent_model": {
           "description": "Default model for spawned subagents when the spawn call does not select one.",
           "type": "string"
@@ -78,24 +82,24 @@
       "type": "string"
     },
     "AltScreenMode": {
-      "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n- `auto` (default): Use alternate screen mode. - `always`: Always use alternate screen mode. - `never`: Never use alternate screen mode. Runs in inline mode, preserving scrollback.\n\nThe CLI flag `--no-alt-screen` can override this setting at runtime.",
+      "description": "Controls whether temporary TUI surfaces may use the terminal's alternate screen buffer.\n\nThe normal conversation remains inline and writes to terminal scrollback in every mode.\n\n- `auto` (default): Allow temporary full-screen surfaces to use alternate screen. - `always`: Enable every alternate-screen transition requested by the TUI. This currently has the same observable behavior as `auto`. - `never`: Never enter alternate screen; render temporary surfaces without switching buffers.\n\nThe CLI flag `--no-alt-screen` can override this setting at runtime.",
       "oneOf": [
         {
-          "description": "Use alternate screen mode.",
+          "description": "Allow temporary full-screen surfaces to use alternate screen.",
           "enum": [
             "auto"
           ],
           "type": "string"
         },
         {
-          "description": "Always use alternate screen mode.",
+          "description": "Enable every alternate-screen transition requested by the TUI.",
           "enum": [
             "always"
           ],
           "type": "string"
         },
         {
-          "description": "Never use alternate screen (inline mode only).",
+          "description": "Never enter alternate screen.",
           "enum": [
             "never"
           ],
@@ -585,6 +589,12 @@
         "approval_policy": {
           "$ref": "#/definitions/AskForApproval"
         },
+        "approval_timeout_ms": {
+          "description": "Maximum time to wait for a command approval response, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "approvals_reviewer": {
           "$ref": "#/definitions/ApprovalsReviewer"
         },
@@ -1041,6 +1051,9 @@
             "view_image": {
               "type": "boolean"
             },
+            "voice_transcription": {
+              "type": "boolean"
+            },
             "web_search": {
               "type": "boolean"
             },
@@ -1205,6 +1218,15 @@
       "enum": [
         "system",
         "external"
+      ],
+      "type": "string"
+    },
+    "DiffBackgroundMode": {
+      "enum": [
+        "auto",
+        "off",
+        "theme",
+        "custom"
       ],
       "type": "string"
     },
@@ -2310,9 +2332,38 @@
       },
       "type": "object"
     },
+    "MultiAgentMessageDelivery": {
+      "description": "Controls how MultiAgentV2 task and message payloads are delivered and audited.",
+      "oneOf": [
+        {
+          "description": "Preserve the provider-opaque encrypted payload without a local plaintext copy.",
+          "enum": [
+            "encrypted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Preserve encrypted delivery and request a separate human-readable audit copy.",
+          "enum": [
+            "encrypted_with_audit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Deliver and persist one plaintext message without an encrypted payload.",
+          "enum": [
+            "plaintext"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "MultiAgentV2ConfigToml": {
       "additionalProperties": false,
       "properties": {
+        "default_fork_turns": {
+          "type": "string"
+        },
         "default_wait_timeout_ms": {
           "format": "int64",
           "maximum": 3600000.0,
@@ -2339,6 +2390,14 @@
           "maximum": 3600000.0,
           "minimum": 0.0,
           "type": "integer"
+        },
+        "message_delivery": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MultiAgentMessageDelivery"
+            }
+          ],
+          "description": "Selects encrypted delivery, encrypted delivery with a plaintext audit copy, or plaintext delivery for MultiAgentV2 tasks and messages."
         },
         "min_wait_timeout_ms": {
           "format": "int64",
@@ -3101,6 +3160,9 @@
       "additionalProperties": false,
       "description": "Raw MCP config shape used for deserialization and supported-field JSON Schema generation.\n\nFields that are accepted only to produce targeted validation errors should be skipped in the generated schema.\n\nKeep `TryFrom<RawMcpServerConfig> for McpServerConfig` exhaustively destructuring this struct so new TOML fields cannot be added here without updating the validation/mapping logic that produces [`McpServerConfig`].",
       "properties": {
+        "allow_implicit_invocation": {
+          "type": "boolean"
+        },
         "args": {
           "default": null,
           "items": {
@@ -3586,7 +3648,7 @@
           "type": "boolean"
         },
         "max_context_tokens": {
-          "description": "Maximum tokens used by the available-skills catalog. Defaults to 2% of the model context window and is capped at 10,000 tokens when set.",
+          "description": "Maximum tokens used by the available-skills catalog. Defaults to 2% of the model context window. An explicit value is used as configured.",
           "format": "uint",
           "minimum": 1.0,
           "type": "integer"
@@ -3828,6 +3890,27 @@
       "additionalProperties": false,
       "description": "Collection of settings that are specific to the TUI.",
       "properties": {
+        "agent_notification_preview_graphemes": {
+          "default": 200,
+          "description": "Truncation limit for agent-turn notification previews, measured in graphemes. Defaults to `200`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "agent_prompt_preview_lines": {
+          "default": 50,
+          "description": "Maximum number of rendered subagent prompt rows shown after a multi-agent spawn or input completes.\n\nSet to `0` to show the full subagent prompt in the main TUI. Defaults to `50`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "agent_response_preview_lines": {
+          "default": 0,
+          "description": "Maximum number of rendered subagent response rows shown after a multi-agent wait completes.\n\nSet to `0` to show the full subagent response in the main TUI. Defaults to `0`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "alternate_screen": {
           "allOf": [
             {
@@ -3835,7 +3918,7 @@
             }
           ],
           "default": "auto",
-          "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n- `auto` (default): Use alternate screen. - `always`: Always use alternate screen. - `never`: Never use alternate screen (inline mode only, preserves scrollback)."
+          "description": "Controls whether temporary TUI surfaces may use the terminal's alternate screen buffer.\n\nThe normal conversation remains inline and writes to terminal scrollback in every mode. - `auto` (default): Allow temporary full-screen surfaces to use alternate screen. - `always`: Enable every alternate-screen transition requested by the TUI. - `never`: Never enter alternate screen."
         },
         "animations": {
           "default": true,
@@ -3850,6 +3933,39 @@
         "disable_paste_burst": {
           "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts. Overrides the legacy top-level `disable_paste_burst` setting. Defaults to `false`.",
           "type": "boolean"
+        },
+        "command_output_preview_lines": {
+          "default": 30,
+          "description": "Maximum number of agent/tool command-output rows shown in the main transcript.\n\nSet to `0` to show all retained command output in the main TUI. Large outputs remain available in the transcript overlay; this only controls the inline preview used by completed command cells and `/ps`. Defaults to `30`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "diff_add_bg": {
+          "default": null,
+          "description": "Custom insert-line background color (`#RRGGBB`).\n\nUsed when `diff_background = \"custom\"`.",
+          "type": "string"
+        },
+        "diff_background": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DiffBackgroundMode"
+            }
+          ],
+          "default": "auto",
+          "description": "Controls how diff add/remove backgrounds are rendered in the TUI.\n\n- `auto` (default): Use built-in adaptive add/remove backgrounds. - `off`: Disable add/remove line backgrounds. - `theme`: Derive add/remove backgrounds from the active syntax theme (`markup.inserted`/`markup.deleted` with diff fallbacks). - `custom`: Use user-provided custom colors from `diff_add_bg` / `diff_del_bg`."
+        },
+        "diff_del_bg": {
+          "default": null,
+          "description": "Custom delete-line background color (`#RRGGBB`).\n\nUsed when `diff_background = \"custom\"`.",
+          "type": "string"
+        },
+        "exec_approval_notification_preview_graphemes": {
+          "default": 30,
+          "description": "Truncation limit for exec-approval notification command previews, measured in graphemes. Defaults to `30`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "keymap": {
           "allOf": [
@@ -3889,6 +4005,7 @@
               "history_search_previous": null,
               "queue": null,
               "submit": null,
+              "toggle_dictation": null,
               "toggle_shortcuts": null
             },
             "editor": {
@@ -4143,6 +4260,20 @@
           "description": "Syntax highlighting theme name (kebab-case).\n\nWhen set, overrides automatic light/dark theme detection. Use `/theme` in the TUI or see `$CODEX_HOME/themes` for custom themes.",
           "type": "string"
         },
+        "user_input_notification_preview_graphemes": {
+          "default": 30,
+          "description": "Truncation limit for user-input notification summaries, measured in graphemes. Defaults to `30`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "user_shell_output_preview_lines": {
+          "default": 50,
+          "description": "Maximum number of user shell command-output rows shown in the main transcript.\n\nSet to `0` to show all retained user shell output in the main TUI. User shell output is typically explicit and more likely to be read directly in the main TUI, so its default remains larger than agent/tool output. Defaults to `50`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "vim_mode_default": {
           "default": false,
           "description": "Start the composer in Vim mode (`Normal`) by default. Defaults to `false`.",
@@ -4367,6 +4498,14 @@
             }
           ],
           "description": "Submit the current composer draft."
+        },
+        "toggle_dictation": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Start or stop voice dictation in the composer."
         },
         "toggle_shortcuts": {
           "allOf": [
@@ -4687,6 +4826,7 @@
             "history_search_previous": null,
             "queue": null,
             "submit": null,
+            "toggle_dictation": null,
             "toggle_shortcuts": null
           }
         },
@@ -5804,6 +5944,12 @@
       ],
       "description": "Default approval policy for executing commands."
     },
+    "approval_timeout_ms": {
+      "description": "Maximum time to wait for a command approval response, in milliseconds.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "approvals_reviewer": {
       "allOf": [
         {
@@ -5844,7 +5990,7 @@
       "description": "Optional policy instructions for the guardian auto-reviewer."
     },
     "background_terminal_max_timeout": {
-      "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `300000` (5 minutes).",
+      "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. If unset, background terminal polls are unbounded.",
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
@@ -5894,6 +6040,12 @@
     "disable_paste_burst": {
       "description": "Legacy fallback for `tui.disable_paste_burst`. Prefer the setting under `[tui]`.",
       "type": "boolean"
+    },
+    "exec_command_timeout_ms": {
+      "description": "Default timeout for shell commands in milliseconds when no per-call timeout is provided.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
     },
     "experimental_compact_prompt_file": {
       "$ref": "#/definitions/AbsolutePathBuf"
@@ -6377,6 +6529,9 @@
         "view_image": {
           "type": "boolean"
         },
+        "voice_transcription": {
+          "type": "boolean"
+        },
         "web_search": {
           "type": "boolean"
         },
@@ -6733,6 +6888,14 @@
       "default": null,
       "description": "Experimental / do not use. Realtime websocket session selection. `version` controls v1/v2 and `type` controls conversational/transcription."
     },
+    "remote_compaction_handoff_fallback_model": {
+      "description": "Fallback model used when remote compaction handoff decoding fails.",
+      "type": "string"
+    },
+    "remote_compaction_handoff_model": {
+      "description": "Model override used to decode remote compaction handoff text for display.",
+      "type": "string"
+    },
     "responses_api_metadata": {
       "additionalProperties": {
         "type": "string"
@@ -6833,6 +6996,24 @@
         }
       ],
       "description": "Collection of settings that are specific to the TUI."
+    },
+    "unified_exec_write_stdin_yield_time_ms": {
+      "description": "Default polling window for unified exec write_stdin output in milliseconds.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "unified_exec_yield_time_ms": {
+      "description": "Default initial yield window for unified exec exec_command output snapshots in milliseconds.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "user_shell_command_timeout_ms": {
+      "description": "Maximum runtime for user shell commands in milliseconds. Zero disables the timeout.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
     },
     "web_search": {
       "allOf": [

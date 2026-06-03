@@ -73,6 +73,8 @@ impl ContextCompactionItem {
         EventMsg::ContextCompacted(ContextCompactedEvent {
             summary: self.summary.clone(),
             message: self.message.clone(),
+            decode_error: self.decode_error.clone(),
+            available_skills: self.available_skills.clone(),
         })
     }
 }
@@ -101,6 +103,9 @@ impl UserMessageItem {
 
 impl AgentMessageItem {
     pub fn as_legacy_events(&self) -> Vec<EventMsg> {
+        if self.has_sub_agent_completion_identity() {
+            return Vec::new();
+        }
         self.content
             .iter()
             .map(|c| match c {
@@ -169,6 +174,7 @@ impl CommandExecutionItem {
             process_id: self.process_id.clone(),
             turn_id,
             started_at_ms,
+            deadline_at_ms: None,
             command: self.command.clone(),
             cwd: self.cwd.clone(),
             parsed_cmd: self.parsed_cmd.clone(),
@@ -290,6 +296,7 @@ impl CollabAgentToolCallItem {
             }),
             CollabAgentTool::Wait => Some(EventMsg::CollabWaitingBegin(CollabWaitingBeginEvent {
                 started_at_ms,
+                deadline_at_ms: self.deadline_at_ms,
                 sender_thread_id: self.sender_thread_id,
                 receiver_thread_ids: self.receiver_thread_ids.clone(),
                 receiver_agents: self.receiver_agents.clone(),
@@ -421,6 +428,7 @@ impl SubAgentActivityItem {
             agent_thread_id: self.agent_thread_id,
             agent_path: self.agent_path.clone(),
             kind: self.kind,
+            prompt: self.prompt.clone(),
         })
     }
 }
@@ -530,7 +538,7 @@ impl TurnItem {
             TurnItem::CommandExecution(_)
             | TurnItem::DynamicToolCall(_)
             | TurnItem::CollabAgentToolCall(_) => Vec::new(),
-            TurnItem::SubAgentActivity(_) => Vec::new(),
+            TurnItem::SubAgentActivity(_) | TurnItem::UserAgentControl(_) => Vec::new(),
             TurnItem::WebSearch(item) => vec![item.as_legacy_event()],
             TurnItem::ImageView(item) => {
                 vec![EventMsg::ViewImageToolCall(ViewImageToolCallEvent {

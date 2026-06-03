@@ -155,6 +155,7 @@ fn turn_started_emits_turn_started_event() {
                 completed_at: None,
                 duration_ms: None,
             },
+            agent_queue: None,
         }));
 
     assert_eq!(
@@ -176,6 +177,8 @@ fn context_compaction_item_emits_context_compacted_event() {
                 id: "compact-1".to_string(),
                 summary: Some("short summary".to_string()),
                 message: Some("compacted prompt".to_string()),
+                decode_error: Some("decoder unavailable".to_string()),
+                available_skills: vec!["test-tui".to_string()],
             },
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -189,6 +192,8 @@ fn context_compaction_item_emits_context_compacted_event() {
             events: vec![ThreadEvent::ContextCompacted(ExecContextCompactedEvent {
                 summary: Some("short summary".to_string()),
                 message: Some("compacted prompt".to_string()),
+                decode_error: Some("decoder unavailable".to_string()),
+                available_skills: vec!["test-tui".to_string()],
             })],
             status: CodexStatus::Running,
         }
@@ -219,6 +224,7 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
     assert_eq!(
         started,
@@ -450,6 +456,7 @@ fn web_search_start_and_completion_reuse_item_id() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
 
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
@@ -529,6 +536,7 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
@@ -674,6 +682,7 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
@@ -761,8 +770,13 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                 id: "collab-1".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: ApiCollabAgentToolCallStatus::InProgress,
+                observe_commentary: None,
+                wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
                 sender_thread_id: "thread-parent".to_string(),
                 receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
                 prompt: Some("draft a plan".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: None,
@@ -771,6 +785,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
             thread_id: "thread-parent".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
@@ -778,8 +793,13 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                 id: "collab-1".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: ApiCollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
                 sender_thread_id: "thread-parent".to_string(),
                 receiver_thread_ids: vec!["thread-child".to_string()],
+                receiver_agents: Vec::new(),
                 prompt: Some("draft a plan".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: None,
@@ -1001,6 +1021,7 @@ fn agent_message_item_started_is_ignored() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
 
     assert_eq!(
@@ -1394,6 +1415,7 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
     assert_eq!(
         started,

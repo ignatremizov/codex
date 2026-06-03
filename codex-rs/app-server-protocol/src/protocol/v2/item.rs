@@ -1,4 +1,5 @@
 use super::AdditionalPermissionProfile;
+use super::AgentFinalResponseHandling;
 use super::ExecPolicyAmendment;
 use super::McpToolCallError;
 use super::McpToolCallResult;
@@ -33,11 +34,16 @@ use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
 use codex_protocol::items::TurnItem as CoreTurnItem;
+use codex_protocol::items::UserAgentControlAction as CoreUserAgentControlAction;
+use codex_protocol::items::UserAgentControlStatus as CoreUserAgentControlStatus;
+use codex_protocol::items::UserAgentForkMode as CoreUserAgentForkMode;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::plaintext_agent_message_content;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand as CoreParsedCommand;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
@@ -48,6 +54,9 @@ use codex_protocol::protocol::GuardianUserAuthorization as CoreGuardianUserAutho
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::ordinary_agent_message_response_item_id;
+use codex_protocol::protocol::sub_agent_completion_transcript_from_agent_message_id;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use serde::Deserialize;
@@ -103,6 +112,69 @@ impl From<CoreReviewDecision> for CommandExecutionApprovalDecision {
             CoreReviewDecision::Abort => Self::Cancel,
             CoreReviewDecision::Denied { .. } => Self::Decline,
             CoreReviewDecision::TimedOut => Self::Decline,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum UserAgentControlAction {
+    Spawn,
+    Prompt,
+    QueuedPrompt,
+    Resume,
+    Interrupt,
+    Close,
+    Observe,
+}
+
+impl From<CoreUserAgentControlAction> for UserAgentControlAction {
+    fn from(value: CoreUserAgentControlAction) -> Self {
+        match value {
+            CoreUserAgentControlAction::Spawn => Self::Spawn,
+            CoreUserAgentControlAction::Prompt => Self::Prompt,
+            CoreUserAgentControlAction::QueuedPrompt => Self::QueuedPrompt,
+            CoreUserAgentControlAction::Resume => Self::Resume,
+            CoreUserAgentControlAction::Interrupt => Self::Interrupt,
+            CoreUserAgentControlAction::Close => Self::Close,
+            CoreUserAgentControlAction::Observe => Self::Observe,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum UserAgentControlStatus {
+    Succeeded,
+    Failed,
+}
+
+impl From<CoreUserAgentControlStatus> for UserAgentControlStatus {
+    fn from(value: CoreUserAgentControlStatus) -> Self {
+        match value {
+            CoreUserAgentControlStatus::Succeeded => Self::Succeeded,
+            CoreUserAgentControlStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum UserAgentForkMode {
+    None,
+    All,
+    LastNTurns { turns: u32 },
+}
+
+impl From<CoreUserAgentForkMode> for UserAgentForkMode {
+    fn from(value: CoreUserAgentForkMode) -> Self {
+        match value {
+            CoreUserAgentForkMode::None => Self::None,
+            CoreUserAgentForkMode::All => Self::All,
+            CoreUserAgentForkMode::LastNTurns { turns } => Self::LastNTurns { turns },
         }
     }
 }
@@ -366,11 +438,23 @@ pub enum ThreadItem {
         tool: CollabAgentTool,
         /// Current status of the collab tool call.
         status: CollabAgentToolCallStatus,
+        /// Whether this V1 lifecycle call requested the target turn's first commentary response.
+        /// `null` means the tool does not expose V1 response observation.
+        observe_commentary: Option<bool>,
+        /// Whether this V1 lifecycle call requested an idle wake when its target turn completes.
+        /// `null` means the tool does not expose V1 response observation.
+        wake_on_completion: Option<bool>,
+        /// Whether this V1 lifecycle call granted the target an exact-turn reply route.
+        target_messages: Option<bool>,
+        /// Whether this V1 send was queued as a distinct future target turn.
+        queue_input: Option<bool>,
         /// Thread ID of the agent issuing the collab request.
         sender_thread_id: String,
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
         /// this corresponds to the newly spawned agent.
         receiver_thread_ids: Vec<String>,
+        /// Known display metadata for receiving agents.
+        receiver_agents: Vec<CollabAgentRef>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
         /// Model requested for the spawned agent, when applicable.
@@ -387,6 +471,30 @@ pub enum ThreadItem {
         kind: SubAgentActivityKind,
         agent_thread_id: String,
         agent_path: String,
+        /// Plaintext or audited task text, when available.
+        prompt: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    UserAgentControl {
+        id: String,
+        action: UserAgentControlAction,
+        authored_selector: Option<String>,
+        target_thread_id: Option<String>,
+        previous_owner_session_id: Option<String>,
+        new_owner_session_id: Option<String>,
+        agent_ref: Option<String>,
+        nickname: Option<String>,
+        role: Option<String>,
+        prompt_preview: Option<String>,
+        resumed_target: bool,
+        fork_mode: Option<UserAgentForkMode>,
+        observe_commentary: Option<bool>,
+        final_response: Option<AgentFinalResponseHandling>,
+        target_messages: Option<bool>,
+        queue_input: Option<bool>,
+        status: UserAgentControlStatus,
+        error: Option<String>,
     },
     WebSearch(WebSearchItem),
     #[serde(rename_all = "camelCase")]
@@ -415,7 +523,74 @@ pub enum ThreadItem {
         id: String,
         summary: Option<String>,
         message: Option<String>,
+        /// User-facing reason compacted-prompt decoding failed; compaction itself may still have succeeded.
+        decode_error: Option<String>,
+        /// Skill names in the model-visible inventory installed after this compaction.
+        #[serde(default)]
+        available_skills: Vec<String>,
     },
+}
+
+/// Converts a model-visible inter-agent message into a transcript item.
+///
+/// The visible item is labeled with its agent author. Canonical final-answer envelopes are
+/// collapsed because their sender and recipient labels duplicate structured item fields.
+/// Encrypted payloads are replaced with a fixed placeholder rather than exposing their envelope
+/// or ciphertext.
+pub fn inter_agent_message_thread_item(item: &ResponseItem) -> Option<ThreadItem> {
+    let id = item.id()?.to_string();
+    inter_agent_message_thread_item_with_id(item, id)
+}
+
+pub(crate) fn inter_agent_message_thread_item_with_id(
+    item: &ResponseItem,
+    id: String,
+) -> Option<ThreadItem> {
+    if is_sub_agent_completion_context_response_item_id(&id) {
+        return None;
+    }
+    let ResponseItem::AgentMessage {
+        author,
+        recipient,
+        content,
+        ..
+    } = item
+    else {
+        return None;
+    };
+    let text = if content
+        .iter()
+        .any(|part| matches!(part, AgentMessageInputContent::EncryptedContent { .. }))
+    {
+        "Input message encrypted".to_string()
+    } else {
+        plaintext_agent_message_content(content)?
+    };
+    if text.trim().is_empty() {
+        return None;
+    }
+    if let Some((agent_id, status)) = super::inter_agent_message::sub_agent_notification(&text)
+        && let Some((id, text)) = sub_agent_completion_transcript_from_agent_message_id(
+            &id,
+            &agent_id.to_string(),
+            &status,
+        )
+    {
+        return Some(ThreadItem::AgentMessage {
+            id: id.to_string(),
+            text,
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+            delivery: None,
+        });
+    }
+    Some(ThreadItem::AgentMessage {
+        id,
+        text: super::inter_agent_message::transcript_text(author, recipient, &text),
+        phase: Some(MessagePhase::Commentary),
+        memory_citation: None,
+        delivery: None,
+    })
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -452,6 +627,7 @@ impl ThreadItem {
             | ThreadItem::DynamicToolCall { id, .. }
             | ThreadItem::CollabAgentToolCall { id, .. }
             | ThreadItem::SubAgentActivity { id, .. }
+            | ThreadItem::UserAgentControl { id, .. }
             | ThreadItem::ImageView { id, .. }
             | ThreadItem::EnteredReviewMode { id, .. }
             | ThreadItem::ExitedReviewMode { id, .. }
@@ -873,6 +1049,13 @@ impl From<CoreTurnItem> for ThreadItem {
                     .collect(),
             },
             CoreTurnItem::AgentMessage(agent) => {
+                let id = if agent.has_sub_agent_completion_identity()
+                    || agent.is_attributed_agent_input_presentation()
+                {
+                    agent.id.clone()
+                } else {
+                    ordinary_agent_message_response_item_id(&agent.id)
+                };
                 let text = agent
                     .content
                     .into_iter()
@@ -881,7 +1064,7 @@ impl From<CoreTurnItem> for ThreadItem {
                     })
                     .collect::<String>();
                 ThreadItem::AgentMessage {
-                    id: agent.id,
+                    id,
                     text,
                     phase: agent.phase,
                     memory_citation: agent.memory_citation.map(Into::into),
@@ -950,11 +1133,20 @@ impl From<CoreTurnItem> for ThreadItem {
                 id: call.id,
                 tool: call.tool.into(),
                 status: call.status.into(),
+                observe_commentary: call.observe_commentary,
+                wake_on_completion: call.wake_on_completion,
+                target_messages: call.target_messages,
+                queue_input: call.queue_input,
                 sender_thread_id: call.sender_thread_id.to_string(),
                 receiver_thread_ids: call
                     .receiver_thread_ids
                     .into_iter()
                     .map(String::from)
+                    .collect(),
+                receiver_agents: call
+                    .receiver_agents
+                    .into_iter()
+                    .map(CollabAgentRef::from)
                     .collect(),
                 prompt: call.prompt,
                 model: call.model,
@@ -970,6 +1162,27 @@ impl From<CoreTurnItem> for ThreadItem {
                 kind: activity.kind.into(),
                 agent_thread_id: activity.agent_thread_id.to_string(),
                 agent_path: String::from(activity.agent_path),
+                prompt: activity.prompt,
+            },
+            CoreTurnItem::UserAgentControl(control) => ThreadItem::UserAgentControl {
+                id: control.id,
+                action: control.action.into(),
+                authored_selector: control.authored_selector,
+                target_thread_id: control.target_thread_id.map(String::from),
+                previous_owner_session_id: control.previous_owner_session_id.map(String::from),
+                new_owner_session_id: control.new_owner_session_id.map(String::from),
+                agent_ref: control.agent_ref.map(|agent_ref| agent_ref.to_string()),
+                nickname: control.nickname,
+                role: control.role,
+                prompt_preview: control.prompt_preview,
+                resumed_target: control.resumed_target,
+                fork_mode: control.fork_mode.map(Into::into),
+                observe_commentary: control.observe_commentary,
+                final_response: control.final_response.map(Into::into),
+                target_messages: control.target_messages,
+                queue_input: control.queue_input,
+                status: control.status.into(),
+                error: control.error,
             },
             CoreTurnItem::WebSearch(search) => ThreadItem::WebSearch(WebSearchItem {
                 id: search.id,
@@ -1045,6 +1258,8 @@ impl From<CoreTurnItem> for ThreadItem {
                 id: compaction.id,
                 summary: compaction.summary,
                 message: compaction.message,
+                decode_error: compaction.decode_error,
+                available_skills: compaction.available_skills,
             },
         }
     }
@@ -1215,6 +1430,25 @@ pub enum CollabAgentToolCallStatus {
     Interrupted,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CollabAgentRef {
+    pub thread_id: String,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+}
+
+impl From<codex_protocol::protocol::CollabAgentRef> for CollabAgentRef {
+    fn from(value: codex_protocol::protocol::CollabAgentRef) -> Self {
+        Self {
+            thread_id: value.thread_id.to_string(),
+            agent_nickname: value.agent_nickname,
+            agent_role: value.agent_role,
+        }
+    }
+}
+
 impl From<CoreCollabAgentTool> for CollabAgentTool {
     fn from(value: CoreCollabAgentTool) -> Self {
         match value {
@@ -1329,6 +1563,10 @@ pub struct ItemStartedNotification {
     /// Unix timestamp (in milliseconds) when this item lifecycle started.
     #[ts(type = "number")]
     pub started_at_ms: i64,
+    /// Unix timestamp (in milliseconds) when a waiting item should report back.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub deadline_at_ms: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1412,6 +1650,16 @@ pub struct ItemCompletedNotification {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ContextCompactionStatusNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct RawResponseItemCompletedNotification {
     pub thread_id: String,
     pub turn_id: String,
@@ -1485,6 +1733,10 @@ pub struct TerminalInteractionNotification {
     pub item_id: String,
     pub process_id: String,
     pub stdin: String,
+    /// Unix timestamp (in milliseconds) when this background wait should report back.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub deadline_at_ms: Option<i64>,
 }
 
 #[serde_as]
@@ -1542,8 +1794,15 @@ pub struct CommandExecutionRequestApprovalParams {
     pub turn_id: String,
     pub item_id: String,
     /// Unix timestamp (in milliseconds) when this approval request started.
-    #[ts(type = "number")]
-    pub started_at_ms: i64,
+    #[serde(default)]
+    #[ts(optional = nullable, type = "number")]
+    pub started_at_ms: Option<i64>,
+    /// Unix timestamp (in milliseconds) when this approval request expires.
+    ///
+    /// If either timestamp is absent, clients must treat the approval as untimed.
+    #[serde(default)]
+    #[ts(optional = nullable, type = "number")]
+    pub expires_at_ms: Option<i64>,
     /// Unique identifier for this specific approval callback.
     ///
     /// For regular shell/unified_exec approvals, this is null.
