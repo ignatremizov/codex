@@ -408,7 +408,7 @@ async fn exec_command_pre_tool_use_payload_skips_write_stdin() {
     };
     let (session, turn) = make_session_and_context().await;
     let turn = Arc::new(turn);
-    let handler = WriteStdinHandler;
+    let handler = WriteStdinHandler::new(turn.unified_exec_write_stdin_yield_time_ms);
 
     assert_eq!(
         handler.pre_tool_use_payload(&ToolInvocation {
@@ -535,7 +535,7 @@ async fn write_stdin_post_tool_use_payload_uses_original_exec_call_id_and_comman
         hook_command: Some("sleep 1; echo finished".to_string()),
     };
     let invocation = invocation_for_payload("write_stdin", "write-stdin-call", payload).await;
-    let handler = WriteStdinHandler;
+    let handler = WriteStdinHandler::new(invocation.turn.unified_exec_write_stdin_yield_time_ms);
 
     assert_eq!(
         handler.post_tool_use_payload(&invocation, &output),
@@ -581,7 +581,7 @@ async fn write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separ
     };
     let invocation_b = invocation_for_payload("write_stdin", "write-call-b", payload.clone()).await;
     let invocation_a = invocation_for_payload("write_stdin", "write-call-a", payload).await;
-    let handler = WriteStdinHandler;
+    let handler = WriteStdinHandler::new(invocation_a.turn.unified_exec_write_stdin_yield_time_ms);
 
     let payloads = [
         handler.post_tool_use_payload(&invocation_b, &output_b),

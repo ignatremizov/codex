@@ -95,7 +95,7 @@ async fn completed_output_preserves_bytes_before_subscription(
     let model_output = UnifiedExecProcessManager::collect_output_until_deadline(
         process.output_handles(),
         /*pause_state*/ None,
-        Instant::now(),
+        Some(Instant::now()),
     )
     .await;
     assert_eq!(model_output.to_bytes(), b"early\n");

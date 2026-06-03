@@ -17,6 +17,16 @@ unified_exec_write_stdin_yield_time_ms = 250
 
 Omitting either setting, or setting it to zero, uses the built-in default shown above. A per-call `yield_time_ms` takes precedence over the corresponding configured default, including an explicit zero; the existing platform and minimum-yield clamps still apply. These are output-yield windows, not process deadlines, and do not change command execution timeouts.
 
+Initial `exec_command` waits remain bounded to 250–30000 ms, or 10000–30000 ms when Codex runs on Windows. Subsequent `write_stdin` calls have a 5000 ms minimum for empty polls and a 250 ms minimum for non-empty writes. Both can request longer waits without an upper cap by default; process exit can return sooner, and interrupting a poll does not terminate its process.
+
+The optional `background_terminal_max_timeout` setting caps **empty polls only**, in milliseconds:
+
+```toml
+background_terminal_max_timeout = 300000
+```
+
+Omitting this setting leaves requested empty-poll windows uncapped. A configured value below 5000, including zero, is raised to 5000. It does not cap non-empty writes or change the configured default yield window. In particular, omitting a per-call `yield_time_ms` still uses the default 250 ms shown above, raised to 5000 ms for an empty poll—not an indefinite wait for process exit.
+
 ## Lifecycle hooks
 
 Admins can set top-level `allow_managed_hooks_only = true` in

@@ -6683,7 +6683,7 @@
       "description": "Optional policy instructions for the guardian auto-reviewer."
     },
     "background_terminal_max_timeout": {
-      "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `300000` (5 minutes).",
+      "description": "Maximum empty-poll window for background terminal output (`write_stdin`), in milliseconds. If unset, requested empty-poll windows have no maximum. Omitting a per-call wait still uses `unified_exec_write_stdin_yield_time_ms`, subject to the empty-poll minimum.",
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
