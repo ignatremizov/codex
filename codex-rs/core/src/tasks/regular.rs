@@ -53,6 +53,7 @@ impl SessionTask for RegularTask {
                 started_at: ctx.turn_timing_state.started_at_unix_secs().await,
                 model_context_window: ctx.model_context_window(),
                 collaboration_mode_kind: ctx.mode(),
+                agent_queue: None,
             });
             sess.send_event(ctx.as_ref(), event).await;
             sess.set_server_reasoning_included(/*included*/ false).await;

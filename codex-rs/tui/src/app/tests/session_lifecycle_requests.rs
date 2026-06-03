@@ -1515,6 +1515,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
             memory_citation: None,
             delivery: None,
             questions: None,
+            sub_agent_completion: None,
         })
     }));
     items.extend([
@@ -1530,6 +1531,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
         started_at: None,
         model_context_window: None,
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }))
     .chain(items.into_iter().map(|item| {
         EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -1691,6 +1693,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
         started_at: None,
         model_context_window: None,
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }))
     .chain((0..305).map(|index| {
         EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -1705,6 +1708,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                sub_agent_completion: None,
             }),
             started_at_ms: None,
             completed_at_ms: 0,
@@ -2090,6 +2094,7 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
         started_at: None,
         model_context_window: None,
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }))
     .chain((0..120).map(|index| {
         EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -2104,6 +2109,7 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                sub_agent_completion: None,
             }),
             started_at_ms: None,
             completed_at_ms: 0,

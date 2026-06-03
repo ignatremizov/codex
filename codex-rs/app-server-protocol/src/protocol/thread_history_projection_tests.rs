@@ -31,6 +31,7 @@ fn projects_turn_lifecycle_without_prior_builder_state() {
             started_at: Some(10),
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         },
     )));
     let completed = project(RolloutItem::EventMsg(EventMsg::TurnComplete(
@@ -126,6 +127,7 @@ fn projects_completed_canonical_turn_items() {
         memory_citation: None,
         delivery: None,
         questions: None,
+        sub_agent_completion: None,
     });
 
     let user_changes = project(item_completed(thread_id, "turn-1", user_item.clone()));

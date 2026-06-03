@@ -148,6 +148,16 @@
       },
       "type": "object"
     },
+    "AgentFinalResponseHandling": {
+      "description": "Final-response handling selected by an explicit user observation replacement.",
+      "enum": [
+        "none",
+        "passive",
+        "wake",
+        "presentation"
+      ],
+      "type": "string"
+    },
     "AgentMessageDelivery": {
       "enum": [
         "async"
@@ -179,6 +189,65 @@
     },
     "AgentPath": {
       "type": "string"
+    },
+    "AgentQueueTurnMetadata": {
+      "description": "Queue provenance and response handling bound to a newly started target turn.",
+      "properties": {
+        "queueId": {
+          "type": "string"
+        },
+        "responseHandling": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentResponseHandling"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Committed queue-entry policy, including queued source delivery; `null` when source-side persistence degraded after admission."
+        },
+        "sourceThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "queueId",
+        "sourceThreadId"
+      ],
+      "type": "object"
+    },
+    "AgentResponseHandling": {
+      "description": "Response, reverse-message, and admission handling for one target turn.",
+      "properties": {
+        "commentary": {
+          "description": "Deliver the first complete commentary item from the target turn.",
+          "type": "boolean"
+        },
+        "finalResponse": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentFinalResponseHandling"
+            }
+          ],
+          "description": "Select how the target turn's final response reaches the source."
+        },
+        "queueInput": {
+          "description": "Admit supplied input as a distinct queued target turn and queue its model-visible final response for the source's next turn.",
+          "type": "boolean"
+        },
+        "targetMessages": {
+          "description": "Let the target turn send attributed input back to the source.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "commentary",
+        "finalResponse",
+        "queueInput",
+        "targetMessages"
+      ],
+      "type": "object"
     },
     "AppBranding": {
       "description": "EXPERIMENTAL - app metadata returned by app-list APIs.",
@@ -793,6 +862,29 @@
         }
       ]
     },
+    "CollabAgentRef": {
+      "properties": {
+        "agentNickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentRole": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "CollabAgentState": {
       "properties": {
         "message": {
@@ -1103,6 +1195,12 @@
     "ContextCompactedNotification": {
       "description": "Deprecated: Use `ContextCompaction` item type instead.",
       "properties": {
+        "availableSkills": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "message": {
           "type": [
             "string",
@@ -1123,6 +1221,30 @@
         }
       },
       "required": [
+        "availableSkills",
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "ContextCompactionStatusNotification": {
+      "properties": {
+        "itemId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "itemId",
+        "message",
         "threadId",
         "turnId"
       ],
@@ -2657,6 +2779,15 @@
     },
     "ItemStartedNotification": {
       "properties": {
+        "deadlineAtMs": {
+          "default": null,
+          "description": "Unix timestamp (in milliseconds) when a waiting item should report back.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "item": {
           "$ref": "#/definitions/ThreadItem"
         },
@@ -4007,6 +4138,15 @@
     },
     "TerminalInteractionNotification": {
       "properties": {
+        "deadlineAtMs": {
+          "default": null,
+          "description": "Unix timestamp (in milliseconds) when this background wait should report back.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },
@@ -4969,10 +5109,24 @@
                 "null"
               ]
             },
+            "observeCommentary": {
+              "description": "Whether this V1 lifecycle call requested the target turn's first commentary response. `null` means the tool does not expose V1 response observation.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "prompt": {
               "description": "Prompt text sent as part of the collab tool call, when available.",
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "queueInput": {
+              "description": "Whether this V1 send was queued as a distinct future target turn.",
+              "type": [
+                "boolean",
                 "null"
               ]
             },
@@ -4986,6 +5140,13 @@
                 }
               ],
               "description": "Reasoning effort requested for the spawned agent, when applicable."
+            },
+            "receiverAgents": {
+              "description": "Known display metadata for receiving agents.",
+              "items": {
+                "$ref": "#/definitions/CollabAgentRef"
+              },
+              "type": "array"
             },
             "receiverThreadIds": {
               "description": "Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
@@ -5006,6 +5167,13 @@
               ],
               "description": "Current status of the collab tool call."
             },
+            "targetMessages": {
+              "description": "Whether this V1 lifecycle call granted the target an exact-turn reply route.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "tool": {
               "allOf": [
                 {
@@ -5020,11 +5188,19 @@
               ],
               "title": "CollabAgentToolCallThreadItemType",
               "type": "string"
+            },
+            "wakeOnCompletion": {
+              "description": "Whether this V1 lifecycle call requested an idle wake when its target turn completes. `null` means the tool does not expose V1 response observation.",
+              "type": [
+                "boolean",
+                "null"
+              ]
             }
           },
           "required": [
             "agentsStates",
             "id",
+            "receiverAgents",
             "receiverThreadIds",
             "senderThreadId",
             "status",
@@ -5048,6 +5224,13 @@
             "kind": {
               "$ref": "#/definitions/SubAgentActivityKind"
             },
+            "prompt": {
+              "description": "Plaintext or audited task text, when available.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "subAgentActivity"
@@ -5064,6 +5247,130 @@
             "type"
           ],
           "title": "SubAgentActivityThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "action": {
+              "$ref": "#/definitions/UserAgentControlAction"
+            },
+            "agentRef": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "authoredSelector": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "finalResponse": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentFinalResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "forkMode": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/UserAgentForkMode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "newOwnerSessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "nickname": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "observeCommentary": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "previousOwnerSessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "promptPreview": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "queueInput": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "resumedTarget": {
+              "type": "boolean"
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/definitions/UserAgentControlStatus"
+            },
+            "targetMessages": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "targetThreadId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "userAgentControl"
+              ],
+              "title": "UserAgentControlThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "id",
+            "resumedTarget",
+            "status",
+            "type"
+          ],
+          "title": "UserAgentControlThreadItem",
           "type": "object"
         },
         {
@@ -5272,6 +5579,21 @@
         },
         {
           "properties": {
+            "availableSkills": {
+              "default": [],
+              "description": "Skill names in the model-visible inventory installed after this compaction.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "decodeError": {
+              "description": "User-facing reason compacted-prompt decoding failed; compaction itself may still have succeeded.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
               "type": "string"
             },
@@ -6349,6 +6671,17 @@
     },
     "TurnStartedNotification": {
       "properties": {
+        "agentQueue": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentQueueTurnMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when this exact turn was admitted from the shared agent queue."
+        },
         "threadId": {
           "type": "string"
         },
@@ -6370,6 +6703,59 @@
         "inProgress"
       ],
       "type": "string"
+    },
+    "UserAgentControlAction": {
+      "enum": [
+        "spawn",
+        "prompt",
+        "queuedPrompt",
+        "resume",
+        "interrupt",
+        "close",
+        "observe"
+      ],
+      "type": "string"
+    },
+    "UserAgentControlStatus": {
+      "enum": [
+        "succeeded",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "UserAgentForkMode": {
+      "oneOf": [
+        {
+          "enum": [
+            "none",
+            "all"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "lastNTurns": {
+              "properties": {
+                "turns": {
+                  "format": "uint32",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "turns"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "lastNTurns"
+          ],
+          "title": "LastNTurnsUserAgentForkMode",
+          "type": "object"
+        }
+      ]
     },
     "UserInput": {
       "oneOf": [
@@ -7327,6 +7713,26 @@
         "params"
       ],
       "title": "Item/completedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "item/contextCompaction/status"
+          ],
+          "title": "Item/contextCompaction/statusNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ContextCompactionStatusNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Item/contextCompaction/statusNotification",
       "type": "object"
     },
     {

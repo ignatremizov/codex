@@ -1,5 +1,6 @@
 use crate::AgentPath;
 use crate::ResponseItemId;
+use crate::SessionId;
 use crate::ThreadId;
 use crate::dynamic_tools::DynamicToolCallOutputContentItem;
 use crate::mcp::CallToolResult;
@@ -12,6 +13,7 @@ use crate::models::ResponseItem;
 use crate::models::WebSearchAction;
 use crate::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crate::parse_command::ParsedCommand;
+use crate::protocol::AgentResponseFinalDelivery;
 use crate::protocol::AgentStatus;
 use crate::protocol::CollabAgentRef;
 use crate::protocol::ExecCommandSource;
@@ -21,6 +23,7 @@ use crate::protocol::PatchApplyStatus;
 use crate::protocol::ReviewOutputEvent;
 use crate::protocol::ReviewTarget;
 use crate::protocol::SubAgentActivityKind;
+use crate::sub_agent_completion::SubAgentCompletionMetadata;
 use crate::user_input::ByteRange;
 use crate::user_input::TextElement;
 use crate::user_input::UserInput;
@@ -38,6 +41,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 use ts_rs::TS;
 
+pub const CONTEXT_COMPACTION_DECODING_MESSAGE: &str = "Decoding";
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 #[serde(tag = "type")]
@@ -53,6 +58,7 @@ pub enum TurnItem {
     DynamicToolCall(DynamicToolCallItem),
     CollabAgentToolCall(CollabAgentToolCallItem),
     SubAgentActivity(SubAgentActivityItem),
+    UserAgentControl(UserAgentControlItem),
     /// Hosted Responses API web-search item handled directly by core.
     ///
     /// Standalone web search uses Self::Extension instead because its display
@@ -93,6 +99,87 @@ pub struct FunctionCallOutputItem {
     #[ts(optional)]
     pub namespace: Option<String>,
     pub output: FunctionCallOutputBody,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct UserAgentControlItem {
+    pub id: String,
+    pub action: UserAgentControlAction,
+    pub authored_selector: Option<String>,
+    pub target_thread_id: Option<ThreadId>,
+    pub previous_owner_session_id: Option<SessionId>,
+    pub new_owner_session_id: Option<SessionId>,
+    pub agent_ref: Option<u64>,
+    pub nickname: Option<String>,
+    pub role: Option<String>,
+    pub prompt_preview: Option<String>,
+    pub resumed_target: bool,
+    pub fork_mode: Option<UserAgentForkMode>,
+    pub observe_commentary: Option<bool>,
+    pub final_response: Option<AgentResponseFinalDelivery>,
+    #[serde(default)]
+    pub target_messages: Option<bool>,
+    #[serde(default)]
+    pub queue_input: Option<bool>,
+    pub status: UserAgentControlStatus,
+    pub error: Option<String>,
+}
+
+impl UserAgentControlItem {
+    pub fn succeeded(action: UserAgentControlAction) -> Self {
+        Self {
+            id: new_item_id(),
+            action,
+            authored_selector: None,
+            target_thread_id: None,
+            previous_owner_session_id: None,
+            new_owner_session_id: None,
+            agent_ref: None,
+            nickname: None,
+            role: None,
+            prompt_preview: None,
+            resumed_target: false,
+            fork_mode: None,
+            observe_commentary: None,
+            final_response: None,
+            target_messages: None,
+            queue_input: None,
+            status: UserAgentControlStatus::Succeeded,
+            error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserAgentControlAction {
+    Spawn,
+    Prompt,
+    QueuedPrompt,
+    Resume,
+    Interrupt,
+    Close,
+    Observe,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserAgentControlStatus {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserAgentForkMode {
+    None,
+    All,
+    LastNTurns { turns: u32 },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -166,6 +253,10 @@ pub struct AgentMessageItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub questions: Option<Vec<AsyncUserInputQuestion>>,
+    /// Core-authored provenance for a client-visible background subagent completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sub_agent_completion: Option<SubAgentCompletionMetadata>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
@@ -331,6 +422,32 @@ pub struct CollabAgentToolCallItem {
     pub id: String,
     pub tool: CollabAgentTool,
     pub status: CollabAgentToolCallStatus,
+    /// Whether this V1 lifecycle call requested the target turn's first commentary response.
+    ///
+    /// `None` means the tool does not expose V1 response observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub observe_commentary: Option<bool>,
+    /// Final-response handling requested by this V1 lifecycle call.
+    ///
+    /// `Some(true)` requests an idle wake, `Some(false)` requests passive model delivery, and
+    /// `None` paired with `observe_commentary: Some(_)` records explicit presentation-only `x`
+    /// handling. Both fields are `None` when the tool does not expose V1 response observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wake_on_completion: Option<bool>,
+    /// Whether this V1 lifecycle call granted the target an exact-turn reply route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_messages: Option<bool>,
+    /// Whether this V1 send was queued as a distinct future target turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub queue_input: Option<bool>,
+    /// Unix timestamp in milliseconds when a wait-agent call should report back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deadline_at_ms: Option<i64>,
     pub sender_thread_id: ThreadId,
     #[serde(default)]
     pub receiver_thread_ids: Vec<ThreadId>,
@@ -347,6 +464,36 @@ pub struct CollabAgentToolCallItem {
     pub reasoning_effort: Option<ReasoningEffortConfig>,
     #[serde(default)]
     pub agents_states: HashMap<ThreadId, AgentStatus>,
+    /// Agent completions whose visible presentation is durably owned by this wait item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub completion_presentation_agent_ids: Option<Vec<ThreadId>>,
+}
+
+impl CollabAgentToolCallItem {
+    /// Returns whether this completed wait durably owns terminal-agent presentation.
+    pub fn owns_completion_presentation(&self) -> bool {
+        let Some(agent_ids) = self.completion_presentation_agent_ids.as_deref() else {
+            return false;
+        };
+        self.tool == CollabAgentTool::Wait
+            && matches!(
+                self.status,
+                CollabAgentToolCallStatus::Completed | CollabAgentToolCallStatus::Failed
+            )
+            && !agent_ids.is_empty()
+            && agent_ids.iter().all(|id| {
+                self.agents_states.get(id).is_some_and(|status| {
+                    matches!(
+                        status,
+                        AgentStatus::Completed(_)
+                            | AgentStatus::Errored(_)
+                            | AgentStatus::Shutdown
+                            | AgentStatus::NotFound
+                    )
+                })
+            })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -355,6 +502,10 @@ pub struct SubAgentActivityItem {
     pub kind: SubAgentActivityKind,
     pub agent_thread_id: ThreadId,
     pub agent_path: AgentPath,
+    /// Plaintext or audited task text, when the configured delivery mode exposes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
@@ -479,6 +630,13 @@ pub struct ContextCompactionItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub message: Option<String>,
+    /// User-facing reason compacted-prompt decoding failed; compaction itself may still have succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub decode_error: Option<String>,
+    /// Skill names in the model-visible inventory installed after this compaction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_skills: Vec<String>,
 }
 
 fn new_item_id() -> String {
@@ -491,6 +649,8 @@ impl ContextCompactionItem {
             id: new_item_id(),
             summary: None,
             message: None,
+            decode_error: None,
+            available_skills: Vec::new(),
         }
     }
 }
@@ -706,6 +866,19 @@ fn serialize_hook_prompt_fragment(text: &str, hook_run_id: &str) -> Option<Strin
     .ok()
 }
 
+impl AgentMessageItem {
+    pub fn new(content: &[AgentMessageContent]) -> Self {
+        Self {
+            id: new_item_id(),
+            content: content.to_vec(),
+            phase: None,
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+            sub_agent_completion: None,
+        }
+    }
+}
 impl TurnItem {
     pub fn id(&self) -> String {
         match self {
@@ -719,6 +892,7 @@ impl TurnItem {
             TurnItem::DynamicToolCall(item) => item.id.clone(),
             TurnItem::CollabAgentToolCall(item) => item.id.clone(),
             TurnItem::SubAgentActivity(item) => item.id.clone(),
+            TurnItem::UserAgentControl(item) => item.id.clone(),
             TurnItem::WebSearch(item) => item.id.clone(),
             TurnItem::ImageView(item) => item.id.clone(),
             TurnItem::Extension(item) => item.id().to_string(),
@@ -728,6 +902,31 @@ impl TurnItem {
             TurnItem::FileChange(item) => item.id.clone(),
             TurnItem::McpToolCall(item) => item.id.clone(),
             TurnItem::ContextCompaction(item) => item.id.clone(),
+        }
+    }
+
+    /// Returns whether this item durably presents a subagent completion.
+    pub fn is_sub_agent_completion_presentation(&self) -> bool {
+        match self {
+            TurnItem::AgentMessage(item) => item.has_sub_agent_completion_identity(),
+            TurnItem::CollabAgentToolCall(item) => item.owns_completion_presentation(),
+            TurnItem::UserMessage(_)
+            | TurnItem::HookPrompt(_)
+            | TurnItem::Plan(_)
+            | TurnItem::Reasoning(_)
+            | TurnItem::CommandExecution(_)
+            | TurnItem::DynamicToolCall(_)
+            | TurnItem::SubAgentActivity(_)
+            | TurnItem::UserAgentControl(_)
+            | TurnItem::WebSearch(_)
+            | TurnItem::ImageView(_)
+            | TurnItem::Extension(_)
+            | TurnItem::ImageGeneration(_)
+            | TurnItem::EnteredReviewMode(_)
+            | TurnItem::ExitedReviewMode(_)
+            | TurnItem::FileChange(_)
+            | TurnItem::McpToolCall(_)
+            | TurnItem::ContextCompaction(_) => false,
         }
     }
 }

@@ -96,6 +96,9 @@ pub(super) fn completed_item(
                 memory_citation: event.memory_citation.clone(),
                 delivery: event.delivery,
                 questions: event.questions.clone(),
+                // Legacy AgentMessage events do not carry canonical background-completion
+                // provenance. Those completions migrate from their durable response items.
+                sub_agent_completion: None,
             }),
             None,
         )),
@@ -176,6 +179,8 @@ pub(super) fn completed_item(
                 id: next_item_id()?,
                 summary: event.summary.clone(),
                 message: event.message.clone(),
+                decode_error: event.decode_error.clone(),
+                available_skills: event.available_skills.clone(),
             }),
             None,
         )),
@@ -209,6 +214,7 @@ pub(super) fn completed_item(
                 kind: event.kind,
                 agent_thread_id: event.agent_thread_id,
                 agent_path: event.agent_path.clone(),
+                prompt: event.prompt.clone(),
             }),
             None,
         )),

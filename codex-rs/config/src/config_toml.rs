@@ -157,6 +157,10 @@ pub struct ConfigToml {
     pub model: Option<String>,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
+    /// Model override used to decode remote compaction handoff text for display.
+    pub remote_compaction_handoff_model: Option<String>,
+    /// Fallback model used when remote compaction handoff decoding fails.
+    pub remote_compaction_handoff_fallback_model: Option<String>,
 
     /// Provider to use from the model_providers map.
     pub model_provider: Option<String>,

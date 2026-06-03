@@ -5,6 +5,7 @@ use crate::protocol::item_builders::build_file_change_begin_item;
 use crate::protocol::item_builders::build_file_change_end_item;
 use crate::protocol::item_builders::build_item_from_guardian_event;
 use crate::protocol::item_builders::review_output_text;
+use crate::protocol::v2::CollabAgentRef;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
@@ -25,8 +26,10 @@ use crate::protocol::v2::UserInput;
 #[cfg(test)]
 use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
+use crate::protocol::v2::inter_agent_message_thread_item_with_id;
 use crate::protocol::v2::web_search_action_from_core;
 use codex_extension_items::image_generation::ImageGenerationItem;
+use codex_history::rollout::exact_rollback_removed_items;
 use codex_protocol::items::parse_hook_prompt_message;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AgentReasoningEvent;
@@ -65,6 +68,11 @@ use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
 
+mod non_paginated_exec;
+
+use self::non_paginated_exec::NonPaginatedExecHistory;
+use self::non_paginated_exec::NonPaginatedExecItemUpdate;
+
 #[cfg(test)]
 use crate::protocol::v2::CommandAction;
 #[cfg(test)]
@@ -84,10 +92,54 @@ use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 /// resumed/rebuilt thread history preserves the original turn identifiers.
 pub fn build_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<Turn> {
     let mut builder = ThreadHistoryBuilder::new();
-    for item in items {
-        builder.handle_rollout_item(item);
+    for (item, removed) in items.iter().zip(exact_rollback_removed_items(items)) {
+        if removed {
+            builder.skip_rollout_item();
+        } else {
+            builder.handle_rollout_item(item);
+        }
     }
     builder.finish()
+}
+
+/// Exact location of a materialized turn suffix in a raw rollout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedRollbackStart {
+    pub rollout_index: usize,
+    pub turn_id: String,
+    pub turn_count: usize,
+}
+
+/// Returns where the selected materialized turn suffix begins.
+///
+/// The returned boundary includes bookkeeping-only interrupted and compaction turns. Core uses it
+/// to derive model-visible instruction boundaries from the canonical rollout while preserving the
+/// exact app-server turn cutoff.
+pub fn materialized_rollback_start(
+    items: &[RolloutItem],
+    num_turns: u32,
+) -> Option<MaterializedRollbackStart> {
+    let mut builder = ThreadHistoryBuilder::new();
+    for (item, removed) in items.iter().zip(exact_rollback_removed_items(items)) {
+        if removed {
+            builder.skip_rollout_item();
+        } else {
+            builder.handle_rollout_item(item);
+        }
+    }
+    builder.finish_current_turn();
+
+    let materialized_count = usize::try_from(num_turns).unwrap_or(usize::MAX);
+    if materialized_count == 0 {
+        return None;
+    }
+    let rollback_start = builder.turns.len().saturating_sub(materialized_count);
+    let turn = builder.turns.get(rollback_start)?;
+    Some(MaterializedRollbackStart {
+        rollout_index: *builder.turn_rollout_start_indices.get(rollback_start)?,
+        turn_id: turn.id.clone(),
+        turn_count: builder.turns.len(),
+    })
 }
 
 /// A materialized `ThreadItem` snapshot that changed while handling one input.
@@ -227,6 +279,8 @@ pub struct ThreadHistoryBuilder {
     // finished turn's item index without adding it to the public Turn type.
     turns: Vec<PendingTurn>,
     current_turn: Option<PendingTurn>,
+    turn_rollout_start_indices: Vec<usize>,
+    non_paginated_exec_history: NonPaginatedExecHistory,
     next_item_index: i64,
     current_rollout_index: usize,
     next_rollout_index: usize,
@@ -244,6 +298,8 @@ impl ThreadHistoryBuilder {
         Self {
             turns: Vec::new(),
             current_turn: None,
+            turn_rollout_start_indices: Vec::new(),
+            non_paginated_exec_history: NonPaginatedExecHistory::default(),
             next_item_index: 1,
             current_rollout_index: 0,
             next_rollout_index: 0,
@@ -273,6 +329,10 @@ impl ThreadHistoryBuilder {
             .as_ref()
             .map(|turn| turn.id.as_str())
             .or_else(|| self.turns.last().map(|turn| turn.id.as_str()))
+    }
+
+    pub fn current_turn_snapshot(&self) -> Option<Turn> {
+        self.current_turn.as_ref().map(Turn::from)
     }
 
     pub fn turn_snapshot(&self, turn_id: &str) -> Option<Turn> {
@@ -371,10 +431,14 @@ impl ThreadHistoryBuilder {
             EventMsg::CollabResumeBegin(payload) => self.handle_collab_resume_begin(payload),
             EventMsg::CollabResumeEnd(payload) => self.handle_collab_resume_end(payload),
             EventMsg::ContextCompacted(payload) => self.handle_context_compacted(payload),
+            EventMsg::ContextCompactionStatus(_) => {}
             EventMsg::EnteredReviewMode(payload) => self.handle_entered_review_mode(payload),
             EventMsg::ExitedReviewMode(payload) => self.handle_exited_review_mode(payload),
             EventMsg::ItemStarted(payload) => self.handle_item_started(payload),
             EventMsg::ItemCompleted(payload) => self.handle_item_completed(payload),
+            EventMsg::RawResponseItem(payload) => {
+                self.handle_inter_agent_response_item(&payload.item, payload.item.turn_id());
+            }
             EventMsg::HookStarted(_) | EventMsg::HookCompleted(_) => {}
             EventMsg::Error(payload) => self.handle_error(payload),
             EventMsg::TokenCount(_) => {}
@@ -393,15 +457,33 @@ impl ThreadHistoryBuilder {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
             RolloutItem::ResponseItem(item) => self.handle_response_item(&item.item),
-            RolloutItem::InterAgentCommunication(_)
-            | RolloutItem::InterAgentCommunicationMetadata { .. }
-            | RolloutItem::TurnContext(_)
+            RolloutItem::InterAgentCommunication(communication) => {
+                self.handle_response_item(&communication.to_model_input_item());
+            }
+            RolloutItem::TurnContext(context) => {
+                let active_turn_id = self.active_turn_id().map(str::to_string);
+                self.non_paginated_exec_history
+                    .record_turn_context(context, active_turn_id.as_deref());
+            }
+            RolloutItem::SessionMeta(meta) => {
+                self.non_paginated_exec_history
+                    .record_session_meta(&meta.meta);
+            }
+            RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::WorldState(_)
             | RolloutItem::RealtimeItem(_)
-            | RolloutItem::SecurityRiskScore(_)
-            | RolloutItem::SessionMeta(_) => {}
+            | RolloutItem::SecurityRiskScore(_) => {}
         }
+    }
+
+    /// Advances the durable rollout index without materializing the skipped record.
+    ///
+    /// Exact rollback projection uses this to keep subsequent absolute rollback indexes aligned
+    /// with the source rollout while omitting records inside removed ranges.
+    pub fn skip_rollout_item(&mut self) {
+        self.next_rollout_index = self.next_rollout_index.saturating_add(1);
     }
 
     /// Handles one event and returns the materialized items or turn metadata
@@ -441,6 +523,15 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_response_item(&mut self, item: &codex_protocol::models::ResponseItem) {
+        if let Some(update) = self.non_paginated_exec_history.handle_response_item(item) {
+            self.upsert_non_paginated_exec_item(update);
+            return;
+        }
+
+        if self.handle_inter_agent_response_item(item, item.turn_id()) {
+            return;
+        }
+
         let codex_protocol::models::ResponseItem::Message {
             role, content, id, ..
         } = item
@@ -464,6 +555,55 @@ impl ThreadHistoryBuilder {
                 .map(crate::protocol::v2::HookPromptFragment::from)
                 .collect(),
         });
+    }
+
+    fn upsert_non_paginated_exec_item(&mut self, update: NonPaginatedExecItemUpdate) {
+        if let Some(turn_id) = update.turn_id.as_deref()
+            && (self
+                .current_turn
+                .as_ref()
+                .is_some_and(|turn| turn.id == turn_id)
+                || self.turns.iter().any(|turn| turn.id == turn_id))
+        {
+            self.upsert_item_in_turn_id(turn_id, update.item);
+        } else {
+            self.upsert_item_in_current_turn(update.item);
+        }
+    }
+
+    fn handle_inter_agent_response_item(
+        &mut self,
+        item: &codex_protocol::models::ResponseItem,
+        turn_id: Option<&str>,
+    ) -> bool {
+        let codex_protocol::models::ResponseItem::AgentMessage { id, .. } = item else {
+            return false;
+        };
+        let id = id
+            .as_ref()
+            .filter(|id| !id.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| self.next_item_id());
+        let item = inter_agent_message_thread_item_with_id(item, id);
+        let Some(item) = item else {
+            return false;
+        };
+        if let Some(turn_id) = turn_id.filter(|turn_id| !turn_id.is_empty()) {
+            let current_turn_matches = self
+                .current_turn
+                .as_ref()
+                .is_some_and(|turn| turn.id == turn_id);
+            if !current_turn_matches && !self.turns.iter().any(|turn| turn.id == turn_id) {
+                self.finish_current_turn();
+                let turn = self.new_turn(Some(turn_id.to_string()));
+                self.record_changed_pending_turn(&turn);
+                self.current_turn = Some(turn);
+            }
+            self.upsert_item_in_turn_id(turn_id, item);
+        } else {
+            self.push_item_in_current_turn(item);
+        }
+        true
     }
 
     fn handle_user_message(&mut self, payload: &UserMessageEvent) {
@@ -594,6 +734,29 @@ impl ThreadHistoryBuilder {
         turn_id: &str,
         item: &codex_protocol::items::TurnItem,
     ) {
+        let is_completion_presentation = item.is_sub_agent_completion_presentation();
+        let is_attributed_agent_input_presentation = matches!(
+            item,
+            codex_protocol::items::TurnItem::AgentMessage(item)
+                if item.is_attributed_agent_input_presentation()
+        );
+        let is_durable_agent_presentation =
+            is_completion_presentation || is_attributed_agent_input_presentation;
+        let is_user_agent_control =
+            matches!(item, codex_protocol::items::TurnItem::UserAgentControl(_));
+        let turn_exists = self
+            .current_turn
+            .as_ref()
+            .is_some_and(|turn| turn.id == turn_id)
+            || self.turns.iter().any(|turn| turn.id == turn_id);
+        let is_orphaned_standalone_item =
+            (is_durable_agent_presentation || is_user_agent_control) && !turn_exists;
+        if is_orphaned_standalone_item {
+            self.finish_current_turn();
+            let turn = self.new_turn(Some(turn_id.to_string()));
+            self.record_changed_pending_turn(&turn);
+            self.current_turn = Some(turn);
+        }
         let is_review_mode_item = matches!(
             item,
             codex_protocol::items::TurnItem::EnteredReviewMode(_)
@@ -601,17 +764,25 @@ impl ThreadHistoryBuilder {
         );
         let should_upsert = match item {
             codex_protocol::items::TurnItem::Plan(plan) => !plan.text.is_empty(),
+            codex_protocol::items::TurnItem::AgentMessage(_) => {
+                is_durable_agent_presentation
+                    && (self
+                        .current_turn
+                        .as_ref()
+                        .is_some_and(|turn| turn.id == turn_id)
+                        || self.turns.iter().any(|turn| turn.id == turn_id))
+            }
             codex_protocol::items::TurnItem::HookPrompt(_)
             | codex_protocol::items::TurnItem::FunctionCallOutput(_)
             | codex_protocol::items::TurnItem::CommandExecution(_)
             | codex_protocol::items::TurnItem::DynamicToolCall(_)
             | codex_protocol::items::TurnItem::CollabAgentToolCall(_)
             | codex_protocol::items::TurnItem::SubAgentActivity(_)
+            | codex_protocol::items::TurnItem::UserAgentControl(_)
             | codex_protocol::items::TurnItem::Extension(_)
             | codex_protocol::items::TurnItem::EnteredReviewMode(_)
             | codex_protocol::items::TurnItem::ExitedReviewMode(_) => true,
             codex_protocol::items::TurnItem::UserMessage(_)
-            | codex_protocol::items::TurnItem::AgentMessage(_)
             | codex_protocol::items::TurnItem::Reasoning(_)
             | codex_protocol::items::TurnItem::WebSearch(_)
             | codex_protocol::items::TurnItem::ImageView(_)
@@ -622,7 +793,12 @@ impl ThreadHistoryBuilder {
         };
 
         if should_upsert {
-            let item = ThreadItem::from(item.clone());
+            let item = if is_completion_presentation && is_orphaned_standalone_item {
+                orphaned_sub_agent_completion_presentation(item)
+            } else {
+                item.clone()
+            };
+            let item = ThreadItem::from(item);
             if is_review_mode_item {
                 self.upsert_review_mode_item(Some(turn_id), item);
             } else {
@@ -885,8 +1061,13 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
@@ -905,23 +1086,33 @@ impl ThreadHistoryBuilder {
             _ if has_receiver => CollabAgentToolCallStatus::Completed,
             _ => CollabAgentToolCallStatus::Failed,
         };
-        let (receiver_thread_ids, agents_states) = match &payload.new_thread_id {
+        let (receiver_thread_ids, receiver_agents, agents_states) = match &payload.new_thread_id {
             Some(id) => {
                 let receiver_id = id.to_string();
                 let received_status = CollabAgentState::from(payload.status.clone());
                 (
                     vec![receiver_id.clone()],
+                    vec![CollabAgentRef {
+                        thread_id: receiver_id.clone(),
+                        agent_nickname: payload.new_agent_nickname.clone(),
+                        agent_role: payload.new_agent_role.clone(),
+                    }],
                     [(receiver_id, received_status)].into_iter().collect(),
                 )
             }
-            None => (Vec::new(), HashMap::new()),
+            None => (Vec::new(), Vec::new(), HashMap::new()),
         };
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
+            receiver_agents,
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
@@ -937,8 +1128,13 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
+            receiver_agents: Vec::new(),
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
@@ -961,8 +1157,13 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id.clone()],
+            receiver_agents: Vec::new(),
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
@@ -979,6 +1180,7 @@ impl ThreadHistoryBuilder {
             kind: payload.kind.into(),
             agent_thread_id: payload.agent_thread_id.to_string(),
             agent_path: String::from(payload.agent_path.clone()),
+            prompt: payload.prompt.clone(),
         });
     }
 
@@ -990,12 +1192,17 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: payload
                 .receiver_thread_ids
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
+            receiver_agents: Vec::new(),
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1029,8 +1236,13 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
+            receiver_agents: Vec::new(),
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1046,8 +1258,13 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
+            receiver_agents: Vec::new(),
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1072,8 +1289,17 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
-            receiver_thread_ids: vec![receiver_id],
+            receiver_thread_ids: vec![receiver_id.clone()],
+            receiver_agents: vec![CollabAgentRef {
+                thread_id: receiver_id,
+                agent_nickname: payload.receiver_agent_nickname.clone(),
+                agent_role: payload.receiver_agent_role.clone(),
+            }],
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1089,8 +1315,13 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
+            receiver_agents: Vec::new(),
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1118,8 +1349,17 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
-            receiver_thread_ids: vec![receiver_id],
+            receiver_thread_ids: vec![receiver_id.clone()],
+            receiver_agents: vec![CollabAgentRef {
+                thread_id: receiver_id,
+                agent_nickname: payload.receiver_agent_nickname.clone(),
+                agent_role: payload.receiver_agent_role.clone(),
+            }],
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1128,11 +1368,16 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_context_compacted(&mut self, payload: &ContextCompactedEvent) {
+        // Keep legacy projection one-to-one. Rollout cleanup handles duplicate compaction events
+        // written by pre-fix fork binaries; heuristic read-time deduplication could hide two real,
+        // adjacent compactions.
         let id = self.next_item_id();
         self.push_item_in_current_turn(ThreadItem::ContextCompaction {
             id,
             summary: payload.summary.clone(),
             message: payload.message.clone(),
+            decode_error: payload.decode_error.clone(),
+            available_skills: payload.available_skills.clone(),
         });
     }
 
@@ -1242,6 +1487,21 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_turn_started(&mut self, payload: &TurnStartedEvent) {
+        if let Some(turn) = self
+            .current_turn
+            .as_mut()
+            .filter(|turn| turn.id == payload.turn_id)
+        {
+            turn.status = TurnStatus::InProgress;
+            turn.error = None;
+            turn.started_at = payload.started_at;
+            turn.completed_at = None;
+            turn.duration_ms = None;
+            turn.opened_explicitly = true;
+            let changed_turn = ThreadHistoryTurnChange::from_pending_turn(turn);
+            self.record_changed_turn(changed_turn);
+            return;
+        }
         self.finish_current_turn();
         let turn = self
             .new_turn(Some(payload.turn_id.clone()))
@@ -1314,14 +1574,18 @@ impl ThreadHistoryBuilder {
     /// This keeps compaction-only legacy turns from being dropped by
     /// `finish_current_turn` when they have no renderable items and were not
     /// explicitly opened.
-    fn handle_compacted(&mut self, _payload: &CompactedItem) {
+    fn handle_compacted(&mut self, payload: &CompactedItem) {
+        if payload.replacement_history_media_repair {
+            return;
+        }
         self.ensure_turn().saw_compaction = true;
     }
 
     fn handle_thread_rollback(&mut self, payload: &ThreadRolledBackEvent) {
         self.finish_current_turn();
 
-        let n = usize::try_from(payload.num_turns).unwrap_or(usize::MAX);
+        let n = usize::try_from(payload.materialized_turns.unwrap_or(payload.num_turns))
+            .unwrap_or(usize::MAX);
         let removed_turn_ids = if n >= self.turns.len() {
             self.turns.iter().map(|turn| turn.id.clone()).collect()
         } else if n == 0 {
@@ -1332,12 +1596,17 @@ impl ThreadHistoryBuilder {
                 .map(|turn| turn.id.clone())
                 .collect()
         };
+        self.non_paginated_exec_history
+            .remove_turns(&removed_turn_ids);
         self.record_removed_turn_ids(removed_turn_ids);
 
         if n >= self.turns.len() {
             self.turns.clear();
+            self.turn_rollout_start_indices.clear();
         } else {
-            self.turns.truncate(self.turns.len().saturating_sub(n));
+            let surviving_turns = self.turns.len().saturating_sub(n);
+            self.turns.truncate(surviving_turns);
+            self.turn_rollout_start_indices.truncate(surviving_turns);
         }
 
         let item_count: usize = self.turns.iter().map(|t| t.items.len()).sum();
@@ -1349,6 +1618,8 @@ impl ThreadHistoryBuilder {
             if turn.items.is_empty() && !turn.opened_explicitly && !turn.saw_compaction {
                 return;
             }
+            self.turn_rollout_start_indices
+                .push(turn.rollout_start_index);
             self.turns.push(turn);
         }
     }
@@ -1528,6 +1799,25 @@ impl ThreadHistoryBuilder {
     }
 }
 
+fn orphaned_sub_agent_completion_presentation(
+    item: &codex_protocol::items::TurnItem,
+) -> codex_protocol::items::TurnItem {
+    let mut item = item.clone();
+    if let codex_protocol::items::TurnItem::CollabAgentToolCall(wait) = &mut item {
+        let owned_agent_ids = wait
+            .completion_presentation_agent_ids
+            .clone()
+            .unwrap_or_default();
+        wait.receiver_thread_ids
+            .retain(|id| owned_agent_ids.contains(id));
+        wait.receiver_agents
+            .retain(|agent| owned_agent_ids.contains(&agent.thread_id));
+        wait.agents_states
+            .retain(|id, _| owned_agent_ids.contains(id));
+    }
+    item
+}
+
 fn convert_dynamic_tool_content_items(
     items: &[codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem],
 ) -> Vec<DynamicToolCallOutputContentItem> {
@@ -1666,6 +1956,7 @@ mod tests {
     use crate::protocol::v2::CommandExecutionSource;
     use codex_extension_items::ExtensionItem as CoreExtensionItem;
     use codex_extension_items::sleep::SleepItem as CoreSleepItem;
+    use codex_protocol::AgentPath;
     use codex_protocol::ThreadId;
     use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
     use codex_protocol::items::CommandExecutionItem as CoreCommandExecutionItem;
@@ -1684,6 +1975,7 @@ mod tests {
     use codex_protocol::parse_command::ParsedCommand;
     use codex_protocol::protocol::AgentReasoningEvent;
     use codex_protocol::protocol::AgentReasoningRawContentEvent;
+    use codex_protocol::protocol::AgentStatus;
     use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::DynamicToolCallResponseEvent;
@@ -1692,6 +1984,7 @@ mod tests {
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
     use codex_protocol::protocol::ExitedReviewModeEvent;
+    use codex_protocol::protocol::InterAgentCommunication;
     use codex_protocol::protocol::ItemStartedEvent;
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::McpToolCallEndEvent;
@@ -1706,6 +1999,7 @@ mod tests {
     use codex_protocol::protocol::UserMessageEvent;
     use codex_protocol::protocol::WebSearchBeginEvent;
     use codex_protocol::protocol::WebSearchEndEvent;
+    use codex_protocol::protocol::sub_agent_completion_item;
     use codex_rollout::CompactedItem;
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
@@ -2038,6 +2332,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -2103,6 +2398,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
@@ -2171,6 +2467,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
@@ -2262,6 +2559,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
                 call_id: "exec-1".to_string(),
@@ -2270,6 +2568,7 @@ mod tests {
                 process_id: Some("pid-1".to_string()),
                 turn_id: turn_id.to_string(),
                 started_at_ms: 0,
+                deadline_at_ms: None,
                 command: command.clone(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 parsed_cmd: parsed_cmd.clone(),
@@ -2379,6 +2678,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ItemStarted(ItemStartedEvent {
                 thread_id,
@@ -2479,6 +2779,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -2745,7 +3046,10 @@ mod tests {
                 delivery: None,
                 questions: None,
             }),
-            EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+            EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
                 message: "Third".into(),
@@ -2851,7 +3155,10 @@ mod tests {
                 delivery: None,
                 questions: None,
             }),
-            EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 99 }),
+            EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 99,
+                ..Default::default()
+            }),
         ];
 
         let items = events
@@ -2863,6 +3170,46 @@ mod tests {
     }
 
     #[test]
+    fn materialized_rollback_start_tracks_duplicate_turn_id_occurrences() {
+        let turn_started = |turn_id: &str| {
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                agent_queue: None,
+            }))
+        };
+        let turn_completed = |turn_id: &str| {
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: turn_id.to_string(),
+                started_at: None,
+                last_agent_message: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }))
+        };
+        let items = vec![
+            turn_started("duplicate"),
+            turn_completed("duplicate"),
+            turn_started("duplicate"),
+            turn_completed("duplicate"),
+        ];
+
+        assert_eq!(
+            materialized_rollback_start(&items, /*num_turns*/ 1),
+            Some(MaterializedRollbackStart {
+                rollout_index: 2,
+                turn_id: "duplicate".to_string(),
+                turn_count: 2,
+            })
+        );
+    }
+
+    #[test]
     fn uses_explicit_turn_boundaries_for_mid_turn_steering() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
@@ -2871,6 +3218,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -2938,6 +3286,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3073,6 +3422,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::McpToolCallEnd(McpToolCallEndEvent {
                 call_id: "mcp-1".into(),
@@ -3152,6 +3502,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3236,6 +3587,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3332,6 +3684,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3424,6 +3777,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3494,6 +3848,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3518,6 +3873,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3600,6 +3956,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3624,6 +3981,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3700,6 +4058,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3768,6 +4127,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3836,6 +4196,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3860,6 +4221,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3916,6 +4278,7 @@ mod tests {
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3931,6 +4294,7 @@ mod tests {
                 started_at: Some(30),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4018,6 +4382,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4042,6 +4407,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4088,12 +4454,14 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: None,
                 guardian_history: None,
                 mcp_resource_origins: None,
+                compaction_summary_tokens: None,
                 window_number: None,
                 first_window_id: None,
                 previous_window_id: None,
@@ -4137,15 +4505,23 @@ mod tests {
                 trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::ContextCompacted(ContextCompactedEvent {
                 summary: Some("Compact summary".into()),
                 message: Some("Full compacted prompt".into()),
+                decode_error: Some("decoder unavailable".into()),
+                available_skills: Vec::new(),
             })),
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: None,
+                compaction_summary_tokens: None,
+                window_number: None,
+                first_window_id: None,
+                previous_window_id: None,
                 window_id: None,
+                ..Default::default()
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),
@@ -4166,6 +4542,8 @@ mod tests {
                 id: "item-1".into(),
                 summary: Some("Compact summary".into()),
                 message: Some("Full compacted prompt".into()),
+                decode_error: Some("decoder unavailable".into()),
+                available_skills: Vec::new(),
             }]
         );
     }
@@ -4188,8 +4566,8 @@ mod tests {
                     .expect("valid sender thread id"),
                 receiver_thread_id: ThreadId::try_from("00000000-0000-0000-0000-000000000002")
                     .expect("valid receiver thread id"),
-                receiver_agent_nickname: None,
-                receiver_agent_role: None,
+                receiver_agent_nickname: Some("Scout".into()),
+                receiver_agent_role: Some("explorer".into()),
                 status: AgentStatus::Completed(None),
             }),
         ];
@@ -4207,8 +4585,17 @@ mod tests {
                 id: "resume-1".into(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                receiver_agents: vec![CollabAgentRef {
+                    thread_id: "00000000-0000-0000-0000-000000000002".into(),
+                    agent_nickname: Some("Scout".into()),
+                    agent_role: Some("explorer".into()),
+                }],
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -4267,8 +4654,17 @@ mod tests {
                 id: "spawn-1".into(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                receiver_agents: vec![CollabAgentRef {
+                    thread_id: "00000000-0000-0000-0000-000000000002".into(),
+                    agent_nickname: Some("Scout".into()),
+                    agent_role: Some("explorer".into()),
+                }],
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
                 reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
@@ -4339,8 +4735,13 @@ mod tests {
                 id: "send-1".into(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
                 sender_thread_id: sender.to_string(),
                 receiver_thread_ids: vec![receiver.to_string()],
+                receiver_agents: Vec::new(),
                 prompt: Some("new task".into()),
                 model: None,
                 reasoning_effort: None,
@@ -4401,6 +4802,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4463,6 +4865,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4522,6 +4925,7 @@ mod tests {
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4592,6 +4996,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4636,6 +5041,136 @@ mod tests {
     }
 
     #[test]
+    fn rebuilds_legacy_idless_plaintext_agent_message() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                agent_queue: None,
+            })),
+            RolloutItem::ResponseItem(
+                codex_protocol::models::ResponseItem::AgentMessage {
+                    id: None,
+                    author: "/root".into(),
+                    recipient: "/root/worker".into(),
+                    content: vec![
+                        codex_protocol::models::AgentMessageInputContent::InputText {
+                            text: "Inspect the repository.".into(),
+                        },
+                    ],
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+                started_at: None,
+                last_agent_message: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(
+            turns,
+            vec![Turn {
+                id: "turn-a".into(),
+                items: vec![ThreadItem::AgentMessage {
+                    id: "item-1".into(),
+                    text: "Agent message from `/root`:\n\nInspect the repository.".into(),
+                    phase: Some(CoreMessagePhase::Commentary),
+                    memory_citation: None,
+                    delivery: None,
+                }],
+                items_view: TurnItemsView::Full,
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rebuilds_legacy_inter_agent_communication_variants() {
+        let plaintext = InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root().join("worker").expect("worker path"),
+            Vec::new(),
+            "Inspect the repository.".to_string(),
+            /*trigger_turn*/ true,
+        );
+        let encrypted = InterAgentCommunication::new_encrypted(
+            AgentPath::root(),
+            AgentPath::root().join("worker").expect("worker path"),
+            Vec::new(),
+            "opaque".to_string(),
+            /*trigger_turn*/ true,
+        );
+
+        for (mut communication, expected_text) in [
+            (
+                plaintext,
+                "Agent message from `/root`:\n\nInspect the repository.",
+            ),
+            (
+                encrypted,
+                "Agent message from `/root`:\n\nInput message encrypted",
+            ),
+        ] {
+            communication.set_turn_id_if_missing("turn-a");
+            let items = vec![
+                RolloutItem::InterAgentCommunication(communication),
+                RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: "turn-a".into(),
+                    trace_id: None,
+                    started_at: None,
+                    model_context_window: None,
+                    collaboration_mode_kind: Default::default(),
+                    agent_queue: None,
+                })),
+                RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "turn-a".into(),
+                    started_at: None,
+                    last_agent_message: None,
+                    error: None,
+                    completed_at: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
+                })),
+            ];
+
+            assert_eq!(
+                build_turns_from_rollout_items(&items),
+                vec![Turn {
+                    id: "turn-a".into(),
+                    items: vec![ThreadItem::AgentMessage {
+                        id: "item-1".into(),
+                        text: expected_text.to_string(),
+                        phase: Some(CoreMessagePhase::Commentary),
+                        memory_citation: None,
+                        delivery: None,
+                    }],
+                    items_view: TurnItemsView::Full,
+                    status: TurnStatus::Completed,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                }]
+            );
+        }
+    }
+
+    #[test]
     fn canonical_hook_prompt_completion_updates_turn_history() {
         let hook_prompt = CoreTurnItem::HookPrompt(codex_protocol::items::HookPromptItem {
             id: "hook-prompt-1".into(),
@@ -4652,6 +5187,7 @@ mod tests {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
             thread_id: ThreadId::new(),
@@ -4668,6 +5204,263 @@ mod tests {
     }
 
     #[test]
+    fn canonical_sub_agent_completion_survives_rollout_replay() {
+        for model_visibility in [
+            codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
+            codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible,
+        ] {
+            let completion = CoreTurnItem::AgentMessage(
+                codex_protocol::protocol::sub_agent_completion_item_with_visibility(
+                    "/root/reviewer",
+                    &AgentStatus::Completed(Some("Finished reviewing.".to_string())),
+                    model_visibility,
+                )
+                .expect("terminal status"),
+            );
+            let expected_item = ThreadItem::from(completion.clone());
+            let ThreadItem::AgentMessage { id, .. } = &expected_item else {
+                panic!("expected agent message");
+            };
+            assert_eq!(
+                codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id(
+                    id
+                ),
+                Some(model_visibility)
+            );
+            let mut builder = ThreadHistoryBuilder::new();
+            builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "completion-turn".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                agent_queue: None,
+            }));
+            builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: ThreadId::new(),
+                turn_id: "completion-turn".into(),
+                item: completion,
+                started_at_ms: None,
+                completed_at_ms: 0,
+            }));
+            assert_eq!(
+                builder.active_turn_snapshot().expect("active turn").items,
+                vec![expected_item]
+            );
+        }
+    }
+
+    #[test]
+    fn attributed_agent_input_presentation_survives_rollout_replay() {
+        let id =
+            codex_protocol::protocol::new_attributed_agent_message_response_item_id().to_string();
+        let item = CoreTurnItem::AgentMessage(codex_protocol::items::AgentMessageItem {
+            id,
+            content: vec![codex_protocol::items::AgentMessageContent::Text {
+                text: "Agent message from `agent-id`:\n\nReview this.".to_string(),
+            }],
+            phase: Some(codex_protocol::models::MessagePhase::Commentary),
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+            sub_agent_completion: None,
+        });
+        let expected_item = ThreadItem::from(item.clone());
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "agent-input-turn".into(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+            agent_queue: None,
+        }));
+        builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "agent-input-turn".into(),
+            item,
+            started_at_ms: None,
+            completed_at_ms: 0,
+        }));
+
+        assert_eq!(
+            builder.active_turn_snapshot().expect("active turn").items,
+            vec![expected_item]
+        );
+    }
+
+    #[test]
+    fn exact_rollback_replays_orphaned_sub_agent_completion_in_a_completed_turn() {
+        let completion = CoreTurnItem::AgentMessage(
+            sub_agent_completion_item(
+                "/root/reviewer",
+                &AgentStatus::Completed(Some("Finished reviewing.".to_string())),
+            )
+            .expect("terminal status"),
+        );
+        let expected_item = ThreadItem::from(completion.clone());
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "rolled-back-turn".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                agent_queue: None,
+            })),
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: ThreadId::new(),
+                turn_id: "rolled-back-turn".into(),
+                item: completion,
+                started_at_ms: None,
+                completed_at_ms: 0,
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "rolled-back-turn".into(),
+                last_agent_message: None,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                rollback_start_index: Some(0),
+                ..Default::default()
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].id, "rolled-back-turn");
+        assert_eq!(turns[0].status, TurnStatus::Completed);
+        assert_eq!(turns[0].items, vec![expected_item]);
+    }
+
+    #[test]
+    fn user_agent_control_does_not_finish_the_active_source_turn() {
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "source-turn".into(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+            agent_queue: None,
+        }));
+        let control =
+            CoreTurnItem::UserAgentControl(codex_protocol::items::UserAgentControlItem::succeeded(
+                codex_protocol::items::UserAgentControlAction::Prompt,
+            ));
+        let expected = ThreadItem::from(control.clone());
+
+        builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "source-turn".into(),
+            item: control,
+            started_at_ms: None,
+            completed_at_ms: 0,
+        }));
+
+        assert_eq!(
+            builder.active_turn_snapshot().expect("active source turn"),
+            Turn {
+                id: "source-turn".into(),
+                status: TurnStatus::InProgress,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                items_view: TurnItemsView::Full,
+                items: vec![expected],
+            }
+        );
+    }
+
+    #[test]
+    fn exact_rollback_replays_orphaned_terminal_wait_in_a_completed_turn() {
+        let child_thread_id = ThreadId::new();
+        let already_presented_thread_id = ThreadId::new();
+        let wait =
+            CoreTurnItem::CollabAgentToolCall(codex_protocol::items::CollabAgentToolCallItem {
+                id: "wait-agent-call".to_string(),
+                tool: codex_protocol::items::CollabAgentTool::Wait,
+                status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
+                deadline_at_ms: None,
+                sender_thread_id: ThreadId::new(),
+                receiver_thread_ids: vec![child_thread_id, already_presented_thread_id],
+                receiver_agents: Vec::new(),
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: [
+                    (
+                        child_thread_id,
+                        AgentStatus::Completed(Some("Finished reviewing.".to_string())),
+                    ),
+                    (
+                        already_presented_thread_id,
+                        AgentStatus::Completed(Some("Already presented.".to_string())),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                completion_presentation_agent_ids: Some(vec![child_thread_id]),
+            });
+        let mut expected_wait_item = wait.clone();
+        let CoreTurnItem::CollabAgentToolCall(expected_wait) = &mut expected_wait_item else {
+            unreachable!("wait item");
+        };
+        expected_wait.receiver_thread_ids = vec![child_thread_id];
+        expected_wait
+            .agents_states
+            .retain(|id, _| *id == child_thread_id);
+        let expected_item = ThreadItem::from(expected_wait_item);
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "rolled-back-wait-turn".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                agent_queue: None,
+            })),
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: ThreadId::new(),
+                turn_id: "rolled-back-wait-turn".into(),
+                item: wait,
+                started_at_ms: None,
+                completed_at_ms: 0,
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "rolled-back-wait-turn".into(),
+                last_agent_message: None,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                rollback_start_index: Some(0),
+                ..Default::default()
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].id, "rolled-back-wait-turn");
+        assert_eq!(turns[0].status, TurnStatus::Completed);
+        assert_eq!(turns[0].items, vec![expected_item]);
+    }
+
+    #[test]
     fn completed_sub_agent_activity_updates_completed_parent_turn() {
         let child_thread_id = ThreadId::new();
         let child_path = codex_protocol::AgentPath::root()
@@ -4680,6 +5473,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
@@ -4727,6 +5521,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::ResponseItem(
                 codex_protocol::models::ResponseItem::Message {
@@ -4886,6 +5681,7 @@ mod tests {
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
         ));
         assert_eq!(
@@ -5000,6 +5796,7 @@ mod tests {
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
@@ -5039,6 +5836,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5050,6 +5848,7 @@ mod tests {
             })),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                ..Default::default()
             })),
         ]);
 

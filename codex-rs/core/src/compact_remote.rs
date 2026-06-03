@@ -12,6 +12,7 @@ use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::compact_remote_history::HistoryItemGroup;
 use crate::compact_remote_history::history_item_groups;
+use crate::context::is_standalone_compacted_image_omission_message;
 use crate::context::world_state::WorldState;
 use crate::context_manager::ContextManager;
 use crate::context_manager::estimate_item_token_count;
@@ -30,13 +31,13 @@ use codex_analytics::CompactionTrigger;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::items::CONTEXT_COMPACTION_DECODING_MESSAGE;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
@@ -51,15 +52,30 @@ use request::run_remote_compact_attempt;
 const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
     "Output exceeded the available model context and was truncated";
 
+pub(crate) struct InlineRemoteAutoCompactTask<'a> {
+    pub(crate) sess: Arc<Session>,
+    pub(crate) step_context: Arc<StepContext>,
+    pub(crate) fallback_step_context: Option<Arc<StepContext>>,
+    pub(crate) turn_state: Arc<OnceLock<String>>,
+    pub(crate) initial_context_injection: InitialContextInjection,
+    pub(crate) reason: CompactionReason,
+    pub(crate) phase: CompactionPhase,
+    pub(crate) cancellation_token: &'a CancellationToken,
+}
+
 pub(crate) async fn run_inline_remote_auto_compact_task(
-    sess: Arc<Session>,
-    step_context: Arc<StepContext>,
-    fallback_step_context: Option<Arc<StepContext>>,
-    turn_state: Arc<OnceLock<String>>,
-    initial_context_injection: InitialContextInjection,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    task: InlineRemoteAutoCompactTask<'_>,
 ) -> CodexResult<()> {
+    let InlineRemoteAutoCompactTask {
+        sess,
+        step_context,
+        fallback_step_context,
+        turn_state,
+        initial_context_injection,
+        reason,
+        phase,
+        cancellation_token,
+    } = task;
     let compaction_metadata = CompactionTurnMetadata::new(
         CompactionTrigger::Auto,
         reason,
@@ -73,6 +89,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         Some(turn_state),
         initial_context_injection,
         compaction_metadata,
+        cancellation_token,
     )
     .await?;
     Ok(())
@@ -81,10 +98,11 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
 pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     // Standalone compaction is its own request boundary, so it captures a fresh step.
     let step_context = sess
-        .capture_step_context(Arc::clone(&turn_context), &CancellationToken::new())
+        .capture_step_context(Arc::clone(&turn_context), cancellation_token)
         .await?;
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_context.sub_id.clone(),
@@ -92,6 +110,7 @@ pub(crate) async fn run_remote_compact_task(
         started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
         model_context_window: turn_context.model_context_window(),
         collaboration_mode_kind: turn_context.mode(),
+        agent_queue: None,
     });
     sess.send_event(&turn_context, start_event).await;
 
@@ -108,6 +127,7 @@ pub(crate) async fn run_remote_compact_task(
         /*turn_state*/ None,
         InitialContextInjection::DoNotInject,
         compaction_metadata,
+        cancellation_token,
     )
     .await?;
     Ok(())
@@ -120,6 +140,7 @@ async fn run_remote_compact_task_inner(
     turn_state: Option<Arc<OnceLock<String>>>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let trigger = compaction_metadata.trigger();
@@ -156,12 +177,15 @@ async fn run_remote_compact_task_inner(
         }
     }
     let result = run_remote_compact_task_inner_impl(
-        sess,
-        step_context,
-        fallback_step_context,
-        turn_state,
-        initial_context_injection,
-        compaction_metadata,
+        RemoteCompactTask {
+            sess,
+            step_context,
+            fallback_step_context,
+            turn_state,
+            initial_context_injection,
+            compaction_metadata,
+            cancellation_token,
+        },
         &mut analytics_details,
     )
     .await;
@@ -190,15 +214,29 @@ async fn run_remote_compact_task_inner(
     Ok(())
 }
 
-async fn run_remote_compact_task_inner_impl(
-    sess: &Arc<Session>,
-    step_context: &Arc<StepContext>,
-    fallback_step_context: Option<&Arc<StepContext>>,
+struct RemoteCompactTask<'a> {
+    sess: &'a Arc<Session>,
+    step_context: &'a Arc<StepContext>,
+    fallback_step_context: Option<&'a Arc<StepContext>>,
     turn_state: Option<Arc<OnceLock<String>>>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
+    cancellation_token: &'a CancellationToken,
+}
+
+async fn run_remote_compact_task_inner_impl(
+    task: RemoteCompactTask<'_>,
     analytics_details: &mut CompactionAnalyticsDetails,
 ) -> CodexResult<()> {
+    let RemoteCompactTask {
+        sess,
+        step_context,
+        fallback_step_context,
+        turn_state,
+        initial_context_injection,
+        compaction_metadata,
+        cancellation_token,
+    } = task;
     let turn_context = &step_context.turn;
     let mut context_compaction_item = ContextCompactionItem::new();
     let compaction_id = context_compaction_item.id.clone();
@@ -267,60 +305,91 @@ async fn run_remote_compact_task_inner_impl(
     let RemoteCompactAttempt {
         new_history,
         trace_input_history,
+        explicit_mcp_context,
     } = attempt;
     let (new_window_number, new_window_ids) = sess.advance_auto_compact_window().await;
-    let (new_history, world_state_baseline) =
+    let (mut new_history, world_state_baseline) =
         process_compacted_history(sess.as_ref(), new_history, &initial_context_injection).await;
+    // Legacy remote compaction does not preserve a structural input/output boundary. Expire
+    // recognized references from its returned replacement before central installation sanitizes
+    // any newly returned raw images.
+    crate::context::expire_compacted_media_references(new_history.as_mut_slice());
 
+    new_history = crate::compact::insert_mcp_server_use_context_items_at_compaction_boundary(
+        new_history,
+        explicit_mcp_context,
+    );
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage { .. } => {
             Some(compaction_turn_context.to_turn_context_item())
         }
     };
+    let summary_text = crate::compact::extract_compacted_summary_text(&new_history);
+    let summary = summary_text
+        .as_deref()
+        .and_then(crate::compact::summary_for_event);
     // Install is the semantic boundary where the compact endpoint's output becomes live
     // thread history. Keep it distinct from the later inference request so the reducer can
     // still represent repeated developer/context prefix items exactly as the model saw them.
-    if let Some(trace_input_history) = trace_input_history.as_deref() {
-        compaction_trace.record_installed(&CompactionCheckpointTracePayload {
-            input_history: trace_input_history,
-            replacement_history: &new_history,
-        });
-    }
     // Legacy `/responses/compact` returns provider-normalized items without a stable link to their
     // original envelopes, so it does not preserve harness metadata. Compaction-trigger/v2 does.
     let new_history = new_history
         .into_iter()
         .map(ResponseItemEnvelope::new)
         .collect();
-    sess.replace_compacted_history(
-        new_history,
-        reference_context_item,
-        world_state_baseline,
-        CompactedHistoryMetadata {
-            message: String::new(),
-            window_number: new_window_number,
-            window_ids: new_window_ids,
-            compaction_response_id: None,
-        },
+    let final_history = sess
+        .replace_compacted_history(
+            Arc::clone(compaction_turn_context),
+            new_history,
+            reference_context_item,
+            world_state_baseline,
+            CompactedHistoryMetadata {
+                message: String::new(),
+                compaction_summary_tokens: None,
+                window_number: new_window_number,
+                window_ids: new_window_ids,
+                compaction_response_id: None,
+            },
+        )
+        .await?;
+    let final_history_items = final_history
+        .iter()
+        .map(|envelope| envelope.item.clone())
+        .collect::<Vec<_>>();
+    if let Some(trace_input_history) = trace_input_history.as_deref() {
+        compaction_trace.record_installed(&CompactionCheckpointTracePayload {
+            input_history: trace_input_history,
+            replacement_history: &final_history_items,
+        });
+    }
+    sess.recompute_token_usage(compaction_turn_context).await;
+    if crate::compact_handoff_summary::should_decode_remote_compaction_handoff(
+        compaction_turn_context.config.as_ref(),
+    ) {
+        sess.emit_transient_context_compaction_status(
+            compaction_turn_context,
+            context_compaction_item.id.clone(),
+            CONTEXT_COMPACTION_DECODING_MESSAGE.to_string(),
+        )
+        .await;
+    }
+    let handoff = crate::compact_handoff_summary::summarize_remote_compaction_handoff(
+        sess,
+        compaction_turn_context,
+        &final_history_items,
+        cancellation_token,
     )
     .await;
-    sess.recompute_token_usage(compaction_turn_context).await;
 
-    context_compaction_item.summary = summary.clone();
-    context_compaction_item.message = None;
+    context_compaction_item.summary = summary;
+    context_compaction_item.available_skills =
+        crate::compact_skills_inventory::available_skill_names(&final_history_items);
+    handoff.apply_to(&mut context_compaction_item);
 
     sess.emit_turn_item_completed(
         compaction_turn_context,
         TurnItem::ContextCompaction(context_compaction_item),
-    )
-    .await;
-    sess.send_event(
-        compaction_turn_context,
-        EventMsg::ContextCompacted(ContextCompactedEvent {
-            summary,
-            message: None,
-        }),
     )
     .await;
     Ok(())
@@ -375,8 +444,8 @@ pub(crate) async fn process_annotated_compacted_history(
 /// append fresh canonical context from the current session.
 ///
 /// We drop:
-/// - `developer` messages because remote output can include stale/duplicated
-///   instruction content.
+/// - `developer` messages because remote output can include stale/duplicated instruction content,
+///   except for an exact standalone compacted-image omission generated locally.
 /// - non-user-content `user` messages (session prefix/instruction wrappers),
 ///   while preserving real user messages and persisted hook prompts.
 ///
@@ -387,7 +456,9 @@ pub(crate) async fn process_annotated_compacted_history(
 ///   check.
 pub(crate) fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
     match item {
-        ResponseItem::Message { role, .. } if role == "developer" => false,
+        ResponseItem::Message { role, .. } if role == "developer" => {
+            is_standalone_compacted_image_omission_message(item)
+        }
         ResponseItem::Message { role, .. } if role == "user" => {
             matches!(
                 crate::event_mapping::parse_turn_item(item),

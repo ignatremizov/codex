@@ -3256,6 +3256,7 @@ mod tests {
                     started_at: Some(42),
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
+                    agent_queue: None,
                 }),
             );
             state.track_current_turn_event(
@@ -3291,6 +3292,7 @@ mod tests {
                     started_at: Some(42),
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
+                    agent_queue: None,
                 }),
             },
             conversation_id,
@@ -3567,6 +3569,7 @@ mod tests {
                     started_at: Some(42),
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
+                    agent_queue: None,
                 }),
             );
             state.track_current_turn_event(
@@ -3588,6 +3591,7 @@ mod tests {
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        sub_agent_completion: None,
                     }),
                     started_at_ms: Some(0),
                     completed_at_ms: 0,
@@ -3607,6 +3611,7 @@ mod tests {
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        sub_agent_completion: None,
                     }),
                     started_at_ms: Some(0),
                     completed_at_ms: 0,

@@ -70,7 +70,6 @@ pub(crate) async fn run_codex_thread_interactive(
         .services
         .model_client
         .responses_websocket_enabled();
-
     let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (tx_ops, rx_ops) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     let conversation_history = initial_history.unwrap_or(InitialHistory::New);
@@ -189,11 +188,41 @@ pub(crate) async fn run_codex_thread_one_shot(
     final_output_json_schema: Option<Value>,
     initial_history: Option<InitialHistory>,
 ) -> Result<(Arc<Session>, SessionIo), CodexErr> {
+    run_codex_thread_one_shot_with_environment_selections(
+        config,
+        auth_manager,
+        models_manager,
+        input,
+        parent_session,
+        parent_ctx.clone(),
+        cancel_token,
+        subagent_source,
+        final_output_json_schema,
+        initial_history,
+        parent_ctx.environments.clone(),
+    )
+    .await
+}
+
+/// Convenience wrapper for one-time use with explicit environment selections.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_codex_thread_one_shot_with_environment_selections(
+    config: Config,
+    auth_manager: Arc<AuthManager>,
+    models_manager: SharedModelsManager,
+    input: Vec<UserInput>,
+    parent_session: Arc<Session>,
+    parent_ctx: Arc<TurnContext>,
+    cancel_token: CancellationToken,
+    subagent_source: SubAgentSource,
+    final_output_json_schema: Option<Value>,
+    initial_history: Option<InitialHistory>,
+    environment_selections: TurnEnvironmentSnapshot,
+) -> Result<(Arc<Session>, SessionIo), CodexErr> {
     // Use a child token so we can stop the delegate after completion without
     // requiring the caller to cancel the parent token.
     let child_cancel = cancel_token.child_token();
     let parent_turn_id = parent_ctx.sub_id.clone();
-    let parent_environments = parent_ctx.environments.clone();
     let root_turn_id = parent_ctx.turn_metadata_state.root_turn_id();
     let (session, io) = Box::pin(run_codex_thread_interactive(
         config,
@@ -201,7 +230,7 @@ pub(crate) async fn run_codex_thread_one_shot(
         models_manager,
         parent_session,
         parent_ctx,
-        parent_environments,
+        environment_selections,
         child_cancel.clone(),
         subagent_source,
         initial_history,

@@ -568,9 +568,16 @@ async fn warm_plugins_and_skills_for_session_init(
     config: Arc<Config>,
     plugins_manager: Arc<PluginsManager>,
     skills_service: Arc<HostSkillsService>,
+    session_source: &SessionSource,
     turn_environments: &TurnEnvironmentSnapshot,
     extensions: &codex_extension_api::ExtensionRegistry<Config>,
 ) -> Vec<SkillError> {
+    if matches!(
+        session_source,
+        SessionSource::SubAgent(SubAgentSource::Compact)
+    ) {
+        return Vec::new();
+    }
     let plugins_input = config.plugins_config_input();
     let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
     if config.features.enabled(Feature::SkipHostSkillDiscovery)
@@ -1223,10 +1230,28 @@ impl Session {
             );
             let resolved_environments = turn_environments.snapshot().await;
             let agents_md_manager = Arc::new(AgentsMdManager::new(user_instructions));
+            let should_load_agents_md = !matches!(
+                &session_configuration.session_source,
+                SessionSource::SubAgent(SubAgentSource::Compact)
+            );
+            let agents_md_refresh = async {
+                if should_load_agents_md {
+                    agents_md_manager
+                        .refresh(
+                            config.as_ref(),
+                            &resolved_environments,
+                            session_configuration.windows_sandbox_level,
+                        )
+                        .await
+                } else {
+                    Ok(())
+                }
+            };
             let plugin_skill_warmup = warm_plugins_and_skills_for_session_init(
                 Arc::clone(&config),
                 Arc::clone(&plugins_manager),
                 Arc::clone(&skills_service),
+                &session_configuration.session_source,
                 &resolved_environments,
                 extensions.as_ref(),
             )
@@ -1241,7 +1266,7 @@ impl Session {
                         otel.name = "session_init.thread_name_lookup",
                     ));
             let (agents_md_result, plugin_skill_errors, thread_name) = tokio::join!(
-                agents_md_manager.refresh(config.as_ref(), &resolved_environments),
+                agents_md_refresh,
                 plugin_skill_warmup,
                 thread_name_lookup,
             );

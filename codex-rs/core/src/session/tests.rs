@@ -3799,6 +3799,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -4006,6 +4007,7 @@ async fn thread_rollback_recomputes_previous_turn_settings_and_reference_context
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -4037,6 +4039,7 @@ async fn thread_rollback_recomputes_previous_turn_settings_and_reference_context
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -4130,6 +4133,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
@@ -4159,6 +4163,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::Compacted(CompactedItem {
@@ -4195,6 +4200,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
@@ -4278,6 +4284,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
@@ -4307,6 +4314,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
@@ -4336,6 +4344,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
@@ -11289,14 +11298,18 @@ async fn legacy_compaction_retains_only_the_selected_step(first_attempt: FirstAt
         ],
     };
     let requests = responses::mount_compact_response_sequence(&server, replies).await;
+    let cancellation_token = CancellationToken::new();
     crate::compact_remote::run_inline_remote_auto_compact_task(
-        Arc::clone(&session),
-        Arc::clone(&primary),
-        Some(Arc::clone(&fallback)),
-        Arc::new(OnceLock::new()),
-        InitialContextInjection::DoNotInject,
-        CompactionReason::ModelDownshift,
-        CompactionPhase::PreTurn,
+        crate::compact_remote::InlineRemoteAutoCompactTask {
+            sess: Arc::clone(&session),
+            step_context: Arc::clone(&primary),
+            fallback_step_context: Some(Arc::clone(&fallback)),
+            turn_state: Arc::new(OnceLock::new()),
+            initial_context_injection: InitialContextInjection::DoNotInject,
+            reason: CompactionReason::ModelDownshift,
+            phase: CompactionPhase::PreTurn,
+            cancellation_token: &cancellation_token,
+        },
     )
     .await
     .expect("compaction succeeds");

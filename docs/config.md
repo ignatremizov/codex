@@ -34,6 +34,22 @@ Only enable parallel calls for MCP servers whose tools are safe to run at the
 same time. If tools read and write shared state, files, databases, or external
 resources, review those read/write race conditions before enabling this setting.
 
+To keep an MCP server connected but hide its tools from the default model
+context until the user explicitly opts in, set
+`allow_implicit_invocation = false` on that server:
+
+```toml
+[mcp_servers.linear]
+url = "https://example.com/mcp"
+allow_implicit_invocation = false
+```
+
+This only affects whether Codex tells the model about the server by default.
+The MCP server still starts normally, and its tools remain available to the
+runtime. In the TUI, `/mcp use <server>` adds forward-only context for later
+turns so the model can use that server explicitly without rebuilding prior
+session context.
+
 ## MCP tool approvals
 
 Codex stores approval defaults and per-tool overrides for custom MCP servers
@@ -76,6 +92,34 @@ source conversation and continue the edit on a new branch instead, enable:
 fork_prompt_edits = true
 ```
 
+## TUI screen buffers and scrollback
+
+Normal conversation output uses the terminal's primary screen and ordinary scrollback. The
+`tui.alternate_screen` setting and `--no-alt-screen` flag control only temporary full-screen
+surfaces such as pickers, pagers, and full-screen approvals. See
+[TUI Alternate Screen and Scrollback](./tui-alternate-screen.md) for mode behavior and resize-reflow
+limits.
+
+## Multi-Agent V2
+
+By default, MultiAgentV2 `spawn_agent` starts subagents without copying the
+parent thread history when `fork_turns` is omitted. Model-authored history
+forks require explicit user authorization:
+
+```toml
+[agents]
+allow_history_forks = true
+
+[features.multi_agent_v2]
+default_fork_turns = "none" # "none", "all", or a positive integer string
+```
+
+Keep `allow_history_forks` disabled to require model-authored V1 and V2 spawns
+to start from their initial prompt. To authorize history inheritance only for
+one configured role, set `allow_history_forks = true` under `[agents]` in that
+role's config file. Explicit `/agent ... fork:` commands are user-controlled
+and do not require this setting.
+
 ## Notify
 
 `notify` is deprecated and will be removed in a future release. Existing configurations still work for compatibility, but new automation should use lifecycle hooks instead.
@@ -84,11 +128,112 @@ Codex can run a legacy notification command when the agent finishes a turn. See 
 
 - https://developers.openai.com/codex/config-reference
 
+Under `[tui]`, desktop notification preview lengths can also be tuned for:
+
+- `agent_notification_preview_graphemes`
+- `exec_approval_notification_preview_graphemes`
+- `user_input_notification_preview_graphemes`
+
 When Codex knows which client started the turn, the legacy notify JSON payload also includes a top-level `client` field. The TUI reports `codex-tui`, and the app server reports the `clientInfo.name` value from `initialize`.
 
 ## JSON Schema
 
 The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.
+
+## Multi-agent message delivery
+
+MultiAgentV2 can preserve provider-opaque encrypted delivery, add a model-authored plaintext audit
+record, or use one plaintext message:
+
+```toml
+[features.multi_agent_v2]
+message_delivery = "plaintext" # encrypted | encrypted_with_audit | plaintext
+```
+
+`encrypted_with_audit` is the default. It keeps encrypted delivery while exposing a required
+`task_message` audit field on `spawn_agent`, `send_message`, and `followup_task`. `encrypted` omits
+the readable audit field. `plaintext` uses one readable `message` field and avoids duplicate model
+output. The setting governs newly emitted messages; resumed and forked history retains each
+persisted agent message's encrypted or plaintext representation. Config-lock exports include the
+resolved setting.
+
+## Remote Compaction Handoff
+
+Set `remote_compaction_handoff_model` to override the model used to decode
+remote compaction handoff text for display. When unset, Codex uses
+`gpt-5.3-codex-spark` if that model is available in the catalog, otherwise it
+falls back to the current turn model.
+
+Set `remote_compaction_handoff_fallback_model` to override the model retried
+when the first decoder fails. When unset, Codex retries with `gpt-5.6-luna` if
+that model is available and differs from the first decoder. Cancellation does
+not start a fallback decoder. Set it to the primary decoder model to disable
+retry explicitly.
+
+## Shell command timeout
+
+Set a default timeout (in milliseconds) for shell commands when `timeout_ms` is not provided:
+
+```toml
+exec_command_timeout_ms = 30000
+```
+
+If unset, Codex uses the built-in default (10,000 ms).
+
+## Approval timeout
+
+Set the maximum time (in milliseconds) to wait for a command approval response:
+
+```toml
+approval_timeout_ms = 120000
+```
+
+Any non-negative millisecond value is accepted. Positive values set the human response deadline. A
+value of `0` rejects command approval requests that would be routed to a user immediately without
+showing a prompt, making `approval_policy = "on-request"` behave like `never` for human command
+approvals. Guardian reviews and permission hooks are unaffected. If a positive deadline expires,
+Codex rejects the command without executing it and lets the turn continue with the rejection as the
+tool result. If unset, command approvals continue waiting until the user responds or the turn is
+interrupted.
+
+TOML integer literals are signed 64-bit values, so the largest value representable in
+`config.toml` is `9223372036854775807`.
+
+This setting does not make `approval_policy = "never"` interactive. It applies only when the active
+approval policy would otherwise produce a command approval request.
+
+## User shell command timeout
+
+Set the maximum runtime (in milliseconds) for commands entered with `!` or `/shell`:
+
+```toml
+user_shell_command_timeout_ms = 3600000
+```
+
+If unset, Codex uses the existing one-hour default. Set the value to `0` to allow user shell
+commands to run until they finish or are interrupted.
+
+## Unified exec yield windows
+
+Set defaults (in milliseconds) for unified exec output capture when `yield_time_ms` is not provided:
+
+```toml
+unified_exec_yield_time_ms = 10000 # exec_command initial snapshot window
+unified_exec_write_stdin_yield_time_ms = 250 # write_stdin polling window
+```
+
+If unset, Codex uses the built-in defaults (10,000 ms initial snapshot window for `exec_command`,
+250 ms polling window for `write_stdin`).
+Explicit initial `exec_command` yield windows below 5,000 ms are raised to 5,000 ms for POSIX
+execution targets. Windows execution targets have a 10,000 ms minimum, including when the target
+runs on a different host from Codex.
+
+Empty `write_stdin` calls are background terminal polls. By default, their `yield_time_ms` wait is
+not capped. To impose a maximum poll window:
+
+```toml
+background_terminal_max_timeout = 300000
+```
 
 ## SQLite State DB
 
@@ -127,7 +272,44 @@ Hide the compacted prompt output after `/compact`:
 show_compact_summary = false
 ```
 
-When unset, the transcript includes the compacted prompt when available (otherwise just the summary).
+When unset, the transcript includes the compacted prompt when available (otherwise just the
+summary). Decode failures remain visible when compacted output is hidden because the setting hides
+content, not diagnostics.
+
+Configure main-transcript command output previews:
+
+```toml
+[tui]
+command_output_preview_lines = 30
+user_shell_output_preview_lines = 50
+agent_prompt_preview_lines = 50
+agent_response_preview_lines = 0
+```
+
+Set any value to `0` to show all retained output for that category in the main TUI. Agent prompt
+previews apply to rendered rows from subagent spawn/input prompts, and agent response previews apply
+to rendered rows from subagent output shown after a multi-agent wait completes.
+
+Configure diff add/remove line backgrounds:
+
+```toml
+[tui]
+# auto (default), off, theme, custom
+diff_background = "theme"
+```
+
+- `auto`: existing adaptive backgrounds (with syntax-theme diff-scope overrides when available).
+- `off`: disable add/remove line backgrounds.
+- `theme`: use syntax-theme scope backgrounds (`markup.inserted`/`markup.deleted`, then
+  `diff.inserted`/`diff.deleted` fallback).
+- `custom`: use explicit colors below (invalid/missing values fall back to `auto` colors):
+
+```toml
+[tui]
+diff_background = "custom"
+diff_add_bg = "#213A2B"
+diff_del_bg = "#4A221D"
+```
 
 ## Notices
 

@@ -64,6 +64,7 @@ use crate::turn_input::TurnInputMode;
 use crate::turn_input::TurnInputRequest;
 use crate::turn_input::TurnInputSubmission;
 use crate::turn_input::TurnStartOptions;
+use crate::user_input::UserInput;
 use codex_extension_items::image_generation::ImageGenerationFailure;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
@@ -111,6 +112,23 @@ pub use crate::permissions::RawFileSystemSandboxPolicy;
 use crate::permissions::default_read_only_subpaths_for_writable_root;
 pub use crate::request_permissions::RequestPermissionsArgs;
 pub use crate::request_user_input::RequestUserInputEvent;
+pub use crate::sub_agent_completion::SubAgentCompletionModelVisibility;
+pub use crate::sub_agent_completion::SubAgentCompletionStatus;
+pub use crate::sub_agent_completion::is_attributed_agent_message_response_item_id;
+pub use crate::sub_agent_completion::is_sub_agent_completion_context_response_item_id;
+pub use crate::sub_agent_completion::is_user_agent_task_context_response_item_id;
+pub use crate::sub_agent_completion::new_attributed_agent_message_response_item_id;
+pub use crate::sub_agent_completion::new_sub_agent_completion_context_response_item_id;
+pub use crate::sub_agent_completion::new_user_agent_task_context_response_item_id;
+pub use crate::sub_agent_completion::ordinary_agent_message_response_item_id;
+pub use crate::sub_agent_completion::sub_agent_completion_item;
+pub use crate::sub_agent_completion::sub_agent_completion_item_with_visibility;
+pub use crate::sub_agent_completion::sub_agent_completion_model_visibility_from_response_item_id;
+pub use crate::sub_agent_completion::sub_agent_completion_status_from_response_item_id;
+pub use crate::sub_agent_completion::sub_agent_completion_transcript;
+pub use crate::sub_agent_completion::sub_agent_completion_transcript_from_agent_message_id;
+pub use crate::sub_agent_completion::sub_agent_completion_transcript_parts;
+pub use crate::sub_agent_completion::sub_agent_completion_transcript_with_visibility;
 
 /// Open/close tags for special context blocks. Used across crates to avoid duplicated hardcoded
 /// strings.
@@ -124,6 +142,7 @@ pub const APPS_INSTRUCTIONS_OPEN_TAG: &str = "<apps_instructions>";
 pub const APPS_INSTRUCTIONS_CLOSE_TAG: &str = "</apps_instructions>";
 pub const SKILLS_INSTRUCTIONS_OPEN_TAG: &str = "<skills_instructions>";
 pub const SKILLS_INSTRUCTIONS_CLOSE_TAG: &str = "</skills_instructions>";
+pub const MAX_SKILLS_INSTRUCTIONS_BYTES: usize = 20 * 1024;
 pub const PLUGINS_INSTRUCTIONS_OPEN_TAG: &str = "<plugins_instructions>";
 pub const PLUGINS_INSTRUCTIONS_CLOSE_TAG: &str = "</plugins_instructions>";
 pub const TOOLS_OPEN_TAG: &str = "<tools>";
@@ -585,6 +604,15 @@ pub struct AdditionalContextEntry {
     pub kind: AdditionalContextKind,
 }
 
+/// Trusted transcript presentation for Core-authored agent input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AgentInputPresentation {
+    /// Delegated input presented with only its caller-authored items.
+    Delegated(Vec<UserInput>),
+    /// Attributed reverse input presented as a canonical agent message.
+    Attributed(String),
+}
+
 /// Submission operation
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -623,6 +651,19 @@ pub enum Op {
         reply: oneshot::Sender<CodexResult<TurnInputSubmission>>,
     },
 
+    /// Internal user input submitted through the agent-control admission path.
+    ///
+    /// Ordinary clients use [`Op::TurnInput`]. Agent control keeps this operation so its
+    /// response-observation policy can be registered against the submission before the target
+    /// decides whether to start or steer a turn.
+    UserInput {
+        items: Vec<UserInput>,
+        final_output_json_schema: Option<Value>,
+        responsesapi_client_metadata: Option<HashMap<String, String>>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        thread_settings: ThreadSettingsOverrides,
+    },
+
     /// Resume an interrupted regular turn.
     RecoverTurn {
         thread_settings: ThreadSettingsOverrides,
@@ -635,7 +676,17 @@ pub enum Op {
         reply: oneshot::Sender<CodexResult<SuspendTurnOutcome>>,
     },
 
-    /// Apply thread-settings overrides without starting a turn.
+    /// Core-authored agent input.
+    ///
+    /// This remains an internal submission operation rather than an app-server input surface.
+    /// Its trusted presentation is carried separately from the model-visible input so clients
+    /// never infer provenance or hidden context from marker-like text.
+    AgentInput {
+        items: Vec<UserInput>,
+        presentation: AgentInputPresentation,
+    },
+
+    /// Apply persistent thread-settings overrides without starting a turn.
     ///
     /// This uses the same submission queue as turn starts so app-server can
     /// preserve caller order between both kinds of mutation.
@@ -718,6 +769,10 @@ pub enum Op {
     /// Request MCP servers to reinitialize and refresh cached tool lists.
     RefreshMcpServers,
 
+    /// Queue forward-only model context so later turns may explicitly use an
+    /// MCP server that is otherwise hidden from default prompt exposure.
+    ActivateMcpServer { server_name: String },
+
     /// Reload user config layer overrides for the active session.
     ///
     /// This updates runtime config-derived behavior (for example app
@@ -740,6 +795,16 @@ pub enum Op {
     /// This does not attempt to revert local filesystem changes. Clients are
     /// responsible for undoing any edits on disk.
     ThreadRollback { num_turns: u32 },
+
+    /// Request Codex to drop the last N materialized app-server turns.
+    ///
+    /// Core resolves those turns to their exact rollout cutoff and model-visible
+    /// instruction boundaries under the rollback persistence barrier.
+    ThreadRollbackMaterialized {
+        num_turns: u32,
+        expected_start_turn_id: Option<String>,
+        expected_turn_count: Option<u32>,
+    },
 
     /// Request a code review from the agent.
     Review { review_request: ReviewRequest },
@@ -817,6 +882,9 @@ pub struct InterAgentCommunication {
     #[ts(optional)]
     pub internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
     pub trigger_turn: bool,
+    /// Hold this communication for the recipient's next turn instead of steering its active turn.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_to_next_turn: bool,
 }
 
 impl InterAgentCommunication {
@@ -836,6 +904,7 @@ impl InterAgentCommunication {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
+            defer_to_next_turn: false,
         }
     }
 
@@ -855,6 +924,7 @@ impl InterAgentCommunication {
             encrypted_content: Some(encrypted_content),
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
+            defer_to_next_turn: false,
         }
     }
 
@@ -939,8 +1009,10 @@ impl Op {
             Self::RealtimeConversationClose => "realtime_conversation_close",
             Self::RealtimeConversationListVoices => "realtime_conversation_list_voices",
             Self::TurnInput { .. } => "turn_input",
+            Self::UserInput { .. } => "user_input",
             Self::RecoverTurn { .. } => "recover_turn",
             Self::SuspendTurnAndShutdown { .. } => "suspend_turn_and_shutdown",
+            Self::AgentInput { .. } => "agent_input",
             Self::ThreadSettings { .. } => "thread_settings",
             Self::TurnSettings { .. } => "turn_settings",
             Self::InterAgentCommunication { .. } => "inter_agent_communication",
@@ -951,14 +1023,29 @@ impl Op {
             Self::RequestPermissionsResponse { .. } => "request_permissions_response",
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
             Self::RefreshMcpServers => "refresh_mcp_servers",
+            Self::ActivateMcpServer { .. } => "activate_mcp_server",
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact => "compact",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
-            Self::ThreadRollback { .. } => "thread_rollback",
+            Self::ThreadRollback { .. } | Self::ThreadRollbackMaterialized { .. } => {
+                "thread_rollback"
+            }
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
             Self::Shutdown => "shutdown",
             Self::RunUserShellCommand { .. } => "run_user_shell_command",
+        }
+    }
+}
+
+impl From<Vec<UserInput>> for Op {
+    fn from(items: Vec<UserInput>) -> Self {
+        Self::UserInput {
+            items,
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: BTreeMap::new(),
+            thread_settings: ThreadSettingsOverrides::default(),
         }
     }
 }
@@ -1396,6 +1483,9 @@ pub enum EventMsg {
 
     /// Conversation history was compacted (either automatically or manually).
     ContextCompacted(ContextCompactedEvent),
+
+    /// Transient progress update for a context compaction item.
+    ContextCompactionStatus(ContextCompactionStatusEvent),
 
     /// Conversation history was rolled back by dropping the last N user turns.
     ThreadRolledBack(ThreadRolledBackEvent),
@@ -1881,6 +1971,7 @@ pub enum CodexErrorInfo {
         turn_kind: NonSteerableTurnKind,
     },
     ThreadRollbackFailed,
+    ThreadRollbackCommitUnknown,
     Other,
 }
 
@@ -1888,7 +1979,9 @@ impl CodexErrorInfo {
     /// Whether this error should mark the current turn as failed when replaying history.
     pub fn affects_turn_status(&self) -> bool {
         match self {
-            Self::ThreadRollbackFailed | Self::ActiveTurnNotSteerable { .. } => false,
+            Self::ThreadRollbackFailed
+            | Self::ThreadRollbackCommitUnknown
+            | Self::ActiveTurnNotSteerable { .. } => false,
             Self::ContextWindowExceeded
             | Self::SessionBudgetExceeded
             | Self::UsageLimitExceeded
@@ -2142,6 +2235,19 @@ pub struct ContextCompactedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub message: Option<String>,
+    /// User-facing reason compacted-prompt decoding failed; compaction itself may still have succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub decode_error: Option<String>,
+    /// Skill names in the model-visible inventory installed after this compaction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_skills: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ContextCompactionStatusEvent {
+    pub item_id: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -2170,6 +2276,29 @@ pub struct TurnCompleteEvent {
     pub time_to_first_token_ms: Option<i64>,
 }
 
+/// Queue provenance for an admitted turn.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentQueueTurnMetadata {
+    pub queue_id: String,
+    pub source_thread_id: ThreadId,
+    /// Queue-entry handling after source-side persistence commits.
+    ///
+    /// An existing next-turn observation can still merge into the started turn. `None` keeps queue
+    /// provenance visible when this entry's handling degrades after target admission.
+    pub response_handling: Option<AgentQueueResponseHandling>,
+}
+
+/// Effective response handling for an admitted queued turn.
+///
+/// The enclosing queue metadata implies `q`; these fields describe the remaining live-turn
+/// handling.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentQueueResponseHandling {
+    pub commentary: bool,
+    pub final_delivery: AgentResponseFinalDelivery,
+    pub target_messages: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnStartedEvent {
     pub turn_id: String,
@@ -2185,6 +2314,10 @@ pub struct TurnStartedEvent {
     pub model_context_window: Option<i64>,
     #[serde(default)]
     pub collaboration_mode_kind: ModeKind,
+    /// Queue provenance and response handling bound to this exact admitted turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_queue: Option<AgentQueueTurnMetadata>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -3174,6 +3307,118 @@ impl<'de> Deserialize<'de> for SessionMetaLine {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum AgentResponseFinalDelivery {
+    /// No pending final-response handling remains.
+    None,
+    /// Persist and publish the final response to clients without adding it to model context.
+    PresentationOnly,
+    /// Add the final response to model context without starting a new turn.
+    #[default]
+    Passive,
+    /// Add the final response to model context and start a turn when the observer is idle.
+    Wake,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponseObservation {
+    pub observer_thread_id: ThreadId,
+    pub target_thread_id: ThreadId,
+    pub target_turn_id: Option<String>,
+    /// Exact admitted task retained for a later presentation-only to model-visible promotion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub task_preview: Option<String>,
+    /// Trusted task context committed atomically with a model-visibility policy promotion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub promoted_task_context: Option<AgentResponsePromotedTaskContext>,
+    pub pending_commentary: bool,
+    #[serde(default)]
+    pub commentary_after_sequences: Vec<u64>,
+    #[serde(default)]
+    pub commentary_admissions: Vec<AgentResponseCommentaryAdmission>,
+    pub commentary_delivery: Option<AgentResponseCommentaryDelivery>,
+    /// The target turn may send attributed input back to this observer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub target_messages: bool,
+    /// Deliver the final response as next-turn input instead of an active-turn steer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queue_delivery: bool,
+    /// Source wake turn consumed by the target-message grant, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message_wake_turn_id: Option<String>,
+    pub baseline_final_delivery: AgentResponseFinalDelivery,
+    pub final_delivery: AgentResponseFinalDelivery,
+    pub final_delivery_response_item_id: Option<ResponseItemId>,
+    #[serde(default)]
+    pub committed_delivery_response_item_ids: Vec<ResponseItemId>,
+}
+
+impl AgentResponseObservation {
+    /// Returns the trusted model-context task committed by this observation snapshot.
+    pub fn promoted_task_context_item(&self) -> Option<ResponseItem> {
+        self.promoted_task_context.as_ref().and_then(|item| {
+            is_user_agent_task_context_response_item_id(item.response_item_id.as_str()).then(|| {
+                ResponseItem::Message {
+                    id: Some(item.response_item_id.clone()),
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: item.text.clone(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+            })
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponsePromotedTaskContext {
+    pub response_item_id: ResponseItemId,
+    pub text: String,
+}
+
+impl AgentResponsePromotedTaskContext {
+    pub fn from_response_item(item: &ResponseItem) -> Option<Self> {
+        let ResponseItem::Message {
+            id: Some(response_item_id),
+            role,
+            content,
+            ..
+        } = item
+        else {
+            return None;
+        };
+        let [ContentItem::InputText { text }] = content.as_slice() else {
+            return None;
+        };
+        (role == "user" && is_user_agent_task_context_response_item_id(response_item_id.as_str()))
+            .then(|| Self {
+                response_item_id: response_item_id.clone(),
+                text: text.clone(),
+            })
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponseCommentaryAdmission {
+    pub minimum_event_sequence: u64,
+    pub after_item_id: Option<String>,
+    #[serde(default)]
+    pub canonical_boundary: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponseCommentaryDelivery {
+    pub source_item_id: String,
+    pub text: String,
+    pub response_item_id: ResponseItemId,
+}
 /// Persisted comparison state used to resume model-visible world-state diffing.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
 pub struct WorldStateItem {
@@ -3479,6 +3724,10 @@ pub struct ExecCommandBeginEvent {
     pub turn_id: String,
     #[serde(default)]
     pub started_at_ms: i64,
+    /// Unix timestamp in milliseconds when this command wait should report back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deadline_at_ms: Option<i64>,
     /// The command to be executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
@@ -3585,6 +3834,10 @@ pub struct TerminalInteractionEvent {
     pub process_id: String,
     /// Stdin sent to the running session.
     pub stdin: String,
+    /// Unix timestamp in milliseconds when this wait/poll should report back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deadline_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -3596,10 +3849,18 @@ pub struct DeprecationNoticeEvent {
     pub details: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ThreadRolledBackEvent {
-    /// Number of user turns that were removed from context.
+    /// Number of model-visible instruction boundaries that were removed from context.
     pub num_turns: u32,
+    /// Number of materialized app-server turns selected by the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub materialized_turns: Option<u32>,
+    /// Zero-based rollout item index where the removed suffix begins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub rollback_start_index: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -4307,12 +4568,20 @@ pub struct SubAgentActivityEvent {
     /// Canonical v2 path of the affected sub-agent.
     pub agent_path: AgentPath,
     pub kind: SubAgentActivityKind,
+    /// Plaintext or audited task text, when the configured delivery mode exposes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct CollabWaitingBeginEvent {
     #[serde(default)]
     pub started_at_ms: i64,
+    /// Unix timestamp in milliseconds when this wait should report back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deadline_at_ms: Option<i64>,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receivers.
@@ -4612,6 +4881,7 @@ mod tests {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn: true,
+            defer_to_next_turn: false,
         };
         communication.set_turn_id_if_missing("turn-1");
         let mut serialized_communication = communication.clone();
@@ -6181,12 +6451,14 @@ mod tests {
     }
 
     #[test]
-    fn serialize_context_compacted_event_with_summary() -> Result<()> {
+    fn serialize_context_compacted_event_with_payload() -> Result<()> {
         let event = Event {
             id: "compact-1".to_string(),
             msg: EventMsg::ContextCompacted(ContextCompactedEvent {
                 summary: Some("summary text".to_string()),
                 message: Some("full prompt text".to_string()),
+                decode_error: Some("decoder unavailable".to_string()),
+                available_skills: vec!["test-tui".to_string()],
             }),
         };
 
@@ -6196,6 +6468,8 @@ mod tests {
                 "type": "context_compacted",
                 "summary": "summary text",
                 "message": "full prompt text",
+                "decode_error": "decoder unavailable",
+                "available_skills": ["test-tui"],
             }
         });
 
@@ -6210,6 +6484,8 @@ mod tests {
             msg: EventMsg::ContextCompacted(ContextCompactedEvent {
                 summary: None,
                 message: None,
+                decode_error: None,
+                available_skills: Vec::new(),
             }),
         };
 

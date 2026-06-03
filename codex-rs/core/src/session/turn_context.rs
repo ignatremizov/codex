@@ -455,6 +455,13 @@ impl TurnContext {
             && self.config.orchestrator_mcp_enabled
     }
 
+    pub(crate) fn is_compact_subagent(&self) -> bool {
+        matches!(
+            &self.session_source,
+            SessionSource::SubAgent(SubAgentSource::Compact)
+        )
+    }
+
     pub(crate) async fn with_model(
         &self,
         model: String,
@@ -954,37 +961,48 @@ impl Session {
             ),
         };
         let plugins_input = per_turn_config.plugins_config_input();
-        let plugin_outcome = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&plugins_input)
-            .await;
-        let trusted_plugin_roots = TrustedPluginRoots::from_plugin_load_outcome(
-            &plugin_outcome,
-            per_turn_config.codex_home.as_path(),
-        );
-        let skills_snapshot = if per_turn_config
-            .features
-            .enabled(Feature::SkipHostSkillDiscovery)
-            && !self.services.extensions.requires_host_skill_discovery()
-        {
-            // Executor and orchestrator catalogs are supplied independently of host skills.
-            HostSkillsSnapshot::new(Arc::new(SkillLoadOutcome::default()))
+        let (skills_snapshot, trusted_plugin_roots) = if matches!(
+            &session_configuration.session_source,
+            SessionSource::SubAgent(SubAgentSource::Compact)
+        ) {
+            (
+                HostSkillsSnapshot::new(Arc::new(SkillLoadOutcome::default())),
+                TrustedPluginRoots::default(),
+            )
         } else {
-            let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
-            let plugin_skill_snapshots = self
+            let plugin_outcome = self
                 .services
                 .plugins_manager
-                .plugin_skill_snapshots_for_config(&plugins_input);
-            let skills_input =
-                skills_load_input_from_config(&per_turn_config, effective_skill_roots)
-                    .with_plugin_skill_snapshots(plugin_skill_snapshots);
-            let fs = primary_turn_environment
-                .map(|turn_environment| turn_environment.environment.get_filesystem());
-            self.services
-                .skills_service
-                .snapshot_for_config(&skills_input, fs)
-                .await
+                .plugins_for_config(&plugins_input)
+                .await;
+            let trusted_plugin_roots = TrustedPluginRoots::from_plugin_load_outcome(
+                &plugin_outcome,
+                per_turn_config.codex_home.as_path(),
+            );
+            let skills_snapshot = if per_turn_config
+                .features
+                .enabled(Feature::SkipHostSkillDiscovery)
+                && !self.services.extensions.requires_host_skill_discovery()
+            {
+                // Executor and orchestrator catalogs are supplied independently of host skills.
+                HostSkillsSnapshot::new(Arc::new(SkillLoadOutcome::default()))
+            } else {
+                let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
+                let plugin_skill_snapshots = self
+                    .services
+                    .plugins_manager
+                    .plugin_skill_snapshots_for_config(&plugins_input);
+                let skills_input =
+                    skills_load_input_from_config(&per_turn_config, effective_skill_roots)
+                        .with_plugin_skill_snapshots(plugin_skill_snapshots);
+                let fs = primary_turn_environment
+                    .map(|turn_environment| turn_environment.environment.get_filesystem());
+                self.services
+                    .skills_service
+                    .snapshot_for_config(&skills_input, fs)
+                    .await
+            };
+            (skills_snapshot, trusted_plugin_roots)
         };
         let step_settings = Arc::new(ResolvedStepSettings::new(
             Arc::clone(&session_configuration.step_settings),
