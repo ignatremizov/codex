@@ -139,7 +139,12 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         responses::ev_assistant_message("m3", "FINAL_REPLY"),
         responses::ev_completed_with_tokens("r3", /*total_tokens*/ 120),
     ]);
-    let responses_log = responses::mount_sse_sequence(&server, vec![sse1, sse2, sse3]).await;
+    let sse_handoff = responses::sse(vec![
+        responses::ev_assistant_message("handoff", "DECODED_REMOTE_HANDOFF"),
+        responses::ev_completed("resp-handoff"),
+    ]);
+    let responses_log =
+        responses::mount_sse_sequence(&server, vec![sse1, sse2, sse_handoff, sse3]).await;
 
     let compacted_history = vec![
         ResponseItem::Message {
@@ -217,14 +222,27 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         completed_summary,
         Some("REMOTE_COMPACT_SUMMARY".to_string())
     );
-    assert_eq!(completed_message, None);
+    assert_eq!(
+        completed_message,
+        Some("DECODED_REMOTE_HANDOFF".to_string())
+    );
 
     let compact_requests = compact_mock.requests();
     assert_eq!(compact_requests.len(), 1);
     assert_eq!(compact_requests[0].path(), "/v1/responses/compact");
 
     let response_requests = responses_log.requests();
-    assert_eq!(response_requests.len(), 3);
+    assert_eq!(response_requests.len(), 4);
+    assert_eq!(
+        response_requests[2].header("x-openai-subagent").as_deref(),
+        Some("compact")
+    );
+    assert!(
+        response_requests[2].body_contains_text(
+            "Repeat the compacted handoff content verbatim. Do not summarize, explain, or add any text."
+        ),
+        "handoff helper should receive the strict verbatim prompt"
+    );
     let turn_metadata = response_requests
         .iter()
         .map(|request| {
@@ -249,6 +267,15 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         );
         assert!(metadata.get("compaction").is_none());
     }
+    assert_eq!(turn_metadata[2]["subagent_kind"].as_str(), Some("compact"));
+    assert!(
+        turn_metadata[2]
+            .get("parent_thread_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "handoff helper should carry parent thread lineage"
+    );
+    assert!(turn_metadata[3].get("subagent_kind").is_none());
 
     let compact_metadata = compact_requests[0]
         .header("x-codex-turn-metadata")
@@ -270,7 +297,7 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         })
     );
     assert_eq!(
-        compact_metadata["turn_id"], turn_metadata[2]["turn_id"],
+        compact_metadata["turn_id"], turn_metadata[3]["turn_id"],
         "pre-turn compaction should carry the current turn id"
     );
     assert_eq!(

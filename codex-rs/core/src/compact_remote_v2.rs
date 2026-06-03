@@ -49,10 +49,17 @@ use tracing::info;
 
 // Mirror the current /responses/compact retained-message default while the
 // server-side path remains the reference implementation.
-const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
+const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 128_000;
 // Compact attempts can run much longer than normal turns, so keep the per-transport
 // retry budget smaller than the general Responses stream retry budget.
 const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
+
+#[derive(Clone, Copy)]
+struct CompactionRun {
+    trigger: CompactionTrigger,
+    reason: CompactionReason,
+    phase: CompactionPhase,
+}
 
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
@@ -61,15 +68,19 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     run_remote_compact_task_inner(
         &sess,
         &step_context,
         Some(client_session),
         initial_context_injection,
-        CompactionTrigger::Auto,
-        reason,
-        phase,
+        CompactionRun {
+            trigger: CompactionTrigger::Auto,
+            reason,
+            phase,
+        },
+        cancellation_token,
     )
     .await
 }
@@ -77,6 +88,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
 pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     // Standalone compaction is its own request boundary, so it captures a fresh step.
     let step_context = sess.capture_step_context(Arc::clone(&turn_context)).await;
@@ -94,9 +106,12 @@ pub(crate) async fn run_remote_compact_task(
         &step_context,
         /*client_session*/ None,
         InitialContextInjection::DoNotInject,
-        CompactionTrigger::Manual,
-        CompactionReason::UserRequested,
-        CompactionPhase::StandaloneTurn,
+        CompactionRun {
+            trigger: CompactionTrigger::Manual,
+            reason: CompactionReason::UserRequested,
+            phase: CompactionPhase::StandaloneTurn,
+        },
+        cancellation_token,
     )
     .await
 }
@@ -106,16 +121,15 @@ async fn run_remote_compact_task_inner(
     step_context: &Arc<StepContext>,
     client_session: Option<&mut ModelClientSession>,
     initial_context_injection: InitialContextInjection,
-    trigger: CompactionTrigger,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    run: CompactionRun,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let compaction_metadata = CompactionTurnMetadata::new(
-        trigger,
-        reason,
+        run.trigger,
+        run.reason,
         CompactionImplementation::ResponsesCompactionV2,
-        phase,
+        run.phase,
     );
     let mut analytics_details = CompactionAnalyticsDetails {
         active_context_tokens_before: Some(sess.get_total_token_usage().await),
@@ -124,13 +138,13 @@ async fn run_remote_compact_task_inner(
     let attempt = CompactionAnalyticsAttempt::begin(
         sess.as_ref(),
         turn_context.as_ref(),
-        trigger,
-        reason,
+        run.trigger,
+        run.reason,
         CompactionImplementation::ResponsesCompactionV2,
-        phase,
+        run.phase,
     )
     .await;
-    let pre_compact_outcome = run_pre_compact_hooks(sess, turn_context, trigger).await;
+    let pre_compact_outcome = run_pre_compact_hooks(sess, turn_context, run.trigger).await;
     match pre_compact_outcome {
         PreCompactHookOutcome::Continue => {}
         PreCompactHookOutcome::Stopped => {
@@ -153,12 +167,13 @@ async fn run_remote_compact_task_inner(
         initial_context_injection,
         compaction_metadata,
         &mut analytics_details,
+        cancellation_token,
     )
     .await;
     let status = compaction_status_from_result(&result);
     let codex_error = result.as_ref().err();
     if result.is_ok() {
-        let post_compact_outcome = run_post_compact_hooks(sess, turn_context, trigger).await;
+        let post_compact_outcome = run_post_compact_hooks(sess, turn_context, run.trigger).await;
         if let PostCompactHookOutcome::Stopped = post_compact_outcome {
             attempt
                 .track(sess.as_ref(), status, codex_error, analytics_details)
@@ -190,16 +205,17 @@ async fn run_remote_compact_task_inner_impl(
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
-    let context_compaction_item = ContextCompactionItem::new();
+    let mut context_compaction_item = ContextCompactionItem::new();
     let compaction_trace = sess.services.rollout_thread_trace.compaction_trace_context(
         turn_context.sub_id.as_str(),
         context_compaction_item.id.as_str(),
         turn_context.model_info.slug.as_str(),
         turn_context.provider.info().name.as_str(),
     );
-    let compaction_item = TurnItem::ContextCompaction(context_compaction_item);
+    let compaction_item = TurnItem::ContextCompaction(context_compaction_item.clone());
     sess.emit_turn_item_started(turn_context, &compaction_item)
         .await;
 
@@ -334,9 +350,20 @@ async fn run_remote_compact_task_inner_impl(
         replacement_history: &final_history,
     });
     sess.recompute_token_usage(turn_context).await;
-
-    sess.emit_turn_item_completed(turn_context, compaction_item)
+    context_compaction_item.message =
+        crate::compact_handoff_summary::summarize_remote_compaction_handoff(
+            sess,
+            turn_context,
+            &final_history,
+            cancellation_token,
+        )
         .await;
+
+    sess.emit_turn_item_completed(
+        turn_context,
+        TurnItem::ContextCompaction(context_compaction_item),
+    )
+    .await;
     Ok(())
 }
 

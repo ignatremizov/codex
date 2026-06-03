@@ -57,7 +57,9 @@ use crate::tasks::emit_compact_metric;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
+use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
+use crate::tools::registry::ToolRegistry;
 use crate::tools::router::ToolRouterParams;
 use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::router::ToolSuggestPresentation;
@@ -154,20 +156,26 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    let pre_sampling_compact =
-        match run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
-            Ok(pre_sampling_compact) => pre_sampling_compact,
-            Err(err) => {
-                if matches!(err, CodexErr::TurnAborted) {
-                    return Err(err);
-                }
-                let error = err.to_codex_protocol_error();
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                    .await;
-                error!("Failed to run pre-sampling compact");
-                return Ok(None);
+    let pre_sampling_compact = match run_pre_sampling_compact(
+        &sess,
+        &turn_context,
+        &mut client_session,
+        &cancellation_token,
+    )
+    .await
+    {
+        Ok(pre_sampling_compact) => pre_sampling_compact,
+        Err(err) => {
+            if matches!(err, CodexErr::TurnAborted) {
+                return Err(err);
             }
-        };
+            let error = err.to_codex_protocol_error();
+            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                .await;
+            error!("Failed to run pre-sampling compact");
+            return Ok(None);
+        }
+    };
     if pre_sampling_compact.reset_client_session {
         client_session.reset_websocket_session();
     }
@@ -179,24 +187,31 @@ pub(crate) async fn run_turn(
         sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
         turn_diff_display_roots(turn_context.as_ref()),
     );
-    let _ = sess.session_start_mcp_tools_for_exposure().await;
-    let queued_response_items = sess
-        .render_queued_mcp_server_use_context_for_turn(turn_context.as_ref())
-        .await;
-    if !queued_response_items.is_empty() {
-        sess.record_mcp_server_use_context_items(&turn_context, queued_response_items)
+    if !turn_context.is_compact_subagent() {
+        let _ = sess.session_start_mcp_tools_for_exposure().await;
+        let queued_response_items = sess
+            .render_queued_mcp_server_use_context_for_turn(turn_context.as_ref())
             .await;
+        if !queued_response_items.is_empty() {
+            sess.record_mcp_server_use_context_items(&turn_context, queued_response_items)
+                .await;
+        }
     }
 
-    let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
-        &sess,
-        first_step_context.as_ref(),
-        &input,
-        &cancellation_token,
-    )
-    .await
-    else {
-        return Ok(None);
+    let (injection_items, explicitly_enabled_connectors) = if turn_context.is_compact_subagent() {
+        (Vec::new(), HashSet::new())
+    } else {
+        let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
+            &sess,
+            first_step_context.as_ref(),
+            &input,
+            &cancellation_token,
+        )
+        .await
+        else {
+            return Ok(None);
+        };
+        (injection_items, explicitly_enabled_connectors)
     };
 
     if run_pending_session_start_hooks(&sess, &turn_context).await {
@@ -371,6 +386,7 @@ pub(crate) async fn run_turn(
                         InitialContextInjection::BeforeLastUserMessage(Arc::clone(&world_state)),
                         CompactionReason::ContextLimit,
                         CompactionPhase::MidTurn,
+                        &cancellation_token,
                     )
                     .await
                     {
@@ -827,9 +843,21 @@ async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<PreSamplingCompactResult> {
-    let mut reset_client_session =
-        maybe_run_previous_model_inline_compact(sess, turn_context, client_session).await?;
+    if turn_context.is_compact_subagent() {
+        return Ok(PreSamplingCompactResult {
+            reset_client_session: false,
+        });
+    }
+
+    let mut reset_client_session = maybe_run_previous_model_inline_compact(
+        sess,
+        turn_context,
+        client_session,
+        cancellation_token,
+    )
+    .await?;
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;
@@ -844,6 +872,7 @@ async fn run_pre_sampling_compact(
             InitialContextInjection::DoNotInject,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
+            cancellation_token,
         )
         .await?;
     }
@@ -870,6 +899,7 @@ async fn maybe_run_previous_model_inline_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     let Some(previous_turn_settings) = sess.previous_turn_settings().await else {
         return Ok(false);
@@ -896,6 +926,7 @@ async fn maybe_run_previous_model_inline_compact(
             InitialContextInjection::DoNotInject,
             CompactionReason::CompHashChanged,
             CompactionPhase::PreTurn,
+            cancellation_token,
         )
         .await;
     }
@@ -936,6 +967,7 @@ async fn maybe_run_previous_model_inline_compact(
             InitialContextInjection::DoNotInject,
             CompactionReason::ModelDownshift,
             CompactionPhase::PreTurn,
+            cancellation_token,
         )
         .await;
     }
@@ -954,6 +986,7 @@ async fn run_auto_compact(
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     let turn_context = &step_context.turn;
     if turn_context.config.features.enabled(Feature::TokenBudget) {
@@ -968,7 +1001,7 @@ async fn run_auto_compact(
         return Ok(true);
     }
 
-    if should_use_remote_compact_task(sess.as_ref(), &turn_context.provider) {
+    if should_use_remote_compact_task(sess.as_ref(), turn_context.provider.info()) {
         if turn_context
             .config
             .features
@@ -986,6 +1019,7 @@ async fn run_auto_compact(
                 initial_context_injection,
                 reason,
                 phase,
+                cancellation_token,
             )
             .await?;
             return Ok(false);
@@ -1002,6 +1036,7 @@ async fn run_auto_compact(
             initial_context_injection,
             reason,
             phase,
+            cancellation_token,
         )
         .await?;
     } else {
@@ -1213,6 +1248,13 @@ pub(crate) async fn built_tools(
     cancellation_token: &CancellationToken,
 ) -> CodexResult<Arc<ToolRouter>> {
     let turn_context = step_context.turn.as_ref();
+    if turn_context.is_compact_subagent() {
+        return Ok(Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools(Vec::<Arc<dyn CoreToolRuntime>>::new()),
+            Vec::new(),
+        )));
+    }
+
     let mcp_connection_manager = step_context.mcp.manager();
     let has_mcp_servers = mcp_connection_manager.has_servers();
     let all_mcp_tools = mcp_connection_manager
