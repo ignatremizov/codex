@@ -31,7 +31,6 @@ use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
-use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
@@ -48,6 +47,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     run_remote_compact_task_inner(
         &sess,
@@ -56,6 +56,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         CompactionTrigger::Auto,
         reason,
         phase,
+        cancellation_token,
     )
     .await?;
     Ok(())
@@ -64,6 +65,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
 pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_context.sub_id.clone(),
@@ -81,6 +83,7 @@ pub(crate) async fn run_remote_compact_task(
         CompactionTrigger::Manual,
         CompactionReason::UserRequested,
         CompactionPhase::StandaloneTurn,
+        cancellation_token,
     )
     .await?;
     Ok(())
@@ -93,6 +96,7 @@ async fn run_remote_compact_task_inner(
     trigger: CompactionTrigger,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let compaction_metadata = CompactionTurnMetadata::new(
         trigger,
@@ -135,6 +139,7 @@ async fn run_remote_compact_task_inner(
         initial_context_injection,
         compaction_metadata,
         &mut analytics_details,
+        cancellation_token,
     )
     .await;
     let status = compaction_status_from_result(&result);
@@ -168,6 +173,7 @@ async fn run_remote_compact_task_inner_impl(
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let mut context_compaction_item = ContextCompactionItem::new();
     // Use the UI compaction item ID as the trace compaction ID so protocol lifecycle events,
@@ -310,21 +316,20 @@ async fn run_remote_compact_task_inner_impl(
         replacement_history: &final_history,
     });
     sess.recompute_token_usage(turn_context).await;
+    let handoff_message = crate::compact_handoff_summary::summarize_remote_compaction_handoff(
+        sess,
+        turn_context,
+        &final_history,
+        cancellation_token,
+    )
+    .await;
 
     context_compaction_item.summary = summary.clone();
-    context_compaction_item.message = None;
+    context_compaction_item.message = handoff_message.clone();
 
     sess.emit_turn_item_completed(
         turn_context,
         TurnItem::ContextCompaction(context_compaction_item),
-    )
-    .await;
-    sess.send_event(
-        turn_context,
-        EventMsg::ContextCompacted(ContextCompactedEvent {
-            summary,
-            message: None,
-        }),
     )
     .await;
     Ok(())

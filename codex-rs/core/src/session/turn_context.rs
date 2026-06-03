@@ -202,6 +202,13 @@ impl TurnContext {
         self.features.apps_enabled_for_auth(uses_codex_backend)
     }
 
+    pub(crate) fn is_compact_subagent(&self) -> bool {
+        matches!(
+            &self.session_source,
+            SessionSource::SubAgent(SubAgentSource::Compact)
+        )
+    }
+
     pub(crate) fn tool_environment_mode(&self) -> ToolEnvironmentMode {
         ToolEnvironmentMode::from_count(self.environments.turn_environments.len())
     }
@@ -514,6 +521,7 @@ impl Session {
         cwd: AbsolutePathBuf,
         sub_id: String,
         skills_outcome: Arc<SkillLoadOutcome>,
+        goal_tools_supported: bool,
     ) -> TurnContext {
         let reasoning_effort = session_configuration.collaboration_mode.reasoning_effort();
         let reasoning_summary = session_configuration
@@ -786,21 +794,30 @@ impl Session {
                 .or(model_info.multi_agent_version)
                 .unwrap_or_else(|| per_turn_config.multi_agent_version_from_features()),
         };
-        let plugin_outcome = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&per_turn_config.plugins_config_input())
-            .await;
-        let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
-        let skills_input = skills_load_input_from_config(&per_turn_config, effective_skill_roots);
-        let fs = primary_turn_environment
-            .map(|turn_environment| turn_environment.environment.get_filesystem());
-        let skills_outcome = Arc::new(
-            self.services
-                .skills_manager
-                .skills_for_config(&skills_input, fs)
-                .await,
-        );
+        let skills_outcome = if matches!(
+            &session_configuration.session_source,
+            SessionSource::SubAgent(SubAgentSource::Compact)
+        ) {
+            Arc::new(SkillLoadOutcome::default())
+        } else {
+            let plugin_outcome = self
+                .services
+                .plugins_manager
+                .plugins_for_config(&per_turn_config.plugins_config_input())
+                .await;
+            let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
+            let skills_input =
+                skills_load_input_from_config(&per_turn_config, effective_skill_roots);
+            let fs = primary_turn_environment
+                .map(|turn_environment| turn_environment.environment.get_filesystem());
+            Arc::new(
+                self.services
+                    .skills_manager
+                    .skills_for_config(&skills_input, fs)
+                    .await,
+            )
+        };
+        let goal_tools_supported = !per_turn_config.ephemeral && self.state_db().is_some();
         let mut turn_context: TurnContext = Self::make_turn_context(
             self.thread_id(),
             self.session_id(),
@@ -829,6 +846,7 @@ impl Session {
             cwd,
             sub_id,
             skills_outcome,
+            goal_tools_supported,
         );
         turn_context.realtime_active = self.conversation.running_state().await.is_some();
 

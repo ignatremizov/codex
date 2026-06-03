@@ -451,8 +451,16 @@ async fn warm_plugins_and_skills_for_session_init(
     environment_manager: Arc<EnvironmentManager>,
     plugins_manager: Arc<PluginsManager>,
     skills_manager: Arc<SkillsManager>,
+    session_source: SessionSource,
     environments: Vec<TurnEnvironmentSelection>,
 ) -> Vec<SkillError> {
+    if matches!(
+        session_source,
+        SessionSource::SubAgent(SubAgentSource::Compact)
+    ) {
+        return Vec::new();
+    }
+
     let fs = crate::environment_selection::resolve_environment_selections(
         environment_manager.as_ref(),
         &environments,
@@ -643,6 +651,7 @@ impl Session {
             Arc::clone(&environment_manager),
             Arc::clone(&plugins_manager),
             Arc::clone(&skills_manager),
+            session_configuration.session_source.clone(),
             session_configuration.environment_selections().to_vec(),
         )
         .instrument(info_span!(
