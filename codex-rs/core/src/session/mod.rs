@@ -23,6 +23,7 @@ use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::context::ApprovalPromptContext;
 use crate::context::ApprovedCommandPrefixSaved;
+use crate::context::AvailablePluginsInstructions;
 use crate::context::AvailableSkillsInstructions;
 use crate::context::CollaborationModeInstructions;
 use crate::context::ContextualUserFragment;
@@ -542,10 +543,15 @@ impl Session {
         config
             .startup_warnings
             .extend(user_instruction_provider_warnings);
-        let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source) {
-            // Guardian review should rely on the built-in shell safety checks,
-            // not on caller-provided exec-policy rules that could shape the
-            // reviewer or silently auto-approve commands.
+        let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source)
+            || matches!(
+                &session_source,
+                SessionSource::SubAgent(SubAgentSource::Compact)
+            ) {
+            // Guardian review and compact handoff helpers should rely on the
+            // built-in shell safety checks, not on caller-provided exec-policy
+            // rules that could shape the subagent or silently auto-approve
+            // commands.
             Arc::new(ExecPolicyManager::default())
         } else if let Some(exec_policy) = &inherited_exec_policy {
             Arc::clone(exec_policy)
@@ -1840,7 +1846,7 @@ impl Session {
                 role: "developer".to_string(),
                 content: vec![ContentItem::InputText { text }],
                 phase: None,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             });
         }
         items
@@ -3613,6 +3619,7 @@ impl Session {
         world_state: &WorldState,
         mcp: &McpRuntimeSnapshot,
     ) -> Vec<ResponseItem> {
+        let compact_subagent = turn_context.is_compact_subagent();
         let mut developer_sections = Vec::<String>::with_capacity(8);
         let mut contextual_user_sections = Vec::<String>::with_capacity(2);
         let mut separate_developer_sections = Vec::<String>::new();
@@ -3742,69 +3749,78 @@ impl Session {
                 developer_sections.push(skills_instructions.render());
             }
         }
-        let loaded_plugins = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&turn_context.config.plugins_config_input())
-            .await;
-        let recommended_plugin_candidates =
-            if crate::tools::spec_plan::tool_suggest_enabled(turn_context) {
-                let auth = self.services.auth_manager.auth().await;
-                let plugins_config = turn_context.config.plugins_config_input();
-                self.services
-                    .plugins_manager
-                    .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
-                        plugins_config: &plugins_config,
-                        loaded_plugins: &loaded_plugins,
-                        auth: auth.as_ref(),
-                        disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
-                        app_server_client_name: turn_context.app_server_client_name.as_deref(),
+        if !compact_subagent {
+            let loaded_plugins = self
+                .services
+                .plugins_manager
+                .plugins_for_config(&turn_context.config.plugins_config_input())
+                .await;
+            let recommended_plugin_candidates =
+                if crate::tools::spec_plan::tool_suggest_enabled(turn_context) {
+                    let auth = self.services.auth_manager.auth().await;
+                    let plugins_config = turn_context.config.plugins_config_input();
+                    self.services
+                        .plugins_manager
+                        .recommended_plugin_candidates_for_config(
+                            RecommendedPluginCandidatesInput {
+                                plugins_config: &plugins_config,
+                                loaded_plugins: &loaded_plugins,
+                                auth: auth.as_ref(),
+                                disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
+                                app_server_client_name: turn_context
+                                    .app_server_client_name
+                                    .as_deref(),
+                            },
+                        )
+                        .await
+                } else {
+                    None
+                };
+            if let Some(recommended_plugins) = recommended_plugin_candidates
+                .as_deref()
+                .and_then(RecommendedPluginsInstructions::from_plugins)
+            {
+                contextual_user_sections.push(recommended_plugins.render());
+            }
+            if !loaded_plugins.capability_summaries().is_empty() {
+                developer_sections.push(AvailablePluginsInstructions.render());
+            }
+            let context_contributors = self.services.extensions.context_contributors().to_vec();
+            for contributor in &context_contributors {
+                for fragment in contributor
+                    .contribute_thread_context(
+                        &self.services.session_extension_data,
+                        &self.services.thread_extension_data,
+                    )
+                    .await
+                {
+                    push_prompt_fragment(
+                        fragment,
+                        &mut developer_sections,
+                        &mut contextual_user_sections,
+                        &mut separate_developer_sections,
+                    );
+                }
+            }
+            for contributor in &context_contributors {
+                for fragment in contributor
+                    .contribute_turn_context(TurnContextContributionInput {
+                        thread_id: self.thread_id(),
+                        turn_id: turn_context.sub_id.as_str(),
+                        session_store: &self.services.session_extension_data,
+                        thread_store: &self.services.thread_extension_data,
+                        turn_store: turn_context.extension_data.as_ref(),
+                        model_context_window: turn_context.model_context_window(),
                     })
                     .await
-            } else {
-                None
-            };
-        if let Some(recommended_plugins) = recommended_plugin_candidates
-            .as_deref()
-            .and_then(RecommendedPluginsInstructions::from_plugins)
-        {
-            contextual_user_sections.push(recommended_plugins.render());
-        }
-        let context_contributors = self.services.extensions.context_contributors().to_vec();
-        for contributor in &context_contributors {
-            for fragment in contributor
-                .contribute_thread_context(
-                    &self.services.session_extension_data,
-                    &self.services.thread_extension_data,
-                )
-                .await
-            {
-                push_prompt_fragment(
-                    fragment,
-                    &mut developer_sections,
-                    &mut contextual_user_sections,
-                    &mut separate_developer_sections,
-                );
-            }
-        }
-        for contributor in &context_contributors {
-            for fragment in contributor
-                .contribute_turn_context(TurnContextContributionInput {
-                    thread_id: self.thread_id(),
-                    turn_id: turn_context.sub_id.as_str(),
-                    session_store: &self.services.session_extension_data,
-                    thread_store: &self.services.thread_extension_data,
-                    turn_store: turn_context.extension_data.as_ref(),
-                    model_context_window: turn_context.model_context_window(),
-                })
-                .await
-            {
-                push_prompt_fragment(
-                    fragment,
-                    &mut developer_sections,
-                    &mut contextual_user_sections,
-                    &mut separate_developer_sections,
-                );
+                {
+                    push_prompt_fragment(
+                        fragment,
+                        &mut developer_sections,
+                        &mut contextual_user_sections,
+                        &mut separate_developer_sections,
+                    );
+                }
             }
         }
         // This is full-context metadata. Steady-state context diffs should not re-emit it.
