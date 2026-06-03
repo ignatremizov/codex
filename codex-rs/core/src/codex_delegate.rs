@@ -32,6 +32,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
+use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::new_guardian_review_id;
 use crate::guardian::routes_approval_to_guardian;
@@ -82,6 +83,32 @@ pub(crate) async fn run_codex_thread_interactive(
     subagent_source: SubAgentSource,
     initial_history: Option<InitialHistory>,
 ) -> Result<(Arc<Session>, SessionIo), CodexErr> {
+    run_codex_thread_interactive_with_environment_selections(
+        config,
+        auth_manager,
+        models_manager,
+        parent_session,
+        parent_ctx.clone(),
+        cancel_token,
+        subagent_source,
+        initial_history,
+        parent_ctx.environments.clone(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_codex_thread_interactive_with_environment_selections(
+    config: Config,
+    auth_manager: Arc<AuthManager>,
+    models_manager: SharedModelsManager,
+    parent_session: Arc<Session>,
+    parent_ctx: Arc<TurnContext>,
+    cancel_token: CancellationToken,
+    subagent_source: SubAgentSource,
+    initial_history: Option<InitialHistory>,
+    environment_selections: TurnEnvironmentSnapshot,
+) -> Result<(Arc<Session>, SessionIo), CodexErr> {
     let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (tx_ops, rx_ops) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     let conversation_history = initial_history.unwrap_or(InitialHistory::New);
@@ -117,11 +144,11 @@ pub(crate) async fn run_codex_thread_interactive(
         dynamic_tools: Vec::new(),
         metrics_service_name: None,
         user_shell_override: None,
-        inherited_environments: Some(parent_ctx.environments.clone()),
+        inherited_environments: Some(environment_selections.clone()),
         inherited_exec_policy: Some(Arc::clone(&parent_session.services.exec_policy)),
         parent_rollout_thread_trace: codex_rollout_trace::ThreadTraceContext::disabled(),
         parent_trace: None,
-        environment_selections: parent_ctx.environments.to_selections(),
+        environment_selections: environment_selections.to_selections(),
         thread_extension_init: codex_extension_api::ExtensionDataInit::default(),
         supports_openai_form_elicitation: parent_session
             .services
@@ -204,10 +231,41 @@ pub(crate) async fn run_codex_thread_one_shot(
     final_output_json_schema: Option<Value>,
     initial_history: Option<InitialHistory>,
 ) -> Result<(Arc<Session>, SessionIo), CodexErr> {
+    run_codex_thread_one_shot_with_environment_selections(
+        config,
+        auth_manager,
+        models_manager,
+        input,
+        parent_session,
+        parent_ctx.clone(),
+        cancel_token,
+        subagent_source,
+        final_output_json_schema,
+        initial_history,
+        parent_ctx.environments.clone(),
+    )
+    .await
+}
+
+/// Convenience wrapper for one-time use with explicit environment selections.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_codex_thread_one_shot_with_environment_selections(
+    config: Config,
+    auth_manager: Arc<AuthManager>,
+    models_manager: SharedModelsManager,
+    input: Vec<UserInput>,
+    parent_session: Arc<Session>,
+    parent_ctx: Arc<TurnContext>,
+    cancel_token: CancellationToken,
+    subagent_source: SubAgentSource,
+    final_output_json_schema: Option<Value>,
+    initial_history: Option<InitialHistory>,
+    environment_selections: TurnEnvironmentSnapshot,
+) -> Result<(Arc<Session>, SessionIo), CodexErr> {
     // Use a child token so we can stop the delegate after completion without
     // requiring the caller to cancel the parent token.
     let child_cancel = cancel_token.child_token();
-    let (session, io) = Box::pin(run_codex_thread_interactive(
+    let (session, io) = Box::pin(run_codex_thread_interactive_with_environment_selections(
         config,
         auth_manager,
         models_manager,
@@ -216,6 +274,7 @@ pub(crate) async fn run_codex_thread_one_shot(
         child_cancel.clone(),
         subagent_source,
         initial_history,
+        environment_selections,
     ))
     .await?;
 
