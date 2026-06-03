@@ -185,11 +185,52 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
         &output_closed_notify,
         &cancellation_token,
         /*pause_state*/ None,
-        Instant::now(),
+        Some(Instant::now()),
     )
     .await;
 
     assert_eq!(collected, b"late output");
+}
+
+#[tokio::test]
+async fn collect_output_without_deadline_waits_until_output_closes() {
+    let output_buffer = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+    let output_notify = Arc::new(Notify::new());
+    let output_closed = Arc::new(AtomicBool::new(false));
+    let output_closed_notify = Arc::new(Notify::new());
+    let cancellation_token = CancellationToken::new();
+
+    {
+        let output_buffer = Arc::clone(&output_buffer);
+        let output_notify = Arc::clone(&output_notify);
+        let output_closed = Arc::clone(&output_closed);
+        let output_closed_notify = Arc::clone(&output_closed_notify);
+        let cancellation_token = cancellation_token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            output_buffer
+                .lock()
+                .await
+                .push_chunk(b"unbounded output".to_vec());
+            output_notify.notify_waiters();
+            output_closed.store(true, Ordering::Release);
+            output_closed_notify.notify_waiters();
+            cancellation_token.cancel();
+        });
+    }
+
+    let collected = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output_buffer,
+        &output_notify,
+        &output_closed,
+        &output_closed_notify,
+        &cancellation_token,
+        /*pause_state*/ None,
+        /*deadline*/ None,
+    )
+    .await;
+
+    assert_eq!(collected, b"unbounded output");
 }
 
 #[tokio::test]

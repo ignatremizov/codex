@@ -293,7 +293,7 @@ pub struct ConfigToml {
     pub tool_output_token_limit: Option<usize>,
 
     /// Maximum poll window for background terminal output (`write_stdin`), in milliseconds.
-    /// Default: `300000` (5 minutes).
+    /// If unset, background terminal polls are unbounded.
     pub background_terminal_max_timeout: Option<u64>,
 
     /// Deprecated: ignored.
