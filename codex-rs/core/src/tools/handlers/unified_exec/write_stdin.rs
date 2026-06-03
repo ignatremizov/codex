@@ -42,7 +42,17 @@ impl WriteStdinArgs {
     }
 }
 
-pub struct WriteStdinHandler;
+pub struct WriteStdinHandler {
+    default_yield_time_ms: u64,
+}
+
+impl WriteStdinHandler {
+    pub(crate) fn new(default_yield_time_ms: u64) -> Self {
+        Self {
+            default_yield_time_ms,
+        }
+    }
+}
 
 impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
     fn tool_name(&self) -> ToolName {
@@ -50,7 +60,7 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_write_stdin_tool()
+        create_write_stdin_tool(self.default_yield_time_ms)
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
