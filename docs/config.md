@@ -114,6 +114,13 @@ When Codex knows which client started the turn, the legacy notify JSON payload a
 
 The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.
 
+## Remote Compaction Handoff
+
+Set `remote_compaction_handoff_model` to override the model used to decode
+remote compaction handoff text for display. When unset, Codex uses
+`gpt-5.3-codex-spark` if that model is available in the catalog, otherwise it
+falls back to the current turn model.
+
 ## Shell command timeout
 
 Set a default timeout (in milliseconds) for shell commands when `timeout_ms` is not provided:

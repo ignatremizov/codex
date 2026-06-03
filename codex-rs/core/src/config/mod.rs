@@ -666,6 +666,12 @@ pub struct Config {
     /// ARC.
     pub approvals_reviewer: ApprovalsReviewer,
 
+    /// Model used specifically to decode remote compaction handoff text for display.
+    pub remote_compaction_handoff_model: Option<String>,
+
+    /// Whether remote compaction should decode handoff text for display.
+    pub remote_compaction_handoff_enabled: bool,
+
     /// enforce_residency means web traffic cannot be routed outside of a
     /// particular geography. HTTP clients should direct their requests
     /// using backend-specific headers or URLs to enforce this.
@@ -3735,6 +3741,7 @@ impl Config {
             .map(AbsolutePathBuf::into_path_buf);
 
         let review_model = override_review_model.or(cfg.review_model);
+        let remote_compaction_handoff_model = cfg.remote_compaction_handoff_model;
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
@@ -3890,6 +3897,8 @@ impl Config {
             explicit_permission_profile_mode,
             custom_permission_profiles,
             approvals_reviewer: constrained_approvals_reviewer.value(),
+            remote_compaction_handoff_model,
+            remote_compaction_handoff_enabled: true,
             enforce_residency: enforce_residency.value,
             exec_command_timeout_ms,
             unified_exec_yield_time_ms,

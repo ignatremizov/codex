@@ -42,6 +42,7 @@ use codex_rollout_trace::InferenceTraceContext;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 #[path = "compact_remote_v2_attempt.rs"]
 mod attempt;
@@ -50,20 +51,35 @@ use attempt::run_remote_compact_v2_attempt;
 
 // Mirror the current /responses/compact retained-message default while the
 // server-side path remains the reference implementation.
-const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
+const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 128_000;
 // Compact attempts can run much longer than normal turns, so keep the per-transport
 // retry budget smaller than the general Responses stream retry budget.
 const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
 
+pub(crate) struct InlineRemoteAutoCompactTask<'a> {
+    pub(crate) sess: Arc<Session>,
+    pub(crate) step_context: Arc<StepContext>,
+    pub(crate) fallback_step_context: Option<Arc<StepContext>>,
+    pub(crate) client_session: &'a mut ModelClientSession,
+    pub(crate) initial_context_injection: InitialContextInjection,
+    pub(crate) reason: CompactionReason,
+    pub(crate) phase: CompactionPhase,
+    pub(crate) cancellation_token: &'a CancellationToken,
+}
+
 pub(crate) async fn run_inline_remote_auto_compact_task(
-    sess: Arc<Session>,
-    step_context: Arc<StepContext>,
-    fallback_step_context: Option<Arc<StepContext>>,
-    client_session: &mut ModelClientSession,
-    initial_context_injection: InitialContextInjection,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    task: InlineRemoteAutoCompactTask<'_>,
 ) -> CodexResult<()> {
+    let InlineRemoteAutoCompactTask {
+        sess,
+        step_context,
+        fallback_step_context,
+        client_session,
+        initial_context_injection,
+        reason,
+        phase,
+        cancellation_token,
+    } = task;
     let compaction_metadata = CompactionTurnMetadata::new(
         CompactionTrigger::Auto,
         reason,
@@ -77,6 +93,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         Some(client_session),
         initial_context_injection,
         compaction_metadata,
+        cancellation_token,
     )
     .await
 }
@@ -84,6 +101,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
 pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     // Standalone compaction is its own request boundary, so it captures a fresh step.
     let step_context = sess.capture_step_context(Arc::clone(&turn_context)).await;
@@ -109,6 +127,7 @@ pub(crate) async fn run_remote_compact_task(
         /*client_session*/ None,
         InitialContextInjection::DoNotInject,
         compaction_metadata,
+        cancellation_token,
     )
     .await
 }
@@ -120,6 +139,7 @@ async fn run_remote_compact_task_inner(
     client_session: Option<&mut ModelClientSession>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let trigger = compaction_metadata.trigger();
@@ -156,12 +176,15 @@ async fn run_remote_compact_task_inner(
         }
     }
     let result = run_remote_compact_task_inner_impl(
-        sess,
-        step_context,
-        fallback_step_context,
-        client_session,
-        initial_context_injection,
-        compaction_metadata,
+        RemoteCompactTask {
+            sess,
+            step_context,
+            fallback_step_context,
+            client_session,
+            initial_context_injection,
+            compaction_metadata,
+            cancellation_token,
+        },
         &mut analytics_details,
     )
     .await;
@@ -193,17 +216,31 @@ async fn run_remote_compact_task_inner(
     }
 }
 
-async fn run_remote_compact_task_inner_impl(
-    sess: &Arc<Session>,
-    step_context: &Arc<StepContext>,
-    fallback_step_context: Option<&Arc<StepContext>>,
-    mut client_session: Option<&mut ModelClientSession>,
+struct RemoteCompactTask<'a> {
+    sess: &'a Arc<Session>,
+    step_context: &'a Arc<StepContext>,
+    fallback_step_context: Option<&'a Arc<StepContext>>,
+    client_session: Option<&'a mut ModelClientSession>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
+    cancellation_token: &'a CancellationToken,
+}
+
+async fn run_remote_compact_task_inner_impl(
+    task: RemoteCompactTask<'_>,
     analytics_details: &mut CompactionAnalyticsDetails,
 ) -> CodexResult<()> {
+    let RemoteCompactTask {
+        sess,
+        step_context,
+        fallback_step_context,
+        mut client_session,
+        initial_context_injection,
+        compaction_metadata,
+        cancellation_token,
+    } = task;
     let turn_context = &step_context.turn;
-    let context_compaction_item = ContextCompactionItem::new();
+    let mut context_compaction_item = ContextCompactionItem::new();
     let compaction_id = context_compaction_item.id.clone();
     let compaction_trace = sess.services.rollout_thread_trace.compaction_trace_context(
         turn_context.sub_id.as_str(),
@@ -211,7 +248,7 @@ async fn run_remote_compact_task_inner_impl(
         turn_context.model_info.slug.as_str(),
         turn_context.provider.info().name.as_str(),
     );
-    let compaction_item = TurnItem::ContextCompaction(context_compaction_item);
+    let compaction_item = TurnItem::ContextCompaction(context_compaction_item.clone());
     sess.emit_turn_item_started(turn_context, &compaction_item)
         .await;
 
@@ -322,9 +359,20 @@ async fn run_remote_compact_task_inner_impl(
         replacement_history: &final_history,
     });
     sess.recompute_token_usage(compaction_turn_context).await;
-
-    sess.emit_turn_item_completed(compaction_turn_context, compaction_item)
+    context_compaction_item.message =
+        crate::compact_handoff_summary::summarize_remote_compaction_handoff(
+            sess,
+            compaction_turn_context,
+            &final_history,
+            cancellation_token,
+        )
         .await;
+
+    sess.emit_turn_item_completed(
+        compaction_turn_context,
+        TurnItem::ContextCompaction(context_compaction_item),
+    )
+    .await;
     Ok(())
 }
 
@@ -637,6 +685,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn build_v2_compacted_history_discards_messages_before_truncating() {
         let old = message("user", "old", /*phase*/ None);
         let new = message("user", "new", /*phase*/ None);
