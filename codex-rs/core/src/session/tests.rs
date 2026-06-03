@@ -10050,7 +10050,7 @@ async fn queued_response_items_for_next_turn_move_into_next_active_turn() {
             text: "queued before wake".to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     };
 
     sess.input_queue
@@ -10093,7 +10093,7 @@ async fn active_turn_mcp_use_defers_itself_and_later_pending_input_to_completion
             text: "before mcp".to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     };
     let mcp_use = ResponseItem::Message {
         id: None,
@@ -10106,7 +10106,7 @@ async fn active_turn_mcp_use_defers_itself_and_later_pending_input_to_completion
             .render(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     };
     let after_mcp = ResponseItem::Message {
         id: None,
@@ -10115,7 +10115,7 @@ async fn active_turn_mcp_use_defers_itself_and_later_pending_input_to_completion
             text: "after mcp".to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     };
 
     sess.inject_response_items(vec![before_mcp.clone(), mcp_use, after_mcp])
@@ -10169,7 +10169,7 @@ async fn interrupt_records_active_turn_mcp_use_before_clearing_pending_input() {
             .render(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     };
 
     sess.inject_response_items(vec![mcp_use.clone()])
@@ -10239,7 +10239,7 @@ async fn active_turn_completion_records_consecutive_mcp_use_blocks_without_wakin
                 .render(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         };
         sess.inject_response_items(vec![mcp_use])
             .await
@@ -10278,7 +10278,7 @@ async fn idle_interrupt_does_not_wake_queued_next_turn_items() {
             text: "queued before interrupt".to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     };
 
     sess.input_queue
