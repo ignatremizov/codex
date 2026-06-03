@@ -58,7 +58,7 @@ fn exec_command_tool_matches_expected_spec() {
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                    "Wait before yielding output. Defaults to configured unified_exec_yield_time_ms (10000 ms when unset); effective range is 250-30000 ms.".to_string(),
+                    "Initial wait before yielding output. This initial wait is clamped to 250-30000 ms.".to_string(),
                 )),
         ),
         (
@@ -130,7 +130,7 @@ fn write_stdin_tool_matches_expected_spec() {
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                "Wait before yielding output. Non-empty writes default to configured unified_exec_write_stdin_yield_time_ms (250 ms when unset) and cap at 30000 ms; empty polls wait at least 5000 ms and are uncapped by default.".to_string(),
+                "Wait before yielding output. Omit yield_time_ms for default; provide for long waits. Non-empty writes cap yield_time_ms at 30000 ms; empty polls wait at least 5000 ms and are not capped.".to_string(),
             )),
         ),
         (
