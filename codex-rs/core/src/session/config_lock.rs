@@ -140,7 +140,7 @@ fn save_config_resolved_fields(
     lock_config.include_collaboration_mode_instructions =
         Some(config.include_collaboration_mode_instructions);
     lock_config.include_environment_context = Some(config.include_environment_context);
-    lock_config.background_terminal_max_timeout = Some(config.background_terminal_max_timeout);
+    lock_config.background_terminal_max_timeout = config.background_terminal_max_timeout;
 
     // Feature aliases and feature configs need to be written in their resolved
     // form; otherwise replay can drift when a legacy key maps to the same

@@ -1148,6 +1148,54 @@ async fn config_defaults_unified_exec_yield_times_when_missing() -> std::io::Res
     Ok(())
 }
 
+#[tokio::test]
+async fn runtime_config_defaults_background_terminal_max_timeout_to_unbounded() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(cfg.background_terminal_max_timeout, None);
+}
+
+#[tokio::test]
+async fn runtime_config_uses_configured_background_terminal_max_timeout() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            background_terminal_max_timeout: Some(120_000),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(cfg.background_terminal_max_timeout, Some(120_000));
+}
+
+#[tokio::test]
+async fn runtime_config_clamps_background_terminal_max_timeout_to_empty_poll_minimum() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            background_terminal_max_timeout: Some(1),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(
+        cfg.background_terminal_max_timeout,
+        Some(crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS)
+    );
+}
+
 #[test]
 fn test_tui_vim_mode_default_defaults_to_false() {
     let toml = r#"
