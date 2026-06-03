@@ -67,7 +67,6 @@ pub(crate) const DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS: u64 = 250;
 // Minimum yield time for an empty `write_stdin`.
 pub(crate) const MIN_EMPTY_YIELD_TIME_MS: u64 = 5_000;
 pub(crate) const MAX_YIELD_TIME_MS: u64 = 30_000;
-pub(crate) const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 300_000;
 pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
@@ -134,22 +133,22 @@ impl ProcessStore {
 
 pub(crate) struct UnifiedExecProcessManager {
     process_store: Mutex<ProcessStore>,
-    max_write_stdin_yield_time_ms: u64,
+    max_write_stdin_yield_time_ms: Option<u64>,
 }
 
 impl UnifiedExecProcessManager {
-    pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
+    pub(crate) fn new(max_write_stdin_yield_time_ms: Option<u64>) -> Self {
         Self {
             process_store: Mutex::new(ProcessStore::default()),
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
-                .max(MIN_EMPTY_YIELD_TIME_MS),
+                .map(|timeout_ms| timeout_ms.max(MIN_EMPTY_YIELD_TIME_MS)),
         }
     }
 }
 
 impl Default for UnifiedExecProcessManager {
     fn default() -> Self {
-        Self::new(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS)
+        Self::new(/*max_write_stdin_yield_time_ms*/ None)
     }
 }
 
