@@ -45,6 +45,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 use ts_rs::TS;
 
+pub const CONTEXT_COMPACTION_DECODING_MESSAGE: &str = "Decoding";
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 #[serde(tag = "type")]

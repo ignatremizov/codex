@@ -28,6 +28,7 @@ use codex_analytics::CompactionTrigger;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::items::CONTEXT_COMPACTION_DECODING_MESSAGE;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::BaseInstructions;
@@ -45,6 +46,12 @@ use tracing::info;
 const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
     "Output exceeded the available model context and was truncated";
 
+struct CompactionRun {
+    trigger: CompactionTrigger,
+    reason: CompactionReason,
+    phase: CompactionPhase,
+}
+
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
@@ -59,9 +66,11 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         &step_context,
         Some(turn_state),
         initial_context_injection,
-        CompactionTrigger::Auto,
-        reason,
-        phase,
+        CompactionRun {
+            trigger: CompactionTrigger::Auto,
+            reason,
+            phase,
+        },
         cancellation_token,
     )
     .await?;
@@ -89,9 +98,11 @@ pub(crate) async fn run_remote_compact_task(
         &step_context,
         /*turn_state*/ None,
         InitialContextInjection::DoNotInject,
-        CompactionTrigger::Manual,
-        CompactionReason::UserRequested,
-        CompactionPhase::StandaloneTurn,
+        CompactionRun {
+            trigger: CompactionTrigger::Manual,
+            reason: CompactionReason::UserRequested,
+            phase: CompactionPhase::StandaloneTurn,
+        },
         cancellation_token,
     )
     .await?;
@@ -103,17 +114,15 @@ async fn run_remote_compact_task_inner(
     step_context: &Arc<StepContext>,
     turn_state: Option<Arc<OnceLock<String>>>,
     initial_context_injection: InitialContextInjection,
-    trigger: CompactionTrigger,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    run: CompactionRun,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let compaction_metadata = CompactionTurnMetadata::new(
-        trigger,
-        reason,
+        run.trigger,
+        run.reason,
         CompactionImplementation::ResponsesCompact,
-        phase,
+        run.phase,
     );
     let mut analytics_details = CompactionAnalyticsDetails {
         active_context_tokens_before: Some(sess.get_total_token_usage().await),
@@ -122,13 +131,13 @@ async fn run_remote_compact_task_inner(
     let attempt = CompactionAnalyticsAttempt::begin(
         sess.as_ref(),
         turn_context.as_ref(),
-        trigger,
-        reason,
+        run.trigger,
+        run.reason,
         CompactionImplementation::ResponsesCompact,
-        phase,
+        run.phase,
     )
     .await;
-    let pre_compact_outcome = run_pre_compact_hooks(sess, turn_context, trigger).await;
+    let pre_compact_outcome = run_pre_compact_hooks(sess, turn_context, run.trigger).await;
     match pre_compact_outcome {
         PreCompactHookOutcome::Continue => {}
         PreCompactHookOutcome::Stopped => {
@@ -157,7 +166,7 @@ async fn run_remote_compact_task_inner(
     let status = compaction_status_from_result(&result);
     let codex_error = result.as_ref().err();
     if result.is_ok() {
-        let post_compact_outcome = run_post_compact_hooks(sess, turn_context, trigger).await;
+        let post_compact_outcome = run_post_compact_hooks(sess, turn_context, run.trigger).await;
         if let PostCompactHookOutcome::Stopped = post_compact_outcome {
             attempt
                 .track(sess.as_ref(), status, codex_error, analytics_details)
@@ -340,6 +349,16 @@ async fn run_remote_compact_task_inner_impl(
         replacement_history: &final_history,
     });
     sess.recompute_token_usage(turn_context).await;
+    if crate::compact_handoff_summary::should_decode_remote_compaction_handoff(
+        turn_context.config.as_ref(),
+    ) {
+        sess.emit_transient_context_compaction_status(
+            turn_context,
+            context_compaction_item.id.clone(),
+            CONTEXT_COMPACTION_DECODING_MESSAGE.to_string(),
+        )
+        .await;
+    }
     let handoff_message = crate::compact_handoff_summary::summarize_remote_compaction_handoff(
         sess,
         turn_context,
