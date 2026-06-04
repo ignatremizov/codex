@@ -113,6 +113,7 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AdditionalContextEntry;
+use codex_protocol::protocol::ContextCompactionStatusEvent;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -1995,6 +1996,26 @@ impl Session {
                 started_at_ms: now_unix_timestamp_ms(),
             }),
         )
+        .await;
+    }
+
+    /// Emits a live-only compaction progress notification.
+    ///
+    /// Use this for transient UI progress labels that should not become part of
+    /// persisted replay.
+    pub(crate) async fn emit_transient_context_compaction_status(
+        &self,
+        turn_context: &TurnContext,
+        item_id: String,
+        message: String,
+    ) {
+        self.deliver_event_raw(Event {
+            id: turn_context.sub_id.clone(),
+            msg: EventMsg::ContextCompactionStatus(ContextCompactionStatusEvent {
+                item_id,
+                message,
+            }),
+        })
         .await;
     }
 
