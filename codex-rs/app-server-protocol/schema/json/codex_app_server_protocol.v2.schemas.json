@@ -4894,6 +4894,31 @@
       "title": "ContextCompactedNotification",
       "type": "object"
     },
+    "ContextCompactionStatusNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "itemId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "itemId",
+        "message",
+        "threadId",
+        "turnId"
+      ],
+      "title": "ContextCompactionStatusNotification",
+      "type": "object"
+    },
     "ConversationTextRole": {
       "enum": [
         "user",
@@ -12256,6 +12281,26 @@
             "params"
           ],
           "title": "Item/completedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "item/contextCompaction/status"
+              ],
+              "title": "Item/contextCompaction/statusNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ContextCompactionStatusNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Item/contextCompaction/statusNotification",
           "type": "object"
         },
         {

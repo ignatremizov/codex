@@ -1035,6 +1035,29 @@
       ],
       "type": "object"
     },
+    "ContextCompactionStatusNotification": {
+      "properties": {
+        "itemId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "itemId",
+        "message",
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
     "CreditsSnapshot": {
       "properties": {
         "balance": {
@@ -5867,6 +5890,26 @@
         "params"
       ],
       "title": "Item/completedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "item/contextCompaction/status"
+          ],
+          "title": "Item/contextCompaction/statusNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ContextCompactionStatusNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Item/contextCompaction/statusNotification",
       "type": "object"
     },
     {

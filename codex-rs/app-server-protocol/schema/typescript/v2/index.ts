@@ -86,6 +86,7 @@ export type { ConfigWriteResponse } from "./ConfigWriteResponse";
 export type { ConfiguredHookHandler } from "./ConfiguredHookHandler";
 export type { ConfiguredHookMatcherGroup } from "./ConfiguredHookMatcherGroup";
 export type { ContextCompactedNotification } from "./ContextCompactedNotification";
+export type { ContextCompactionStatusNotification } from "./ContextCompactionStatusNotification";
 export type { CreditsSnapshot } from "./CreditsSnapshot";
 export type { DeprecationNoticeNotification } from "./DeprecationNoticeNotification";
 export type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputContentItem";

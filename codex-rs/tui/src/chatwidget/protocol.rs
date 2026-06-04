@@ -78,6 +78,17 @@ impl ChatWidget {
             ServerNotification::ItemCompleted(notification) => {
                 self.handle_item_completed_notification(notification, replay_kind);
             }
+            ServerNotification::ContextCompactionStatus(notification) => {
+                if !from_replay
+                    && self.bottom_pane.is_task_running()
+                    && !notification.message.trim().is_empty()
+                {
+                    self.bottom_pane.ensure_status_indicator();
+                    self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Working;
+                    self.set_status_header(notification.message);
+                    self.request_redraw();
+                }
+            }
             ServerNotification::AgentMessageDelta(notification) => {
                 self.on_agent_message_delta(notification.delta);
             }
