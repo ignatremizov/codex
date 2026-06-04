@@ -37,14 +37,25 @@ struct HandoffModelSelection {
     reasoning_effort: Option<ReasoningEffort>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RemoteCompactionHandoff {
+    Skipped,
+    Decoded(String),
+    Failed(String),
+}
+
+pub(crate) fn should_decode_remote_compaction_handoff(config: &Config) -> bool {
+    config.remote_compaction_handoff_enabled && config.features.enabled(Feature::RemoteCompaction)
+}
+
 pub(crate) async fn summarize_remote_compaction_handoff(
     sess: &Arc<Session>,
     turn: &Arc<TurnContext>,
     installed_history: &[ResponseItemEnvelope],
     cancellation: &CancellationToken,
-) -> Option<String> {
-    if cancellation.is_cancelled() || !turn.config.remote_compaction_handoff_enabled {
-        return None;
+) -> RemoteCompactionHandoff {
+    if cancellation.is_cancelled() || !should_decode_remote_compaction_handoff(&turn.config) {
+        return RemoteCompactionHandoff::Skipped;
     }
     let catalog = sess
         .services
@@ -71,9 +82,10 @@ pub(crate) async fn summarize_remote_compaction_handoff(
         &catalog,
         &primary,
     );
+    let mut errors = Vec::new();
     for selection in std::iter::once(primary).chain(fallback) {
         if cancellation.is_cancelled() {
-            return None;
+            return RemoteCompactionHandoff::Skipped;
         }
         let result = async {
             let config = build_remote_compaction_handoff_config(&turn.config, &selection)?;
@@ -90,20 +102,26 @@ pub(crate) async fn summarize_remote_compaction_handoff(
                 .ok_or_else(|| anyhow::anyhow!("decoder returned no usable text"))
         }
         .await;
+        if cancellation.is_cancelled() {
+            return RemoteCompactionHandoff::Skipped;
+        }
         match result {
-            Ok(message) if !cancellation.is_cancelled() => return Some(message),
-            Ok(_) => return None,
+            Ok(message) => return RemoteCompactionHandoff::Decoded(message),
             Err(error) => {
                 tracing::warn!(turn_id = %turn.sub_id, model = %selection.model, %error,
                     "remote compaction handoff decoder failed");
+                errors.push(format!(
+                    "decoder model `{}` failed: {error:#}",
+                    selection.model
+                ));
                 if error.is::<crate::codex_delegate::compaction::DecoderWorkerLost>() {
                     // No actual termination evidence: never overlap another decoder actor.
-                    return None;
+                    break;
                 }
             }
         }
     }
-    None
+    RemoteCompactionHandoff::Failed(errors.join("\n"))
 }
 
 fn usable_handoff_message(message: String) -> Option<String> {

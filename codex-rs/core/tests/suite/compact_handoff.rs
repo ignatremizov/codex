@@ -17,12 +17,15 @@ use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
+use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CONTEXT_COMPACTION_DECODING_MESSAGE;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use codex_rollout::RolloutRecorder;
@@ -105,6 +108,7 @@ async fn remote_checkpoint_and_retained_inventory_are_independent_of_decoder(
     replies.push(responses::sse(vec![responses::ev_completed("followup")]));
     let mock = responses::mount_sse_sequence(&server, replies).await;
     let test = test_codex()
+        .with_history_mode(ThreadHistoryMode::Paginated)
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_cloud_config_bundle(
             CloudConfigBundleFixture::loader_with_enterprise_requirement(
@@ -168,35 +172,62 @@ async fn remote_checkpoint_and_retained_inventory_are_independent_of_decoder(
         .await?;
     test.submit_turn("seed").await?;
     test.codex.submit(Op::Compact).await?;
-    let completion = wait_for_event_with_timeout(
-        &test.codex,
-        |event| {
-            matches!(
-                event, EventMsg::ItemCompleted(completed)
-                    if matches!(completed.item, TurnItem::ContextCompaction(_))
-            )
+    let (started, statuses, completed) = timeout(Duration::from_secs(/*secs*/ 30), async {
+        let mut started = None;
+        let mut statuses = Vec::new();
+        loop {
+            let event = test.codex.next_event().await?;
+            match event.msg {
+                EventMsg::ItemStarted(item)
+                    if matches!(item.item, TurnItem::ContextCompaction(_)) =>
+                {
+                    started = Some(item);
+                }
+                EventMsg::ContextCompactionStatus(status) => {
+                    let started = started.as_ref().context("status follows item start")?;
+                    assert_eq!(event.id, started.turn_id);
+                    assert_eq!(status.item_id, started.item.id());
+                    statuses.push(status.message);
+                }
+                EventMsg::ItemCompleted(item)
+                    if matches!(item.item, TurnItem::ContextCompaction(_)) =>
+                {
+                    break Ok::<_, anyhow::Error>((started, statuses, item));
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .context("compaction completed")??;
+    let started = started.context("compaction started")?;
+    assert_eq!(
+        (completed.thread_id, &completed.turn_id, completed.item.id()),
+        (started.thread_id, &started.turn_id, started.item.id()),
+    );
+    assert_eq!(
+        statuses,
+        if matches!(outcome, DecoderOutcome::Disabled) {
+            Vec::new()
+        } else {
+            vec![CONTEXT_COMPACTION_DECODING_MESSAGE.to_string()]
         },
-        Duration::from_secs(/*secs*/ 30),
-    )
-    .await;
-    let EventMsg::ItemCompleted(completed) = completion else {
-        unreachable!()
-    };
+    );
     let TurnItem::ContextCompaction(compacted) = completed.item else {
         unreachable!()
     };
     assert_eq!(
-        (
-            compacted.summary,
-            compacted.message,
-            compacted.available_skills
-        ),
-        (
-            None,
-            matches!(outcome, DecoderOutcome::Primary | DecoderOutcome::Fallback)
+        serde_json::to_value(&compacted)?,
+        serde_json::to_value(ContextCompactionItem {
+            id: compacted.id.clone(),
+            summary: None,
+            message: matches!(outcome, DecoderOutcome::Primary | DecoderOutcome::Fallback)
                 .then(|| "DECODED_PRESENTATION".to_string()),
-            vec!["retained".to_string()],
-        ),
+            available_skills: vec!["retained".to_string()],
+            decode_error: matches!(outcome, DecoderOutcome::Failed).then(|| {
+                "decoder model `gpt-5.5` failed: decoder returned no usable text\ndecoder model `gpt-5.4` failed: decoder returned no text".to_string()
+            }),
+        })?,
     );
     let terminal = wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -279,6 +310,21 @@ async fn remote_checkpoint_and_retained_inventory_are_independent_of_decoder(
     // Reconstruct a fresh runtime from disk, retaining the selected executor identities.
     let environments = test.codex.environment_selections().await;
     let (history, _, _) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    assert!(!history.iter().any(|item| matches!(
+        item,
+        RolloutItem::EventMsg(EventMsg::ContextCompactionStatus(_))
+    )));
+    let persisted = history.iter().find_map(|item| match item {
+        RolloutItem::EventMsg(EventMsg::ItemCompleted(completed)) => match &completed.item {
+            TurnItem::ContextCompaction(item) => Some(item),
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!(
+        serde_json::to_value(persisted.context("durable compaction item")?)?,
+        serde_json::to_value(&compacted)?,
+    );
     let resumed = test
         .thread_manager
         .start_thread(StartThreadOptions {
@@ -314,6 +360,7 @@ async fn remote_checkpoint_and_retained_inventory_are_independent_of_decoder(
     );
     assert!(!cold.body_contains_text("DECODED_PRESENTATION"));
     assert!(!cold.body_contains_text(PROMPT));
+    assert!(!cold.body_contains_text("decoder model"));
     resumed.thread.shutdown_and_wait().await?;
     Ok(())
 }
@@ -352,6 +399,7 @@ async fn cancellation_during_decoder_preserves_installed_checkpoint_and_new_sett
     .collect();
     let mock = responses::mount_response_sequence(&server, replies).await;
     let test = test_codex()
+        .with_history_mode(ThreadHistoryMode::Paginated)
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
             config.remote_compaction_handoff_enabled = true;
@@ -410,6 +458,20 @@ async fn cancellation_during_decoder_preserves_installed_checkpoint_and_new_sett
     );
     assert!(!followup.body_contains_text("MUST_NOT_INSTALL"));
     test.codex.shutdown_and_wait().await?;
+    let (history, _, _) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    for item in history {
+        match item {
+            RolloutItem::EventMsg(EventMsg::ContextCompactionStatus(_)) => {
+                anyhow::bail!("transient decoding status was persisted");
+            }
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(completed)) => {
+                if let TurnItem::ContextCompaction(item) = completed.item {
+                    assert_eq!((item.message, item.decode_error), (None, None));
+                }
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 
@@ -488,6 +550,7 @@ async fn local_midturn_compaction_reports_the_reinjected_inventory() -> Result<(
         unreachable!()
     };
     assert_eq!(compacted.available_skills, vec!["retained".to_string()]);
+    assert_eq!(compacted.decode_error, None);
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

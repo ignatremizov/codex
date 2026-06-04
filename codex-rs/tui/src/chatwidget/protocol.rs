@@ -6,6 +6,19 @@ impl ChatWidget {
         notification: ServerNotification,
         replay_kind: Option<ReplayKind>,
     ) {
+        // A stale progress event must not even clear a current retry status.
+        if let ServerNotification::ContextCompactionStatus(status) = &notification
+            && (replay_kind.is_some()
+                || status.message.trim().is_empty()
+                || !self
+                    .thread_id()
+                    .is_some_and(|id| id.to_string() == status.thread_id)
+                || !self.status_state.compaction.as_ref().is_some_and(|active| {
+                    active.id == status.item_id && active.turn_id == status.turn_id
+                }))
+        {
+            return;
+        }
         // Reject misrouted child updates before shared notification handling mutates parent state.
         if let ServerNotification::McpServerStatusUpdated(notification) = &notification
             && let (Some(notification_thread_id), Some(thread_id)) =
@@ -380,6 +393,14 @@ impl ChatWidget {
             | ServerNotification::ProjectChanged(_)
             | ServerNotification::ThreadProjectUpdated(_) => {}
             ServerNotification::ContextCompacted(_) => {}
+            ServerNotification::ContextCompactionStatus(status) => {
+                if let Some(active) = &mut self.status_state.compaction {
+                    active.status_message = Some(status.message.clone());
+                    self.bottom_pane.ensure_status_indicator();
+                    self.set_status_header(status.message);
+                    self.request_redraw();
+                }
+            }
         }
         // Tool and hook activity can recreate a hidden row with its default
         // heading. Restore the selected status before that row is rendered.
@@ -553,7 +574,7 @@ impl ChatWidget {
                 } else {
                     Duration::ZERO
                 };
-                self.on_context_compaction_started(id, elapsed);
+                self.on_context_compaction_started(id, notification.turn_id, elapsed);
             }
             item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_started(item),
             ThreadItem::FileChange { id: _, changes, .. } => {

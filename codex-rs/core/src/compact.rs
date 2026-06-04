@@ -448,6 +448,7 @@ async fn run_compact_task_inner_impl(
     let mut completed_compaction_item = compaction_item;
     completed_compaction_item.summary = summary_for_event_text;
     completed_compaction_item.message = Some(summary_text);
+    completed_compaction_item.decode_error = None;
     completed_compaction_item.available_skills =
         crate::compact_skills_inventory::available_skill_names(&installed_history);
 

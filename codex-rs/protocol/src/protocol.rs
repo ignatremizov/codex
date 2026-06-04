@@ -1399,6 +1399,9 @@ pub enum EventMsg {
     /// Conversation history was compacted (either automatically or manually).
     ContextCompacted(ContextCompactedEvent),
 
+    /// Transient progress update for a context compaction item.
+    ContextCompactionStatus(ContextCompactionStatusEvent),
+
     /// Legacy persisted marker for dropping the last N user turns.
     /// Retained for replay of existing rollouts; live rollback operations are unsupported.
     ThreadRolledBack(ThreadRolledBackEvent),
@@ -2140,6 +2143,8 @@ pub struct SafetyBufferingEvent {
     pub faster_model: Option<String>,
 }
 
+pub const CONTEXT_COMPACTION_DECODING_MESSAGE: &str = "Decoding";
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ContextCompactedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2148,9 +2153,18 @@ pub struct ContextCompactedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub decode_error: Option<String>,
     /// Skill names in the model-visible inventory installed after this compaction.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub available_skills: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct ContextCompactionStatusEvent {
+    pub item_id: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -6338,6 +6352,7 @@ mod tests {
             id: "compact-1".to_string(),
             summary: Some("summary text".to_string()),
             message: Some("full prompt text".to_string()),
+            decode_error: None,
             available_skills: vec!["test-tui".to_string()],
         };
         let event = Event {
@@ -6366,6 +6381,7 @@ mod tests {
             msg: EventMsg::ContextCompacted(ContextCompactedEvent {
                 summary: None,
                 message: None,
+                decode_error: None,
                 available_skills: Vec::new(),
             }),
         };

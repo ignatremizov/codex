@@ -66,6 +66,7 @@ export type ContextCompactedEvent = {
   type: "context.compacted";
   summary: string | null;
   message: string | null;
+  decode_error: string | null;
   available_skills: string[];
 };
 

@@ -1245,6 +1245,7 @@ fn compaction_summary_cell_wraps_and_preserves_blank_lines() {
         "Context compacted".into(),
         Some("First line\n\nSecond line that is long".into()),
         /*message*/ None,
+        /*decode_error*/ None,
         /*show_compact_summary*/ true,
     );
     let rendered = render_lines(&cell.display_lines(/*width*/ 24));
@@ -1267,6 +1268,7 @@ fn compaction_summary_cell_handles_empty_summary() {
         "Context compacted".into(),
         Some("   ".into()),
         /*message*/ None,
+        /*decode_error*/ None,
         /*show_compact_summary*/ true,
     );
     let rendered = render_lines(&cell.display_lines(/*width*/ 40));
@@ -1280,6 +1282,7 @@ fn compaction_prompt_cell_wraps_and_preserves_blank_lines() {
         "Context compacted".into(),
         /*summary*/ None,
         Some("Prompt line\n\nMore detail".into()),
+        /*decode_error*/ None,
         /*show_compact_summary*/ true,
     );
     let rendered = render_lines(&cell.display_lines(/*width*/ 24));
@@ -1301,6 +1304,7 @@ fn compaction_prompt_cell_handles_empty_prompt() {
         "Context compacted".into(),
         /*summary*/ None,
         Some("   ".into()),
+        /*decode_error*/ None,
         /*show_compact_summary*/ true,
     );
     let rendered = render_lines(&cell.display_lines(/*width*/ 40));
@@ -1315,12 +1319,58 @@ fn compaction_raw_output_preserves_untrimmed_full_text() {
         "Context compacted".into(),
         Some("Short summary".into()),
         Some(message.into()),
+        /*decode_error*/ None,
         /*show_compact_summary*/ true,
     );
     let mut expected = vec![Line::from("• Context compacted")];
     expected.extend(raw_lines_from_source(message));
     assert_eq!(cell.raw_lines(), expected);
     assert!(cell.display_lines(/*width*/ 0).is_empty());
+}
+
+#[test]
+fn compaction_decode_error_retains_full_raw_text_when_content_is_hidden() {
+    let error = "first failure\n\n  indented detail  \nlast failure\n\n";
+    let cell = new_compaction(
+        "Context compacted".into(),
+        Some("hidden summary".into()),
+        Some("hidden prompt".into()),
+        Some(error.into()),
+        /*show_compact_summary*/ false,
+    );
+    let mut expected = vec![Line::from("• Context compacted")];
+    expected.extend(raw_lines_from_source(&format!(
+        "Compacted prompt decoding failed: {error}"
+    )));
+    assert_eq!(cell.raw_lines(), expected);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 45))
+        .into_iter()
+        .map(|line| line.trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @"
+    • Context compacted
+      Compacted prompt decoding failed: first
+      failure
+
+        indented detail
+      last failure
+    ");
+}
+
+#[test]
+fn whitespace_only_compaction_decode_error_keeps_normal_presentation() {
+    let cell = new_compaction(
+        "Context compacted".into(),
+        Some("summary".into()),
+        /*message*/ None,
+        Some(" \n ".into()),
+        /*show_compact_summary*/ true,
+    );
+    insta::assert_snapshot!(render_lines(&cell.display_lines(/*width*/ 80)).join("\n"), @"
+    • Context compacted
+      summary
+    ");
 }
 
 #[test]
