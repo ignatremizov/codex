@@ -1319,6 +1319,9 @@ pub enum EventMsg {
     /// Conversation history was compacted (either automatically or manually).
     ContextCompacted(ContextCompactedEvent),
 
+    /// Transient progress update for a context compaction item.
+    ContextCompactionStatus(ContextCompactionStatusEvent),
+
     /// Conversation history was rolled back by dropping the last N user turns.
     ThreadRolledBack(ThreadRolledBackEvent),
 
@@ -1961,6 +1964,12 @@ pub struct ContextCompactedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ContextCompactionStatusEvent {
+    pub item_id: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

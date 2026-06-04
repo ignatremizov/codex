@@ -992,7 +992,9 @@ pub(crate) async fn apply_bespoke_event_handling(
             );
             outgoing.send_server_notification(notification).await;
         }
-        msg @ (EventMsg::PatchApplyUpdated(_) | EventMsg::TerminalInteraction(_)) => {
+        msg @ (EventMsg::ContextCompactionStatus(_)
+        | EventMsg::PatchApplyUpdated(_)
+        | EventMsg::TerminalInteraction(_)) => {
             let notification = item_event_to_server_notification(
                 msg,
                 &conversation_id.to_string(),

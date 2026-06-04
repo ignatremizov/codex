@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::items::CONTEXT_COMPACTION_DECODING_MESSAGE;
 use pretty_assertions::assert_eq;
 
 const SAFETY_BUFFERING_HEADER_TEXT: &str =
@@ -648,6 +649,65 @@ async fn live_app_server_context_compaction_item_completed_renders_prompt() {
     assert!(rendered.contains("Compacted prompt"));
     assert!(rendered.contains("Prompt line 1"));
     assert!(rendered.contains("Prompt line 2"));
+}
+
+#[tokio::test]
+async fn live_app_server_context_compaction_decoding_updates_status_without_history() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: AppServerTurnStatus::InProgress,
+                error: None,
+                started_at: Some(0),
+                completed_at: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(chat.status_state.current_status.header, "Working");
+
+    chat.handle_server_notification(
+        ServerNotification::ContextCompactionStatus(
+            codex_app_server_protocol::ContextCompactionStatusNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "compact-1".to_string(),
+                message: CONTEXT_COMPACTION_DECODING_MESSAGE.to_string(),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(
+        chat.status_state.current_status.header,
+        CONTEXT_COMPACTION_DECODING_MESSAGE
+    );
+    assert!(drain_insert_history(&mut rx).is_empty());
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+                summary: Some("Decoded summary".to_string()),
+                message: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(chat.status_state.current_status.header, "Working");
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
 }
 
 #[tokio::test]

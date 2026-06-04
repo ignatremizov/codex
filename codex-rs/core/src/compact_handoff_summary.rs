@@ -43,7 +43,7 @@ pub(crate) async fn summarize_remote_compaction_handoff(
     new_history: &[ResponseItem],
     cancellation_token: &CancellationToken,
 ) -> Option<String> {
-    if !turn_context.config.remote_compaction_handoff_enabled {
+    if !should_decode_remote_compaction_handoff(turn_context.config.as_ref()) {
         return None;
     }
 
@@ -61,6 +61,10 @@ pub(crate) async fn summarize_remote_compaction_handoff(
             None
         }
     }
+}
+
+pub(crate) fn should_decode_remote_compaction_handoff(config: &Config) -> bool {
+    config.remote_compaction_handoff_enabled && config.features.enabled(Feature::RemoteCompaction)
 }
 
 async fn summarize_remote_compaction_handoff_inner(
