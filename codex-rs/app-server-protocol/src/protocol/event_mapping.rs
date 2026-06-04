@@ -7,6 +7,7 @@ use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
 use crate::protocol::v2::CommandExecutionOutputDeltaNotification;
+use crate::protocol::v2::ContextCompactionStatusNotification;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
 use crate::protocol::v2::FileChangePatchUpdatedNotification;
@@ -412,6 +413,14 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 item: item_completed_event.item.into(),
                 completed_at_ms: item_completed_event.completed_at_ms,
+            })
+        }
+        EventMsg::ContextCompactionStatus(event) => {
+            ServerNotification::ContextCompactionStatus(ContextCompactionStatusNotification {
+                thread_id,
+                turn_id,
+                item_id: event.item_id,
+                message: event.message,
             })
         }
         EventMsg::PatchApplyUpdated(event) => {
