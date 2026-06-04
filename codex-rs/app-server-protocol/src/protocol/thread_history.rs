@@ -369,6 +369,7 @@ impl ThreadHistoryBuilder {
             EventMsg::CollabResumeBegin(payload) => self.handle_collab_resume_begin(payload),
             EventMsg::CollabResumeEnd(payload) => self.handle_collab_resume_end(payload),
             EventMsg::ContextCompacted(payload) => self.handle_context_compacted(payload),
+            EventMsg::ContextCompactionStatus(_) => {}
             EventMsg::EnteredReviewMode(payload) => self.handle_entered_review_mode(payload),
             EventMsg::ExitedReviewMode(payload) => self.handle_exited_review_mode(payload),
             EventMsg::ItemStarted(payload) => self.handle_item_started(payload),
@@ -3660,6 +3661,9 @@ mod tests {
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: None,
+                window_number: None,
+                first_window_id: None,
+                previous_window_id: None,
                 window_id: None,
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
