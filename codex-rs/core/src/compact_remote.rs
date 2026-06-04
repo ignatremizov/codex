@@ -25,6 +25,7 @@ use codex_analytics::CompactionReason;
 use codex_analytics::CompactionTrigger;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::items::CONTEXT_COMPACTION_DECODING_MESSAGE;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::BaseInstructions;
@@ -344,6 +345,16 @@ async fn run_remote_compact_task_inner_impl(
         replacement_history: &final_history,
     });
     sess.recompute_token_usage(compaction_turn_context).await;
+    if crate::compact_handoff_summary::should_decode_remote_compaction_handoff(
+        compaction_turn_context.config.as_ref(),
+    ) {
+        sess.emit_transient_context_compaction_status(
+            compaction_turn_context,
+            context_compaction_item.id.clone(),
+            CONTEXT_COMPACTION_DECODING_MESSAGE.to_string(),
+        )
+        .await;
+    }
     let handoff_message = crate::compact_handoff_summary::summarize_remote_compaction_handoff(
         sess,
         compaction_turn_context,
