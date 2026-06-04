@@ -641,6 +641,7 @@ Use `thread/compact/start` to trigger manual history compaction for a thread. Th
 Progress is emitted as standard `turn/*` and `item/*` notifications on the same `threadId`. Clients should expect a single compaction item:
 
 - `item/started` with `item: { "type": "contextCompaction", ... }`
+- `item/contextCompaction/status` with a transient `message` such as `"Decoding"` when remote compaction enters a display-only handoff decode phase
 - `item/completed` with the same `contextCompaction` item id
 
 While compaction is running, the thread is effectively in a turn so clients should surface progress UI based on the notifications.
@@ -1325,6 +1326,7 @@ Today both notifications carry an empty `items` array even when item events were
 All items emit shared lifecycle events:
 
 - `item/started` — emits the full `item` when a new unit of work begins so the UI can render it immediately; the `item.id` in this payload matches the `itemId` used by deltas.
+- `item/contextCompaction/status` — emits transient context compaction progress `{threadId, turnId, itemId, message}` for live UI status only; do not persist it as final compaction text.
 - `item/completed` — sends the final `item` once that work itself finishes (for example, after a tool call or message completes); treat this as the authoritative execution/result state.
 - `item/autoApprovalReview/started` — [UNSTABLE] temporary auto-review notification carrying `{threadId, turnId, targetItemId, review, action}` when approval auto-review begins. This shape is expected to change soon.
 - `item/autoApprovalReview/completed` — [UNSTABLE] temporary auto-review notification carrying `{threadId, turnId, targetItemId, review, action}` when approval auto-review resolves. This shape is expected to change soon.
