@@ -18,6 +18,7 @@ fn compaction_started(id: &str) -> ServerNotification {
             summary: None,
             message: None,
             available_skills: Vec::new(),
+            decode_error: None,
         },
     })
 }
@@ -32,8 +33,231 @@ fn compaction_completed(id: &str) -> ServerNotification {
             summary: None,
             message: None,
             available_skills: Vec::new(),
+            decode_error: None,
         },
     })
+}
+
+fn compaction_status(
+    thread_id: &str,
+    turn_id: &str,
+    item_id: &str,
+    message: &str,
+) -> ServerNotification {
+    ServerNotification::ContextCompactionStatus(
+        codex_app_server_protocol::ContextCompactionStatusNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: turn_id.to_string(),
+            item_id: item_id.to_string(),
+            message: message.to_string(),
+        },
+    )
+}
+
+#[tokio::test]
+async fn decoding_status_preserves_timer_across_follow_up_and_duplicate_start() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    handle_turn_started(&mut chat, "turn-1");
+    chat.handle_server_notification(compaction_started("compact-1"), /*replay_kind*/ None);
+    let started_at = chat.status_state.compaction.as_ref().unwrap().started_at;
+    chat.handle_server_notification(
+        compaction_status(&thread_id.to_string(), "turn-1", "compact-1", "Decoding"),
+        /*replay_kind*/ None,
+    );
+    let rendered = normalize_compaction_snapshot(render_bottom_popup(&chat, /*width*/ 80));
+    insta::assert_snapshot!(rendered.lines().next().unwrap(), @"• Decoding (<elapsed> • esc to interrupt)");
+    chat.set_status_header("Working".to_string());
+    chat.handle_server_notification(compaction_started("compact-1"), /*replay_kind*/ None);
+    chat.handle_server_notification(
+        compaction_status(&thread_id.to_string(), "turn-1", "compact-1", "Decoding"),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(
+        (
+            chat.bottom_pane.status_widget().unwrap().header(),
+            chat.status_state.compaction.as_ref().unwrap().started_at,
+        ),
+        ("Decoding", started_at),
+    );
+    assert!(drain_insert_history(&mut rx).is_empty());
+    chat.handle_server_notification(compaction_completed("compact-1"), /*replay_kind*/ None);
+    assert!(chat.status_state.compaction.is_none());
+    assert_eq!(
+        chat.bottom_pane.status_widget().unwrap().header(),
+        "Working"
+    );
+    assert_eq!(drain_insert_history(&mut rx).len(), 1);
+    chat.handle_server_notification(
+        compaction_status(&thread_id.to_string(), "turn-1", "compact-1", "Decoding"),
+        /*replay_kind*/ None,
+    );
+    assert!(chat.status_state.compaction.is_none());
+    assert_eq!(
+        chat.bottom_pane.status_widget().unwrap().header(),
+        "Working"
+    );
+    assert!(drain_insert_history(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn invalid_decoding_status_cannot_clear_retry_or_change_active_compaction() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    handle_turn_started(&mut chat, "turn-1");
+    chat.handle_server_notification(compaction_started("compact-1"), /*replay_kind*/ None);
+    chat.handle_server_notification(
+        compaction_status(&thread_id.to_string(), "turn-1", "compact-1", "Decoding"),
+        /*replay_kind*/ None,
+    );
+    let started_at = chat.status_state.compaction.as_ref().unwrap().started_at;
+    chat.handle_server_notification(
+        ServerNotification::Error(ErrorNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "turn-1".into(),
+            will_retry: true,
+            error: codex_app_server_protocol::TurnError {
+                message: "Reconnecting".into(),
+                codex_error_info: None,
+                additional_details: None,
+                misalignment: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    for (thread, turn, item, message, replay) in [
+        (
+            "other-thread".to_string(),
+            "turn-1",
+            "compact-1",
+            "Decoding",
+            None,
+        ),
+        (
+            thread_id.to_string(),
+            "other-turn",
+            "compact-1",
+            "Decoding",
+            None,
+        ),
+        (
+            thread_id.to_string(),
+            "turn-1",
+            "other-item",
+            "Decoding",
+            None,
+        ),
+        (thread_id.to_string(), "turn-1", "compact-1", " \n ", None),
+        (
+            thread_id.to_string(),
+            "turn-1",
+            "compact-1",
+            "Decoding",
+            Some(ReplayKind::ThreadSnapshot),
+        ),
+        (
+            thread_id.to_string(),
+            "turn-1",
+            "compact-1",
+            "Decoding",
+            Some(ReplayKind::ResumeInitialMessages),
+        ),
+    ] {
+        chat.handle_server_notification(compaction_status(&thread, turn, item, message), replay);
+        assert_eq!(
+            (
+                chat.bottom_pane.status_widget().unwrap().header(),
+                chat.status_state.compaction.as_ref().unwrap().started_at,
+                chat.status_state
+                    .compaction
+                    .as_ref()
+                    .unwrap()
+                    .status_message
+                    .as_deref(),
+            ),
+            ("Reconnecting", started_at, Some("Decoding")),
+        );
+    }
+    chat.handle_server_notification(compaction_started("compact-1"), /*replay_kind*/ None);
+    assert_eq!(
+        chat.bottom_pane.status_widget().unwrap().header(),
+        "Decoding"
+    );
+    assert!(drain_insert_history(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn replayed_completion_for_other_turn_preserves_decoding_timer() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    handle_turn_started(&mut chat, "turn-1");
+    chat.handle_server_notification(compaction_started("compact-1"), /*replay_kind*/ None);
+    chat.handle_server_notification(
+        compaction_status(&thread_id.to_string(), "turn-1", "compact-1", "Decoding"),
+        /*replay_kind*/ None,
+    );
+    let started_at = chat.status_state.compaction.as_ref().unwrap().started_at;
+    let ServerNotification::ItemCompleted(mut completed) = compaction_completed("compact-1") else {
+        unreachable!();
+    };
+    completed.turn_id = "older-turn".into();
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(completed),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    assert_eq!(
+        (
+            chat.bottom_pane.status_widget().unwrap().header(),
+            chat.status_state.compaction.as_ref().unwrap().started_at,
+        ),
+        ("Decoding", started_at),
+    );
+    let lines = drain_insert_history(&mut rx)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    insta::assert_snapshot!(lines_to_single_string(&lines), @"• Context compacted");
+}
+
+#[tokio::test]
+async fn decoding_status_clears_on_terminal_turn_without_completion() {
+    for status in [
+        AppServerTurnStatus::Interrupted,
+        AppServerTurnStatus::Failed,
+    ] {
+        let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        let thread_id = ThreadId::new();
+        chat.thread_id = Some(thread_id);
+        handle_turn_started(&mut chat, "turn-1");
+        chat.handle_server_notification(compaction_started("compact-1"), /*replay_kind*/ None);
+        chat.handle_server_notification(
+            compaction_status(&thread_id.to_string(), "turn-1", "compact-1", "Decoding"),
+            /*replay_kind*/ None,
+        );
+        chat.handle_server_notification(
+            ServerNotification::TurnCompleted(TurnCompletedNotification {
+                thread_id: thread_id.to_string(),
+                turn: app_server_turn(
+                    "turn-1", status, /*duration_ms*/ None, /*error*/ None,
+                ),
+            }),
+            /*replay_kind*/ None,
+        );
+        chat.handle_server_notification(
+            compaction_status(&thread_id.to_string(), "turn-1", "compact-1", "Decoding"),
+            /*replay_kind*/ None,
+        );
+        assert!(chat.status_state.compaction.is_none());
+        assert!(!chat.bottom_pane.status_indicator_visible());
+        let lines = drain_insert_history(&mut rx)
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        assert!(!lines_to_single_string(&lines).contains("Decoding"));
+    }
 }
 
 #[tokio::test]
@@ -51,6 +275,7 @@ async fn compaction_payload_keeps_live_duration_and_full_detail() {
         summary: Some("Short summary".into()),
         message: Some("Full prompt\n\nLast line".into()),
         available_skills: vec!["test-tui".into()],
+        decode_error: None,
     };
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(completed),
@@ -81,6 +306,7 @@ async fn compaction_empty_message_falls_back_to_summary() {
         summary: Some("Retained summary".into()),
         message: Some(" \n ".into()),
         available_skills: Vec::new(),
+        decode_error: None,
     };
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(completed),

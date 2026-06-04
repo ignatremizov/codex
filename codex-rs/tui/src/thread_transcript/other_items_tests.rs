@@ -34,6 +34,7 @@ async fn cold_compaction_projection_respects_preference_and_preserves_detail() -
         summary: Some("Short summary".into()),
         message: Some("Prompt line 1\n\nPrompt line 2".into()),
         available_skills: vec!["test-tui".into()],
+        decode_error: None,
     };
     let mut rendered = Vec::new();
     // No config follows the effective default; explicit opt-out hides all details.
@@ -64,6 +65,42 @@ async fn cold_compaction_projection_respects_preference_and_preserves_detail() -
     • Context compacted
     ");
     Ok(())
+}
+
+#[test]
+fn cold_compaction_decode_error_is_visible_with_content_hidden() {
+    let cwd = test_path_buf("/workspace").abs();
+    let mut rendered = Vec::new();
+    for show_compact_summary in [true, false] {
+        let projected = cells(
+            ThreadItem::ContextCompaction {
+                id: "compact-1".into(),
+                summary: Some("summary".into()),
+                message: Some("full prompt".into()),
+                available_skills: vec!["test-tui".into()],
+                decode_error: Some("Decoder unavailable.".into()),
+            },
+            &cwd,
+            show_compact_summary,
+        );
+        assert_eq!(projected.len(), 1);
+        rendered.push(
+            projected[0]
+                .display_lines(/*width*/ 80)
+                .into_iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    insta::assert_snapshot!(rendered.join("\n---\n"), @"
+    • Context compacted
+      Compacted prompt decoding failed: Decoder unavailable.
+      full prompt
+    ---
+    • Context compacted
+      Compacted prompt decoding failed: Decoder unavailable.
+    ");
 }
 
 #[test]
@@ -218,6 +255,7 @@ fn tool_and_notice_projection_uses_normal_transcript_presentation() {
             summary: None,
             message: None,
             available_skills: Vec::new(),
+            decode_error: None,
         },
     ];
     let rendered = items

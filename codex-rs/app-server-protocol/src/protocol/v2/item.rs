@@ -423,10 +423,21 @@ pub enum ThreadItem {
         id: String,
         summary: Option<String>,
         message: Option<String>,
+        decode_error: Option<String>,
         /// Skill names in the model-visible inventory installed after this compaction.
         #[serde(default)]
         available_skills: Vec<String>,
     },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ContextCompactionStatusNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub message: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -1059,6 +1070,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 id: compaction.id,
                 summary: compaction.summary,
                 message: compaction.message,
+                decode_error: compaction.decode_error,
                 available_skills: compaction.available_skills,
             },
         }

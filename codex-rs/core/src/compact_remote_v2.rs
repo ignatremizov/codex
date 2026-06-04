@@ -11,6 +11,9 @@ use crate::compact::InitialContextInjection;
 use crate::compact::build_compaction_initial_context;
 use crate::compact::compaction_status_from_result;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
+use crate::compact_handoff_summary::RemoteCompactionHandoff;
+use crate::compact_handoff_summary::should_decode_remote_compaction_handoff;
+use crate::compact_handoff_summary::summarize_remote_compaction_handoff;
 use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::compact_remote_history::HistoryItemGroup;
@@ -48,6 +51,7 @@ use codex_protocol::models::ContentItem;
 #[cfg(test)]
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CONTEXT_COMPACTION_DECODING_MESSAGE;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TruncationPolicy;
@@ -396,14 +400,32 @@ async fn run_remote_compact_task_inner_impl(
 
     context_compaction_item.available_skills =
         crate::compact_skills_inventory::available_skill_names(&installed_history);
-    context_compaction_item.message =
-        crate::compact_handoff_summary::summarize_remote_compaction_handoff(
-            sess,
+    if !cancellation.is_cancelled()
+        && should_decode_remote_compaction_handoff(&compaction_turn_context.config)
+    {
+        sess.emit_transient_context_compaction_status(
             compaction_turn_context,
-            &installed_history,
-            cancellation,
+            context_compaction_item.id.clone(),
+            CONTEXT_COMPACTION_DECODING_MESSAGE.to_string(),
         )
         .await;
+    }
+    match summarize_remote_compaction_handoff(
+        sess,
+        compaction_turn_context,
+        &installed_history,
+        cancellation,
+    )
+    .await
+    {
+        RemoteCompactionHandoff::Skipped => {}
+        RemoteCompactionHandoff::Decoded(message) => {
+            context_compaction_item.message = Some(message);
+        }
+        RemoteCompactionHandoff::Failed(error) => {
+            context_compaction_item.decode_error = Some(error);
+        }
+    }
     sess.emit_turn_item_completed(
         compaction_turn_context,
         TurnItem::ContextCompaction(context_compaction_item),

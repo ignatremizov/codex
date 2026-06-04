@@ -77,6 +77,7 @@ impl ContextCompactionItem {
         EventMsg::ContextCompacted(ContextCompactedEvent {
             summary: self.summary.clone(),
             message: self.message.clone(),
+            decode_error: self.decode_error.clone(),
             available_skills: self.available_skills.clone(),
         })
     }

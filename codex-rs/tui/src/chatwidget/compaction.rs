@@ -9,20 +9,25 @@ pub(super) const COMPACTION_DETAILS: &str = "Making room to continue.";
 #[derive(Debug)]
 pub(super) struct ActiveCompaction {
     pub(super) id: String,
+    pub(super) turn_id: String,
     pub(super) started_at: Instant,
+    pub(super) status_message: Option<String>,
 }
 
 impl ChatWidget {
     pub(super) fn on_context_compaction_completed(
         &mut self,
         id: &str,
+        turn_id: &str,
         from_replay: bool,
         summary: Option<String>,
         message: Option<String>,
+        decode_error: Option<String>,
     ) {
         let mut header = "Context compacted".to_string();
         if let Some(active) = self.status_state.compaction.as_ref()
             && active.id == id
+            && active.turn_id == turn_id
         {
             if !from_replay {
                 let elapsed = crate::status_indicator_widget::fmt_elapsed_compact(
@@ -36,24 +41,35 @@ impl ChatWidget {
             header,
             summary,
             message,
+            decode_error,
             self.local_settings.tui.show_compact_summary,
         ));
         self.request_redraw();
     }
 
-    pub(super) fn on_context_compaction_started(&mut self, id: String, elapsed: Duration) {
+    pub(super) fn on_context_compaction_started(
+        &mut self,
+        id: String,
+        turn_id: String,
+        elapsed: Duration,
+    ) {
         if self
             .status_state
             .compaction
             .as_ref()
-            .is_some_and(|active| active.id == id)
+            .is_some_and(|active| active.id == id && active.turn_id == turn_id)
         {
             return;
         }
         self.flush_answer_stream_with_separator();
         let now = Instant::now();
         let started_at = now.checked_sub(elapsed).unwrap_or(now);
-        self.status_state.compaction = Some(ActiveCompaction { id, started_at });
+        self.status_state.compaction = Some(ActiveCompaction {
+            id,
+            turn_id,
+            started_at,
+            status_message: None,
+        });
         self.bottom_pane.set_status_timer_origin(Some(started_at));
         self.bottom_pane.ensure_status_indicator();
         self.set_status_header(COMPACTION_HEADER.to_string());

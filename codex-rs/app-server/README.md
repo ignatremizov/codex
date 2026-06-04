@@ -167,8 +167,8 @@ these values rather than message text. Native diagnostic payloads stay private.
 
 ## Completed context compaction
 
-Completed `contextCompaction` items include nullable `summary` and `message` fields
-and an `availableSkills` string array. The summary is the compacted text when
+Completed `contextCompaction` items include nullable `summary`, `message`, and
+`decodeError` fields and an `availableSkills` string array. The summary is the compacted text when
 available. For local compaction, the message is the complete compacted prompt;
 for remote compaction, it is the display-only decoding of the installed handoff.
 Decoded text never replaces the authoritative model history. Started items and
@@ -177,6 +177,15 @@ older saved history can have null text payloads; an omitted historical
 model-visible skill names in the installed history, not newly activated skills.
 Render the canonical `item/completed` item once; the deprecated `thread/compacted`
 notification is not a second completion.
+
+Remote handoff decoding sends a live-only `item/contextCompaction/status`
+notification with `threadId`, `turnId`, `itemId`, and a `message` such as `Decoding`.
+Apply it only to the matching active compaction; it does not start a new item,
+reset its elapsed time, or appear in persisted replay. A decoder failure is
+reported by `decodeError` on the completed item without undoing successful
+compaction. Historical items lacking this field deserialize as null. Cancellation
+and intentionally skipped decoding are not failures. Clients should show this
+diagnostic even when compacted text is hidden.
 
 Local compaction uses a 15-minute response deadline, an output limit of half the
 model context window when known, and bounded session metadata appended to its

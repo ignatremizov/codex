@@ -486,12 +486,14 @@ impl EventProcessorWithJsonOutput {
                     ThreadItem::ContextCompaction {
                         summary,
                         message,
+                        decode_error,
                         available_skills,
                         ..
                     } => {
                         events.push(ThreadEvent::ContextCompacted(ContextCompactedEvent {
                             summary,
                             message,
+                            decode_error,
                             available_skills,
                         }));
                     }
