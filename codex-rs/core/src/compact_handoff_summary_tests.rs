@@ -123,6 +123,26 @@ fn usable_handoff_message_rejects_prompt_echo() {
     );
 }
 
+#[tokio::test]
+async fn handoff_decode_requires_remote_compaction_feature() {
+    let mut config = crate::config::test_config().await;
+    config.remote_compaction_handoff_enabled = true;
+    config
+        .features
+        .disable(Feature::RemoteCompaction)
+        .expect("disable remote compaction");
+    assert!(!should_decode_remote_compaction_handoff(&config));
+
+    config
+        .features
+        .enable(Feature::RemoteCompaction)
+        .expect("enable remote compaction");
+    assert!(should_decode_remote_compaction_handoff(&config));
+
+    config.remote_compaction_handoff_enabled = false;
+    assert!(!should_decode_remote_compaction_handoff(&config));
+}
+
 #[test]
 fn handoff_initial_history_appends_instruction_after_new_history() {
     let summary = ResponseItem::Message {
