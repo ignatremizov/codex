@@ -80,6 +80,17 @@ impl ChatWidget {
             ServerNotification::ItemCompleted(notification) => {
                 self.handle_item_completed_notification(notification, replay_kind);
             }
+            ServerNotification::ContextCompactionStatus(notification) => {
+                if !from_replay
+                    && self.bottom_pane.is_task_running()
+                    && !notification.message.trim().is_empty()
+                {
+                    self.bottom_pane.ensure_status_indicator();
+                    self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Working;
+                    self.set_status_header(notification.message);
+                    self.request_redraw();
+                }
+            }
             ServerNotification::AgentMessageDelta(notification) => {
                 self.on_agent_message_delta(notification.delta);
             }
@@ -266,7 +277,12 @@ impl ChatWidget {
             | ServerNotification::ProjectChanged(_)
             | ServerNotification::ThreadProjectUpdated(_) => {}
             ServerNotification::ContextCompacted(notification) => {
-                self.on_context_compacted(notification.summary, notification.message);
+                self.on_context_compacted(notification.summary, notification.message, None);
+                if self.status_state.current_status.header
+                    == codex_protocol::items::CONTEXT_COMPACTION_DECODING_MESSAGE
+                {
+                    self.set_status_header(String::from("Working"));
+                }
             }
         }
         self.thread_usage.replaying_turn_completion = was_replaying_turn_completion;
@@ -275,7 +291,7 @@ impl ChatWidget {
     #[cfg(test)]
     pub(crate) fn handle_codex_event(&mut self, event: Event) {
         if let EventMsg::ContextCompacted(ev) = event.msg {
-            self.on_context_compacted(ev.summary, ev.message);
+            self.on_context_compacted(ev.summary, ev.message, ev.decode_error);
         }
     }
 
@@ -413,6 +429,8 @@ impl ChatWidget {
         notification: ItemCompletedNotification,
         replay_kind: Option<ReplayKind>,
     ) {
+        let completed_context_compaction =
+            matches!(&notification.item, ThreadItem::ContextCompaction { .. });
         match notification.item {
             item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_completed(item),
             item => self.handle_thread_item(
@@ -420,6 +438,12 @@ impl ChatWidget {
                 notification.turn_id,
                 replay_kind.map_or(ThreadItemRenderSource::Live, ThreadItemRenderSource::Replay),
             ),
+        }
+        if completed_context_compaction
+            && self.status_state.current_status.header
+                == codex_protocol::items::CONTEXT_COMPACTION_DECODING_MESSAGE
+        {
+            self.set_status_header(String::from("Working"));
         }
     }
 }
