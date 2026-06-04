@@ -1315,6 +1315,16 @@ pub struct ItemCompletedNotification {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ContextCompactionStatusNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct RawResponseItemCompletedNotification {
     pub thread_id: String,
     pub turn_id: String,
