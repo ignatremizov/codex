@@ -297,6 +297,18 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
         ThreadItem::ExitedReviewMode { review, .. } => {
             vec![vec!["review finished: ".dim(), review.clone().into()].into()]
         }
+        ThreadItem::ContextCompaction {
+            decode_error: Some(error),
+            ..
+        } => {
+            vec![
+                vec![
+                    "context compacted · prompt decoding failed: ".dim(),
+                    error.clone().red(),
+                ]
+                .into(),
+            ]
+        }
         ThreadItem::ContextCompaction { .. } => {
             vec!["context compacted".dim().into()]
         }

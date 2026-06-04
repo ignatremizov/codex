@@ -20,6 +20,11 @@ use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
 
+mod compaction;
+
+use self::compaction::ContextCompactionRender;
+use self::compaction::context_compaction_render_plan;
+
 pub(crate) struct EventProcessorWithHumanOutput {
     bold: Style,
     cyan: Style,
@@ -202,33 +207,31 @@ impl EventProcessorWithHumanOutput {
                 eprintln!("{} {}", "web search:".style(self.bold), item.query);
             }
             ThreadItem::ContextCompaction {
-                summary, message, ..
+                summary,
+                message,
+                decode_error,
+                ..
             } => {
-                if !self.show_compact_summary {
-                    eprintln!("{}", "context compacted".style(self.dimmed));
-                } else {
-                    let rendered = if let Some(message) =
-                        message.as_deref().filter(|text| !text.trim().is_empty())
-                    {
-                        self.print_compaction_section(
-                            "Compacted prompt",
-                            Some(message),
-                            "(prompt was empty)",
-                        )
-                    } else if let Some(summary) =
-                        summary.as_deref().filter(|text| !text.trim().is_empty())
-                    {
-                        self.print_compaction_section(
-                            "Compacted summary",
-                            Some(summary),
-                            "(summary was empty)",
-                        )
-                    } else {
-                        false
-                    };
-
-                    if !rendered {
-                        eprintln!("{}", "context compacted".style(self.dimmed));
+                for output in context_compaction_render_plan(
+                    summary.as_deref(),
+                    message.as_deref(),
+                    decode_error.as_deref(),
+                    self.show_compact_summary,
+                ) {
+                    match output {
+                        ContextCompactionRender::DecodeError(message) => {
+                            eprintln!("{}", message.style(self.red));
+                        }
+                        ContextCompactionRender::Section {
+                            title,
+                            content,
+                            empty_label,
+                        } => {
+                            self.print_compaction_section(title, Some(content), empty_label);
+                        }
+                        ContextCompactionRender::Compacted => {
+                            eprintln!("{}", "context compacted".style(self.dimmed));
+                        }
                     }
                 }
             }

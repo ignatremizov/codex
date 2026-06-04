@@ -142,15 +142,32 @@ impl ChatWidget {
         &mut self,
         summary: Option<String>,
         message: Option<String>,
+        decode_error: Option<String>,
     ) {
         self.flush_answer_stream_with_separator();
         self.handle_stream_finished();
 
+        let decode_error = decode_error.and_then(|text| {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        });
+        let has_decode_error = decode_error.is_some();
+        if let Some(error) = decode_error {
+            self.add_to_history(history_cell::new_error_event(format!(
+                "Compacted prompt decoding failed: {error}"
+            )));
+        }
+
         if !self.config.show_compact_summary {
-            self.add_to_history(history_cell::new_info_event(
-                "Context compacted.".to_owned(),
-                /*hint*/ None,
-            ));
+            if !has_decode_error {
+                self.add_to_history(history_cell::new_info_event(
+                    "Context compacted.".to_owned(),
+                    /*hint*/ None,
+                ));
+            }
             self.request_redraw();
             return;
         }
@@ -174,7 +191,7 @@ impl ChatWidget {
             self.add_boxed_history(Box::new(history_cell::new_compaction_prompt(message)));
         } else if let Some(summary) = summary {
             self.add_boxed_history(Box::new(history_cell::new_compaction_summary(summary)));
-        } else {
+        } else if !has_decode_error {
             self.add_to_history(history_cell::new_info_event(
                 "Context compacted.".to_owned(),
                 /*hint*/ None,

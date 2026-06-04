@@ -200,9 +200,12 @@ impl ChatWidget {
                 self.exit_review_mode_after_item();
             }
             ThreadItem::ContextCompaction {
-                summary, message, ..
+                summary,
+                message,
+                decode_error,
+                ..
             } => {
-                self.on_context_compacted(summary, message);
+                self.on_context_compacted(summary, message, decode_error);
             }
             ThreadItem::FunctionCallOutput {
                 name,

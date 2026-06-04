@@ -13,6 +13,7 @@ import type { CommandExecOutputDeltaNotification } from "./v2/CommandExecOutputD
 import type { CommandExecutionOutputDeltaNotification } from "./v2/CommandExecutionOutputDeltaNotification";
 import type { ConfigWarningNotification } from "./v2/ConfigWarningNotification";
 import type { ContextCompactedNotification } from "./v2/ContextCompactedNotification";
+import type { ContextCompactionStatusNotification } from "./v2/ContextCompactionStatusNotification";
 import type { DeprecationNoticeNotification } from "./v2/DeprecationNoticeNotification";
 import type { EnvironmentConnectionNotification } from "./v2/EnvironmentConnectionNotification";
 import type { ErrorNotification } from "./v2/ErrorNotification";
