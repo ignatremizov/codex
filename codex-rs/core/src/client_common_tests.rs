@@ -2,9 +2,12 @@ use codex_api::OpenAiVerbosity;
 use codex_api::ResponsesApiRequest;
 use codex_api::TextControls;
 use codex_api::create_text_param_for_request;
+use codex_protocol::AgentPath;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::protocol::InterAgentCommunication;
 use pretty_assertions::assert_eq;
 
 use super::*;
@@ -99,6 +102,42 @@ fn responses_lite_request_copies_strip_image_details() {
     assert_eq!(
         prompt.get_formatted_input_for_request(/*use_responses_lite*/ false),
         original
+    );
+}
+
+#[test]
+fn encrypted_inter_agent_communication_request_uses_ciphertext_not_audit_content() {
+    let mut communication = InterAgentCommunication::new_encrypted(
+        AgentPath::root(),
+        AgentPath::try_from("/root/worker").expect("agent path"),
+        Vec::new(),
+        "encrypted-task".to_string(),
+        /*trigger_turn*/ true,
+    );
+    communication.content = "audit-visible task".to_string();
+    let prompt = Prompt {
+        input: vec![communication.to_model_input_item()],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        prompt.get_formatted_input_for_request(/*use_responses_lite*/ false),
+        vec![ResponseItem::AgentMessage {
+            id: None,
+            author: "/root".to_string(),
+            recipient: "/root/worker".to_string(),
+            content: vec![
+                AgentMessageInputContent::InputText {
+                    text:
+                        "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\n"
+                            .to_string(),
+                },
+                AgentMessageInputContent::EncryptedContent {
+                    encrypted_content: "encrypted-task".to_string(),
+                },
+            ],
+            internal_chat_message_metadata_passthrough: None,
+        }]
     );
 }
 

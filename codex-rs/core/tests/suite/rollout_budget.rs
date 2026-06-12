@@ -17,9 +17,11 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_remote;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use serde_json::Value;
 use serde_json::json;
 use std::time::Duration;
 use test_case::test_case;
@@ -51,7 +53,60 @@ fn rollout_budget_message(remaining_tokens: i64) -> String {
 }
 
 fn wire_request_contains(request: &wiremock::Request, text: &str) -> bool {
-    std::str::from_utf8(&request.body).is_ok_and(|body| body.contains(text))
+    request_body_bytes(request)
+        .and_then(|body| String::from_utf8(body).ok())
+        .is_some_and(|body| body.contains(text))
+}
+
+fn request_body_bytes(request: &wiremock::Request) -> Option<Vec<u8>> {
+    let is_zstd = request
+        .headers
+        .get("content-encoding")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|entry| entry.trim().eq_ignore_ascii_case("zstd"))
+        });
+    if is_zstd {
+        zstd::stream::decode_all(std::io::Cursor::new(&request.body)).ok()
+    } else {
+        Some(request.body.clone())
+    }
+}
+
+fn request_body_json(request: &wiremock::Request) -> Option<Value> {
+    let body = request_body_bytes(request)?;
+    serde_json::from_slice(&body).ok()
+}
+
+fn request_has_agent_message_recipient(
+    request: &wiremock::Request,
+    expected_recipient: &str,
+) -> bool {
+    let Some(body) = request_body_json(request) else {
+        return false;
+    };
+    let Some(input) = body.get("input").and_then(Value::as_array) else {
+        return false;
+    };
+    input.iter().any(|item| {
+        item.get("type").and_then(Value::as_str) == Some("agent_message")
+            && item.get("recipient").and_then(Value::as_str) == Some(expected_recipient)
+    })
+}
+
+fn request_has_function_call_output(request: &wiremock::Request, call_id: &str) -> bool {
+    let Some(body) = request_body_json(request) else {
+        return false;
+    };
+    let Some(input) = body.get("input").and_then(Value::as_array) else {
+        return false;
+    };
+    input.iter().any(|item| {
+        item.get("type").and_then(Value::as_str) == Some("function_call_output")
+            && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -118,12 +173,14 @@ async fn subagent_usage_draws_from_the_shared_budget() -> Result<()> {
 
     const ROOT_PROMPT: &str = "spawn a budget worker";
     const CHILD_PROMPT: &str = "consume child budget";
+    const CHILD_AGENT_PATH: &str = "/root/budget_worker";
     const FOLLOW_UP_PROMPT: &str = "report the shared budget";
     const SPAWN_CALL_ID: &str = "spawn-budget-worker";
 
     let server = start_mock_server().await;
     let spawn_args = json!({
         "message": CHILD_PROMPT,
+        "task_message": CHILD_PROMPT,
         "task_name": "budget_worker",
     })
     .to_string();
@@ -144,7 +201,9 @@ async fn subagent_usage_draws_from_the_shared_budget() -> Result<()> {
     .await;
     mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| wire_request_contains(request, "\"type\":\"agent_message\""),
+        |request: &wiremock::Request| {
+            request_has_agent_message_recipient(request, CHILD_AGENT_PATH)
+        },
         sse(vec![
             ev_response_created("child-1"),
             ev_completed_with_tokens("child-1", /*total_tokens*/ 30),
@@ -153,10 +212,7 @@ async fn subagent_usage_draws_from_the_shared_budget() -> Result<()> {
     .await;
     mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| {
-            wire_request_contains(request, SPAWN_CALL_ID)
-                && !wire_request_contains(request, "\"type\":\"agent_message\"")
-        },
+        |request: &wiremock::Request| request_has_function_call_output(request, SPAWN_CALL_ID),
         sse(vec![
             ev_response_created("root-2"),
             ev_completed_with_tokens("root-2", /*total_tokens*/ 10),
@@ -195,7 +251,12 @@ async fn subagent_usage_draws_from_the_shared_budget() -> Result<()> {
     .await;
     test.submit_turn(FOLLOW_UP_PROMPT).await?;
 
-    let request = follow_up.single_request();
+    let request = follow_up
+        .requests()
+        .into_iter()
+        .rev()
+        .find(|request| request.body_contains_text(FOLLOW_UP_PROMPT))
+        .expect("follow-up request should be sent to the model");
     assert_eq!(
         rollout_budget_texts(&request).last(),
         Some(&rollout_budget_message(/*remaining_tokens*/ 50))
@@ -396,6 +457,10 @@ async fn restates_the_current_remainder_after_compaction() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restates_the_current_remainder_after_rollback() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "rollback budget reminder coverage does not need a remote executor"
+    );
 
     let server = start_mock_server().await;
     let responses = mount_sse_sequence(
