@@ -33,6 +33,9 @@ In the codex-rs folder where the rust code lives:
 - Prefer private modules and explicitly exported public crate API.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
 - When working with MCP tool calls, prefer using `codex-rs/codex-mcp/src/mcp_connection_manager.rs` to handle mutation of tools and tool calls. Aim to minimize the footprint of changes and leverage existing abstractions rather than plumbing code through multiple levels of function calls.
+- When working with MCP server registrations or plugin MCP config, route contributions through `codex-rs/codex-mcp/src/catalog.rs` and parse plugin config with `codex-rs/codex-mcp/src/plugin_config.rs`. Keep config, compatibility, plugin, and extension registrations in the catalog instead of adding parallel maps, and keep registrations thread-scoped when they depend on thread environments.
+- When working with executor-owned plugin or skill resources, resolve them through `codex-rs/plugin/src/provider.rs` and `codex-rs/core-plugins/src/provider.rs`, preserving the owning `environment_id` and resource authority. Do not convert remote resources to host paths except at an explicit current-host boundary.
+- When touching executor filesystem APIs or remote environment file access, use `codex_utils_path_uri::PathUri` and `ExecutorFileSystem` APIs. Keep URI segment operations in `PathUri` (`join`, `parent`, `basename`) and do not reintroduce exec-server `fs/join`/`fs/parent` RPCs or host `PathBuf` assumptions across environment boundaries.
 - Do not call `reset_client_session` unnecessarily; let the incremental check logic decide whether to reuse the previous request.
 - If you change Rust dependencies (`Cargo.toml` or `Cargo.lock`), run `just bazel-lock-update` from the
   repo root to refresh `MODULE.bazel.lock`, and include that lockfile update in the same change.
