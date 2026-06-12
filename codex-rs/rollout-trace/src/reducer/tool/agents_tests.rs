@@ -3,6 +3,7 @@ use serde_json::json;
 use tempfile::TempDir;
 
 use crate::model::AgentOrigin;
+use crate::model::ConversationPart;
 use crate::model::ExecutionStatus;
 use crate::model::InteractionEdgeKind;
 use crate::model::RolloutStatus;
@@ -121,6 +122,7 @@ fn spawn_runtime_payload_targets_delivered_child_message() -> anyhow::Result<()>
     let replayed = replay_bundle(temp.path())?;
     let edge = &replayed.interaction_edges["edge:spawn:019d0000-0000-7000-8000-000000000001:019d0000-0000-7000-8000-000000000002"];
     assert_eq!(edge.kind, InteractionEdgeKind::SpawnAgent);
+    assert_eq!(edge.message_content.as_deref(), Some("count"));
     assert_eq!(
         edge.source,
         TraceAnchor::ToolCall {
@@ -206,7 +208,7 @@ fn sub_agent_started_activity_creates_spawn_edge() -> anyhow::Result<()> {
             "tool_name": "spawn_agent",
             "payload": {
                 "type": "function",
-                "arguments": "{\"message\":\"review this\",\"task_name\":\"reviewer\"}"
+                "arguments": "{\"message\":\"encrypted-review\",\"task_message\":\"review this\",\"task_name\":\"reviewer\"}"
             }
         }),
     )?;
@@ -246,23 +248,125 @@ fn sub_agent_started_activity_creates_spawn_edge() -> anyhow::Result<()> {
     )?;
     start_thread(&writer, child_thread_id, "/root/reviewer")?;
     start_turn_for_thread(&writer, child_thread_id, "turn-child-1")?;
+    let delivered = json!({
+        "type": "agent_message",
+        "author": "/root",
+        "recipient": "/root/reviewer",
+        "content": [{
+            "type": "encrypted_content",
+            "encrypted_content": "encrypted-review",
+        }],
+    });
     append_inference_request(
         &writer,
         child_thread_id,
         "turn-child-1",
         "inference-child-1",
-        vec![json!({
-            "type": "agent_message",
-            "author": "/root",
-            "recipient": "/root/reviewer",
-            "content": [{"type": "input_text", "text": "review this"}]
-        })],
+        vec![delivered],
     )?;
 
     let replayed = replay_bundle(temp.path())?;
     let edge_id = format!("edge:spawn:019d0000-0000-7000-8000-000000000001:{child_thread_id}");
     let edge = &replayed.interaction_edges[&edge_id];
     assert_eq!(edge.kind, InteractionEdgeKind::SpawnAgent);
+    assert_eq!(edge.message_content.as_deref(), Some("review this"));
+    let target_item_id = target_conversation_item_id(&edge.target);
+    assert_eq!(edge.carried_item_ids, vec![target_item_id.clone()]);
+    assert_eq!(
+        replayed.conversation_items[target_item_id].thread_id,
+        child_thread_id
+    );
+    assert_eq!(
+        replayed.conversation_items[target_item_id].body.parts,
+        vec![ConversationPart::Encoded {
+            label: "encrypted_content".to_string(),
+            value: "encrypted-review".to_string(),
+        },]
+    );
+    assert_eq!(
+        edge.carried_raw_payload_ids,
+        vec![
+            invocation_payload.raw_payload_id,
+            activity_payload.raw_payload_id,
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn sub_agent_started_activity_matches_encrypted_legacy_delivery() -> anyhow::Result<()> {
+    let temp = TempDir::new()?;
+    let writer = create_started_agent_writer(&temp)?;
+    start_agent_turn(&writer, "turn-1")?;
+    let child_thread_id = "019d0000-0000-7000-8000-000000000002";
+    let invocation_payload = writer.write_json_payload(
+        RawPayloadKind::ToolInvocation,
+        &json!({
+            "tool_name": "spawn_agent",
+            "payload": {
+                "type": "function",
+                "arguments": "{\"message\":\"encrypted-review\",\"task_name\":\"reviewer\"}"
+            }
+        }),
+    )?;
+    writer.append_with_context(
+        trace_context_for_agent("turn-1"),
+        RawTraceEventPayload::ToolCallStarted {
+            tool_call_id: "call-spawn-v2".to_string(),
+            model_visible_call_id: Some("call-spawn-v2".to_string()),
+            code_mode_runtime_tool_id: None,
+            requester: RawToolCallRequester::Model,
+            kind: ToolCallKind::SpawnAgent,
+            summary: ToolCallSummary::Generic {
+                label: "spawn_agent".to_string(),
+                input_preview: None,
+                output_preview: None,
+            },
+            invocation_payload: Some(invocation_payload.clone()),
+        },
+    )?;
+    let activity_payload = writer.write_json_payload(
+        RawPayloadKind::ToolRuntimeEvent,
+        &json!({
+            "event_id": "call-spawn-v2",
+            "occurred_at_ms": 1234,
+            "agent_thread_id": child_thread_id,
+            "agent_path": "/root/reviewer",
+            "kind": "started"
+        }),
+    )?;
+    writer.append_with_context(
+        trace_context_for_agent("turn-1"),
+        RawTraceEventPayload::ToolCallRuntimeEnded {
+            tool_call_id: "call-spawn-v2".to_string(),
+            status: ExecutionStatus::Completed,
+            runtime_payload: activity_payload.clone(),
+        },
+    )?;
+    start_thread(&writer, child_thread_id, "/root/reviewer")?;
+    start_turn_for_thread(&writer, child_thread_id, "turn-child-1")?;
+    let delivered = json!({
+        "author": "/root",
+        "recipient": "/root/reviewer",
+        "other_recipients": [],
+        "content": "review this",
+        "encrypted_content": "encrypted-review",
+        "trigger_turn": true,
+    })
+    .to_string();
+    append_inference_request(
+        &writer,
+        child_thread_id,
+        "turn-child-1",
+        "inference-child-1",
+        vec![message("assistant", &delivered)],
+    )?;
+
+    let replayed = replay_bundle(temp.path())?;
+    let edge_id = format!("edge:spawn:019d0000-0000-7000-8000-000000000001:{child_thread_id}");
+    let edge = &replayed.interaction_edges[&edge_id];
+    assert_eq!(edge.kind, InteractionEdgeKind::SpawnAgent);
+    assert_eq!(edge.message_content.as_deref(), Some("review this"));
     let target_item_id = target_conversation_item_id(&edge.target);
     assert_eq!(edge.carried_item_ids, vec![target_item_id.clone()]);
     assert_eq!(

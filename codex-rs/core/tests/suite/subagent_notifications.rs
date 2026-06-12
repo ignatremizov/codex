@@ -962,6 +962,7 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
     let server = start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
+        "task_message": CHILD_PROMPT,
         "task_name": "worker",
     }))?;
     mount_sse_once_match(
@@ -969,12 +970,7 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
         |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
         sse(vec![
             ev_response_created("resp-turn1-1"),
-            ev_function_call_with_namespace(
-                SPAWN_CALL_ID,
-                MULTI_AGENT_V1_NAMESPACE,
-                "spawn_agent",
-                &spawn_args,
-            ),
+            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
             ev_completed("resp-turn1-1"),
         ]),
     )
@@ -1034,6 +1030,7 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
     let encrypted_message = "opaque-encrypted-message";
     let spawn_args = serde_json::to_string(&json!({
         "message": encrypted_message,
+        "task_message": "audit-visible child task",
         "task_name": "worker",
     }))?;
     mount_sse_once_match(
@@ -1086,6 +1083,7 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
         .await?
         .pop()
         .expect("child request");
+    assert!(!child_request.body_contains_text("audit-visible child task"));
     assert_eq!(
         child_request.inputs_of_type("agent_message"),
         vec![json!({
@@ -1217,6 +1215,7 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
     let server = start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
+        "task_message": CHILD_PROMPT,
         "task_name": "worker",
     }))?;
     let spawn_turn = mount_sse_once_match(
@@ -1224,12 +1223,7 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
         |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
         sse(vec![
             ev_response_created("resp-turn1-1"),
-            ev_function_call_with_namespace(
-                SPAWN_CALL_ID,
-                MULTI_AGENT_V1_NAMESPACE,
-                "spawn_agent",
-                &spawn_args,
-            ),
+            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
             ev_completed("resp-turn1-1"),
         ]),
     )
