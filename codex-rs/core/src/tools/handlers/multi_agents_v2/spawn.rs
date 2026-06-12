@@ -56,7 +56,13 @@ async fn handle_spawn_agent(
         .map(str::trim)
         .filter(|role| !role.is_empty());
 
-    let message = message_content(args.message)?;
+    let encrypted_message = message_content(args.message)?;
+    let task_message = args.task_message;
+    if task_message.trim().is_empty() {
+        return Err(FunctionCallError::RespondToModel(
+            "task_message must not be empty".to_string(),
+        ));
+    }
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
     let mut config =
@@ -108,7 +114,9 @@ async fn handle_spawn_agent(
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
+    let mut communication =
+        communication_from_tool_message(author, new_agent_path.clone(), encrypted_message);
+    communication.content = task_message;
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
     let spawned_agent = Box::pin(
         session
@@ -180,6 +188,7 @@ impl CoreToolRuntime for Handler {
 struct SpawnAgentArgs {
     message: String,
     task_name: String,
+    task_message: String,
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,

@@ -1312,6 +1312,14 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
                 .and_then(|schema| schema.encrypted),
             Some(true)
         );
+        if tool_name == "spawn_agent" {
+            assert_eq!(
+                properties
+                    .get("task_message")
+                    .and_then(|schema| schema.encrypted),
+                None
+            );
+        }
     }
 }
 
