@@ -79,12 +79,19 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     ));
     assert!(!description.contains("hidden-model"));
     assert!(properties.contains_key("task_name"));
+    assert!(properties.contains_key("task_message"));
     assert!(properties.contains_key("message"));
     assert_eq!(
         properties
             .get("message")
             .and_then(|schema| schema.encrypted),
         Some(true)
+    );
+    assert_eq!(
+        properties
+            .get("task_message")
+            .and_then(|schema| schema.encrypted),
+        None
     );
     assert!(properties.contains_key("fork_turns"));
     assert!(!properties.contains_key("items"));
@@ -107,7 +114,11 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     );
     assert_eq!(
         parameters.required.as_ref(),
-        Some(&vec!["task_name".to_string(), "message".to_string()])
+        Some(&vec![
+            "task_name".to_string(),
+            "task_message".to_string(),
+            "message".to_string()
+        ])
     );
     assert_eq!(
         output_schema.expect("spawn_agent output schema")["required"],

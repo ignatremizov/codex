@@ -34,7 +34,12 @@ pub(in crate::reducer) struct PendingAgentInteractionEdge {
     pub(in crate::reducer) source: TraceAnchor,
     pub(in crate::reducer) target_thread_id: String,
     pub(in crate::reducer) message_author: String,
+    /// User-facing audit content retained while this pending edge is merged.
     pub(in crate::reducer) message_content: String,
+    /// True when `message_content` is only a fallback copy of the transport content.
+    pub(in crate::reducer) message_content_from_delivery_match: bool,
+    /// Transport content used to correlate the sender-side tool with receiver-side history.
+    pub(in crate::reducer) delivery_match_content: String,
     /// Spawn-only fallback for children that fail before their task message is model-visible.
     pub(in crate::reducer) unresolved_spawn_thread_id: Option<String>,
     pub(in crate::reducer) started_at_unix_ms: i64,
@@ -60,6 +65,32 @@ pub(in crate::reducer) struct ObservedAgentResultEdge {
 #[derive(Deserialize)]
 struct AgentMessageInvocationArgs {
     message: String,
+    task_message: Option<String>,
+}
+
+struct AgentMessageInvocationContent {
+    audit_content: String,
+    delivery_match_content: String,
+    audit_content_from_delivery_match: bool,
+}
+
+struct InterAgentMessageFields {
+    author_agent_path: String,
+    recipient_agent_path: String,
+    delivery_match_content: String,
+    audit_content: Option<String>,
+}
+
+struct InterAgentMessageItem {
+    thread_id: String,
+    author_agent_path: String,
+    delivery_match_content: String,
+    audit_content: Option<String>,
+}
+
+struct InterAgentMessageTarget {
+    item_id: String,
+    audit_content: Option<String>,
 }
 
 /// Builds the stable edge id for the spawn relationship between two threads.
@@ -266,7 +297,9 @@ impl TraceReducer {
             },
             target_thread_id,
             message_author,
-            message_content,
+            message_content: message_content.audit_content,
+            message_content_from_delivery_match: message_content.audit_content_from_delivery_match,
+            delivery_match_content: message_content.delivery_match_content,
             unresolved_spawn_thread_id,
             started_at_unix_ms,
             ended_at_unix_ms: Some(wall_time_unix_ms),
@@ -274,7 +307,10 @@ impl TraceReducer {
         })
     }
 
-    fn agent_message_content_from_invocation(&self, tool_call_id: &str) -> Result<String> {
+    fn agent_message_content_from_invocation(
+        &self,
+        tool_call_id: &str,
+    ) -> Result<AgentMessageInvocationContent> {
         let tool_call = self.rollout.tool_calls.get(tool_call_id).with_context(|| {
             format!("agent activity referenced unknown tool call {tool_call_id}")
         })?;
@@ -303,7 +339,17 @@ impl TraceReducer {
             })?;
         let args: AgentMessageInvocationArgs = serde_json::from_str(arguments)
             .with_context(|| format!("parse agent activity tool call {tool_call_id} arguments"))?;
-        Ok(args.message)
+        let delivery_match_content = args.message;
+        let task_message = args
+            .task_message
+            .filter(|task_message| !task_message.trim().is_empty());
+        let audit_content_from_delivery_match = task_message.is_none();
+        let audit_content = task_message.unwrap_or_else(|| delivery_match_content.clone());
+        Ok(AgentMessageInvocationContent {
+            audit_content,
+            delivery_match_content,
+            audit_content_from_delivery_match,
+        })
     }
 
     /// Adds the canonical tool result payload to an already reduced multi-agent edge.
@@ -368,6 +414,8 @@ impl TraceReducer {
             target_thread_id: child_thread_id.clone(),
             message_author,
             message_content: payload.prompt.clone(),
+            message_content_from_delivery_match: false,
+            delivery_match_content: payload.prompt.clone(),
             unresolved_spawn_thread_id: Some(child_thread_id),
             started_at_unix_ms: tool_call.execution.started_at_unix_ms,
             ended_at_unix_ms: Some(wall_time_unix_ms),
@@ -409,7 +457,9 @@ impl TraceReducer {
             },
             target_thread_id,
             message_author,
+            delivery_match_content: message_content.clone(),
             message_content,
+            message_content_from_delivery_match: false,
             unresolved_spawn_thread_id: None,
             started_at_unix_ms: tool_call.execution.started_at_unix_ms,
             ended_at_unix_ms,
@@ -464,6 +514,7 @@ impl TraceReducer {
             target: TraceAnchor::Thread {
                 thread_id: target_thread_id,
             },
+            message_content: None,
             started_at_unix_ms,
             ended_at_unix_ms,
             carried_item_ids: Vec::new(),
@@ -501,7 +552,9 @@ impl TraceReducer {
             source,
             target_thread_id: observed.parent_thread_id,
             message_author,
+            delivery_match_content: observed.message.clone(),
             message_content: observed.message,
+            message_content_from_delivery_match: false,
             unresolved_spawn_thread_id: None,
             started_at_unix_ms: observed.wall_time_unix_ms,
             ended_at_unix_ms: Some(observed.wall_time_unix_ms),
@@ -520,23 +573,22 @@ impl TraceReducer {
         if self.is_interaction_edge_target_item(item_id) {
             return Ok(());
         }
-        let Some((thread_id, message_author, message_content)) =
-            self.inter_agent_message_item(item_id)
-        else {
+        let Some(message_item) = self.inter_agent_message_item(item_id) else {
             return Ok(());
         };
         let Some(pending_index) = self
             .pending_agent_interaction_edges
             .iter()
             .position(|pending| {
-                pending.target_thread_id == thread_id
-                    && pending.message_author == message_author
-                    && pending.message_content == message_content
+                pending.target_thread_id == message_item.thread_id
+                    && pending.message_author == message_item.author_agent_path
+                    && pending.delivery_match_content == message_item.delivery_match_content
             })
         else {
             return Ok(());
         };
-        let pending = self.pending_agent_interaction_edges.remove(pending_index);
+        let mut pending = self.pending_agent_interaction_edges.remove(pending_index);
+        apply_delivery_audit_content(&mut pending, message_item.audit_content);
         self.upsert_agent_interaction_edge_for_item(pending, item_id.to_string())
     }
 
@@ -544,12 +596,14 @@ impl TraceReducer {
         &mut self,
         pending: PendingAgentInteractionEdge,
     ) -> Result<()> {
-        if let Some(item_id) = self.find_unlinked_inter_agent_message_item(
+        let mut pending = pending;
+        if let Some(target) = self.find_unlinked_inter_agent_message_item(
             &pending.target_thread_id,
             &pending.message_author,
-            &pending.message_content,
+            &pending.delivery_match_content,
         ) {
-            return self.upsert_agent_interaction_edge_for_item(pending, item_id);
+            apply_delivery_audit_content(&mut pending, target.audit_content);
+            return self.upsert_agent_interaction_edge_for_item(pending, target.item_id);
         }
 
         if let Some(existing) = self
@@ -562,6 +616,9 @@ impl TraceReducer {
                 || existing.target_thread_id != pending.target_thread_id
                 || existing.message_author != pending.message_author
                 || existing.message_content != pending.message_content
+                || existing.message_content_from_delivery_match
+                    != pending.message_content_from_delivery_match
+                || existing.delivery_match_content != pending.delivery_match_content
                 || existing.unresolved_spawn_thread_id != pending.unresolved_spawn_thread_id
             {
                 bail!(
@@ -618,6 +675,7 @@ impl TraceReducer {
                 target: TraceAnchor::Thread {
                     thread_id: child_thread_id,
                 },
+                message_content: non_empty_edge_message_content(&pending.message_content),
                 started_at_unix_ms: pending.started_at_unix_ms,
                 ended_at_unix_ms: pending.ended_at_unix_ms,
                 carried_item_ids: Vec::new(),
@@ -639,6 +697,7 @@ impl TraceReducer {
             target: TraceAnchor::ConversationItem {
                 item_id: target_item_id.clone(),
             },
+            message_content: non_empty_edge_message_content(&pending.message_content),
             started_at_unix_ms: pending.started_at_unix_ms,
             ended_at_unix_ms: pending.ended_at_unix_ms,
             carried_item_ids: vec![target_item_id],
@@ -662,6 +721,18 @@ impl TraceReducer {
                 (Some(existing_ended), Some(edge_ended)) => Some(existing_ended.max(edge_ended)),
                 (None, ended) | (ended, None) => ended,
             };
+            match (&existing.message_content, edge.message_content) {
+                (Some(existing_message), Some(edge_message))
+                    if existing_message != &edge_message =>
+                {
+                    bail!(
+                        "interaction edge {} was observed with conflicting message content",
+                        edge.edge_id
+                    );
+                }
+                (None, Some(edge_message)) => existing.message_content = Some(edge_message),
+                (Some(_), Some(_)) | (Some(_), None) | (None, None) => {}
+            }
             extend_unique(&mut existing.carried_item_ids, edge.carried_item_ids);
             extend_unique(
                 &mut existing.carried_raw_payload_ids,
@@ -680,33 +751,40 @@ impl TraceReducer {
         &self,
         thread_id: &str,
         message_author: &str,
-        message_content: &str,
-    ) -> Option<String> {
+        delivery_match_content: &str,
+    ) -> Option<InterAgentMessageTarget> {
         self.rollout
             .threads
             .get(thread_id)?
             .conversation_item_ids
             .iter()
-            .find(|item_id| {
-                !self.is_interaction_edge_target_item(item_id)
-                    && self
-                        .inter_agent_message_item(item_id)
-                        .is_some_and(|(_, author, content)| {
-                            author == message_author && content == message_content
-                        })
+            .find_map(|item_id| {
+                if self.is_interaction_edge_target_item(item_id) {
+                    return None;
+                }
+                let message_item = self.inter_agent_message_item(item_id)?;
+                (message_item.author_agent_path == message_author
+                    && message_item.delivery_match_content == delivery_match_content)
+                    .then(|| InterAgentMessageTarget {
+                        item_id: item_id.clone(),
+                        audit_content: message_item.audit_content,
+                    })
             })
-            .cloned()
     }
 
-    fn inter_agent_message_item(&self, item_id: &str) -> Option<(String, String, String)> {
+    fn inter_agent_message_item(&self, item_id: &str) -> Option<InterAgentMessageItem> {
         let item = self.rollout.conversation_items.get(item_id)?;
-        let (author_agent_path, recipient_agent_path, message_content) =
-            inter_agent_message_fields(item)?;
+        let fields = inter_agent_message_fields(item)?;
         let thread = self.rollout.threads.get(&item.thread_id)?;
-        if recipient_agent_path != thread.agent_path {
+        if fields.recipient_agent_path != thread.agent_path {
             return None;
         }
-        Some((item.thread_id.clone(), author_agent_path, message_content))
+        Some(InterAgentMessageItem {
+            thread_id: item.thread_id.clone(),
+            author_agent_path: fields.author_agent_path,
+            delivery_match_content: fields.delivery_match_content,
+            audit_content: fields.audit_content,
+        })
     }
 
     fn agent_path_for_thread(&self, thread_id: &str) -> Result<String> {
@@ -766,41 +844,94 @@ fn push_unique(items: &mut Vec<String>, item: &str) {
     }
 }
 
-fn inter_agent_message_fields(item: &ConversationItem) -> Option<(String, String, String)> {
+fn non_empty_edge_message_content(message_content: &str) -> Option<String> {
+    (!message_content.trim().is_empty()).then(|| message_content.to_string())
+}
+
+fn apply_delivery_audit_content(
+    pending: &mut PendingAgentInteractionEdge,
+    audit_content: Option<String>,
+) {
+    if pending.message_content_from_delivery_match
+        && let Some(audit_content) = audit_content.filter(|content| !content.trim().is_empty())
+    {
+        pending.message_content = audit_content;
+        pending.message_content_from_delivery_match = false;
+    }
+}
+
+fn inter_agent_message_fields(item: &ConversationItem) -> Option<InterAgentMessageFields> {
     if item.role != ConversationRole::Assistant || item.kind != ConversationItemKind::Message {
         return None;
     }
+
     if let Some(agent_message) = &item.agent_message {
         let [content] = item.body.parts.as_slice() else {
             return None;
         };
-        let message_content = match content {
-            ConversationPart::Text { text } => text,
-            ConversationPart::Encoded { label, value } if label == "encrypted_content" => value,
-            _ => return None,
+        let (delivery_match_content, audit_content) = match content {
+            ConversationPart::Text { text } => (text.clone(), non_empty_edge_message_content(text)),
+            ConversationPart::Encoded { label, value } if label == "encrypted_content" => {
+                (value.clone(), None)
+            }
+            ConversationPart::Code { .. }
+            | ConversationPart::Encoded { .. }
+            | ConversationPart::Json { .. }
+            | ConversationPart::PayloadRef { .. }
+            | ConversationPart::Summary { .. } => return None,
         };
-        return Some((
-            agent_message.author.clone(),
-            agent_message.recipient.clone(),
-            message_content.clone(),
-        ));
+        return Some(InterAgentMessageFields {
+            author_agent_path: agent_message.author.clone(),
+            recipient_agent_path: agent_message.recipient.clone(),
+            delivery_match_content,
+            audit_content,
+        });
     }
 
-    // Older traces store multi-agent v2 deliveries as assistant messages whose
-    // text is serialized `InterAgentCommunication`. Treat only that exact
-    // transport shape as an edge target; ordinary assistant JSON must not be
-    // mistaken for cross-thread delivery.
-    let [ConversationPart::Text { text }] = item.body.parts.as_slice() else {
-        return None;
-    };
-    let communication = serde_json::from_str::<InterAgentCommunication>(text).ok()?;
-    Some((
-        communication.author.to_string(),
-        communication.recipient.to_string(),
-        communication
+    // Legacy/unencoded deliveries are assistant messages whose text is serialized
+    // `InterAgentCommunication`. Treat only that exact transport shape as an edge
+    // target; ordinary assistant JSON must not be mistaken for cross-thread delivery.
+    if let [ConversationPart::Text { text }] = item.body.parts.as_slice() {
+        let communication = serde_json::from_str::<InterAgentCommunication>(text).ok()?;
+        let audit_content = non_empty_edge_message_content(&communication.content);
+        let delivery_match_content = communication
             .encrypted_content
-            .unwrap_or(communication.content),
-    ))
+            .unwrap_or_else(|| communication.content.clone());
+        return Some(InterAgentMessageFields {
+            author_agent_path: communication.author.to_string(),
+            recipient_agent_path: communication.recipient.to_string(),
+            delivery_match_content,
+            audit_content,
+        });
+    }
+
+    let author_agent_path =
+        encoded_part_value(&item.body.parts, "agent_message.author")?.to_string();
+    let recipient_agent_path =
+        encoded_part_value(&item.body.parts, "agent_message.recipient")?.to_string();
+    let delivery_match_content =
+        encoded_part_value(&item.body.parts, "encrypted_content")?.to_string();
+    Some(InterAgentMessageFields {
+        author_agent_path,
+        recipient_agent_path,
+        delivery_match_content,
+        audit_content: None,
+    })
+}
+
+fn encoded_part_value<'a>(parts: &'a [ConversationPart], label: &str) -> Option<&'a str> {
+    parts.iter().find_map(|part| {
+        if let ConversationPart::Encoded {
+            label: part_label,
+            value,
+        } = part
+            && part_label == label
+        {
+            Some(value.as_str())
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(test)]
