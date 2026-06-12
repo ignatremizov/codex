@@ -771,9 +771,6 @@ pub(crate) fn render_input_preview(input: &[UserInput]) -> String {
 }
 
 fn last_task_message_from_communication(communication: &InterAgentCommunication) -> Option<String> {
-    if communication.encrypted_content.is_some() {
-        return None;
-    }
     non_empty_task_message(communication.content.clone())
 }
 
