@@ -93,6 +93,13 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
                 .to_string(),
         )),
     );
+    properties.insert(
+        "task_message".to_string(),
+        JsonSchema::string(Some(
+            "Plaintext audit copy of the task instructions in `message`; persisted in history and rollouts for review."
+                .to_string(),
+        )),
+    );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
@@ -106,7 +113,11 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
         defer_loading: None,
         parameters: JsonSchema::object(
             properties,
-            Some(vec!["task_name".to_string(), "message".to_string()]),
+            Some(vec![
+                "task_name".to_string(),
+                "task_message".to_string(),
+                "message".to_string(),
+            ]),
             Some(false.into()),
         ),
         output_schema: Some(spawn_agent_output_schema_v2(
@@ -600,7 +611,8 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         (
             "message".to_string(),
             JsonSchema::string(Some(
-                "Initial plain-text task for the new agent.".to_string(),
+                "Initial task for the new agent. This field is encrypted for delivery; also set `task_message` to the same plaintext for audit history."
+                    .to_string(),
             ))
             .with_encrypted(),
         ),

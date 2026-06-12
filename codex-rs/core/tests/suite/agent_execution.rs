@@ -40,6 +40,7 @@ async fn v2_nested_spawn_checks_shared_active_execution_capacity() -> Result<()>
     let server = start_mock_server().await;
     let first_args = serde_json::to_string(&json!({
         "message": FIRST_TASK,
+        "task_message": FIRST_TASK,
         "task_name": "first",
     }))?;
     mount_sse_once_match(
@@ -54,6 +55,7 @@ async fn v2_nested_spawn_checks_shared_active_execution_capacity() -> Result<()>
     .await;
     let second_args = serde_json::to_string(&json!({
         "message": SECOND_TASK,
+        "task_message": SECOND_TASK,
         "task_name": "second",
     }))?;
     mount_sse_once_match(
