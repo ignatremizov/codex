@@ -3091,6 +3091,62 @@ async fn personality_selection_popup_snapshot() {
     assert_chatwidget_snapshot!("personality_selection_popup", popup);
 }
 
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn realtime_audio_selection_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.open_realtime_audio_popup();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("realtime_audio_selection_popup", popup);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn realtime_audio_selection_popup_narrow_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.open_realtime_audio_popup();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 56);
+    assert_chatwidget_snapshot!("realtime_audio_selection_popup_narrow", popup);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn realtime_microphone_picker_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.config.realtime_audio.microphone = Some("Studio Mic".to_string());
+    chat.open_realtime_audio_device_selection_with_names(
+        RealtimeAudioDeviceKind::Microphone,
+        vec!["Built-in Mic".to_string(), "USB Mic".to_string()],
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("realtime_microphone_picker_popup", popup);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn realtime_audio_picker_emits_persist_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.open_realtime_audio_device_selection_with_names(
+        RealtimeAudioDeviceKind::Speaker,
+        vec!["Desk Speakers".to_string(), "Headphones".to_string()],
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::PersistRealtimeAudioDeviceSelection {
+            kind: RealtimeAudioDeviceKind::Speaker,
+            name: Some(name),
+        }) if name == "Headphones"
+    );
+}
+
 #[tokio::test]
 async fn skills_menu_default_mentions_shortcut_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
