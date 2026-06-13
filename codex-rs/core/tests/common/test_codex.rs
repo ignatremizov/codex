@@ -850,6 +850,17 @@ impl TestCodex {
         &self._test_env
     }
 
+    pub fn default_environment_selections(
+        &self,
+        cwd: AbsolutePathBuf,
+    ) -> TurnEnvironmentSelections {
+        TurnEnvironmentSelections::new(
+            cwd.clone(),
+            self.thread_manager
+                .default_environment_selections(&cwd, &self.config.workspace_roots),
+        )
+    }
+
     pub fn fs(&self) -> Arc<dyn ExecutorFileSystem> {
         self._test_env.environment().get_filesystem()
     }
