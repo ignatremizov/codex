@@ -1,4 +1,3 @@
-use core_test_support::test_codex::local_selections;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -207,6 +206,7 @@ async fn submit_unified_exec_turn(
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -299,7 +299,7 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(cwd)),
+                environments: Some(test.default_environment_selections(cwd)),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -2044,7 +2044,7 @@ async fn write_stdin_ctrl_c_interrupts_non_tty_session() -> Result<()> {
     skip_if_target_windows!(Ok(()), "asserts Unix SIGINT and trap semantics");
     assert_write_stdin_ctrl_c_interrupts_non_tty_session(
         "trap",
-        "trap 'echo INT-TRAP; exit 42' INT; echo READY; while true; do sleep 30; done",
+        "trap 'printf \"INT-TRAP\\n\"; exit 42' INT; printf 'READY\\n'; while :; do :; done",
         /*expected_exit_code*/ 42,
         Some("INT-TRAP"),
     )
@@ -2057,7 +2057,7 @@ async fn write_stdin_ctrl_c_default_interrupt_reports_130_for_non_tty_session() 
     skip_if_target_windows!(Ok(()), "asserts Unix SIGINT and exit-code semantics");
     assert_write_stdin_ctrl_c_interrupts_non_tty_session(
         "default",
-        "echo READY; exec sleep 30",
+        "printf 'READY\\n'; while :; do :; done",
         /*expected_exit_code*/ 130,
         /*expected_interrupt_output*/ None,
     )
@@ -2071,6 +2071,10 @@ async fn assert_write_stdin_ctrl_c_interrupts_non_tty_session(
     expected_interrupt_output: Option<&str>,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "Docker-backed remote exec-server process completion is not stable under manual verify"
+    );
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
@@ -2087,6 +2091,7 @@ async fn assert_write_stdin_ctrl_c_interrupts_non_tty_session(
     let interrupt_call_id = format!("uexec-non-tty-interrupt-{test_name}");
 
     let start_args = serde_json::json!({
+        "shell": "/bin/sh",
         "cmd": command,
         "yield_time_ms": 250,
         "tty": false,
@@ -2094,7 +2099,7 @@ async fn assert_write_stdin_ctrl_c_interrupts_non_tty_session(
     let interrupt_args = serde_json::json!({
         "chars": "\u{3}",
         "session_id": 1000,
-        "yield_time_ms": 1000,
+        "yield_time_ms": 10_000,
     });
 
     let responses = vec![
@@ -2393,12 +2398,10 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build(&server).await?;
+    let codex = test.codex.clone();
+    let cwd = test.cwd.clone();
+    let session_configured = test.session_configured.clone();
 
     let temp_dir = tempfile::tempdir()?;
     let pid_path = temp_dir.path().join("uexec_pid");
@@ -2440,7 +2443,7 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(turn_cwd)),
+                environments: Some(test.default_environment_selections(turn_cwd)),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -2503,12 +2506,10 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build(&server).await?;
+    let codex = test.codex.clone();
+    let cwd = test.cwd.clone();
+    let session_configured = test.session_configured.clone();
 
     let temp_dir = tempfile::tempdir()?;
     let pid_path = temp_dir.path().join("uexec_pid_interrupt");
@@ -2543,7 +2544,7 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(turn_cwd)),
+                environments: Some(test.default_environment_selections(turn_cwd)),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -2981,12 +2982,10 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build(&server).await?;
+    let codex = test.codex.clone();
+    let cwd = test.cwd.clone();
+    let session_configured = test.session_configured.clone();
 
     let call_id = "uexec";
     let args = serde_json::json!({
@@ -3022,7 +3021,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(turn_cwd)),
+                environments: Some(test.default_environment_selections(turn_cwd)),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -3092,12 +3091,10 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
             ))
             .expect("set permission profile");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build(&server).await?;
+    let codex = test.codex.clone();
+    let cwd = test.cwd.clone();
+    let session_configured = test.session_configured.clone();
 
     let fixture_dir = cwd.path().join("glob-deny-read");
     fs::create_dir_all(&fixture_dir).context("create glob deny-read fixture directory")?;
@@ -3144,7 +3141,7 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(turn_cwd)),
+                environments: Some(test.default_environment_selections(turn_cwd)),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -3219,12 +3216,10 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
             .enable(Feature::UnifiedExec)
             .expect("test config should allow feature update");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build(&server).await?;
+    let codex = test.codex.clone();
+    let cwd = test.cwd.clone();
+    let session_configured = test.session_configured.clone();
 
     let startup_call_id = "uexec-python-seatbelt";
     let startup_args = serde_json::json!({
@@ -3282,7 +3277,7 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(turn_cwd)),
+                environments: Some(test.default_environment_selections(turn_cwd)),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,

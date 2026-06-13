@@ -1208,7 +1208,7 @@ impl UnifiedExecProcessManager {
         mut pause_state: Option<watch::Receiver<bool>>,
         mut deadline: Instant,
     ) -> Vec<u8> {
-        const POST_EXIT_CLOSE_WAIT_CAP: Duration = Duration::from_millis(50);
+        const POST_EXIT_CLOSE_WAIT_CAP: Duration = Duration::from_secs(1);
 
         let mut collected: Vec<u8> = Vec::with_capacity(4096);
         let mut exit_signal_received = cancellation_token.is_cancelled();
@@ -1230,58 +1230,74 @@ impl UnifiedExecProcessManager {
                 }
             }
 
-            if drained_chunks.is_empty() {
-                exit_signal_received |= cancellation_token.is_cancelled();
-                if exit_signal_received && output_closed.load(std::sync::atomic::Ordering::Acquire)
-                {
-                    break;
-                }
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining == Duration::ZERO {
-                    break;
-                }
-
-                if exit_signal_received {
-                    let now = Instant::now();
-                    let close_wait_deadline = *post_exit_deadline
-                        .get_or_insert_with(|| now + remaining.min(POST_EXIT_CLOSE_WAIT_CAP));
-                    let close_wait_remaining = close_wait_deadline.saturating_duration_since(now);
-                    if close_wait_remaining == Duration::ZERO {
-                        break;
-                    }
-                    let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
-                    let closed = output_closed_notify.notified();
-                    tokio::pin!(notified);
-                    tokio::pin!(closed);
-                    tokio::select! {
-                        _ = &mut notified => {}
-                        _ = &mut closed => {}
-                        _ = tokio::time::sleep(close_wait_remaining) => break,
-                        _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
-                    }
-                    continue;
-                }
-
-                let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
-                tokio::pin!(notified);
-                let exit_notified = cancellation_token.cancelled();
-                tokio::pin!(exit_notified);
-                tokio::select! {
-                    _ = &mut notified => {}
-                    _ = &mut exit_notified => exit_signal_received = true,
-                    _ = tokio::time::sleep(remaining) => break,
-                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
-                }
-                continue;
-            }
-
+            let had_chunks = !drained_chunks.is_empty();
             for chunk in drained_chunks {
                 collected.extend_from_slice(&chunk);
             }
 
             exit_signal_received |= cancellation_token.is_cancelled();
-            if Instant::now() >= deadline {
+            if exit_signal_received {
+                if output_closed.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+
+                let now = Instant::now();
+                let close_wait_deadline = *post_exit_deadline.get_or_insert_with(|| {
+                    let remaining = deadline.saturating_duration_since(now);
+                    now + if remaining == Duration::ZERO {
+                        POST_EXIT_CLOSE_WAIT_CAP
+                    } else {
+                        remaining.min(POST_EXIT_CLOSE_WAIT_CAP)
+                    }
+                });
+                let close_wait_remaining = close_wait_deadline.saturating_duration_since(now);
+                if close_wait_remaining == Duration::ZERO {
+                    break;
+                }
+                if had_chunks {
+                    continue;
+                }
+                let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
+                let closed = output_closed_notify.notified();
+                tokio::pin!(notified);
+                tokio::pin!(closed);
+                tokio::select! {
+                    _ = &mut notified => {}
+                    _ = &mut closed => {}
+                    _ = tokio::time::sleep(close_wait_remaining) => break,
+                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
+                }
+                continue;
+            }
+
+            if had_chunks {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                continue;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining == Duration::ZERO {
                 break;
+            }
+
+            let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
+            tokio::pin!(notified);
+            let exit_notified = cancellation_token.cancelled();
+            tokio::pin!(exit_notified);
+            tokio::select! {
+                _ = &mut notified => {}
+                _ = &mut exit_notified => exit_signal_received = true,
+                _ = tokio::time::sleep(remaining) => break,
+                _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
+            }
+        }
+
+        {
+            let mut guard = output_buffer.lock().await;
+            for chunk in guard.drain_chunks() {
+                collected.extend_from_slice(&chunk);
             }
         }
 
