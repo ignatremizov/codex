@@ -2228,14 +2228,35 @@ impl App {
             },
             AppEvent::UpdateRecordingMeter { id, text } => {
                 // Update in place to preserve the element id for subsequent frames.
-                let updated = self.chat_widget.update_recording_meter_in_place(&id, &text);
+                let updated = self.chat_widget.on_dictation_meter_update(&id, &text)
+                    || self.chat_widget.update_recording_meter_in_place(&id, &text);
                 if updated
                     || self
                         .chat_widget
                         .stop_realtime_conversation_for_deleted_meter(&id)
+                    || self.chat_widget.stop_dictation_for_deleted_meter(&id)
                 {
                     tui.frame_requester().schedule_frame();
                 }
+            }
+            AppEvent::DictationChunkTranscriptionComplete { id, sequence, text } => {
+                self.chat_widget
+                    .on_dictation_chunk_transcription_complete(&id, sequence, text);
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::DictationChunkTranscriptionFailed {
+                id,
+                sequence,
+                error,
+            } => {
+                self.chat_widget
+                    .on_dictation_chunk_transcription_failed(&id, sequence, error);
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::DictationChunksFlushed { id, final_sequence } => {
+                self.chat_widget
+                    .on_dictation_chunks_flushed(&id, final_sequence);
+                tui.frame_requester().schedule_frame();
             }
             AppEvent::StatusLineSetup {
                 items,
@@ -2413,7 +2434,14 @@ impl App {
             }
         };
 
-        let runtime_keymap = match RuntimeKeymap::from_config(&keymap_config) {
+        let runtime_keymap = match RuntimeKeymap::from_config_with_features(
+            &keymap_config,
+            RuntimeKeymapFeatures {
+                voice_transcription_enabled: crate::voice_availability::transcription_enabled(
+                    &self.config,
+                ),
+            },
+        ) {
             Ok(runtime_keymap) => runtime_keymap,
             Err(err) => {
                 let params = crate::keymap_setup::build_keymap_conflict_params(
@@ -2466,7 +2494,14 @@ impl App {
             }
         };
 
-        let runtime_keymap = match RuntimeKeymap::from_config(&keymap_config) {
+        let runtime_keymap = match RuntimeKeymap::from_config_with_features(
+            &keymap_config,
+            RuntimeKeymapFeatures {
+                voice_transcription_enabled: crate::voice_availability::transcription_enabled(
+                    &self.config,
+                ),
+            },
+        ) {
             Ok(runtime_keymap) => runtime_keymap,
             Err(err) => {
                 self.chat_widget
