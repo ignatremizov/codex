@@ -100,6 +100,7 @@ fn guardian_stdin_reviews_preserve_parent_command_history() {
         process_id: Some("42".into()),
         turn_id: "turn-1".into(),
         started_at_ms: 1_000,
+        deadline_at_ms: None,
         command: vec!["cat".into()],
         cwd: cwd.clone(),
         parsed_cmd: vec![ParsedCommand::Unknown { cmd: "cat".into() }],
@@ -113,6 +114,7 @@ fn guardian_stdin_reviews_preserve_parent_command_history() {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }))
     };
     let mut items = vec![

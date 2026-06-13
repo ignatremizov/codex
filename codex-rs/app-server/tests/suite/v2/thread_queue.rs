@@ -979,7 +979,7 @@ fn blocked_turn_response() -> Result<String> {
     create_escalated_command_execution_sse_response(
         shell_command,
         /*workdir*/ None,
-        /*timeout_ms*/ Some(10_000),
+        /*yield_time_ms*/ Some(10_000),
         "queue-blocked-command",
     )
 }

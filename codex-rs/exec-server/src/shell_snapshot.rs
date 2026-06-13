@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -54,6 +55,7 @@ struct CachedShellSnapshot {
 struct ShellSnapshot {
     state: String,
     environment: HashMap<String, String>,
+    unset_environment: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -215,20 +217,38 @@ impl ShellSnapshotCache {
             .iter()
             .map(|name| format!("${{{name}}}"))
             .collect::<String>();
-        let state_variables = state_variables.join(" ");
+        let mut variables_to_unset = state_variables;
+        variables_to_unset.extend(
+            snapshot
+                .unset_environment
+                .iter()
+                .filter(|name| !prepared.env.contains_key(*name))
+                .cloned(),
+        );
+        let variables_to_unset = variables_to_unset.join(" ");
         let shell_start = prepared.command.len() - params.argv.len();
         // Automatic startup files run before the restoration script and could
         // reintroduce environment variables that the snapshot already filtered.
-        let (shell_flag, startup) = match shell_type {
-            ShellType::Bash => ("-pc", "set +o privileged\n"),
-            ShellType::Zsh => ("-fc", "setopt RCS\n"),
-            ShellType::Sh => ("-c", ""),
+        let (shell_flags, startup): (&[&str], &str) = match shell_type {
+            // Privileged mode suppresses BASH_ENV, while the explicit startup
+            // flags also suppress the remote-shell .bashrc behavior observed
+            // through the Linux sandbox wrapper.
+            ShellType::Bash => (
+                &["--noprofile", "--norc", "-p", "-c"],
+                "set +o privileged\n",
+            ),
+            ShellType::Zsh => (&["-fc"], "setopt RCS\n"),
+            ShellType::Sh => (&["-c"], ""),
             ShellType::PowerShell | ShellType::Cmd => unreachable!(),
         };
-        prepared.command[shell_start + 1] = shell_flag.to_string();
-        prepared.command[shell_start + 2] = format!(
-            "{startup}if ! eval \"unset {state_variables}\n{state_expansion}\" >/dev/null; then printf 'failed to restore shell snapshot\\n' >&2; fi\n{}",
-            params.argv[2]
+        replace_shell_invocation(
+            &mut prepared.command,
+            shell_start,
+            shell_flags,
+            format!(
+                "{startup}if ! eval \"command unset {variables_to_unset}\n{state_expansion}\" >/dev/null; then printf 'failed to restore shell snapshot\\n' >&2; fi\n{}",
+                params.argv[2]
+            ),
         );
 
         Ok(())
@@ -244,7 +264,19 @@ async fn capture_snapshot(
         .ok_or_else(|| invalid_params("unsupported shell snapshot script".to_string()))?;
     let shell_start = prepared.command.len() - params.argv.len();
     let mut argv = prepared.command.clone();
-    argv[shell_start + 2] = script;
+    if shell_type == ShellType::Bash {
+        // Capture profiles exactly once. In particular, --norc prevents Bash
+        // from implicitly reading .bashrc when the sandbox wrapper resembles
+        // a remote shell; the capture script sources the intended profile.
+        replace_shell_invocation(
+            &mut argv,
+            shell_start,
+            &["--noprofile", "--norc", "-c"],
+            script,
+        );
+    } else {
+        argv[shell_start + 2] = script;
+    }
     let (program, args) = argv
         .split_first()
         .ok_or_else(|| internal_error("missing shell snapshot command".to_string()))?;
@@ -299,6 +331,22 @@ async fn capture_snapshot(
     parse_snapshot(&output, params.env_policy.as_ref())
 }
 
+fn replace_shell_invocation(
+    argv: &mut Vec<String>,
+    shell_start: usize,
+    flags: &[&str],
+    script: String,
+) {
+    argv.splice(
+        shell_start + 1..shell_start + 3,
+        flags
+            .iter()
+            .copied()
+            .map(str::to_owned)
+            .chain(std::iter::once(script)),
+    );
+}
+
 fn parse_snapshot(
     output: &[u8],
     env_policy: Option<&ExecEnvPolicy>,
@@ -316,14 +364,22 @@ fn parse_snapshot(
     let state = std::str::from_utf8(&state[start..])
         .map_err(|err| internal_error(format!("shell snapshot state is not UTF-8: {err}")))?;
 
-    let mut environment = output[separator + 1..]
+    let mut environment = HashMap::new();
+    let mut captured_environment_names = HashSet::new();
+    for entry in output[separator + 1..]
         .split(|byte| *byte == 0)
         .filter(|entry| !entry.is_empty())
-        .filter_map(|entry| {
-            let (name, value) = std::str::from_utf8(entry).ok()?.split_once('=')?;
-            Some((name.to_string(), value.to_string()))
-        })
-        .collect::<HashMap<_, _>>();
+    {
+        let Ok(entry) = std::str::from_utf8(entry) else {
+            continue;
+        };
+        let Some((name, value)) = entry.split_once('=') else {
+            continue;
+        };
+        let name = name.to_string();
+        captured_environment_names.insert(name.clone());
+        environment.insert(name, value.to_string());
+    }
     if environment.contains_key(PROXY_ACTIVE_ENV_KEY) {
         strip_managed_proxy_env(&mut environment);
     }
@@ -338,10 +394,24 @@ fn parse_snapshot(
     environment.remove("PWD");
     environment.remove("OLDPWD");
     environment.retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));
+    let mut unset_environment = captured_environment_names
+        .into_iter()
+        .filter(|name| !environment.contains_key(name))
+        .filter(|name| !matches!(name.as_str(), "PWD" | "OLDPWD"))
+        .filter(|name| {
+            let mut bytes = name.bytes();
+            bytes
+                .next()
+                .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+                && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+        })
+        .collect::<Vec<_>>();
+    unset_environment.sort_unstable();
 
     Ok(ShellSnapshot {
         state: state.to_string(),
         environment,
+        unset_environment,
     })
 }
 

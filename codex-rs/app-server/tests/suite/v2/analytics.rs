@@ -251,25 +251,46 @@ async fn multi_agent_v2_tools_emit_collaborator_analytics() -> Result<()> {
     let calls = [
         (
             "spawn_agent",
-            json!({"task_name": "worker", "message": "PRIVATE_CHILD", "fork_turns": "none"}),
+            json!({
+                "task_name": "worker",
+                "message": "PRIVATE_CHILD",
+                "task_message": "PRIVATE_CHILD",
+                "fork_turns": "none",
+            }),
         ),
         (
             "send_message",
-            json!({"target": "worker", "message": "PRIVATE_MESSAGE"}),
+            json!({
+                "target": "worker",
+                "message": "PRIVATE_MESSAGE",
+                "task_message": "PRIVATE_MESSAGE",
+            }),
         ),
         (
             "followup_task",
-            json!({"target": "worker", "message": "PRIVATE_FOLLOWUP"}),
+            json!({
+                "target": "worker",
+                "message": "PRIVATE_FOLLOWUP",
+                "task_message": "PRIVATE_FOLLOWUP",
+            }),
         ),
         ("interrupt_agent", json!({"target": "worker"})),
         ("list_agents", json!({})),
         (
             "send_message",
-            json!({"target": "missing", "message": "PRIVATE_MESSAGE"}),
+            json!({
+                "target": "missing",
+                "message": "PRIVATE_MESSAGE",
+                "task_message": "PRIVATE_MESSAGE",
+            }),
         ),
         (
             "followup_task",
-            json!({"target": "/root", "message": "PRIVATE_FOLLOWUP"}),
+            json!({
+                "target": "/root",
+                "message": "PRIVATE_FOLLOWUP",
+                "task_message": "PRIVATE_FOLLOWUP",
+            }),
         ),
         ("interrupt_agent", json!({"target": "/root"})),
         ("list_agents", json!({"unexpected": true})),

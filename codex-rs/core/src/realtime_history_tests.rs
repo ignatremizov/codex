@@ -223,6 +223,7 @@ fn promotes_backing_agent_artifacts_once_without_a_client_request() {
         memory_citation: None,
         delivery: None,
         questions: None,
+        sub_agent_completion: None,
     }));
     assert!(state.observe(&completed).items.is_empty());
 
@@ -253,6 +254,7 @@ fn promotes_backing_agent_artifacts_once_without_a_client_request() {
         kind: SubAgentActivityKind::Started,
         agent_thread_id: ThreadId::new(),
         agent_path: AgentPath::root(),
+        prompt: None,
     }));
     for (event, item_id) in [(image, "image-1"), (subagent, "subagent-1")] {
         assert_eq!(
@@ -300,6 +302,7 @@ fn promotes_distinct_visualizations_once_and_ignores_markdown_fences() {
         memory_citation: None,
         delivery: None,
         questions: None,
+        sub_agent_completion: None,
     }));
     assert!(state.observe(&completed).items.is_empty());
 }

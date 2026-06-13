@@ -2743,7 +2743,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
     let expected_display_command =
         expected_approval_command.replace(bearer_token, "[REDACTED_SECRET]");
 
-    // Mock server: first turn requests a shell call (elicitation), then completes.
+    // Mock server: first turn requests a command execution (elicitation), then completes.
     // Second turn same, but we'll set approval_policy=never to avoid elicitation.
     let responses = vec![
         create_escalated_command_execution_sse_response(

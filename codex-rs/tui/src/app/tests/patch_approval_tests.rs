@@ -87,6 +87,7 @@ async fn enqueue_pending_patch(app: &mut App, thread_id: ThreadId) -> Result<()>
             thread_id: thread_id.to_string(),
             turn_id: TURN_ID.to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: patch_item(),
         }),
     )
@@ -295,6 +296,7 @@ async fn replayed_patch_approval_pager_recovers_stored_turn_changes() {
             )],
             events: vec![ThreadBufferedEvent::Request(Box::new(request(thread_id)))],
             input_state: None,
+            active_turn_timing: None,
         },
         /*resume_restored_queue*/ false,
     );

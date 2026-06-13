@@ -32,6 +32,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_remote;
+use core_test_support::skip_if_target_windows;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
@@ -90,10 +91,8 @@ async fn write_repo_skill(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn user_turn_includes_skill_instructions() -> Result<()> {
-    skip_if_wine_exec!(
-        Ok(()),
-        "skill paths require matching host and executor path conventions"
-    );
+    skip_if_wine_exec!(Ok(()), "requires native cross-OS skill paths");
+    skip_if_target_windows!(Ok(()), "requires native skill paths");
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;

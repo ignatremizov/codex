@@ -241,6 +241,10 @@ fn snapshot_filters_profile_exports_after_capture() {
         HashMap::from([("PROFILE_ALLOWED".to_string(), "override".to_string())])
     );
     assert_eq!(
+        snapshot.unset_environment,
+        vec!["PROFILE_DENIED".to_string(), "PROFILE_SECRET".to_string()]
+    );
+    assert_eq!(
         snapshot.state,
         "# Snapshot file\nfunction profile_helper() { :; }\n"
     );

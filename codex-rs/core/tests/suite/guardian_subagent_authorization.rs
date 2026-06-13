@@ -2,6 +2,7 @@ use anyhow::Result;
 use codex_core::GuardianRootMessage;
 use codex_core::config::Constrained;
 use codex_features::Feature;
+use codex_features::MultiAgentMessageDelivery;
 use codex_prompts::render_review_exit_success;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -114,6 +115,7 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization() -> Re
         }
         config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
         config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+        config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Plaintext;
         config
             .permissions
             .set_permission_profile(PermissionProfile::workspace_write())
@@ -134,7 +136,11 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization() -> Re
                 SPAWN_CALL_ID,
                 "collaboration",
                 "spawn_agent",
-                &json!({ "message": INITIAL_TASK, "task_name": "worker" }).to_string(),
+                &json!({
+                    "message": INITIAL_TASK,
+                    "task_name": "worker",
+                })
+                .to_string(),
             ),
             ev_completed("root-spawn-response"),
         ]),
@@ -205,7 +211,11 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization() -> Re
         FOLLOWUP_CALL_ID,
         "collaboration",
         "followup_task",
-        &json!({ "target": "worker", "message": FORWARDED_AGENT_MESSAGE }).to_string(),
+        &json!({
+            "target": "worker",
+            "message": FORWARDED_AGENT_MESSAGE,
+        })
+        .to_string(),
     );
     followup_call["item"]["encrypted_function_args"] = json!([]);
     mount_sse_once_match(
@@ -311,8 +321,8 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization() -> Re
         guardian_transcript
             .matches(&format!("user: {INITIAL_PROMPT}"))
             .count(),
-        2,
-        "the original user instructions remain in the existing worker transcript"
+        1,
+        "the fresh worker omits inherited root history while Guardian retains the trusted root conversation"
     );
     assert!(guardian_transcript.contains(&format!("user: {USER_APPROVAL}")));
     assert!(guardian_transcript.contains(&format!("assistant: {ROOT_ASSISTANT_REPLY}")));

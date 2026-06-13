@@ -4217,7 +4217,9 @@ async fn local_bundled_cleanup_hook_runs_without_saved_trust(
             .expect("disable executor capability discovery");
         let repl: McpServerConfig = serde_json::from_value(serde_json::json!({
             "url": repl_url,
-            "environment_id": super::rmcp_client::remote_aware_environment_id(),
+            // The Wiremock endpoint belongs to the host test process. Keep this
+            // MCP client local when the acting turn uses a remote executor.
+            "environment_id": codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
         }))
         .expect("valid MCP configuration");
         config

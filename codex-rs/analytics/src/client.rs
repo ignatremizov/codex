@@ -370,6 +370,7 @@ impl AnalyticsEventsClient {
             thread_id: thread_id.clone(),
             turn_id: turn_id.clone(),
             started_at_ms,
+            deadline_at_ms: None,
         }));
         self.track_notification(&ServerNotification::ItemCompleted(
             ItemCompletedNotification {

@@ -135,7 +135,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
 ) -> Result<()> {
     if use_sandbox
         && let Some(warning) =
-            codex_sandboxing::system_bwrap_warning(&PermissionProfile::read_only())
+            codex_sandboxing::system_bwrap_warning(&PermissionProfile::workspace_write())
     {
         eprintln!("skipping sandbox test: {warning}");
         return Ok(());
@@ -242,9 +242,9 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
                 tty,
                 pipe_stdin: false,
                 arg0: None,
-                sandbox: (use_sandbox && attempt == 0).then(|| {
+                sandbox: use_sandbox.then(|| {
                     FileSystemSandboxContext::from_permission_profile_with_cwd(
-                        PermissionProfile::read_only(),
+                        PermissionProfile::workspace_write(),
                         cwd.clone(),
                     )
                 }),
@@ -367,13 +367,6 @@ async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
     shell_name: &str,
     failures_before_repair: usize,
 ) -> Result<()> {
-    if use_remote
-        && let Some(warning) =
-            codex_sandboxing::system_bwrap_warning(&PermissionProfile::workspace_write())
-    {
-        eprintln!("skipping sandbox test: {warning}");
-        return Ok(());
-    }
     let context = create_process_context(use_remote).await?;
     let home = TempDir::new()?;
     let cwd = PathUri::from_host_native_path(home.path())?;
@@ -416,12 +409,7 @@ async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
         tty,
         pipe_stdin: false,
         arg0: None,
-        sandbox: use_remote.then(|| {
-            FileSystemSandboxContext::from_permission_profile_with_cwd(
-                PermissionProfile::workspace_write(),
-                cwd,
-            )
-        }),
+        sandbox: None,
         enforce_managed_network: false,
         managed_network: None,
         network_proxy: None,

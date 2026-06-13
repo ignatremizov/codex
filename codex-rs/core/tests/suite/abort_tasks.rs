@@ -284,7 +284,7 @@ async fn interrupt_tool_records_history_entries() {
     assert_matches!(
         captures.as_ref(),
         Some(caps) if caps.get(1).is_some(),
-        "aborted message with elapsed seconds"
+        "aborted message with elapsed seconds; actual output: {output:?}"
     );
     let secs: f32 = captures
         .expect("aborted message with elapsed seconds")

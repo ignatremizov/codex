@@ -407,13 +407,21 @@ async fn parent_response(
                     (
                         "guardian-spawn-worker",
                         "spawn_agent",
-                        json!({ "message": "Call the configured MCP tool.", "task_name": "worker" }),
+                        json!({
+                            "message": "Call the configured MCP tool.",
+                            "task_message": "Call the configured MCP tool.",
+                            "task_name": "worker",
+                        }),
                     )
                 } else {
                     (
                         "guardian-followup-worker",
                         "followup_task",
-                        json!({ "target": "worker", "message": "Call the MCP tool again." }),
+                        json!({
+                            "target": "worker",
+                            "message": "Call the MCP tool again.",
+                            "task_message": "Call the MCP tool again.",
+                        }),
                     )
                 };
                 vec![
@@ -1293,6 +1301,8 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                 .send_thread_rollback_request(ThreadRollbackParams {
                     thread_id: thread_id.clone(),
                     num_turns: 1,
+                    expected_start_turn_id: None,
+                    expected_turn_count: None,
                 })
                 .await?;
             let _: ThreadRollbackResponse =
@@ -1400,15 +1410,14 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             })
             .await?;
         }
+        let turn = wait_for_matching_analytics_event(&analytics_server, TIMEOUT, |event| {
+            event["event_type"] == "codex_turn_event"
+                && event["event_params"]["thread_id"] == reviewed_thread_id
+        })
+        .await?;
         timeout(TIMEOUT, app_server.shutdown_gracefully()).await??;
         let events = captured_analytics_events(&analytics_server).await;
-        let turn = &events
-            .iter()
-            .find(|event| {
-                event["event_type"] == "codex_turn_event"
-                    && event["event_params"]["thread_id"] == reviewed_thread_id
-            })
-            .expect("parent turn analytics")["event_params"];
+        let turn = &turn["event_params"];
         assert_eq!(turn["guardian_v2_enabled"], classifier_in_scope);
         let classification = events.iter().find(|event| {
             event["event_type"] == "codex_guardian_v2_classification"
