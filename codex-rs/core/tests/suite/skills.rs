@@ -17,8 +17,7 @@ use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
-use core_test_support::skip_if_target_windows;
-use core_test_support::test_codex::local_selections;
+use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use std::sync::Arc;
@@ -49,7 +48,7 @@ async fn write_repo_skill(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn user_turn_includes_skill_instructions() -> Result<()> {
     // TODO(anp): Remove after skill-path helpers use target-native paths.
-    skip_if_target_windows!(Ok(()), "requires native cross-OS skill paths");
+    skip_if_wine_exec!(Ok(()), "requires native cross-OS skill paths");
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -96,7 +95,7 @@ async fn user_turn_includes_skill_instructions() -> Result<()> {
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
+                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,

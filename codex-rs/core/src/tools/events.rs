@@ -8,7 +8,6 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::SandboxErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::items::CommandExecutionItem;
-use codex_protocol::items::CommandExecutionStatus;
 use codex_protocol::items::FileChangeItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::parse_command::ParsedCommand;
