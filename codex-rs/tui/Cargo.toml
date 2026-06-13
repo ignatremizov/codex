@@ -124,10 +124,11 @@ webbrowser = { workspace = true }
 uuid = { workspace = true }
 
 codex-windows-sandbox = { workspace = true }
-tokio-util = { workspace = true, features = ["time"] }
+tokio-util = { workspace = true, features = ["rt", "time"] }
 
 [target.'cfg(any(not(target_os = "linux"), all(target_os = "linux", not(target_env = "musl"))))'.dependencies]
 cpal = "0.15"
+webrtc-vad = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
