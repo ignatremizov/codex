@@ -7,6 +7,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::protocol::InterAgentCommunication;
 use pretty_assertions::assert_eq;
 
 use super::*;
@@ -105,12 +106,12 @@ fn encrypted_inter_agent_communication_request_uses_ciphertext_not_audit_content
     );
     communication.content = "audit-visible task".to_string();
     let prompt = Prompt {
-        input: vec![ResponseItem::from(communication.to_response_input_item())],
+        input: vec![communication.to_model_input_item()],
         ..Default::default()
     };
 
     assert_eq!(
-        prompt.get_formatted_input(),
+        prompt.get_formatted_input_for_request(/*use_responses_lite*/ false),
         vec![ResponseItem::AgentMessage {
             author: "/root".to_string(),
             recipient: "/root/worker".to_string(),

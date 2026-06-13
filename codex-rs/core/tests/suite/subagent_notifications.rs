@@ -61,6 +61,12 @@ const SUBAGENT_STOP_CONTINUATION: &str = "continue only the child";
 const INTERNAL_SUBAGENT_PROMPT: &str = "internal subagent: review";
 
 fn body_contains(req: &wiremock::Request, text: &str) -> bool {
+    request_body_bytes(req)
+        .and_then(|body| String::from_utf8(body).ok())
+        .is_some_and(|body| body.contains(text))
+}
+
+fn request_body_bytes(req: &wiremock::Request) -> Option<Vec<u8>> {
     let is_zstd = req
         .headers
         .get("content-encoding")
@@ -70,14 +76,82 @@ fn body_contains(req: &wiremock::Request, text: &str) -> bool {
                 .split(',')
                 .any(|entry| entry.trim().eq_ignore_ascii_case("zstd"))
         });
-    let bytes = if is_zstd {
+
+    if is_zstd {
         zstd::stream::decode_all(std::io::Cursor::new(&req.body)).ok()
     } else {
         Some(req.body.clone())
+    }
+}
+
+fn request_has_agent_message_text(req: &wiremock::Request, expected_text: &str) -> bool {
+    let Some(body) = request_body_bytes(req) else {
+        return false;
     };
-    bytes
-        .and_then(|body| String::from_utf8(body).ok())
-        .is_some_and(|body| body.contains(text))
+    let Ok(body) = serde_json::from_slice::<Value>(&body) else {
+        return false;
+    };
+    let Some(input) = body.get("input").and_then(Value::as_array) else {
+        return false;
+    };
+    input.iter().any(|item| {
+        item.get("type").and_then(Value::as_str) == Some("agent_message")
+            && item
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|content| {
+                    content.iter().any(|part| {
+                        part.get("type").and_then(Value::as_str) == Some("input_text")
+                            && part.get("text").and_then(Value::as_str) == Some(expected_text)
+                    })
+                })
+    })
+}
+
+fn request_has_agent_message_route(
+    req: &wiremock::Request,
+    expected_author: &str,
+    expected_recipient: &str,
+) -> bool {
+    let Some(body) = request_body_bytes(req) else {
+        return false;
+    };
+    let Ok(body) = serde_json::from_slice::<Value>(&body) else {
+        return false;
+    };
+    let Some(input) = body.get("input").and_then(Value::as_array) else {
+        return false;
+    };
+    input.iter().any(|item| {
+        item.get("type").and_then(Value::as_str) == Some("agent_message")
+            && item.get("author").and_then(Value::as_str) == Some(expected_author)
+            && item.get("recipient").and_then(Value::as_str) == Some(expected_recipient)
+    })
+}
+
+async fn wait_for_agent_messages(
+    mock: &core_test_support::responses::ResponseMock,
+    expected_agent_messages: &[Value],
+    description: &str,
+) -> Result<ResponsesRequest> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let requests = mock.requests();
+        if let Some(request) = requests.into_iter().find(|request| {
+            request.inputs_of_type("agent_message").as_slice() == expected_agent_messages
+        }) {
+            return Ok(request);
+        }
+        if Instant::now() >= deadline {
+            let observed_agent_messages: Vec<Vec<Value>> = mock
+                .requests()
+                .iter()
+                .map(|request| request.inputs_of_type("agent_message"))
+                .collect();
+            anyhow::bail!("{description}, got {observed_agent_messages:#?}");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn has_subagent_notification(req: &ResponsesRequest) -> bool {
@@ -1045,7 +1119,9 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
     .await;
     let child_request_log = mount_sse_once_match(
         &server,
-        |req: &wiremock::Request| body_contains(req, "\"type\":\"agent_message\""),
+        |req: &wiremock::Request| {
+            body_contains(req, "\"type\":\"agent_message\"") && !body_contains(req, SPAWN_CALL_ID)
+        },
         sse(vec![
             ev_response_created("resp-child-1"),
             ev_completed("resp-child-1"),
@@ -1105,6 +1181,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message() -> Result<()>
     let server = start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": "opaque-encrypted-message",
+        "task_message": "audit-visible child task",
         "task_name": "worker",
     }))?;
     mount_sse_once_match(
@@ -1119,7 +1196,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message() -> Result<()>
     .await;
     let child_request = mount_response_once_match(
         &server,
-        |req: &wiremock::Request| body_contains(req, "\"type\":\"agent_message\""),
+        |req: &wiremock::Request| request_has_agent_message_route(req, "/root", "/root/worker"),
         sse_response(sse(vec![
             ev_response_created("resp-child-1"),
             ev_assistant_message("msg-child-1", "child done"),
@@ -1158,9 +1235,9 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message() -> Result<()>
     .await;
     let agent_request = mount_sse_once_match(
         &server,
-        |req: &wiremock::Request| {
+        move |req: &wiremock::Request| {
             body_contains(req, TURN_2_NO_WAIT_PROMPT)
-                && body_contains(req, "<subagent_notification>")
+                && request_has_agent_message_text(req, notification)
         },
         sse(vec![
             ev_response_created("resp-parent-4"),
@@ -1185,24 +1262,41 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message() -> Result<()>
         .await?;
 
     test.submit_turn(TURN_1_PROMPT).await?;
-    let _ = wait_for_requests(&child_request).await?;
+    let expected_child_agent_messages = vec![json!({
+        "type": "agent_message",
+        "author": "/root",
+        "recipient": "/root/worker",
+        "content": [{
+            "type": "encrypted_content",
+            "encrypted_content": "opaque-encrypted-message",
+        }],
+    })];
+    let _ = wait_for_agent_messages(
+        &child_request,
+        &expected_child_agent_messages,
+        "expected child agent message request",
+    )
+    .await?;
     test.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
 
-    let request = wait_for_requests(&agent_request)
-        .await?
-        .pop()
-        .expect("agent message request");
+    let expected_agent_messages = vec![json!({
+        "type": "agent_message",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{
+            "type": "input_text",
+            "text": notification,
+        }],
+    })];
+    let request = wait_for_agent_messages(
+        &agent_request,
+        &expected_agent_messages,
+        "expected parent completion agent message request",
+    )
+    .await?;
     assert_eq!(
         request.inputs_of_type("agent_message"),
-        vec![json!({
-            "type": "agent_message",
-            "author": "/root/worker",
-            "recipient": "/root",
-            "content": [{
-                "type": "input_text",
-                "text": notification,
-            }],
-        })]
+        expected_agent_messages
     );
 
     Ok(())
