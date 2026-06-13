@@ -737,6 +737,9 @@
             "use_linux_sandbox_bwrap": {
               "type": "boolean"
             },
+            "voice_transcription": {
+              "type": "boolean"
+            },
             "web_search": {
               "type": "boolean"
             },
@@ -3170,6 +3173,7 @@
               "history_search_previous": null,
               "queue": null,
               "submit": null,
+              "toggle_dictation": null,
               "toggle_shortcuts": null
             },
             "editor": {
@@ -3545,6 +3549,14 @@
           ],
           "description": "Submit the current composer draft."
         },
+        "toggle_dictation": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Start or stop voice dictation in the composer."
+        },
         "toggle_shortcuts": {
           "allOf": [
             {
@@ -3831,6 +3843,7 @@
             "history_search_previous": null,
             "queue": null,
             "submit": null,
+            "toggle_dictation": null,
             "toggle_shortcuts": null
           }
         },
@@ -5198,6 +5211,9 @@
           "type": "boolean"
         },
         "use_linux_sandbox_bwrap": {
+          "type": "boolean"
+        },
+        "voice_transcription": {
           "type": "boolean"
         },
         "web_search": {
