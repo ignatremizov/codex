@@ -341,6 +341,7 @@ use self::ide_context::IdeContextState;
 mod input_queue;
 mod reconnect;
 use self::input_queue::InputQueueState;
+mod dictation;
 mod image_submission;
 mod input_flow;
 mod input_restore;
@@ -656,6 +657,8 @@ pub(crate) struct ChatWidget {
     unified_exec_wait_streak: Option<UnifiedExecWaitStreak>,
     turn_lifecycle: TurnLifecycleState,
     realtime_conversation: RealtimeConversationUiState,
+    dictation: Option<crate::dictation::session::Session>,
+    dictation_keymap: Vec<KeyBinding>,
     realtime_conversation_available_for_thread: bool,
     safety_buffering: SafetyBufferingState,
     task_complete_pending: bool,
@@ -1208,6 +1211,15 @@ impl ChatWidget {
     }
 
     pub(crate) fn pre_draw_tick(&mut self) {
+        if self.dictation.as_ref().is_some_and(|session| {
+            !self.bottom_pane.has_dictation_element(session.element)
+                || session.thread != self.thread_id()
+                || !self.bottom_pane.composer_input_enabled()
+                || !self.dictation_enabled()
+                || self.external_writer_view
+        }) {
+            self.cancel_dictation();
+        }
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
         self.bottom_pane.pre_draw_tick();
@@ -2082,6 +2094,7 @@ fn has_websocket_timing_metrics(summary: RuntimeMetricsSummary) -> bool {
 
 impl Drop for ChatWidget {
     fn drop(&mut self) {
+        self.cancel_dictation();
         if self.realtime_conversation.handle.is_some()
             && let Some(thread_id) = self.thread_id
         {

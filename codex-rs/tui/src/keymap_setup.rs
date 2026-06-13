@@ -756,6 +756,14 @@ mod tests {
     fn fast_mode_action_filter() -> KeymapActionFilter {
         KeymapActionFilter {
             fast_mode_enabled: true,
+            voice_transcription_enabled: false,
+        }
+    }
+
+    fn voice_action_filter() -> KeymapActionFilter {
+        KeymapActionFilter {
+            fast_mode_enabled: false,
+            voice_transcription_enabled: true,
         }
     }
 
@@ -890,6 +898,126 @@ mod tests {
                 tab.label
             );
         }
+    }
+
+    #[test]
+    fn picker_shows_dictation_action_only_when_feature_is_enabled() {
+        let keymap = TuiKeymap::default();
+        let disabled_runtime = RuntimeKeymap::from_config(&keymap).expect("runtime keymap");
+        let disabled_params = build_keymap_picker_params(&disabled_runtime, &keymap);
+        assert!(
+            selection_tab(&disabled_params, KEYMAP_ALL_TAB_ID)
+                .items
+                .iter()
+                .all(|item| item.name != "Toggle Dictation")
+        );
+
+        let enabled_runtime = RuntimeKeymap::from_config_with_features(
+            &keymap,
+            crate::keymap::RuntimeKeymapFeatures {
+                voice_transcription_enabled: true,
+            },
+        )
+        .expect("runtime keymap");
+        let enabled_params = build_keymap_picker_params_with_filter(
+            &enabled_runtime,
+            &keymap,
+            voice_action_filter(),
+        );
+        for tab_id in [
+            KEYMAP_ALL_TAB_ID,
+            KEYMAP_COMMON_TAB_ID,
+            "composer-shortcuts",
+        ] {
+            let tab = selection_tab(&enabled_params, tab_id);
+            assert!(
+                tab.items.iter().any(|item| item.name == "Toggle Dictation"),
+                "expected Toggle Dictation in {}",
+                tab.label
+            );
+        }
+    }
+
+    #[test]
+    fn picker_dictation_enabled_and_disabled_snapshots() {
+        let keymap = TuiKeymap::default();
+        let disabled_runtime = RuntimeKeymap::from_config(&keymap).expect("runtime keymap");
+        let mut disabled_params = build_keymap_picker_params(&disabled_runtime, &keymap);
+        disabled_params.initial_tab_id = Some("composer-shortcuts".to_string());
+        let disabled_snapshot = render_picker(disabled_params, /*width*/ 120);
+        assert_snapshot!("keymap_picker_dictation_disabled", disabled_snapshot);
+
+        let enabled_runtime = RuntimeKeymap::from_config_with_features(
+            &keymap,
+            crate::keymap::RuntimeKeymapFeatures {
+                voice_transcription_enabled: true,
+            },
+        )
+        .expect("runtime keymap");
+        let mut enabled_params = build_keymap_picker_params_with_filter(
+            &enabled_runtime,
+            &keymap,
+            voice_action_filter(),
+        );
+        enabled_params.initial_tab_id = Some("composer-shortcuts".to_string());
+        let enabled_snapshot = render_picker(enabled_params, /*width*/ 120);
+        assert_snapshot!("keymap_picker_dictation_enabled", enabled_snapshot);
+    }
+
+    #[test]
+    fn picker_dictation_preserves_configured_custom_and_unbound_bindings() {
+        let mut custom = TuiKeymap::default();
+        custom.composer.toggle_dictation = Some(KeybindingsSpec::One(KeybindingSpec(
+            "ctrl-alt-d".to_string(),
+        )));
+        let custom_runtime = RuntimeKeymap::from_config_with_features(
+            &custom,
+            crate::keymap::RuntimeKeymapFeatures {
+                voice_transcription_enabled: true,
+            },
+        )
+        .expect("custom dictation keymap");
+        let custom_params =
+            build_keymap_picker_params_with_filter(&custom_runtime, &custom, voice_action_filter());
+        let custom_item = selection_tab(&custom_params, KEYMAP_ALL_TAB_ID)
+            .items
+            .iter()
+            .find(|item| item.name == "Toggle Dictation")
+            .expect("custom dictation row");
+        assert_eq!(custom_item.description.as_deref(), Some("ctrl-alt-d"));
+        assert!(
+            selection_tab(&custom_params, KEYMAP_CUSTOM_TAB_ID)
+                .items
+                .iter()
+                .any(|item| item.name == "Toggle Dictation")
+        );
+
+        let mut unbound = TuiKeymap::default();
+        unbound.composer.toggle_dictation = Some(KeybindingsSpec::Many(Vec::new()));
+        let unbound_runtime = RuntimeKeymap::from_config_with_features(
+            &unbound,
+            crate::keymap::RuntimeKeymapFeatures {
+                voice_transcription_enabled: true,
+            },
+        )
+        .expect("unbound dictation keymap");
+        let unbound_params = build_keymap_picker_params_with_filter(
+            &unbound_runtime,
+            &unbound,
+            voice_action_filter(),
+        );
+        let unbound_item = selection_tab(&unbound_params, KEYMAP_ALL_TAB_ID)
+            .items
+            .iter()
+            .find(|item| item.name == "Toggle Dictation")
+            .expect("unbound dictation row");
+        assert_eq!(unbound_item.description.as_deref(), Some("unbound"));
+        assert!(
+            selection_tab(&unbound_params, KEYMAP_UNBOUND_TAB_ID)
+                .items
+                .iter()
+                .any(|item| item.name == "Toggle Dictation")
+        );
     }
 
     #[test]

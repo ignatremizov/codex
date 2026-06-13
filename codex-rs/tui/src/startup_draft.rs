@@ -255,7 +255,10 @@ impl StartupDraftPump {
         self.bottom_pane
             .set_disable_paste_burst(local_settings.tui.disable_paste_burst.unwrap_or(false));
         self.bottom_pane.request_redraw();
-        if let Ok(keymap) = RuntimeKeymap::from_config(&local_settings.tui.keymap) {
+        if let Ok(keymap) = RuntimeKeymap::from_config_with_features(
+            &local_settings.tui.keymap,
+            crate::dictation::keymap_features(&local_settings),
+        ) {
             if crate::keymap::keymap_action_id("composer", "submit").is_none_or(|submit| {
                 self.key_chords.configured_specs(submit) != keymap.chords.configured_specs(submit)
             }) {

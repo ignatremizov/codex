@@ -71,7 +71,11 @@ impl ChatWidget {
             &model_catalog.try_list_models().unwrap_or_default(),
         );
         let current_terminal_info = terminal_info();
-        let runtime_keymap = RuntimeKeymap::from_config(&local_settings.tui.keymap).ok();
+        let runtime_keymap = RuntimeKeymap::from_config_with_features(
+            &local_settings.tui.keymap,
+            crate::dictation::keymap_features(&local_settings),
+        )
+        .ok();
         let default_keymap = RuntimeKeymap::defaults();
         let copy_last_response_binding = runtime_keymap
             .as_ref()
@@ -183,6 +187,11 @@ impl ChatWidget {
             unified_exec_wait_streak: None,
             turn_lifecycle: TurnLifecycleState::new(prevent_idle_sleep),
             realtime_conversation: RealtimeConversationUiState::default(),
+            dictation: None,
+            dictation_keymap: runtime_keymap
+                .as_ref()
+                .map(|keymap| keymap.composer.toggle_dictation.clone())
+                .unwrap_or_default(),
             realtime_conversation_available_for_thread: false,
             safety_buffering: SafetyBufferingState::default(),
             task_complete_pending: false,

@@ -329,6 +329,24 @@ pub(crate) struct BottomPaneParams {
 }
 
 impl BottomPane {
+    pub(crate) fn begin_dictation(&mut self) -> u64 {
+        self.composer.begin_dictation()
+    }
+
+    pub(crate) fn has_dictation_element(&self, id: u64) -> bool {
+        self.composer.has_dictation_element(id)
+    }
+
+    pub(crate) fn update_dictation(&mut self, id: u64, text: &str, label: &str) -> bool {
+        let updated = self.composer.update_dictation(id, text, label);
+        self.frame_requester.schedule_frame();
+        updated
+    }
+
+    pub(crate) fn finish_dictation(&mut self, id: u64) {
+        self.composer.finish_dictation(id);
+        self.frame_requester.schedule_frame();
+    }
     pub fn new(params: BottomPaneParams) -> Self {
         Self::new_with_composer_config(params, ChatComposerConfig::default())
     }

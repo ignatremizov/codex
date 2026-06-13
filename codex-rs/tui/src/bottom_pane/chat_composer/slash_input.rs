@@ -246,6 +246,49 @@ impl ChatComposer {
             unreachable!();
         };
 
+        if self.dictation_element.is_some()
+            && (key_event.code == KeyCode::Tab
+                || (key_event.code == KeyCode::Enter && key_event.modifiers.is_empty()))
+        {
+            // These keys may complete a token while recording, but must not dispatch a
+            // command or replace the entire draft (including its recording marker).
+            let text = self.draft.textarea.text();
+            let first_line = text.lines().next().unwrap_or("");
+            let cursor = self.draft.textarea.cursor();
+            let filter = command_popup_filter_text(first_line, cursor)
+                .unwrap_or_else(|| first_line.to_string());
+            popup.on_composer_text_change(filter);
+            if let Some(selected) = popup.selected_item()
+                && let Some(completion) = selected_command_completion("", &selected)
+            {
+                let end = match selected {
+                    CommandItem::Mcp(_) => cursor.min(first_line.len()),
+                    CommandItem::Builtin(_) | CommandItem::ServiceTier(_) => first_line
+                        .find(char::is_whitespace)
+                        .unwrap_or(first_line.len()),
+                };
+                let completion = if text[end..].chars().next().is_some_and(char::is_whitespace) {
+                    completion.trim_end().to_string()
+                } else {
+                    completion
+                };
+                let placeholder_overlaps =
+                    self.draft
+                        .textarea
+                        .text_element_snapshots()
+                        .iter()
+                        .any(|element| {
+                            Some(element.id) == self.dictation_element && element.range.start < end
+                        });
+                if !placeholder_overlaps {
+                    self.draft.textarea.replace_range(0..end, &completion);
+                    self.draft.textarea.set_cursor(completion.len());
+                    self.draft.is_bash_mode = false;
+                }
+            }
+            return (InputResult::None, true);
+        }
+
         match key_event {
             KeyEvent {
                 code: KeyCode::Up, ..

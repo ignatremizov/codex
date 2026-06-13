@@ -730,14 +730,17 @@ impl App {
             )));
         }
         let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
-        let runtime_keymap =
-            RuntimeKeymap::from_config(&local_settings.tui.keymap).map_err(|err| {
-                color_eyre::eyre::eyre!(
-                    "Invalid `tui.keymap` configuration: {err}\n\
+        let runtime_keymap = RuntimeKeymap::from_config_with_features(
+            &local_settings.tui.keymap,
+            crate::dictation::keymap_features(&local_settings),
+        )
+        .map_err(|err| {
+            color_eyre::eyre::eyre!(
+                "Invalid `tui.keymap` configuration: {err}\n\
 Fix the config and retry.\n\
 See the Codex keymap documentation for supported actions and examples."
-                )
-            })?;
+            )
+        })?;
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 

@@ -474,13 +474,10 @@ impl RouteAwareClientPool {
         http_client_factory: HttpClientFactory,
         route_class: ClientRouteClass,
     ) -> Self {
-        Self::with_builder(
-            http_client_factory,
-            route_class,
-            HttpClientBuilder::new()
-                .with_chatgpt_cloudflare_cookie_store()
-                .without_request_logging(),
-        )
+        let client_builder = HttpClientBuilder::new()
+            .with_chatgpt_cookies(&http_client_factory)
+            .without_request_logging();
+        Self::with_builder(http_client_factory, route_class, client_builder)
     }
 
     pub fn get<U>(&self, url: U) -> RouteAwareRequestBuilder
