@@ -46,6 +46,7 @@ use crate::history_cell::UpdateAvailableHistoryCell;
 use crate::hooks_rpc::HookTrustUpdate;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::RuntimeKeymap;
+use crate::keymap::RuntimeKeymapFeatures;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
@@ -995,13 +996,19 @@ impl App {
             .maybe_prompt_windows_sandbox_enable(should_prompt_windows_sandbox_nux_at_startup);
 
         let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
-        let runtime_keymap = RuntimeKeymap::from_config(&config.tui_keymap).map_err(|err| {
-            color_eyre::eyre::eyre!(
-                "Invalid `tui.keymap` configuration: {err}\n\
+        let keymap_features = RuntimeKeymapFeatures {
+            voice_transcription_enabled: crate::voice_availability::transcription_enabled(&config),
+        };
+        let runtime_keymap =
+            RuntimeKeymap::from_config_with_features(&config.tui_keymap, keymap_features).map_err(
+                |err| {
+                    color_eyre::eyre::eyre!(
+                        "Invalid `tui.keymap` configuration: {err}\n\
 Fix the config and retry.\n\
 See the Codex keymap documentation for supported actions and examples."
-            )
-        })?;
+                    )
+                },
+            )?;
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 

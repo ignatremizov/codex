@@ -14,6 +14,7 @@ use crate::key_hint::is_plain_text_key_event;
 use crate::keymap::ListKeymap;
 use crate::keymap::PagerKeymap;
 use crate::keymap::RuntimeKeymap;
+use crate::keymap::RuntimeKeymapFeatures;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
 use crate::markdown::append_markdown;
@@ -528,8 +529,13 @@ fn picker_provider_filter(config: &Config, uses_remote_workspace: bool) -> Provi
 }
 
 fn picker_runtime_keymap(config: &Config) -> Result<RuntimeKeymap> {
-    RuntimeKeymap::from_config(&config.tui_keymap)
-        .map_err(|err| color_eyre::eyre::eyre!("invalid keymap configuration: {err}"))
+    RuntimeKeymap::from_config_with_features(
+        &config.tui_keymap,
+        RuntimeKeymapFeatures {
+            voice_transcription_enabled: crate::voice_availability::transcription_enabled(config),
+        },
+    )
+    .map_err(|err| color_eyre::eyre::eyre!("invalid keymap configuration: {err}"))
 }
 
 fn picker_cwd_filter(

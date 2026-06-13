@@ -71,8 +71,16 @@ impl ChatWidget {
             &model_catalog.try_list_models().unwrap_or_default(),
         );
         let current_terminal_info = terminal_info();
-        let runtime_keymap = RuntimeKeymap::from_config(&config.tui_keymap).ok();
-        let default_keymap = RuntimeKeymap::defaults();
+        let runtime_keymap_features = RuntimeKeymapFeatures {
+            voice_transcription_enabled: crate::voice_availability::transcription_enabled(&config),
+        };
+        let runtime_keymap =
+            RuntimeKeymap::from_config_with_features(&config.tui_keymap, runtime_keymap_features)
+                .ok();
+        let mut default_keymap = RuntimeKeymap::defaults();
+        if !runtime_keymap_features.voice_transcription_enabled {
+            default_keymap.composer.toggle_dictation.clear();
+        }
         let copy_last_response_binding = runtime_keymap
             .as_ref()
             .map(|keymap| keymap.app.copy.clone())
@@ -81,6 +89,10 @@ impl ChatWidget {
             .as_ref()
             .map(|keymap| keymap.chat.clone())
             .unwrap_or_else(|| default_keymap.chat.clone());
+        let dictation_keymap = runtime_keymap
+            .as_ref()
+            .map(|keymap| keymap.composer.toggle_dictation.clone())
+            .unwrap_or_else(|| default_keymap.composer.toggle_dictation.clone());
         let queued_message_edit_hint_binding = queued_message_edit_hint_binding(
             &chat_keymap.edit_queued_message,
             current_terminal_info,
@@ -192,6 +204,7 @@ impl ChatWidget {
             input_queue: InputQueueState::default(),
             cancel_edit: CancelEditState::default(),
             chat_keymap,
+            dictation_keymap,
             queued_message_edit_hint_binding,
             show_welcome_banner: is_first_run,
             startup_tooltip_override,
@@ -226,6 +239,7 @@ impl ChatWidget {
             current_goal_status_indicator: None,
             current_goal_status: None,
             external_editor_state: ExternalEditorState::Closed,
+            dictation: DictationUiState::default(),
             realtime_conversation: RealtimeConversationUiState::default(),
             last_rendered_user_message_display: None,
             last_non_retry_error: None,

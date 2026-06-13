@@ -1962,9 +1962,18 @@ impl App {
                     || self
                         .chat_widget
                         .stop_realtime_conversation_for_deleted_meter(&id)
+                    || self.chat_widget.stop_dictation_for_deleted_meter(&id)
                 {
                     tui.frame_requester().schedule_frame();
                 }
+            }
+            AppEvent::TranscriptionComplete { id, text } => {
+                self.chat_widget.on_transcription_complete(&id, &text);
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::TranscriptionFailed { id, error } => {
+                self.chat_widget.on_transcription_failed(&id, error);
+                tui.frame_requester().schedule_frame();
             }
             AppEvent::StatusLineSetup {
                 items,
@@ -2134,7 +2143,14 @@ impl App {
             }
         };
 
-        let runtime_keymap = match RuntimeKeymap::from_config(&keymap_config) {
+        let runtime_keymap = match RuntimeKeymap::from_config_with_features(
+            &keymap_config,
+            RuntimeKeymapFeatures {
+                voice_transcription_enabled: crate::voice_availability::transcription_enabled(
+                    &self.config,
+                ),
+            },
+        ) {
             Ok(runtime_keymap) => runtime_keymap,
             Err(err) => {
                 let params = crate::keymap_setup::build_keymap_conflict_params(
@@ -2187,7 +2203,14 @@ impl App {
             }
         };
 
-        let runtime_keymap = match RuntimeKeymap::from_config(&keymap_config) {
+        let runtime_keymap = match RuntimeKeymap::from_config_with_features(
+            &keymap_config,
+            RuntimeKeymapFeatures {
+                voice_transcription_enabled: crate::voice_availability::transcription_enabled(
+                    &self.config,
+                ),
+            },
+        ) {
             Ok(runtime_keymap) => runtime_keymap,
             Err(err) => {
                 self.chat_widget

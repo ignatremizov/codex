@@ -678,6 +678,13 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn composer_submit_or_queue_pressed(&self, key_event: KeyEvent) -> bool {
+        self.view_stack.is_empty()
+            && !self.composer.popup_active()
+            && (self.keymap.composer.submit.is_pressed(key_event)
+                || self.keymap.composer.queue.is_pressed(key_event))
+    }
+
     /// Handles a Ctrl+C press within the bottom pane.
     ///
     /// An active modal view is given the first chance to consume the key (typically to dismiss
@@ -1778,6 +1785,15 @@ impl BottomPane {
         self.composer.remove_recording_meter_placeholder(id);
         self.composer.sync_popups();
         self.request_redraw();
+    }
+
+    pub(crate) fn replace_recording_meter_placeholder(&mut self, id: &str, text: &str) -> bool {
+        let replaced = self.composer.replace_recording_meter_placeholder(id, text);
+        if replaced {
+            self.composer.sync_popups();
+            self.request_redraw();
+        }
+        replaced
     }
 }
 
