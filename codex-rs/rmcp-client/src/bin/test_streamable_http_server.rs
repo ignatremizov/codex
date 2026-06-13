@@ -184,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             StreamableHttpService::new(
                 || Ok(TestToolServer::new()),
                 Arc::new(LocalSessionManager::default()),
-                StreamableHttpServerConfig::default(),
+                StreamableHttpServerConfig::default().disable_allowed_hosts(),
             ),
         )
         .layer(middleware::from_fn_with_state(

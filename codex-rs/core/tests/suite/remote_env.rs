@@ -63,10 +63,10 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_no_remote_env;
-use core_test_support::skip_if_target_windows;
-use core_test_support::submit_thread_settings;
 use core_test_support::skip_if_remote;
+use core_test_support::skip_if_target_windows;
 use core_test_support::skip_if_wine_exec;
+use core_test_support::submit_thread_settings;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local;
 use core_test_support::test_codex::test_codex;
@@ -1543,7 +1543,7 @@ async fn remote_request_permissions_grant_unblocks_later_remote_exec() -> Result
                     "exec-call",
                     "exec_command",
                     &json!({
-                        "shell": "/bin/sh",
+                        "shell": "/bin/bash",
                         "cmd": command,
                         "login": false,
                         "yield_time_ms": 1_000,
@@ -1974,7 +1974,7 @@ async fn apply_patch_intercepted_exec_command_routes_to_selected_remote_environm
                     call_id,
                     "exec_command",
                     &serde_json::to_string(&json!({
-                        "shell": "/bin/sh",
+                        "shell": "/bin/bash",
                         "cmd": command,
                         "login": false,
                         "yield_time_ms": 5_000,
