@@ -89,8 +89,11 @@ async fn run_startup_hooks_review_app(
     entry: HooksListEntry,
 ) -> Result<StartupHooksReviewOutcome> {
     let local_settings = crate::local_settings::LocalSettings::from(config);
-    let keymap = RuntimeKeymap::from_config(&local_settings.tui.keymap)
-        .map_err(|err| color_eyre::eyre::eyre!(err))?;
+    let keymap = RuntimeKeymap::from_config_with_features(
+        &local_settings.tui.keymap,
+        crate::dictation::keymap_features(&local_settings),
+    )
+    .map_err(|err| color_eyre::eyre::eyre!(err))?;
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
     let app_event_tx = AppEventSender::new(tx_raw);
     let mut trust_all_error = None;

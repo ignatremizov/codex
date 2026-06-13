@@ -11,6 +11,8 @@
 //! search, or blocking view. The app reads clipboard text asynchronously and delivers a normal
 //! paste only while the same thread, draft, and cursor remain eligible. Intervening input or focus
 //! loss cancels the pending paste; a late clipboard result cannot overwrite newer input.
+//! Pending dictation owns a numeric placeholder: transcripts become ordinary editable text,
+//! while submit/queue keys are held until it finishes. Newline and paste-burst behavior is unchanged.
 //! The live voice strip renders after effort ignition, followed by the Astra sparkle when eligible.
 //! Owned transcripts keep persistent status below the composer and hints on a separate final row.
 //! Shortcut help expands above the composer, with its close hint replacing the final shortcuts row
@@ -385,6 +387,7 @@ mod agents_navigation;
 mod attachment_state;
 mod completion_target;
 mod composer_layout;
+mod dictation;
 mod draft_state;
 mod footer_state;
 mod history_search;
@@ -600,6 +603,8 @@ pub(crate) struct ChatComposer {
     history_search: Option<HistorySearchSession>,
     vim_history: VimHistory,
     submit_keys: Vec<KeyBinding>,
+    /// Submission is held while a generation-owned dictation placeholder is pending.
+    dictation_element: Option<u64>,
     queue_keys: Vec<KeyBinding>,
     toggle_shortcuts_keys: Vec<KeyBinding>,
     history_search_previous_keys: Vec<KeyBinding>,
@@ -774,6 +779,7 @@ impl ChatComposer {
             history_search: None,
             vim_history: VimHistory::default(),
             submit_keys: vec![key_hint::plain(KeyCode::Enter)],
+            dictation_element: None,
             queue_keys: vec![key_hint::plain(KeyCode::Tab)],
             toggle_shortcuts_keys: vec![
                 key_hint::plain(KeyCode::Char('?')),
@@ -1932,6 +1938,11 @@ impl ChatComposer {
         }
 
         if Self::is_history_search_key(&key_event, &self.history_search_previous_keys) {
+            if let Some(id) = self.dictation_element {
+                // Search can replace and restore the whole draft. Do not snapshot a live
+                // recording marker that cancellation could otherwise resurrect.
+                self.finish_dictation(id);
+            }
             return self.begin_history_search();
         }
 
@@ -3113,6 +3124,11 @@ impl ChatComposer {
 
         if !should_queue && self.handle_paste_enter(now) {
             return (InputResult::None, true);
+        }
+        // Completion and history-search acceptance edit the draft before reaching this
+        // boundary. Only actual submission/queueing is held during dictation.
+        if self.dictation_element.is_some() {
+            return (InputResult::None, false);
         }
         if should_queue {
             if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {

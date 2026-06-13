@@ -435,6 +435,8 @@ pub enum Feature {
     UltrafastMode,
     /// Enable explicitly requested model changes for later step captures.
     StepModelSwitching,
+    /// Enable voice transcription in the TUI composer.
+    VoiceTranscription,
     /// Removed compatibility flag. TUI voice availability follows platform support.
     RealtimeConversation,
     /// Prevent idle system sleep while a turn is actively running.
@@ -2071,6 +2073,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::StepModelSwitching,
         key: "step_model_switching",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::VoiceTranscription,
+        key: "voice_transcription",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
