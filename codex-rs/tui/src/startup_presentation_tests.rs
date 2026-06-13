@@ -6,6 +6,47 @@ use crossterm::event::KeyCode;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn first_frame_dictation_binding_uses_client_feature_without_execution_config()
+-> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let cli = Cli::try_parse_from(["codex"])?;
+    for enabled in [false, true] {
+        std::fs::write(
+            home.path().join("config.toml"),
+            format!(
+                "default_permissions = \"server-only\"\n[permissions.server-only]\nextends = \"missing-local-parent\"\n[features]\nvoice_transcription = {enabled}\n[tui.keymap.composer]\ntoggle_dictation = \"f12\"\n"
+            ),
+        )?;
+        let presentation = load(
+            &cli,
+            home.path(),
+            LoaderOverrides {
+                ignore_project_config: true,
+                ..LoaderOverrides::without_managed_config_for_tests()
+            },
+            Vec::new(),
+            /*config_cwd*/ None,
+        )
+        .await?;
+        assert_eq!(
+            (
+                presentation.local_settings.voice_transcription_enabled,
+                presentation.screen.keymap.composer.toggle_dictation,
+            ),
+            (
+                enabled,
+                if enabled && crate::dictation::is_supported() {
+                    vec![crate::key_hint::plain(KeyCode::F(12))]
+                } else {
+                    Vec::new()
+                },
+            ),
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn selected_profile_controls_submit_before_the_first_frame() -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
     std::fs::write(

@@ -61,16 +61,105 @@ async fn voice_cannot_start_on_an_external_writer_thread() {
 }
 
 #[tokio::test]
+async fn delayed_microphone_reservation_revalidates_only_the_current_attempt_authority() {
+    for external_writer in [false, true] {
+        let (mut chat, _sender, _events, mut ops) = make_chatwidget_manual_with_sender().await;
+        let thread_id = ThreadId::new();
+        let (abort, _registration) = AbortHandle::new_pair();
+        let observed_abort = abort.clone();
+        chat.thread_id = Some(thread_id);
+        chat.realtime_conversation.phase = RealtimeConversationPhase::Starting;
+        chat.realtime_conversation.thread_id = Some(thread_id);
+        chat.realtime_conversation.attempt_id = 43;
+        chat.realtime_conversation.startup_abort = Some(abort);
+        if external_writer {
+            chat.show_external_writer_thread();
+        } else {
+            chat.show_provider_error(
+                codex_app_server_protocol::ModelProviderError::ModelProviderNotConfigured {
+                    model_provider: "unavailable-provider".into(),
+                },
+                /*rejected_message_id*/ None,
+            );
+        }
+        let microphone = crate::dictation::session::MicReservation::default();
+
+        chat.on_realtime_microphone_ready(
+            thread_id,
+            42,
+            Ok(microphone.acquire().expect("stale attempt lease")),
+        );
+
+        assert!(microphone.acquire().is_some());
+        assert_eq!(
+            (
+                chat.realtime_conversation.phase,
+                chat.realtime_conversation.attempt_id,
+                chat.realtime_conversation.thread_id,
+                observed_abort.is_aborted(),
+            ),
+            (
+                RealtimeConversationPhase::Starting,
+                43,
+                Some(thread_id),
+                false,
+            )
+        );
+
+        chat.on_realtime_microphone_ready(
+            thread_id,
+            43,
+            Ok(microphone.acquire().expect("current attempt lease")),
+        );
+
+        assert!(microphone.acquire().is_some());
+        assert_eq!(
+            (
+                chat.realtime_conversation.phase,
+                chat.realtime_conversation.attempt_id,
+                chat.realtime_conversation.thread_id,
+                observed_abort.is_aborted(),
+            ),
+            (RealtimeConversationPhase::Inactive, 43, None, true)
+        );
+        assert!(chat.realtime_conversation.startup_abort.is_none());
+        assert!(chat.realtime_conversation._microphone_lease.is_none());
+        assert!(ops.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
 async fn stopping_while_the_offer_is_pending_resets_the_session() {
     let (mut chat, sender, mut events, _ops) = make_chatwidget_manual_with_sender().await;
     let (abort, _registration) = AbortHandle::new_pair();
     let observed_abort = abort.clone();
     chat.realtime_conversation.phase = RealtimeConversationPhase::Starting;
     chat.realtime_conversation.startup_abort = Some(abort);
+    let microphone = crate::dictation::session::MicReservation::default();
+    chat.realtime_conversation._microphone_lease = microphone.acquire();
+    assert!(microphone.acquire().is_none());
 
     let (mut restored, _, _, mut ops) = make_chatwidget_manual_with_sender().await;
     let callback = chat.app_event_tx.clone();
     chat.park_voice();
+    let thread_id = ThreadId::new();
+    callback.send(AppEvent::RealtimeMicrophoneReady {
+        thread_id,
+        attempt_id: 42,
+        lease: Err("synthetic cleanup timeout".into()),
+    });
+    let Ok(AppEvent::RealtimeMicrophoneReady {
+        thread_id: observed_thread,
+        attempt_id,
+        lease,
+    }) = events.try_recv()
+    else {
+        panic!("parked sender must forward microphone readiness to its owner");
+    };
+    assert_eq!(
+        (observed_thread, attempt_id, lease.err()),
+        (thread_id, 42, Some("synthetic cleanup timeout".into()))
+    );
     callback.send(AppEvent::ResetTranscriptForThreadSwitch);
     assert!(events.try_recv().is_err());
     callback.send(AppEvent::RefreshRateLimits {
@@ -87,7 +176,9 @@ async fn stopping_while_the_offer_is_pending_resets_the_session() {
     restored.resume_background_voice(&mut chat);
     drop(chat);
     assert!(!observed_abort.is_aborted());
+    assert!(microphone.acquire().is_none());
     restored.stop_realtime_conversation();
+    assert!(microphone.acquire().is_some());
 
     assert_eq!(
         (
@@ -426,12 +517,22 @@ async fn already_locked_session_prevents_microphone_startup() {
     let observer = SessionLock::observe(ThreadId::new(), chat.app_event_tx.clone(), async {
         Ok(Box::pin(async { Ok(()) }) as crate::session_lock::Activation)
     });
+    let reservation = crate::dictation::session::MicReservation::default();
+    let lease = reservation.acquire().expect("unclaimed microphone");
     let (opened, microphone) = tokio::sync::oneshot::channel();
     let abort = observer.start_media(move |_| {
+        let _lease = lease;
         let _ = opened.send(());
     });
     assert!(microphone.await.is_err());
     assert!(abort.is_aborted());
+    let _released = tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 5),
+        reservation.acquire_after_release(),
+    )
+    .await
+    .expect("suppressed startup must release its microphone reservation")
+    .expect("microphone reservation remains open");
 }
 
 #[tokio::test]

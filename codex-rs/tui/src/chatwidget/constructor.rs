@@ -76,9 +76,12 @@ impl ChatWidget {
             &header_model,
             &model_catalog.try_list_models().unwrap_or_default(),
         );
-        let runtime_keymap = RuntimeKeymap::for_session(
+        let runtime_keymap = RuntimeKeymap::from_config_with_features(
             &local_settings.tui.keymap,
-            local_settings.workspace_enabled(&config),
+            crate::keymap::RuntimeKeymapFeatures {
+                workspace_enabled: local_settings.workspace_enabled(&config),
+                ..crate::dictation::keymap_features(&local_settings)
+            },
         )
         .ok();
         let default_keymap = RuntimeKeymap::defaults();
@@ -203,6 +206,11 @@ impl ChatWidget {
             turn_lifecycle: TurnLifecycleState::new(prevent_idle_sleep),
             safety_recourse: None,
             realtime_conversation: RealtimeConversationUiState::default(),
+            dictation: None,
+            dictation_keymap: runtime_keymap
+                .as_ref()
+                .map(|keymap| keymap.composer.toggle_dictation.clone())
+                .unwrap_or_default(),
             realtime_conversation_available_for_thread: false,
             safety_buffering: SafetyBufferingState::default(),
             task_complete_pending: false,

@@ -98,6 +98,15 @@ impl RealtimeWebrtcSession {
         abort: AbortRegistration,
         selection: AudioDeviceSelection,
     ) -> Result<StartedRealtimeWebrtcSession> {
+        Self::start_with_resource_guard(abort, selection, ())
+    }
+
+    /// Retain device ownership until acknowledged helper exit, including cancelled startup.
+    pub fn start_with_resource_guard(
+        abort: AbortRegistration,
+        selection: AudioDeviceSelection,
+        resource_guard: impl Send + 'static,
+    ) -> Result<StartedRealtimeWebrtcSession> {
         let package = codex_install_context::InstallContext::current()
             .package_layout
             .clone()
@@ -141,7 +150,12 @@ impl RealtimeWebrtcSession {
                 let task = async {
                     let host = report_failure(
                         ConnectionError::HelperStartup,
-                        VoiceHost::connect(&package, &build_commit).await,
+                        VoiceHost::connect_with_resource_guard(
+                            &package,
+                            &build_commit,
+                            resource_guard,
+                        )
+                        .await,
                     )?;
                     let host = report_failure(
                         ConnectionError::RuntimeInitialization,

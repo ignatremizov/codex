@@ -871,9 +871,9 @@ impl ChatWidget {
             SlashCommand::Keymap => match trimmed.to_ascii_lowercase().as_str() {
                 "" => self.open_keymap_picker(),
                 "debug" => {
-                    match crate::keymap::RuntimeKeymap::for_session(
+                    match crate::keymap::RuntimeKeymap::from_config_with_features(
                         &self.local_settings.tui.keymap,
-                        self.local_settings.workspace_enabled(self.config_ref()),
+                        self.runtime_keymap_features(),
                     ) {
                         Ok(runtime_keymap) => self.open_keymap_debug(&runtime_keymap),
                         Err(err) => {

@@ -968,9 +968,12 @@ impl App {
             ));
         }
         let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
-        let runtime_keymap = RuntimeKeymap::for_session(
+        let runtime_keymap = RuntimeKeymap::from_config_with_features(
             &local_settings.tui.keymap,
-            local_settings.workspace_enabled(&config),
+            crate::keymap::RuntimeKeymapFeatures {
+                workspace_enabled: local_settings.workspace_enabled(&config),
+                ..crate::dictation::keymap_features(&local_settings)
+            },
         )
         .map_err(|err| {
             color_eyre::eyre::eyre!(

@@ -37,6 +37,7 @@ enum KeymapActionFeature {
     FastMode,
     MultiBackend,
     Workspace,
+    VoiceTranscription,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -44,6 +45,7 @@ pub(crate) struct KeymapActionFilter {
     pub(crate) fast_mode_enabled: bool,
     pub(crate) multi_backend_enabled: bool,
     pub(crate) workspace_enabled: bool,
+    pub(crate) voice_transcription_enabled: bool,
 }
 
 impl KeymapActionDescriptor {
@@ -53,6 +55,7 @@ impl KeymapActionDescriptor {
             Some(KeymapActionFeature::FastMode) => filter.fast_mode_enabled,
             Some(KeymapActionFeature::MultiBackend) => filter.multi_backend_enabled,
             Some(KeymapActionFeature::Workspace) => filter.workspace_enabled,
+            Some(KeymapActionFeature::VoiceTranscription) => filter.voice_transcription_enabled,
         }
     }
 }
@@ -166,6 +169,7 @@ define_keymap_actions! {
         submit => "Submit the current composer draft.",
         queue => "Queue the draft while a task is running.",
         toggle_shortcuts => "Show or hide the composer shortcut overlay.",
+        toggle_dictation [VoiceTranscription] => "Start or stop voice dictation.",
         history_search_previous => "Open history search or move to the previous match.",
         history_search_next => "Move to the next history search match.",
     }

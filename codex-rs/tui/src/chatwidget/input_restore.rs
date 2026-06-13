@@ -46,6 +46,7 @@ impl ChatWidget {
 
     /// Restore the exact draft entered before the fully initialized composer became available.
     pub(crate) fn restore_startup_draft(&mut self, draft: ComposerDraftSnapshot) {
+        self.cancel_dictation();
         self.bottom_pane
             .inherit_startup_sparkle(draft.sparkle_draft);
         let existing_draft = self.bottom_pane.composer_draft_snapshot();
@@ -609,6 +610,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn restore_user_message_to_composer(&mut self, user_message: UserMessage) {
+        self.cancel_dictation();
         let draft = self.bottom_pane.composer_draft_snapshot();
         let pending_pastes = draft.pending_pastes;
         let draft_message = UserMessage {
@@ -640,6 +642,7 @@ impl ChatWidget {
         composer: ThreadComposerState,
         shell_mode: Option<bool>,
     ) {
+        self.cancel_dictation();
         let ThreadComposerState {
             text,
             local_images,
@@ -686,6 +689,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn capture_thread_input_state(&mut self) -> Option<ThreadInputState> {
+        self.cancel_dictation();
         self.cancel_image_submission();
         let draft = self.bottom_pane.composer_recovery_snapshot();
         let composer = ThreadComposerState {
