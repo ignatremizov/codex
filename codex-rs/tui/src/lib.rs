@@ -216,6 +216,7 @@ mod updates_cache;
 mod version;
 #[cfg(not(all(target_os = "linux", target_env = "musl")))]
 mod voice;
+mod voice_availability;
 mod width;
 #[cfg(any(target_os = "windows", test))]
 mod windows_sandbox;
@@ -231,6 +232,13 @@ mod voice {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU16;
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct RecordedAudio {
+        pub data: Vec<i16>,
+        pub sample_rate: u32,
+        pub channels: u16,
+    }
+
     pub struct VoiceCapture;
 
     pub(crate) struct RecordingMeterState;
@@ -238,6 +246,14 @@ mod voice {
     pub(crate) struct RealtimeAudioPlayer;
 
     impl VoiceCapture {
+        pub fn start_chunked_recording(
+            _config: &Config,
+            _placeholder_id: String,
+            _tx: AppEventSender,
+        ) -> Result<Self, String> {
+            Err("voice input is unavailable in this build".to_string())
+        }
+
         pub fn start_realtime(_config: &Config, _tx: AppEventSender) -> Result<Self, String> {
             Err("voice input is unavailable in this build".to_string())
         }
@@ -248,8 +264,18 @@ mod voice {
             Arc::new(AtomicBool::new(true))
         }
 
+        pub(crate) fn chunked_recording_cancellation_token(
+            &self,
+        ) -> Option<tokio_util::sync::CancellationToken> {
+            None
+        }
+
         pub fn last_peak_arc(&self) -> Arc<AtomicU16> {
             Arc::new(AtomicU16::new(0))
+        }
+
+        pub fn stop_chunked_recording(self) -> Result<(), String> {
+            Err("voice input is unavailable in this build".to_string())
         }
     }
 
@@ -276,6 +302,10 @@ mod voice {
         }
 
         pub(crate) fn clear(&self) {}
+    }
+
+    pub(crate) fn validate_transcription_auth(_config: &Config) -> Result<(), String> {
+        Err("voice input is unavailable in this build".to_string())
     }
 }
 
