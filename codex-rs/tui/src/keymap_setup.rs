@@ -837,6 +837,21 @@ mod tests {
     fn fast_mode_action_filter() -> KeymapActionFilter {
         KeymapActionFilter {
             fast_mode_enabled: true,
+            voice_transcription_enabled: false,
+        }
+    }
+
+    fn all_features_action_filter() -> KeymapActionFilter {
+        KeymapActionFilter {
+            fast_mode_enabled: true,
+            voice_transcription_enabled: true,
+        }
+    }
+
+    fn voice_action_filter() -> KeymapActionFilter {
+        KeymapActionFilter {
+            fast_mode_enabled: false,
+            voice_transcription_enabled: true,
         }
     }
 
@@ -913,7 +928,7 @@ mod tests {
         let params = build_keymap_picker_params_with_filter(
             &runtime,
             &TuiKeymap::default(),
-            fast_mode_action_filter(),
+            all_features_action_filter(),
         );
         let all_tab = selection_tab(&params, KEYMAP_ALL_TAB_ID);
 
@@ -969,6 +984,44 @@ mod tests {
                 "expected Toggle Fast Mode in {}",
                 tab.label
             );
+        }
+    }
+
+    #[test]
+    fn picker_shows_dictation_action_when_voice_feature_is_enabled() {
+        let keymap = TuiKeymap::default();
+        let hidden_runtime = RuntimeKeymap::from_config(&keymap).expect("runtime keymap");
+        assert!(hidden_runtime.composer.toggle_dictation.is_empty());
+
+        let hidden_params = build_keymap_picker_params(&hidden_runtime, &keymap);
+        let hidden_all_tab = selection_tab(&hidden_params, KEYMAP_ALL_TAB_ID);
+        assert!(
+            hidden_all_tab
+                .items
+                .iter()
+                .all(|item| item.name != "Toggle Dictation")
+        );
+
+        let runtime = RuntimeKeymap::from_config_with_features(
+            &keymap,
+            crate::keymap::RuntimeKeymapFeatures {
+                voice_transcription_enabled: true,
+            },
+        )
+        .expect("runtime keymap");
+        let params =
+            build_keymap_picker_params_with_filter(&runtime, &keymap, voice_action_filter());
+        let all_tab = selection_tab(&params, KEYMAP_ALL_TAB_ID);
+        let common_tab = selection_tab(&params, KEYMAP_COMMON_TAB_ID);
+        let composer_tab = selection_tab(&params, "composer-shortcuts");
+
+        for tab in [all_tab, common_tab, composer_tab] {
+            let item = tab
+                .items
+                .iter()
+                .find(|item| item.name == "Toggle Dictation")
+                .unwrap_or_else(|| panic!("expected Toggle Dictation in {}", tab.label));
+            assert_eq!(item.description.as_deref(), Some("alt-m"));
         }
     }
 
