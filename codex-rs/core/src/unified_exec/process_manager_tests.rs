@@ -257,6 +257,46 @@ async fn late_network_denial_grace_observes_cancellation_after_exit() {
 }
 
 #[tokio::test]
+async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() {
+    let output_buffer = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+    let output_notify = Arc::new(Notify::new());
+    let output_closed = Arc::new(AtomicBool::new(false));
+    let output_closed_notify = Arc::new(Notify::new());
+    let cancellation_token = CancellationToken::new();
+    cancellation_token.cancel();
+
+    {
+        let output_buffer = Arc::clone(&output_buffer);
+        let output_notify = Arc::clone(&output_notify);
+        let output_closed = Arc::clone(&output_closed);
+        let output_closed_notify = Arc::clone(&output_closed_notify);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            output_buffer
+                .lock()
+                .await
+                .push_chunk(b"late output".to_vec());
+            output_notify.notify_waiters();
+            output_closed.store(true, Ordering::Release);
+            output_closed_notify.notify_waiters();
+        });
+    }
+
+    let collected = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output_buffer,
+        &output_notify,
+        &output_closed,
+        &output_closed_notify,
+        &cancellation_token,
+        /*pause_state*/ None,
+        Instant::now(),
+    )
+    .await;
+
+    assert_eq!(collected, b"late output");
+}
+
+#[tokio::test]
 async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
     let (session, turn, rx_event) = crate::session::tests::make_session_and_context_with_rx().await;
     let context = UnifiedExecContext::new(

@@ -1168,14 +1168,47 @@ impl ThreadManagerState {
         forked_from_thread_id: Option<ThreadId>,
         config: &Config,
     ) -> MultiAgentVersion {
-        self.initial_multi_agent_version_for_spawn(
+        self.multi_agent_version_for_spawn(
             initial_history,
             session_source,
             parent_thread_id,
             forked_from_thread_id,
+            config,
         )
         .await
         .unwrap_or_else(|| config.multi_agent_version_from_features())
+    }
+
+    async fn multi_agent_version_for_spawn(
+        &self,
+        initial_history: &InitialHistory,
+        session_source: Option<&SessionSource>,
+        parent_thread_id: Option<ThreadId>,
+        forked_from_thread_id: Option<ThreadId>,
+        config: &Config,
+    ) -> Option<MultiAgentVersion> {
+        let inherited_multi_agent_version = self
+            .initial_multi_agent_version_for_spawn(
+                initial_history,
+                session_source,
+                parent_thread_id,
+                forked_from_thread_id,
+            )
+            .await;
+        let configured_multi_agent_version = config.multi_agent_version_from_features();
+        if matches!(
+            session_source,
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
+        ) && matches!(
+            initial_history,
+            InitialHistory::New | InitialHistory::Cleared
+        ) && configured_multi_agent_version == MultiAgentVersion::V2
+            && inherited_multi_agent_version != Some(MultiAgentVersion::Disabled)
+        {
+            return Some(MultiAgentVersion::V2);
+        }
+
+        inherited_multi_agent_version
     }
 
     async fn initial_multi_agent_version_for_spawn(
@@ -1554,11 +1587,12 @@ impl ThreadManagerState {
             .await;
         let tracked_session_source = session_source.clone();
         let multi_agent_version = self
-            .initial_multi_agent_version_for_spawn(
+            .multi_agent_version_for_spawn(
                 &initial_history,
                 Some(&session_source),
                 parent_thread_id,
                 forked_from_thread_id,
+                &config,
             )
             .await;
         let originator = self
