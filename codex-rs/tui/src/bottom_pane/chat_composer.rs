@@ -4101,6 +4101,10 @@ impl ChatComposer {
     pub fn remove_recording_meter_placeholder(&mut self, id: &str) {
         let _ = self.draft.textarea.replace_element_by_id(id, "");
     }
+
+    pub fn replace_recording_meter_placeholder(&mut self, id: &str, text: &str) -> bool {
+        self.draft.textarea.replace_element_by_id(id, text)
+    }
 }
 
 fn skill_description(skill: &SkillMetadata) -> Option<String> {
@@ -4739,6 +4743,27 @@ mod tests {
 
         assert_eq!(composer.draft.textarea.text(), "");
         assert!(composer.draft.textarea.named_element_range(&id).is_none());
+    }
+
+    #[test]
+    fn replace_recording_meter_placeholder_preserves_long_user_text() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        let long_text = "dictated ".repeat(15_000);
+
+        composer.draft.textarea.insert_str("prefix ");
+        let id = composer.insert_recording_meter_placeholder("⠤⠤⠤⠤");
+        let replaced = composer.replace_recording_meter_placeholder(&id, &long_text);
+
+        assert!(replaced);
+        assert_eq!(composer.current_text(), format!("prefix {long_text}"));
     }
 
     #[test]
