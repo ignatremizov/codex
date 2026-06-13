@@ -191,6 +191,36 @@ impl ChatWidget {
                     self.on_shutdown_complete();
                 }
             }
+            ServerNotification::ThreadRealtimeStarted(notification) => {
+                if !from_replay {
+                    self.on_realtime_conversation_started(notification);
+                }
+            }
+            ServerNotification::ThreadRealtimeItemAdded(notification) => {
+                if !from_replay {
+                    self.on_realtime_item_added(notification);
+                }
+            }
+            ServerNotification::ThreadRealtimeOutputAudioDelta(notification) => {
+                if !from_replay {
+                    self.on_realtime_output_audio_delta(notification);
+                }
+            }
+            ServerNotification::ThreadRealtimeError(notification) => {
+                if !from_replay {
+                    self.on_realtime_error(notification);
+                }
+            }
+            ServerNotification::ThreadRealtimeClosed(notification) => {
+                if !from_replay {
+                    self.on_realtime_conversation_closed(notification);
+                }
+            }
+            ServerNotification::ThreadRealtimeSdp(notification) => {
+                if !from_replay {
+                    self.on_realtime_conversation_sdp(notification.sdp);
+                }
+            }
             ServerNotification::ServerRequestResolved(_)
             | ServerNotification::AccountUpdated(_)
             | ServerNotification::AccountRateLimitsUpdated(_)
@@ -214,12 +244,6 @@ impl ChatWidget {
             | ServerNotification::TurnModerationMetadata(_)
             | ServerNotification::FuzzyFileSearchSessionUpdated(_)
             | ServerNotification::FuzzyFileSearchSessionCompleted(_)
-            | ServerNotification::ThreadRealtimeStarted(_)
-            | ServerNotification::ThreadRealtimeItemAdded(_)
-            | ServerNotification::ThreadRealtimeOutputAudioDelta(_)
-            | ServerNotification::ThreadRealtimeError(_)
-            | ServerNotification::ThreadRealtimeClosed(_)
-            | ServerNotification::ThreadRealtimeSdp(_)
             | ServerNotification::ThreadRealtimeTranscriptDelta(_)
             | ServerNotification::ThreadRealtimeTranscriptDone(_)
             | ServerNotification::WindowsWorldWritableWarning(_)
