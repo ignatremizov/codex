@@ -27,14 +27,14 @@ pub fn create_command_execution_sse_response(
 pub fn create_escalated_command_execution_sse_response(
     command: Vec<String>,
     workdir: Option<&Path>,
-    timeout_ms: Option<u64>,
+    yield_time_ms: Option<u64>,
     call_id: &str,
 ) -> anyhow::Result<String> {
     let command_str = shlex::try_join(command.iter().map(String::as_str))?;
     let tool_call_arguments = serde_json::to_string(&json!({
         "cmd": command_str,
         "workdir": workdir.map(|w| w.to_string_lossy()),
-        "yield_time_ms": timeout_ms,
+        "yield_time_ms": yield_time_ms,
         "sandbox_permissions": "require_escalated",
         "justification": "Test approval request."
     }))?;
@@ -73,9 +73,24 @@ pub fn create_exec_command_sse_response(call_id: &str) -> anyhow::Result<String>
     let command = std::iter::once(cmd.to_string())
         .chain(args.into_iter().map(str::to_string))
         .collect::<Vec<_>>();
+    create_exec_command_sse_response_with_command(
+        &command.join(" "),
+        /*workdir*/ None,
+        Some(500),
+        call_id,
+    )
+}
+
+pub fn create_exec_command_sse_response_with_command(
+    command: &str,
+    workdir: Option<&Path>,
+    yield_time_ms: Option<u64>,
+    call_id: &str,
+) -> anyhow::Result<String> {
     let tool_call_arguments = serde_json::to_string(&json!({
-        "cmd": command.join(" "),
-        "yield_time_ms": 500
+        "cmd": command,
+        "workdir": workdir.map(|workdir| workdir.to_string_lossy()),
+        "yield_time_ms": yield_time_ms,
     }))?;
     Ok(responses::sse(vec![
         responses::ev_response_created("resp-1"),

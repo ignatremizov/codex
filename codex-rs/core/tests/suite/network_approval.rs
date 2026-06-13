@@ -53,11 +53,13 @@ use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
+use core_test_support::TempDirExt;
 use core_test_support::managed_network_requirements_loader;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ev_assistant_message;
@@ -100,6 +102,12 @@ use tokio::io::AsyncWriteExt;
 const NETWORK_TEST_HOST: &str = "codex-network-test.invalid";
 const NETWORK_TEST_TARGET: &str = "http://codex-network-test.invalid:80";
 
+#[derive(Clone, Copy)]
+enum ManagedNetworkEnvironment {
+    Local,
+    RemoteAndLocal,
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg_attr(
     not(target_os = "linux"),
@@ -112,7 +120,7 @@ async fn guardian_network_approval_preserves_action_and_outcome_routing() -> Res
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let first_call_id = "guardian-network-approved";
     let second_call_id = "guardian-network-denied";
     let first_command = network_fetch_args(LOCAL_ENVIRONMENT_ID)["cmd"]
@@ -219,7 +227,7 @@ async fn guardian_network_approval_preserves_action_and_outcome_routing() -> Res
         submit_managed_network_turn(
             &test,
             prompt,
-            vec![local(test.config.cwd.clone())],
+            vec![local(test.cwd.abs())],
             ApprovalsReviewer::AutoReview,
             AskForApproval::OnRequest,
         )
@@ -286,6 +294,7 @@ async fn strict_auto_review_routes_network_approval_to_guardian_when_user_review
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test_with_features(
         &server,
+        ManagedNetworkEnvironment::Local,
         &[Feature::RequestPermissionsTool],
     )
     .await?;
@@ -399,7 +408,7 @@ async fn cancelled_guardian_network_review_fails_closed_without_rewriting_turn_s
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let call_id = "guardian-network-cancelled";
     let marker = "guardian cancellation must preserve this turn marker";
     mount_sse_once_match(
@@ -432,7 +441,7 @@ async fn cancelled_guardian_network_review_fails_closed_without_rewriting_turn_s
     submit_managed_network_turn(
         &test,
         marker,
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )
@@ -470,7 +479,7 @@ async fn cancelled_guardian_network_review_fails_closed_without_rewriting_turn_s
     submit_managed_network_turn(
         &test,
         "verify preserved state",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::User,
         AskForApproval::OnRequest,
     )
@@ -499,7 +508,7 @@ async fn disconnected_network_request_explains_failure_to_model(
 
     let server = start_mock_server().await;
     // This tests the controller-local proxy; remote disconnect forwarding is not supported yet.
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let call_id = "network-disconnect";
     let poll_call_id = "network-disconnect-poll";
     let command = format!(
@@ -610,7 +619,7 @@ async fn timed_out_guardian_network_review_uses_timeout_outcome_without_user_fal
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let call_id = "guardian-network-timeout";
     let poll_call_id = "guardian-network-timeout-poll";
     mount_sse_once_match(
@@ -677,7 +686,7 @@ async fn timed_out_guardian_network_review_uses_timeout_outcome_without_user_fal
     submit_managed_network_turn(
         &test,
         "time out the Guardian network review",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )
@@ -688,19 +697,30 @@ async fn timed_out_guardian_network_review_uses_timeout_outcome_without_user_fal
     tokio::time::resume();
     wait_for_completion_without_network_prompt(&test).await;
 
-    let tool_output = parent_final
+    let expected_timeout = concat!(
+        "The automatic permission approval review did not finish before its deadline. ",
+        "Do not assume the action is unsafe based on the timeout alone. ",
+        "You may retry once, or ask the user for guidance or explicit approval."
+    );
+    // Depending on whether the Guardian timeout wins before or after the
+    // initial exec yield, the terminal result belongs to exec_command or the
+    // already-scripted write_stdin poll. Both are valid observations of the
+    // same rejected command.
+    let tool_outputs = parent_final
         .requests()
         .iter()
-        .find_map(|request| request.function_call_output_text(poll_call_id))
-        .context("expected timed-out Guardian tool output")?;
-    assert!(
-        tool_output.contains(concat!(
-            "The automatic permission approval review did not finish before its deadline. ",
-            "Do not assume the action is unsafe based on the timeout alone. ",
-            "You may retry once, or ask the user for guidance or explicit approval."
-        )),
-        "unexpected timed-out Guardian tool output: {tool_output}"
-    );
+        .flat_map(|request| {
+            [call_id, poll_call_id]
+                .into_iter()
+                .filter_map(move |call_id| request.function_call_output_text(call_id))
+        })
+        .collect::<Vec<_>>();
+    let tool_output = tool_outputs
+        .iter()
+        .find(|output| output.contains(expected_timeout))
+        .with_context(|| {
+            format!("expected timed-out Guardian tool output, got {tool_outputs:?}")
+        })?;
     assert!(!tool_output.contains("rejected by user"));
 
     Ok(())
@@ -722,15 +742,15 @@ async fn background_network_approval_uses_current_review_settings_and_original_e
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_builder(&[
-        Feature::RequestPermissionsTool,
-        Feature::StepModelSwitching,
-    ])?
+    let test = managed_network_unified_exec_builder(
+        ManagedNetworkEnvironment::Local,
+        &[Feature::RequestPermissionsTool, Feature::StepModelSwitching],
+    )?
     .with_model("guardian-parent-a")
     .with_config(|config| {
         config.model_catalog = Some(guardian_parent_catalog());
     })
-    .build_with_remote_and_local_env(&server)
+    .build(&server)
     .await?;
     let start_call_id = "cross-turn-network-start";
     let permission_call_id = "cross-turn-network-permissions";
@@ -914,22 +934,38 @@ async fn background_network_approval_uses_current_review_settings_and_original_e
             },
         })
         .await?;
-    let assessment = wait_for_event(&test.codex, |event| {
-        matches!(
-            event,
-            EventMsg::GuardianAssessment(assessment)
-                if assessment.status == GuardianAssessmentStatus::Approved
-        ) || matches!(
-            event,
-            EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
-        )
-    })
-    .await;
-    let EventMsg::GuardianAssessment(assessment) = assessment else {
-        panic!("expected Guardian approval, got {assessment:?}");
-    };
+    let mut assessment = None;
+    let mut turn_completed = false;
+    while assessment.is_none() || !turn_completed {
+        match wait_for_event(&test.codex, |event| {
+            matches!(
+                event,
+                EventMsg::GuardianAssessment(_)
+                    | EventMsg::ExecApprovalRequest(_)
+                    | EventMsg::TurnComplete(_)
+            )
+        })
+        .await
+        {
+            EventMsg::GuardianAssessment(event)
+                if event.status == GuardianAssessmentStatus::Approved =>
+            {
+                assessment = Some(event);
+            }
+            EventMsg::GuardianAssessment(_) => {}
+            EventMsg::ExecApprovalRequest(event) => {
+                panic!("strict auto-review unexpectedly requested user approval: {event:?}");
+            }
+            EventMsg::TurnComplete(event) if event.turn_id == active_turn_id => {
+                turn_completed = true;
+            }
+            EventMsg::TurnComplete(_) => {}
+            _ => unreachable!("matched only terminal approval lifecycle events"),
+        }
+    }
+    let assessment = assessment.expect("Guardian assessment should be observed");
+    assert_eq!(assessment.status, GuardianAssessmentStatus::Approved);
     assert_eq!(assessment.turn_id, active_turn_id);
-    wait_for_turn_complete(&test).await;
 
     let actions = guardian_network_actions(&responses)?;
     assert_eq!(actions.len(), 2);
@@ -1019,8 +1055,8 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
-    let environments = vec![local(test.config.cwd.clone())];
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
+    let environments = vec![local(test.cwd.abs())];
 
     mount_exec_network_turn(
         &server,
@@ -1029,7 +1065,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
         network_fetch_args(LOCAL_ENVIRONMENT_ID),
     )
     .await?;
-    submit_managed_network_turn(
+    let first_turn_id = submit_managed_network_turn(
         &test,
         "approve this network request once",
         environments.clone(),
@@ -1037,7 +1073,8 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
         AskForApproval::OnRequest,
     )
     .await?;
-    let approval = expect_network_approval(&test, LOCAL_ENVIRONMENT_ID).await?;
+    let approval =
+        expect_network_approval_for_turn(&test, LOCAL_ENVIRONMENT_ID, &first_turn_id).await?;
     assert!(
         approval
             .call_id
@@ -1166,7 +1203,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     submit_managed_network_turn(
         &test,
         "a different protocol must prompt and the user abort must stay a user outcome",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::User,
         AskForApproval::OnRequest,
     )
@@ -1218,7 +1255,7 @@ async fn network_rejection_preserves_execution_and_review_outcomes(
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let local_cwd = test.cwd.path().abs();
     let call_id = "network-multiple-reviews";
     let poll_call_id = "network-multiple-reviews-poll";
@@ -1414,8 +1451,8 @@ async fn allowing_network_policy_amendment_persists_context_and_bypasses_prompt(
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
-    let environments = vec![local(test.config.cwd.clone())];
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
+    let environments = vec![local(test.cwd.abs())];
     let first_responses = mount_exec_network_turn(
         &server,
         "resp-network-amendment-1",
@@ -1501,7 +1538,7 @@ async fn denying_network_policy_amendment_persists_and_blocks_request() -> Resul
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let responses = mount_exec_network_turn(
         &server,
         "resp-network-deny-amendment",
@@ -1557,7 +1594,7 @@ async fn failed_network_policy_amendment_denies_request_and_does_not_approve_hos
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let environments = vec![local(test.config.cwd.clone())];
     let first_responses = mount_exec_network_turn(
         &server,
@@ -1644,7 +1681,12 @@ async fn unattributed_network_request_uses_active_turn_environment_fallback(
     } else {
         &[]
     };
-    let test = managed_network_unified_exec_test_with_features(&server, features).await?;
+    let test = managed_network_unified_exec_test_with_features(
+        &server,
+        ManagedNetworkEnvironment::Local,
+        features,
+    )
+    .await?;
     let mut selection = local(test.config.cwd.clone());
     if approvals_reviewer == ApprovalsReviewer::User {
         let cwd = test.config.cwd.join("late-environment");
@@ -1820,7 +1862,7 @@ async fn ambiguous_unattributed_network_request_is_not_assigned_to_active_calls(
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let first_marker = test.cwd.path().join("ambiguous-network-first");
     let second_marker = test.cwd.path().join("ambiguous-network-second");
     let wait_command = |marker: &std::path::Path| {
@@ -1851,7 +1893,7 @@ async fn ambiguous_unattributed_network_request_is_not_assigned_to_active_calls(
     submit_managed_network_turn(
         &test,
         "start two active commands",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::User,
         AskForApproval::OnRequest,
     )
@@ -2015,7 +2057,7 @@ async fn guardian_receives_exact_triggers_for_concurrent_network_requests() -> R
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let barrier_dir = TempDir::new_in(test.cwd.path())?;
     let first_marker = barrier_dir.path().join("first");
     let second_marker = barrier_dir.path().join("second");
@@ -2113,7 +2155,7 @@ async fn guardian_receives_exact_triggers_for_concurrent_network_requests() -> R
     submit_managed_network_turn(
         &test,
         "run both network requests",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )
@@ -2169,7 +2211,7 @@ async fn guardian_receives_exact_trigger_for_single_network_request() -> Result<
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let command = "python3 -c \"import urllib.request; opener = urllib.request.build_opener(urllib.request.ProxyHandler()); print('OK:' + opener.open('http://1.1.1.1', timeout=10).read().decode(errors='replace'))\"".to_string();
     let responses = mount_sse_sequence(
         &server,
@@ -2200,7 +2242,7 @@ async fn guardian_receives_exact_trigger_for_single_network_request() -> Result<
     submit_managed_network_turn(
         &test,
         "run one network request",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )
@@ -2225,7 +2267,9 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
     skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test =
+        managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::RemoteAndLocal)
+            .await?;
     let remote = test.executor_environment().selection().clone();
     assert_eq!(remote.environment_id, REMOTE_ENVIRONMENT_ID);
     let session_call_id = "remote-guardian-session-approval";
@@ -2266,14 +2310,17 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
     ];
 
     let mut scripted_responses = Vec::with_capacity(cases.len() * 3 + 4);
-    for (call_id, command, _, rationale, approved) in &cases {
+    for (call_id, command, environment, rationale, approved) in &cases {
         if *call_id == "local-guardian-deny" {
             scripted_responses.push(sse(vec![
                 ev_response_created("resp-remote-guardian-session-approval-parent"),
                 ev_function_call(
                     session_call_id,
                     "exec_command",
-                    &serde_json::to_string(&network_exec_args(&session_command))?,
+                    &serde_json::to_string(&network_exec_args_for_environment(
+                        &session_command,
+                        REMOTE_ENVIRONMENT_ID,
+                    ))?,
                 ),
                 ev_completed("resp-remote-guardian-session-approval-parent"),
             ]));
@@ -2288,7 +2335,10 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
             ev_function_call(
                 call_id,
                 "exec_command",
-                &serde_json::to_string(&network_exec_args(command))?,
+                &serde_json::to_string(&network_exec_args_for_environment(
+                    command,
+                    &environment.environment_id,
+                ))?,
             ),
             ev_completed(&format!("resp-{call_id}-parent")),
         ]));
@@ -2314,7 +2364,10 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
         ev_function_call(
             session_probe_call_id,
             "exec_command",
-            &serde_json::to_string(&network_exec_args(&session_probe_command))?,
+            &serde_json::to_string(&network_exec_args_for_environment(
+                &session_probe_command,
+                REMOTE_ENVIRONMENT_ID,
+            ))?,
         ),
         ev_completed("resp-remote-guardian-session-probe-parent"),
     ]));
@@ -2327,7 +2380,7 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
 
     for (call_id, _, environment, _, _) in &cases {
         if *call_id == "local-guardian-deny" {
-            submit_managed_network_turn(
+            let turn_id = submit_managed_network_turn(
                 &test,
                 "approve the remote destination for this session",
                 vec![remote.clone()],
@@ -2335,7 +2388,8 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
                 AskForApproval::OnRequest,
             )
             .await?;
-            let approval = expect_network_approval(&test, REMOTE_ENVIRONMENT_ID).await?;
+            let approval =
+                expect_network_approval_for_turn(&test, REMOTE_ENVIRONMENT_ID, &turn_id).await?;
             test.codex
                 .submit(Op::ExecApproval {
                     id: approval.effective_approval_id(),
@@ -2343,12 +2397,15 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
                     decision: ReviewDecision::ApprovedForSession,
                 })
                 .await?;
-            tokio::time::timeout(Duration::from_secs(15), wait_for_turn_complete(&test))
-                .await
-                .context("remote session approval should complete")?;
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                wait_for_completion_without_network_prompt_for_turn(&test, &turn_id),
+            )
+            .await
+            .context("remote session approval should complete")?;
         }
         let prompt = format!("review network request {call_id}");
-        submit_managed_network_turn(
+        let turn_id = submit_managed_network_turn(
             &test,
             &prompt,
             vec![environment.clone()],
@@ -2358,12 +2415,12 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
         .await?;
         tokio::time::timeout(
             Duration::from_secs(15),
-            wait_for_completion_without_network_prompt(&test),
+            wait_for_completion_without_network_prompt_for_turn(&test, &turn_id),
         )
         .await
         .with_context(|| format!("Guardian review for {call_id} should complete"))?;
     }
-    submit_managed_network_turn(
+    let turn_id = submit_managed_network_turn(
         &test,
         "verify the remote session approval remains active",
         vec![remote],
@@ -2373,7 +2430,7 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
     .await?;
     tokio::time::timeout(
         Duration::from_secs(15),
-        wait_for_completion_without_network_prompt(&test),
+        wait_for_completion_without_network_prompt_for_turn(&test, &turn_id),
     )
     .await
     .context("remote session approval should bypass another network prompt")?;
@@ -2388,7 +2445,7 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
         let command = if environment.environment_id == LOCAL_ENVIRONMENT_ID {
             local_shell.derive_exec_args(command, /*use_login_shell*/ false)
         } else {
-            vec!["/bin/sh".to_string(), "-c".to_string(), command.clone()]
+            vec!["/bin/bash".to_string(), "-c".to_string(), command.clone()]
         };
         expected_actions.push(json!({
             "host": NETWORK_TEST_HOST,
@@ -2866,7 +2923,9 @@ async fn approved_network_host_for_one_environment_still_prompts_in_another() ->
     skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test =
+        managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::RemoteAndLocal)
+            .await?;
     let local_cwd = TempDir::new()?;
     let remote_cwd = PathBuf::from(format!(
         "/tmp/codex-network-approval-{}",
@@ -2906,7 +2965,7 @@ async fn approved_network_host_for_one_environment_still_prompts_in_another() ->
         "fetch from the local environment",
         environments.clone(),
         ApprovalsReviewer::User,
-        AskForApproval::UnlessTrusted,
+        AskForApproval::OnRequest,
     )
     .await?;
     let approval = expect_network_approval(&test, LOCAL_ENVIRONMENT_ID).await?;
@@ -2931,7 +2990,7 @@ async fn approved_network_host_for_one_environment_still_prompts_in_another() ->
         "fetch from the remote environment",
         environments.clone(),
         ApprovalsReviewer::User,
-        AskForApproval::UnlessTrusted,
+        AskForApproval::OnRequest,
     )
     .await?;
     let approval = expect_network_approval(&test, REMOTE_ENVIRONMENT_ID).await?;
@@ -3002,37 +3061,57 @@ pub(super) fn guardian_parent_catalog() -> ModelsResponse {
     }
 }
 
-async fn managed_network_unified_exec_test(server: &wiremock::MockServer) -> Result<TestCodex> {
-    managed_network_unified_exec_test_with_features(server, &[]).await
+async fn managed_network_unified_exec_test(
+    server: &wiremock::MockServer,
+    environment: ManagedNetworkEnvironment,
+) -> Result<TestCodex> {
+    managed_network_unified_exec_test_with_features(server, environment, &[]).await
 }
 
 async fn managed_network_unified_exec_test_with_features(
     server: &wiremock::MockServer,
+    environment: ManagedNetworkEnvironment,
     features: &[Feature],
 ) -> Result<TestCodex> {
-    let test = managed_network_unified_exec_builder(features)?
-        .build_with_remote_and_local_env(server)
-        .await?;
+    let mut builder = managed_network_unified_exec_builder(environment, features)?;
+    let test = match environment {
+        ManagedNetworkEnvironment::Local => builder.build(server).await?,
+        ManagedNetworkEnvironment::RemoteAndLocal => {
+            builder.build_with_remote_and_local_env(server).await?
+        }
+    };
     assert!(test.config.managed_network_requirements_enabled());
     assert!(test.config.permissions.network.is_some());
     assert!(test.session_configured.network_proxy.is_some());
     Ok(test)
 }
 
-fn managed_network_unified_exec_builder(features: &[Feature]) -> Result<TestCodexBuilder> {
+fn managed_network_unified_exec_builder(
+    environment: ManagedNetworkEnvironment,
+    features: &[Feature],
+) -> Result<TestCodexBuilder> {
     let home = Arc::new(TempDir::new()?);
+    // Remote executors deliberately reject controller-side MITM state. Full mode still routes
+    // this fixture's unlisted HTTP host through the Guardian policy decider without requiring
+    // MITM.
+    let network_mode = match environment {
+        ManagedNetworkEnvironment::Local => "limited",
+        ManagedNetworkEnvironment::RemoteAndLocal => "full",
+    };
     fs::write(
         home.path().join("config.toml"),
-        r#"default_permissions = "workspace"
+        format!(
+            r#"default_permissions = "workspace"
 
 [permissions.workspace.filesystem]
 ":minimal" = "read"
 
 [permissions.workspace.network]
 enabled = true
-mode = "limited"
+mode = "{network_mode}"
 allow_local_binding = true
-"#,
+"#
+        ),
     )?;
     let approval_policy = AskForApproval::OnRequest;
     let permission_profile = PermissionProfile::workspace_write_with(
@@ -3088,6 +3167,9 @@ fn network_fetch_args(environment_id: &str) -> Value {
     );
     let mut args = network_exec_args(&command);
     args["environment_id"] = json!(environment_id);
+    if environment_id == REMOTE_ENVIRONMENT_ID {
+        args["shell"] = json!("/bin/bash");
+    }
     args
 }
 
@@ -3096,8 +3178,16 @@ fn network_exec_args(command: &str) -> Value {
         "shell": "/bin/sh",
         "cmd": command,
         "login": false,
-        "yield_time_ms": 1_000,
+        "yield_time_ms": 10_000,
     })
+}
+
+fn network_exec_args_for_environment(command: &str, environment_id: &str) -> Value {
+    let mut args = network_exec_args(command);
+    if environment_id == REMOTE_ENVIRONMENT_ID {
+        args["shell"] = json!("/bin/bash");
+    }
+    args
 }
 
 fn remote_network_proxy_request_command(marker: &str) -> String {
@@ -3113,7 +3203,13 @@ async fn submit_managed_network_turn(
     environments: Vec<TurnEnvironmentSelection>,
     approvals_reviewer: ApprovalsReviewer,
     approval_policy: AskForApproval,
-) -> Result<()> {
+) -> Result<String> {
+    let turn_cwd = environments
+        .first()
+        .context("managed network turn requires an execution environment")?
+        .cwd
+        .to_abs_path()
+        .context("managed network turn cwd must be host-compatible")?;
     let permission_profile = PermissionProfile::workspace_write_with(
         &[],
         NetworkSandboxPolicy::Enabled,
@@ -3121,11 +3217,11 @@ async fn submit_managed_network_turn(
         /*exclude_slash_tmp*/ false,
     );
     let (sandbox_policy, permission_profile) =
-        turn_permission_fields(permission_profile, test.config.cwd.as_path());
-    let turn_environment_selections =
-        TurnEnvironmentSelections::new(test.config.cwd.clone(), environments);
+        turn_permission_fields(permission_profile, turn_cwd.as_path());
+    let turn_environment_selections = TurnEnvironmentSelections::new(turn_cwd, environments);
 
-    test.codex
+    let turn_id = match test
+        .codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
                 text: prompt.into(),
@@ -3148,9 +3244,17 @@ async fn submit_managed_network_turn(
                 ..Default::default()
             }),
         )
-        .await?;
+        .await?
+    {
+        TurnInputSubmission::Started { turn_id } | TurnInputSubmission::Steered { turn_id } => {
+            turn_id
+        }
+        TurnInputSubmission::NotSubmitted { reason } => {
+            anyhow::bail!("managed network turn was not submitted: {reason:?}")
+        }
+    };
 
-    Ok(())
+    Ok(turn_id)
 }
 
 fn decoded_request_body(request: &wiremock::Request) -> Option<Vec<u8>> {
@@ -3280,6 +3384,40 @@ async fn expect_network_approval(
     .await
 }
 
+async fn expect_network_approval_for_turn(
+    test: &TestCodex,
+    expected_environment_id: &str,
+    expected_turn_id: &str,
+) -> Result<ExecApprovalRequestEvent> {
+    let event = wait_for_event_with_timeout(
+        &test.codex,
+        |event| match event {
+            EventMsg::ExecApprovalRequest(approval) => approval.turn_id == expected_turn_id,
+            EventMsg::TurnComplete(completed) => completed.turn_id == expected_turn_id,
+            _ => false,
+        },
+        Duration::from_secs(30),
+    )
+    .await;
+    match event {
+        EventMsg::ExecApprovalRequest(approval) => {
+            assert_network_approval_target(
+                &approval,
+                expected_environment_id,
+                NETWORK_TEST_TARGET,
+                NetworkApprovalProtocol::Http,
+            );
+            Ok(approval)
+        }
+        EventMsg::TurnComplete(_) => {
+            anyhow::bail!(
+                "expected network approval request before turn {expected_turn_id} completed"
+            )
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
 async fn expect_network_approval_target(
     test: &TestCodex,
     expected_environment_id: &str,
@@ -3303,28 +3441,42 @@ async fn expect_network_approval_target(
     .await;
     match event {
         EventMsg::ExecApprovalRequest(approval) => {
-            assert_eq!(
-                approval.command,
-                vec!["network-access".to_string(), expected_target.to_string()]
-            );
-            assert_eq!(
-                approval.network_approval_context,
-                Some(NetworkApprovalContext {
-                    host: NETWORK_TEST_HOST.to_string(),
-                    protocol: expected_protocol,
-                })
-            );
-            assert_eq!(
-                approval.environment_id.as_deref(),
-                Some(expected_environment_id)
+            assert_network_approval_target(
+                &approval,
+                expected_environment_id,
+                expected_target,
+                expected_protocol,
             );
             Ok(approval)
         }
         EventMsg::TurnComplete(_) => {
-            panic!("expected network approval request before completion");
+            anyhow::bail!("expected network approval request before completion")
         }
         other => panic!("unexpected event: {other:?}"),
     }
+}
+
+fn assert_network_approval_target(
+    approval: &ExecApprovalRequestEvent,
+    expected_environment_id: &str,
+    expected_target: &str,
+    expected_protocol: NetworkApprovalProtocol,
+) {
+    assert_eq!(
+        approval.command,
+        vec!["network-access".to_string(), expected_target.to_string()]
+    );
+    assert_eq!(
+        approval.network_approval_context,
+        Some(NetworkApprovalContext {
+            host: NETWORK_TEST_HOST.to_string(),
+            protocol: expected_protocol,
+        })
+    );
+    assert_eq!(
+        approval.environment_id.as_deref(),
+        Some(expected_environment_id)
+    );
 }
 
 async fn wait_for_completion_without_network_prompt(test: &TestCodex) {
@@ -3360,6 +3512,30 @@ async fn wait_for_guardian_request(responses: &ResponseMock) {
     })
     .await
     .expect("timed out waiting for Guardian request");
+}
+
+async fn wait_for_completion_without_network_prompt_for_turn(test: &TestCodex, turn_id: &str) {
+    // Guardian assessment completion can reuse the submitted parent turn ID. Wait for the
+    // scripted parent response so the next case cannot consume the previous case's mock.
+    let event = wait_for_event(&test.codex, |event| match event {
+        EventMsg::ExecApprovalRequest(_) => true,
+        EventMsg::TurnComplete(event) => {
+            event.turn_id == turn_id
+                && (event.error.is_some() || event.last_agent_message.as_deref() == Some("done"))
+        }
+        _ => false,
+    })
+    .await;
+    match event {
+        EventMsg::TurnComplete(_) => {}
+        EventMsg::ExecApprovalRequest(approval) => {
+            panic!(
+                "unexpected network approval request: {:?}",
+                approval.command
+            )
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
 }
 
 async fn wait_for_response_request(responses: &ResponseMock) {

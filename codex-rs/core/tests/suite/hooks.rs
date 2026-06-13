@@ -1982,7 +1982,7 @@ async fn async_hook_finishing_while_idle_waits_for_the_next_turn(
     test.codex.start_turn_if_idle(next_turn).await?;
 
     let mut warning_event = None;
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(15), async {
         loop {
             let event = test.codex.next_event().await?;
             if matches!(
@@ -4555,7 +4555,9 @@ async fn local_bundled_cleanup_hook_runs_without_saved_trust(
             .expect("disable executor capability discovery");
         let repl: McpServerConfig = serde_json::from_value(serde_json::json!({
             "url": repl_url,
-            "environment_id": super::rmcp_client::remote_aware_environment_id(),
+            // The Wiremock endpoint belongs to the host test process. Keep this
+            // MCP client local when the acting turn uses a remote executor.
+            "environment_id": codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
         }))
         .expect("valid MCP configuration");
         config

@@ -3010,19 +3010,18 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         "import sys, time; time.sleep(0.5); print(sys.argv[1].endswith('7890'))".to_string(),
         format!("Authorization: Bearer {bearer_token}"),
     ];
-    let expected_approval_command = format_with_current_shell_display(&shlex::try_join(
-        first_shell_command.iter().map(String::as_str),
-    )?);
+    let first_command = shlex::try_join(first_shell_command.iter().map(String::as_str))?;
+    let expected_approval_command = format_with_current_shell_display(&first_command);
     let expected_display_command =
         expected_approval_command.replace(bearer_token, "[REDACTED_SECRET]");
 
-    // Mock server: first turn requests a shell call (elicitation), then completes.
+    // Mock server: first turn requests a command execution (elicitation), then completes.
     // Second turn same, but we'll set approval_policy=never to avoid elicitation.
     let responses = vec![
         create_escalated_command_execution_sse_response(
             first_shell_command,
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call1",
         )?,
         create_final_assistant_message_sse_response("done 1")?,
@@ -3033,7 +3032,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
                 "print(42)".to_string(),
             ],
             /*workdir*/ None,
-            Some(5000),
+            /*timeout_ms*/ Some(5000),
             "call2",
         )?,
         create_final_assistant_message_sse_response("done 2")?,
@@ -3251,9 +3250,8 @@ async fn run_turn_start_exec_approval_rejection_v2(
         "print(42)".to_string(),
         format!("Authorization: Bearer {bearer_token}"),
     ];
-    let expected_approval_command = format_with_current_shell_display(&shlex::try_join(
-        shell_command.iter().map(String::as_str),
-    )?);
+    let command = shlex::try_join(shell_command.iter().map(String::as_str))?;
+    let expected_approval_command = format_with_current_shell_display(&command);
     let expected_display_command =
         expected_approval_command.replace(bearer_token, "[REDACTED_SECRET]");
 
@@ -3261,7 +3259,7 @@ async fn run_turn_start_exec_approval_rejection_v2(
         create_escalated_command_execution_sse_response(
             shell_command,
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call-decline",
         )?,
         create_final_assistant_message_sse_response("done")?,

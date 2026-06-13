@@ -66,7 +66,8 @@ async fn cancelling_tool_aborts_its_guardian_review(cancellation: Cancellation) 
         builder = builder
             .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?);
     }
-    let test = builder.build_with_auto_env(&server).await?;
+    // Cancellation owns a host-native output path, so keep the fixture local.
+    let test = builder.build(&server).await?;
     let output_file = test.cwd.path().join("cancelled-guardian-command.txt");
     let output_path = shlex::try_join([output_file.to_string_lossy().as_ref()])?;
     let tool_args = json!({
