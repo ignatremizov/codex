@@ -76,6 +76,7 @@ members = [
     "ollama",
     "process-hardening",
     "protocol",
+    "realtime-webrtc",
     "prompts",
     "rollout",
     "rollout-trace",
@@ -216,6 +217,7 @@ codex-plugin = { path = "plugin" }
 codex-model-provider = { path = "model-provider" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
+codex-realtime-webrtc = { path = "realtime-webrtc" }
 codex-prompts = { path = "prompts" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-response-debug-context = { path = "response-debug-context" }
