@@ -71,7 +71,11 @@ pub(super) async fn load(
         .status_line
         .as_ref()
         .is_none_or(|items| !items.is_empty());
-    let keymap = RuntimeKeymap::from_config(&settings.keymap).map_err(io::Error::other)?;
+    let keymap = RuntimeKeymap::from_config_with_features(
+        &settings.keymap,
+        crate::dictation::keymap_features(&local_settings),
+    )
+    .map_err(io::Error::other)?;
     let disable_paste_burst = settings.disable_paste_burst.unwrap_or(false);
     let welcome_motion = crate::motion::MotionMode::from_animations_enabled(
         settings.animations && settings.effects.welcome,
