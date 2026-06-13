@@ -332,6 +332,8 @@ mod command_lifecycle;
 mod connectors;
 mod constructor;
 use self::connectors::ConnectorsState;
+mod dictation;
+use self::dictation::DictationUiState;
 mod exec_state;
 use self::exec_state::RunningCommand;
 use self::exec_state::UnifiedExecProcessSummary;
@@ -730,6 +732,7 @@ pub(crate) struct ChatWidget {
     current_goal_status_indicator: Option<GoalStatusIndicator>,
     current_goal_status: Option<GoalStatusState>,
     external_editor_state: ExternalEditorState,
+    dictation: DictationUiState,
     realtime_conversation: RealtimeConversationUiState,
     last_rendered_user_message_display: Option<UserMessageDisplay>,
     last_non_retry_error: Option<(String, String)>,
@@ -1998,6 +2001,16 @@ impl ChatWidget {
         self.bottom_pane.remove_recording_meter_placeholder(id);
         // Ensure the UI redraws to reflect placeholder removal.
         self.request_redraw();
+    }
+
+    pub(crate) fn replace_recording_meter_placeholder(&mut self, id: &str, text: &str) -> bool {
+        let replaced = self
+            .bottom_pane
+            .replace_recording_meter_placeholder(id, text);
+        if replaced {
+            self.request_redraw();
+        }
+        replaced
     }
 }
 

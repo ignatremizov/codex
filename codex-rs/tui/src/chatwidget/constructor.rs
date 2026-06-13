@@ -226,6 +226,7 @@ impl ChatWidget {
             current_goal_status_indicator: None,
             current_goal_status: None,
             external_editor_state: ExternalEditorState::Closed,
+            dictation: DictationUiState::default(),
             realtime_conversation: RealtimeConversationUiState::default(),
             last_rendered_user_message_display: None,
             last_non_retry_error: None,

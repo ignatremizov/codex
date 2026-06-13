@@ -12,18 +12,75 @@ use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering;
 use tracing::error;
 
+#[path = "voice/transcription.rs"]
+mod transcription;
+
+pub(crate) use transcription::transcribe_async;
+pub(crate) use transcription::validate_transcription_auth;
+
 const MODEL_AUDIO_SAMPLE_RATE: u32 = 24_000;
 const MODEL_AUDIO_CHANNELS: u16 = 1;
+const MAX_RECORDING_SECONDS: u32 = 120;
+
+pub struct RecordedAudio {
+    pub data: Vec<i16>,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+struct RecordingBuffer {
+    data: Arc<Mutex<Vec<i16>>>,
+    sample_rate: u32,
+    channels: u16,
+    limit_reached: Arc<AtomicBool>,
+}
 
 pub struct VoiceCapture {
     stream: Option<cpal::Stream>,
+    recording: Option<RecordingBuffer>,
     stopped: Arc<AtomicBool>,
     last_peak: Arc<AtomicU16>,
 }
 
 impl VoiceCapture {
+    pub fn start_recording(config: &Config) -> Result<Self, String> {
+        let (device, config) = select_input_device_and_config(config)?;
+
+        let sample_rate = config.sample_rate().0;
+        let channels = config.channels();
+        let data = Arc::new(Mutex::new(Vec::new()));
+        let max_samples = recording_sample_limit(sample_rate, channels)?;
+        let limit_reached = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let last_peak = Arc::new(AtomicU16::new(0));
+
+        let stream = build_recording_input_stream(
+            &device,
+            &config,
+            data.clone(),
+            max_samples,
+            limit_reached.clone(),
+            last_peak.clone(),
+        )?;
+        stream
+            .play()
+            .map_err(|e| format!("failed to start input stream: {e}"))?;
+
+        Ok(Self {
+            stream: Some(stream),
+            recording: Some(RecordingBuffer {
+                data,
+                sample_rate,
+                channels,
+                limit_reached,
+            }),
+            stopped,
+            last_peak,
+        })
+    }
+
     pub fn start_realtime(config: &Config, tx: AppEventSender) -> Result<Self, String> {
-        let (device, config) = select_realtime_input_device_and_config(config)?;
+        let (device, config) = select_input_device_and_config(config)?;
 
         let sample_rate = config.sample_rate().0;
         let channels = config.channels();
@@ -44,6 +101,7 @@ impl VoiceCapture {
 
         Ok(Self {
             stream: Some(stream),
+            recording: None,
             stopped,
             last_peak,
         })
@@ -54,6 +112,31 @@ impl VoiceCapture {
         self.stopped.store(true, Ordering::SeqCst);
         // Dropping the stream stops capture.
         self.stream.take();
+    }
+
+    pub fn stop_recording(mut self) -> Result<RecordedAudio, String> {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.stream.take();
+        let recording = self
+            .recording
+            .take()
+            .ok_or_else(|| "voice capture was not recording audio".to_string())?;
+        let limit_reached = recording.limit_reached.load(Ordering::SeqCst);
+        let data = recording
+            .data
+            .lock()
+            .map_err(|_| "failed to lock audio buffer".to_string())?
+            .clone();
+        if limit_reached {
+            return Err(format!(
+                "recording exceeded the {MAX_RECORDING_SECONDS}s dictation limit"
+            ));
+        }
+        Ok(RecordedAudio {
+            data,
+            sample_rate: recording.sample_rate,
+            channels: recording.channels,
+        })
     }
 
     pub fn stopped_flag(&self) -> Arc<AtomicBool> {
@@ -128,10 +211,129 @@ impl RecordingMeterState {
 // Voice input helpers
 // -------------------------
 
-fn select_realtime_input_device_and_config(
+fn select_input_device_and_config(
     config: &Config,
 ) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
     crate::audio_device::select_configured_input_device_and_config(config)
+}
+
+pub(super) fn clip_duration_seconds(audio: &RecordedAudio) -> f32 {
+    if audio.sample_rate == 0 || audio.channels == 0 {
+        return 0.0;
+    }
+    audio.data.len() as f32 / f32::from(audio.channels) / audio.sample_rate as f32
+}
+
+fn recording_sample_limit(sample_rate: u32, channels: u16) -> Result<usize, String> {
+    let samples = sample_rate
+        .checked_mul(u32::from(channels))
+        .and_then(|samples_per_second| samples_per_second.checked_mul(MAX_RECORDING_SECONDS))
+        .ok_or_else(|| "input format is too large for dictation recording".to_string())?;
+    usize::try_from(samples)
+        .map_err(|_| "input format is too large for dictation recording".to_string())
+}
+
+fn remaining_recording_capacity(
+    current_len: usize,
+    max_samples: usize,
+    incoming_len: usize,
+    limit_reached: &AtomicBool,
+) -> usize {
+    let remaining = max_samples.saturating_sub(current_len);
+    if incoming_len > remaining {
+        limit_reached.store(true, Ordering::Relaxed);
+    }
+    remaining.min(incoming_len)
+}
+
+fn append_recording_f32(
+    buffer: &mut Vec<i16>,
+    input: &[f32],
+    max_samples: usize,
+    limit_reached: &AtomicBool,
+) {
+    let take = remaining_recording_capacity(buffer.len(), max_samples, input.len(), limit_reached);
+    buffer.extend(input.iter().take(take).copied().map(f32_to_i16));
+}
+
+fn append_recording_i16(
+    buffer: &mut Vec<i16>,
+    input: &[i16],
+    max_samples: usize,
+    limit_reached: &AtomicBool,
+) {
+    let take = remaining_recording_capacity(buffer.len(), max_samples, input.len(), limit_reached);
+    buffer.extend_from_slice(&input[..take]);
+}
+
+fn append_recording_u16(
+    buffer: &mut Vec<i16>,
+    input: &[u16],
+    max_samples: usize,
+    limit_reached: &AtomicBool,
+) {
+    let take = remaining_recording_capacity(buffer.len(), max_samples, input.len(), limit_reached);
+    buffer.extend(
+        input
+            .iter()
+            .take(take)
+            .map(|sample| (*sample as i32 - 32768) as i16),
+    );
+}
+
+fn build_recording_input_stream(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    data: Arc<Mutex<Vec<i16>>>,
+    max_samples: usize,
+    limit_reached: Arc<AtomicBool>,
+    last_peak: Arc<AtomicU16>,
+) -> Result<cpal::Stream, String> {
+    match config.sample_format() {
+        cpal::SampleFormat::F32 => device
+            .build_input_stream(
+                &config.clone().into(),
+                move |input: &[f32], _| {
+                    let peak = peak_f32(input);
+                    last_peak.store(peak, Ordering::Relaxed);
+                    if let Ok(mut buffer) = data.lock() {
+                        append_recording_f32(&mut buffer, input, max_samples, &limit_reached);
+                    }
+                },
+                move |err| error!("audio input error: {err}"),
+                None,
+            )
+            .map_err(|e| format!("failed to build input stream: {e}")),
+        cpal::SampleFormat::I16 => device
+            .build_input_stream(
+                &config.clone().into(),
+                move |input: &[i16], _| {
+                    let peak = peak_i16(input);
+                    last_peak.store(peak, Ordering::Relaxed);
+                    if let Ok(mut buffer) = data.lock() {
+                        append_recording_i16(&mut buffer, input, max_samples, &limit_reached);
+                    }
+                },
+                move |err| error!("audio input error: {err}"),
+                None,
+            )
+            .map_err(|e| format!("failed to build input stream: {e}")),
+        cpal::SampleFormat::U16 => device
+            .build_input_stream(
+                &config.clone().into(),
+                move |input: &[u16], _| {
+                    let peak = peak_u16(input);
+                    last_peak.store(peak, Ordering::Relaxed);
+                    if let Ok(mut buffer) = data.lock() {
+                        append_recording_u16(&mut buffer, input, max_samples, &limit_reached);
+                    }
+                },
+                move |err| error!("audio input error: {err}"),
+                None,
+            )
+            .map_err(|e| format!("failed to build input stream: {e}")),
+        _ => Err("unsupported input sample format".to_string()),
+    }
 }
 
 fn build_realtime_input_stream(
@@ -253,6 +455,18 @@ fn peak_i16(input: &[i16]) -> u16 {
     let mut peak: i32 = 0;
     for &s in input {
         let a = (s as i32).unsigned_abs() as i32;
+        if a > peak {
+            peak = a;
+        }
+    }
+    peak as u16
+}
+
+fn peak_u16(input: &[u16]) -> u16 {
+    let mut peak: i32 = 0;
+    for &s in input {
+        let v_i16 = (s as i32 - 32768) as i16;
+        let a = (v_i16 as i32).unsigned_abs() as i32;
         if a > peak {
             peak = a;
         }
@@ -410,7 +624,7 @@ fn fill_output_u16(output: &mut [u16], queue: &Arc<Mutex<VecDeque<i16>>>) {
     output.fill(32768);
 }
 
-fn convert_pcm16(
+pub(super) fn convert_pcm16(
     input: &[i16],
     input_sample_rate: u32,
     input_channels: u16,

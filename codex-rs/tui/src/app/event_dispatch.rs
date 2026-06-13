@@ -1962,9 +1962,18 @@ impl App {
                     || self
                         .chat_widget
                         .stop_realtime_conversation_for_deleted_meter(&id)
+                    || self.chat_widget.stop_dictation_for_deleted_meter(&id)
                 {
                     tui.frame_requester().schedule_frame();
                 }
+            }
+            AppEvent::TranscriptionComplete { id, text } => {
+                self.chat_widget.on_transcription_complete(&id, &text);
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::TranscriptionFailed { id, error } => {
+                self.chat_widget.on_transcription_failed(&id, error);
+                tui.frame_requester().schedule_frame();
             }
             AppEvent::StatusLineSetup {
                 items,

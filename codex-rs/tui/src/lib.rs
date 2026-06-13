@@ -221,12 +221,19 @@ mod workspace_command;
 #[cfg(all(target_os = "linux", target_env = "musl"))]
 #[allow(dead_code)]
 mod voice {
+    use crate::app_event::AppEvent;
     use crate::app_event_sender::AppEventSender;
     use crate::legacy_core::config::Config;
     use codex_app_server_protocol::ThreadRealtimeAudioChunk;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU16;
+
+    pub struct RecordedAudio {
+        pub data: Vec<i16>,
+        pub sample_rate: u32,
+        pub channels: u16,
+    }
 
     pub struct VoiceCapture;
 
@@ -235,6 +242,10 @@ mod voice {
     pub(crate) struct RealtimeAudioPlayer;
 
     impl VoiceCapture {
+        pub fn start_recording(_config: &Config) -> Result<Self, String> {
+            Err("voice input is unavailable in this build".to_string())
+        }
+
         pub fn start_realtime(_config: &Config, _tx: AppEventSender) -> Result<Self, String> {
             Err("voice input is unavailable in this build".to_string())
         }
@@ -247,6 +258,10 @@ mod voice {
 
         pub fn last_peak_arc(&self) -> Arc<AtomicU16> {
             Arc::new(AtomicU16::new(0))
+        }
+
+        pub fn stop_recording(self) -> Result<RecordedAudio, String> {
+            Err("voice input is unavailable in this build".to_string())
         }
     }
 
@@ -273,6 +288,22 @@ mod voice {
         }
 
         pub(crate) fn clear(&self) {}
+    }
+
+    pub fn transcribe_async(
+        id: String,
+        _audio: RecordedAudio,
+        _config: Config,
+        tx: AppEventSender,
+    ) {
+        tx.send(AppEvent::TranscriptionFailed {
+            id,
+            error: "voice input is unavailable in this build".to_string(),
+        });
+    }
+
+    pub(crate) fn validate_transcription_auth(_config: &Config) -> Result<(), String> {
+        Err("voice input is unavailable in this build".to_string())
     }
 }
 

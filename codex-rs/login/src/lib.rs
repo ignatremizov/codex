@@ -25,6 +25,7 @@ pub use auth::AuthManagerConfig;
 pub use auth::CLIENT_ID;
 pub use auth::CODEX_ACCESS_TOKEN_ENV_VAR;
 pub use auth::CODEX_API_KEY_ENV_VAR;
+pub use auth::ChatgptAuthSession;
 pub use auth::CodexAuth;
 pub use auth::ExternalAuth;
 pub use auth::ExternalAuthChatgptMetadata;
