@@ -197,13 +197,39 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
             });
             LOGGER.write_json_line(value);
         }
-        // Noise or control flow – record variant only
-        other => {
+        AppEvent::TranscriptionComplete { id, text } => {
             let value = json!({
                 "ts": now_ts(),
                 "dir": "to_tui",
                 "kind": "app_event",
-                "variant": format!("{other:?}").split('(').next().unwrap_or("app_event"),
+                "variant": "TranscriptionComplete",
+                "id": id,
+                "text_chars": text.chars().count(),
+            });
+            LOGGER.write_json_line(value);
+        }
+        AppEvent::TranscriptionFailed { id, error } => {
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": "TranscriptionFailed",
+                "id": id,
+                "error": error,
+            });
+            LOGGER.write_json_line(value);
+        }
+        // Noise or control flow – record variant only
+        other => {
+            let variant = format!("{other:?}");
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": variant
+                    .split(['(', ' ', '{'])
+                    .next()
+                    .unwrap_or("app_event"),
             });
             LOGGER.write_json_line(value);
         }

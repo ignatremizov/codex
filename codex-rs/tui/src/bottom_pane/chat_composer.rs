@@ -4034,6 +4034,10 @@ impl ChatComposer {
     pub fn remove_recording_meter_placeholder(&mut self, id: &str) {
         let _ = self.draft.textarea.replace_element_by_id(id, "");
     }
+
+    pub fn replace_recording_meter_placeholder(&mut self, id: &str, text: &str) -> bool {
+        self.draft.textarea.replace_element_by_id(id, text)
+    }
 }
 
 fn skill_description(skill: &SkillMetadata) -> Option<String> {

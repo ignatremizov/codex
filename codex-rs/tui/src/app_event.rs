@@ -1006,6 +1006,19 @@ pub(crate) enum AppEvent {
         text: String,
     },
 
+    /// Voice transcription finished for the given placeholder id.
+    TranscriptionComplete {
+        id: String,
+        text: String,
+    },
+
+    /// Voice transcription failed; remove the placeholder identified by `id`.
+    TranscriptionFailed {
+        id: String,
+        #[allow(dead_code)]
+        error: String,
+    },
+
     /// Open the branch picker option from the review popup.
     OpenReviewBranchPicker(PathBuf),
 

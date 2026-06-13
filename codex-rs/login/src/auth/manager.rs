@@ -289,6 +289,35 @@ impl From<RefreshTokenError> for std::io::Error {
     }
 }
 
+/// ChatGPT authentication session for callers that only need bearer auth and refresh.
+///
+/// This wraps the shared authentication cache while keeping `AuthManager` out of
+/// higher-level runtime modules that should not depend on manager internals.
+#[derive(Clone)]
+pub struct ChatgptAuthSession {
+    inner: Arc<AuthManager>,
+}
+
+impl ChatgptAuthSession {
+    /// Creates a ChatGPT auth session from resolved config.
+    pub async fn from_config(config: &impl AuthManagerConfig) -> Self {
+        Self {
+            inner: AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false)
+                .await,
+        }
+    }
+
+    /// Returns the current cached authentication, refreshing proactively when needed.
+    pub async fn auth(&self) -> Option<CodexAuth> {
+        self.inner.auth().await
+    }
+
+    /// Forces a ChatGPT token refresh using the underlying auth session.
+    pub async fn refresh_token(&self) -> Result<(), RefreshTokenError> {
+        self.inner.refresh_token().await
+    }
+}
+
 impl CodexAuth {
     async fn from_auth_dot_json(
         codex_home: &Path,
