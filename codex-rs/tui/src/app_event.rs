@@ -1005,6 +1005,27 @@ pub(crate) enum AppEvent {
         text: String,
     },
 
+    /// One dictation chunk finished transcribing.
+    DictationChunkTranscriptionComplete {
+        id: String,
+        sequence: u64,
+        text: String,
+    },
+
+    /// One dictation chunk failed to transcribe.
+    DictationChunkTranscriptionFailed {
+        id: String,
+        sequence: u64,
+        #[allow(dead_code)]
+        error: String,
+    },
+
+    /// Dictation capture stopped and all remaining audio has been chunked.
+    DictationChunksFlushed {
+        id: String,
+        final_sequence: Option<u64>,
+    },
+
     /// Open the branch picker option from the review popup.
     OpenReviewBranchPicker(PathBuf),
 
