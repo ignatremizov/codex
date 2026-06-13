@@ -56,7 +56,7 @@ const SIGKILL_CODE: i32 = 9;
 const TIMEOUT_CODE: i32 = 64;
 const EXIT_CODE_SIGNAL_BASE: i32 = 128; // conventional shell: 128 + signal
 const EXEC_TIMEOUT_EXIT_CODE: i32 = 124; // conventional timeout exit code
-const CANCELLATION_TERMINATION_GRACE_PERIOD: Duration = Duration::from_millis(50);
+const CANCELLATION_TERMINATION_GRACE_PERIOD: Duration = Duration::from_millis(250);
 
 // I/O buffer sizing
 const READ_CHUNK_SIZE: usize = 8192; // bytes per read
