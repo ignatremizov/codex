@@ -29,10 +29,13 @@ In the codex-rs folder where the rust code lives:
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
 - Do not add tests for values that are statically defined.
 - Do not add negative tests for logic that was removed.
-- Do not add general product or user-facing documentation to the `docs/` folder. The official Codex documentation lives elsewhere. The exception is app-server API documentation, which is covered by the app-server guidance below.
+- When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
 - Prefer private modules and explicitly exported public crate API.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
 - When working with MCP tool calls, prefer using `codex-rs/codex-mcp/src/mcp_connection_manager.rs` to handle mutation of tools and tool calls. Aim to minimize the footprint of changes and leverage existing abstractions rather than plumbing code through multiple levels of function calls.
+- When working with MCP server registrations or plugin MCP config, route contributions through `codex-rs/codex-mcp/src/catalog.rs` and parse plugin config with `codex-rs/codex-mcp/src/plugin_config.rs`. Keep config, compatibility, plugin, and extension registrations in the catalog instead of adding parallel maps, and keep registrations thread-scoped when they depend on thread environments.
+- When working with executor-owned plugin or skill resources, resolve them through `codex-rs/plugin/src/provider.rs` and `codex-rs/core-plugins/src/provider.rs`, preserving the owning `environment_id` and resource authority. Do not convert remote resources to host paths except at an explicit current-host boundary.
+- When touching executor filesystem APIs or remote environment file access, use `codex_utils_path_uri::PathUri` and `ExecutorFileSystem` APIs. Keep URI segment operations in `PathUri` (`join`, `parent`, `basename`) and do not reintroduce exec-server `fs/join`/`fs/parent` RPCs or host `PathBuf` assumptions across environment boundaries.
 - Do not call `reset_client_session` unnecessarily; let the incremental check logic decide whether to reuse the previous request.
 - If you change Rust dependencies (`Cargo.toml` or `Cargo.lock`), run `just bazel-lock-update` from the
   repo root to refresh `MODULE.bazel.lock`, and include that lockfile update in the same change. CI
@@ -60,14 +63,37 @@ In the codex-rs folder where the rust code lives:
   - Avoid adding new standalone methods to `codex-rs/tui/src/chatwidget.rs` unless the change is
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
 - When running Rust commands (e.g. `just fix` or `just test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
+- For large GitHub Actions artifacts, prefer downloading the artifact ZIP directly with `gh api repos/<owner>/<repo>/actions/artifacts/<artifact_id>/zip > artifact.zip`. `gh run download` can stay quiet for 20+ minutes while still making progress, so do not assume it is stuck or kill it solely because there is no terminal output.
+- In shell cleanup, use anchored, validated destructive commands instead of glob expansion.
+- In zsh, avoid bare glob expansion in destructive commands.
 
-Run `just fmt` (in the `codex-rs` directory) automatically after you have finished making code changes anywhere in this repository; do not ask for approval to run it. Additionally, run the tests:
+Unless the user or environment specifically prohibits formatting, run `just fmt` (in the `codex-rs` directory) automatically after you have finished making code changes anywhere in this repository; do not ask for approval to run it.
+
+Do not compile or run tests locally by default. Local compilation and test execution require an explicit user request. A request to implement, fix, validate, verify, finish, or check a change does not by itself authorize local compilation or tests. When the user explicitly requests local tests, follow these test rules:
 
 1. Do not run `cargo test` directly. Use `just test` so test execution follows the repo defaults.
 2. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `just test -p codex-tui`.
 3. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `just test`. Avoid `--all-features` for routine local runs because it expands the build matrix and can significantly increase `target/` disk usage; use it only when you specifically need full feature coverage. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
-Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
+Run `just fix -p <project>` (in `codex-rs` directory) before finalizing a large change only when the user explicitly authorizes local compilation. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
+
+### Default static preflight
+
+Unless the user explicitly requests local compilation or tests, statically preflight the change and rely on remote CI for executable validation:
+
+- Treat local compilation and tests as prohibited until the user explicitly requests them. Scope that authorization to what the user requested; do not treat one requested command as blanket permission for later compilation or tests.
+- Do not infer authorization from a coding request, a request to verify the change, or the normal validation instructions above.
+- Without explicit authorization, do not run `just fix`, `just test`, `cargo fix`, `cargo check`, `cargo clippy`, `cargo test`, `cargo build`, or any other command that compiles, links, or executes tests. This includes targeted crate tests and commands that compile as an implicit prerequisite.
+- Compilation and test restrictions do not prohibit formatting. Continue to run `just fmt` unless formatting is separately prohibited.
+- When formatting is prohibited, do not run `just fmt`, `cargo fmt`, or another formatter.
+- Do not start a prohibited command with the intention of stopping it later. Use only read-only inspection, explicitly permitted formatting, and remote CI for the remaining validation.
+- Inspect the complete final diff and `git status --short`.
+- Compare edited Rust imports and wrapping against nearby rustfmt output. In particular, keep imports in the ordering used by the file; do not assume a newly inserted import is already in rustfmt order.
+- Search changed Rust code for common workspace-denied Clippy patterns: unused imports, dead production methods added only for tests, `expect`/`unwrap` in production paths, redundant closures where a method reference works, and non-collapsed nested `if` statements.
+- For `insta` snapshots, update and review the entire serialized snapshot rather than only visible text. Ratatui snapshots can include auxiliary metadata such as `Hidden by multi-width symbols` column positions, and spacing changes can alter that metadata without changing the apparent line contents.
+- When a test calls a lower-level render/layout method directly, initialize state normally established by the outer render loop (for example clamped scroll offsets). Do not assert against sentinel/default state that production normalizes before rendering.
+- In async integration tests, do not assume that completion of a parent turn means independently spawned child work has already reached a mock server. Poll captured requests with a bounded timeout using an existing test helper or the established `tokio::time::timeout` pattern.
+- Before pushing follow-up fixes, statically re-check every failure reported by remote fmt, Clippy, and tests together; avoid fixing only the first diagnostic when the same log identifies related snapshot metadata or test-state mismatches.
 
 ## The `codex-core` crate
 
@@ -297,7 +323,7 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 
 ### Development Workflow
 
-- Update app-server docs/examples when API behavior changes (at minimum `app-server/README.md`).
+- Update docs/examples when API behavior changes (at minimum `app-server/README.md`).
 - Regenerate schema fixtures when API shapes change:
   `just write-app-server-schema`
   (and `just write-app-server-schema --experimental` when experimental API fixtures are affected).
