@@ -254,6 +254,20 @@ pub(crate) fn update_turn_settings_for_test(
     }));
 }
 
+/// Updates only the next-step view of a shared test turn context.
+pub(crate) fn update_current_turn_settings_for_test(
+    turn: &TurnContext,
+    update: impl FnOnce(&mut super::step_settings::ResolvedStepSettings),
+) {
+    let current = turn.next_step_input.load_full();
+    let mut settings = Arc::clone(&current.settings);
+    update(Arc::make_mut(&mut settings));
+    turn.next_step_input.store(Arc::new(StepInputs {
+        settings,
+        environments: current.environments.clone(),
+    }));
+}
+
 impl StepContext {
     pub(crate) fn for_test(turn: Arc<TurnContext>) -> Arc<Self> {
         let environments = turn.initial_environments.clone();
@@ -290,6 +304,20 @@ impl StepContext {
             )),
             loaded_agents_md: None,
         })
+    }
+
+    pub(crate) fn for_test_with_current_settings(turn: Arc<TurnContext>) -> Arc<Self> {
+        let current = turn.next_step_input.load_full();
+        let mut step_context = Self::for_test(turn);
+        let step = Arc::get_mut(&mut step_context).expect("fresh test step context");
+        step.settings = Arc::clone(&current.settings);
+        step.environments = current.environments.clone();
+        step.token_budget = token_budget::resolve_token_budget(
+            step.turn.configured_token_budget.as_ref(),
+            step.turn.use_model_token_budget_defaults,
+            step.settings.model_info.as_ref(),
+        );
+        step_context
     }
 
     pub(crate) fn with_tool_router_for_test(
@@ -12222,14 +12250,14 @@ async fn sample_rollout(
         std::iter::once(&user1),
         reconstruction_turn.model_info().truncation_policy.into(),
     );
-    rollout_items.push(RolloutItem::ResponseItem(user1.clone().into()));
+    rollout_items.push(RolloutItem::ResponseItem(user1.into()));
 
     let assistant1 = assistant_message("assistant reply one");
     live_history.record_items(
         std::iter::once(&assistant1),
         reconstruction_turn.model_info().truncation_policy.into(),
     );
-    rollout_items.push(RolloutItem::ResponseItem(assistant1.clone().into()));
+    rollout_items.push(RolloutItem::ResponseItem(assistant1.into()));
 
     let summary1 = "summary one";
     let snapshot1 = raw_history_items(&live_history);
@@ -12256,14 +12284,14 @@ async fn sample_rollout(
         std::iter::once(&user2),
         reconstruction_turn.model_info().truncation_policy.into(),
     );
-    rollout_items.push(RolloutItem::ResponseItem(user2.clone().into()));
+    rollout_items.push(RolloutItem::ResponseItem(user2.into()));
 
     let assistant2 = assistant_message("assistant reply two");
     live_history.record_items(
         std::iter::once(&assistant2),
         reconstruction_turn.model_info().truncation_policy.into(),
     );
-    rollout_items.push(RolloutItem::ResponseItem(assistant2.clone().into()));
+    rollout_items.push(RolloutItem::ResponseItem(assistant2.into()));
 
     let summary2 = "summary two";
     let snapshot2 = raw_history_items(&live_history);

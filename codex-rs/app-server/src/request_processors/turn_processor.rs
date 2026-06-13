@@ -672,10 +672,18 @@ impl TurnRequestProcessor {
             TurnInputSubmission::Started { turn_id } => (turn_id, true),
             TurnInputSubmission::Steered { turn_id } => (turn_id, false),
             TurnInputSubmission::NotSubmitted { reason } => {
-                let error = if reason == NotSubmittedReason::ServerDraining {
-                    crate::error_code::server_draining_error()
-                } else {
-                    internal_error(format!("failed to submit turn input: {reason:?}"))
+                let error = match reason {
+                    NotSubmittedReason::ServerDraining => {
+                        crate::error_code::server_draining_error()
+                    }
+                    NotSubmittedReason::ActiveTurnNotSteerable { turn_kind } => {
+                        let turn_kind_label = match turn_kind {
+                            codex_protocol::protocol::NonSteerableTurnKind::Review => "review",
+                            codex_protocol::protocol::NonSteerableTurnKind::Compact => "compact",
+                        };
+                        invalid_request(format!("cannot steer a {turn_kind_label} turn"))
+                    }
+                    reason => internal_error(format!("failed to submit turn input: {reason:?}")),
                 };
                 self.track_error_response(&request_id, &error, /*error_type*/ None);
                 return Err(error);

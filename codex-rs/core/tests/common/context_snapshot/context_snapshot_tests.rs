@@ -96,6 +96,35 @@ fn code_mode_timing_normalization_preserves_status_and_user_output() {
 }
 
 #[test]
+fn unified_exec_metadata_normalization_preserves_exit_and_literal_output() {
+    let output = "Process exited with code 7\nOriginal token count: 12\nOutput:\nChunk ID: abcdef\nWall time: 3.5 seconds\n";
+    for (chunk, duration) in [("adc741", "0.0003"), ("bc7d06", "0.0009")] {
+        let text = format!("Chunk ID: {chunk}\nWall time: {duration} seconds\n{output}");
+        assert_eq!(
+            Normalizer::default().text(
+                &text,
+                TextSource::Other,
+                &ContextSnapshotOptions::default(),
+            ),
+            format!("Chunk ID: <CHUNK_ID>\nWall time: <DURATION> seconds\n{output}"),
+        );
+    }
+    for literal in [
+        "Chunk ID: abcdef\nOrdinary output, not an execution header.",
+        "Ordinary output\nChunk ID: abcdef\nWall time: 3.5 seconds",
+    ] {
+        assert_eq!(
+            Normalizer::default().text(
+                literal,
+                TextSource::Other,
+                &ContextSnapshotOptions::default(),
+            ),
+            literal,
+        );
+    }
+}
+
+#[test]
 fn tool_outputs_show_only_their_own_names_and_namespaces() {
     let items = [
         json!({ "type": "function_call", "call_id": "lookup", "namespace": "collaboration", "name": "lookup", "arguments": "{}" }),

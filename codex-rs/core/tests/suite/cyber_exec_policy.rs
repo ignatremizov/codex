@@ -138,7 +138,8 @@ async fn saved_prefix_only_bypasses_guardian_for_general_models(
             }
         })
         .with_config(configure_saved_prefix_and_guardian);
-    let test = builder.build_with_auto_env(&server).await?;
+    // The standard-shell cases exercise the host-native approval path.
+    let test = builder.build(&server).await?;
     let expected_guardian_review_count = match (model_specialty, shell_backend) {
         (ModelSpecialty::General, _) => 0,
         (ModelSpecialty::Cyber, ShellBackend::Standard) => 1,
@@ -201,7 +202,7 @@ async fn cyber_model_user_approval_never_offers_a_reusable_prefix() -> Result<()
             configure_saved_prefix_and_guardian(config);
             config.approvals_reviewer = ApprovalsReviewer::User;
         });
-    let test = builder.build_with_auto_env(&server).await?;
+    let test = builder.build(&server).await?;
     let policy_path = test.codex_home_path().join("rules/default.rules");
     let initial_policy = fs::read_to_string(&policy_path)?;
     let responses = mount_sse_sequence(
@@ -278,7 +279,7 @@ async fn switching_models_suppresses_and_restores_saved_prefix_approvals() -> Re
         })
         .with_model("gpt-5.2")
         .with_config(configure_saved_prefix_and_guardian);
-    let test = builder.build_with_auto_env(&server).await?;
+    let test = builder.build(&server).await?;
 
     let responses = mount_sse_sequence(
         &server,

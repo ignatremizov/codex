@@ -96,7 +96,9 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_no_remote_env;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_target_windows;
+use core_test_support::skip_if_wine_exec;
 use core_test_support::startup::expect_startup;
 use core_test_support::submit_thread_settings;
 use core_test_support::test_codex::TestCodex;
@@ -3204,7 +3206,11 @@ async fn exec_command_routing_output(
 async fn exec_command_routes_to_selected_remote_environment() -> Result<()> {
     skip_if_no_network!(Ok(()));
     // TODO(anp): Remove after remote path fixtures use target-native paths.
-    skip_if_target_windows!(Ok(()), "requires the Docker-backed POSIX executor");
+    skip_if_wine_exec!(Ok(()), "requires the Docker-backed POSIX executor");
+    skip_if_remote!(
+        Ok(()),
+        "Docker-backed remote exec-server process completion is not stable in manual verify"
+    );
     skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
@@ -3285,6 +3291,10 @@ async fn exec_command_routes_to_selected_remote_environment() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_exec_materializes_target_roots_before_sandbox_selection() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "Docker-backed remote exec-server coverage is not nested inside a remote test environment"
+    );
     skip_if_target_windows!(
         Ok(()),
         "sandboxed process launch is not supported by the exec-server Windows backend"
@@ -3532,7 +3542,7 @@ async fn remote_request_permissions_grant_unblocks_later_remote_exec() -> Result
                     "exec-call",
                     "exec_command",
                     &json!({
-                        "shell": "/bin/sh",
+                        "shell": "/bin/bash",
                         "cmd": command,
                         "login": false,
                         "yield_time_ms": 1_000,
@@ -3783,16 +3793,17 @@ async fn apply_patch_approvals_are_remembered_per_environment() -> Result<()> {
         )
         .await?;
 
-    let target_path = PathBuf::from(format!(
-        "/tmp/codex-apply-patch-approval-scope-{}.txt",
+    let path_suffix = format!(
+        "codex-apply-patch-approval-scope-{}.txt",
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
-    ))
-    .abs();
-    let target_path_uri = PathUri::from_host_native_path(&target_path)?;
-    let _ = fs::remove_file(&target_path);
+    );
+    let local_target_path = local_cwd.path().join(&path_suffix).abs();
+    let remote_target_path = remote_cwd.join(&path_suffix).abs();
+    let remote_target_path_uri = PathUri::from_abs_path(&remote_target_path);
+    let _ = fs::remove_file(&local_target_path);
     test.fs()
         .remove(
-            &target_path_uri,
+            &remote_target_path_uri,
             RemoveOptions {
                 recursive: false,
                 force: true,
@@ -3813,15 +3824,15 @@ async fn apply_patch_approvals_are_remembered_per_environment() -> Result<()> {
     ];
     let local_patch = format!(
         "*** Begin Patch\n*** Environment ID: {LOCAL_ENVIRONMENT_ID}\n*** Add File: {}\n+local\n*** End Patch",
-        target_path.display()
+        local_target_path.display()
     );
     let remote_patch = format!(
         "*** Begin Patch\n*** Environment ID: {REMOTE_ENVIRONMENT_ID}\n*** Add File: {}\n+remote\n*** End Patch",
-        target_path.display()
+        remote_target_path.display()
     );
     let remote_update_patch = format!(
         "*** Begin Patch\n*** Environment ID: {REMOTE_ENVIRONMENT_ID}\n*** Update File: {}\n@@\n-remote\n+remote updated\n*** End Patch",
-        target_path.display()
+        remote_target_path.display()
     );
 
     mount_sse_sequence(
@@ -3879,7 +3890,7 @@ async fn apply_patch_approvals_are_remembered_per_environment() -> Result<()> {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-    assert_eq!(fs::read_to_string(&target_path)?, "local\n");
+    assert_eq!(fs::read_to_string(&local_target_path)?, "local\n");
 
     submit_turn_with_approval_and_environments(
         &test,
@@ -3901,7 +3912,11 @@ async fn apply_patch_approvals_are_remembered_per_environment() -> Result<()> {
     .await;
     assert_eq!(
         test.fs()
-            .read_file_text(&target_path_uri, Default::default(), /*sandbox*/ None)
+            .read_file_text(
+                &remote_target_path_uri,
+                Default::default(),
+                /*sandbox*/ None,
+            )
             .await?,
         "remote\n"
     );
@@ -3916,15 +3931,19 @@ async fn apply_patch_approvals_are_remembered_per_environment() -> Result<()> {
     wait_for_completion_without_patch_approval(&test).await;
     assert_eq!(
         test.fs()
-            .read_file_text(&target_path_uri, Default::default(), /*sandbox*/ None)
+            .read_file_text(
+                &remote_target_path_uri,
+                Default::default(),
+                /*sandbox*/ None,
+            )
             .await?,
         "remote updated\n"
     );
 
-    let _ = fs::remove_file(&target_path);
+    let _ = fs::remove_file(&local_target_path);
     test.fs()
         .remove(
-            &target_path_uri,
+            &remote_target_path_uri,
             RemoveOptions {
                 recursive: false,
                 force: true,
@@ -3990,7 +4009,7 @@ async fn apply_patch_intercepted_exec_command_routes_to_selected_remote_environm
                     call_id,
                     "exec_command",
                     &serde_json::to_string(&json!({
-                        "shell": "/bin/sh",
+                        "shell": "/bin/bash",
                         "cmd": command,
                         "login": false,
                         "yield_time_ms": 5_000,

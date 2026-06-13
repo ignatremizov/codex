@@ -175,13 +175,20 @@ async fn build_uploaded_argument_value(
             .file_system_sandbox_policy(),
         additional_permissions.as_ref(),
     );
+    let sandbox_context = turn_environment.sandbox_context(additional_permissions);
+    // Reject exact-path policy denials using the selected executor's path context before any
+    // file bytes enter the upload client. Its sandbox still enforces symlinks and deny globs.
+    if !file_system_policy.can_read_path(&path_uri, &sandbox_context.policy_context()) {
+        return Err(contextualize_error(
+            "Permission denied by the active filesystem policy".to_string(),
+        ));
+    }
     let requires_sandbox = !file_system_policy.has_full_disk_read_access()
         || file_system_policy
             .entries
             .iter()
             .any(|entry| entry.access == FileSystemAccessMode::Deny);
-    let sandbox =
-        requires_sandbox.then(|| turn_environment.sandbox_context(additional_permissions));
+    let sandbox = requires_sandbox.then_some(sandbox_context);
     if sandbox.is_some() {
         let environment_info = turn_environment
             .environment

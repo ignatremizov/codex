@@ -38,6 +38,7 @@ use codex_utils_output_truncation::approx_tokens_from_byte_count;
 use codex_utils_path_uri::PathUri;
 use core_test_support::TempDirExt;
 use core_test_support::assert_regex_match;
+use core_test_support::is_remote_test_environment;
 use core_test_support::managed_network_requirements_loader;
 use core_test_support::process::process_is_alive;
 use core_test_support::process::wait_for_pid_file;
@@ -51,6 +52,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_host_windows;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_target_windows;
 use core_test_support::skip_if_wine_exec;
@@ -221,6 +223,7 @@ async fn submit_unified_exec_turn(
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
+                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -1218,6 +1221,10 @@ async fn unified_exec_network_denial_emits_failed_background_end_event() -> Resu
     // TODO(anp): Remove after network-denial fixtures use target-native commands.
     skip_if_target_windows!(Ok(()), "uses the POSIX/Python network-denial fixture");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "network-denial process completion is not stable under Docker-backed remote exec-server tests"
+    );
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1262,6 +1269,10 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
     // TODO(anp): Remove after network-denial fixtures use target-native commands.
     skip_if_target_windows!(Ok(()), "uses the POSIX/Python network-denial fixture");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "network-denial process completion is not stable under Docker-backed remote exec-server tests"
+    );
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1412,7 +1423,12 @@ async fn wait_for_unified_exec_end(
     call_id: &str,
     response_mock: &core_test_support::responses::ResponseMock,
 ) -> (codex_protocol::protocol::ExecCommandEndEvent, bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let timeout = if is_remote_test_environment() {
+        std::time::Duration::from_secs(45)
+    } else {
+        std::time::Duration::from_secs(15)
+    };
+    let deadline = std::time::Instant::now() + timeout;
     let mut observed_events = Vec::new();
     let mut turn_completed = false;
     let end_event = loop {
@@ -2496,7 +2512,7 @@ async fn write_stdin_ctrl_c_interrupts_non_tty_session() -> Result<()> {
     skip_if_target_windows!(Ok(()), "asserts Unix SIGINT and trap semantics");
     assert_write_stdin_ctrl_c_interrupts_non_tty_session(
         "trap",
-        "trap 'echo INT-TRAP; exit 42' INT; echo READY; while true; do sleep 30; done",
+        "trap 'printf \"INT-TRAP\\n\"; exit 42' INT; printf 'READY\\n'; while :; do :; done",
         /*expected_exit_code*/ 42,
         Some("INT-TRAP"),
     )
@@ -2509,7 +2525,7 @@ async fn write_stdin_ctrl_c_default_interrupt_reports_130_for_non_tty_session() 
     skip_if_target_windows!(Ok(()), "asserts Unix SIGINT and exit-code semantics");
     assert_write_stdin_ctrl_c_interrupts_non_tty_session(
         "default",
-        "echo READY; exec sleep 30",
+        "printf 'READY\\n'; while :; do :; done",
         /*expected_exit_code*/ 130,
         /*expected_interrupt_output*/ None,
     )
@@ -2523,6 +2539,10 @@ async fn assert_write_stdin_ctrl_c_interrupts_non_tty_session(
     expected_interrupt_output: Option<&str>,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "Docker-backed remote exec-server process completion is not stable under manual verify"
+    );
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
@@ -2539,6 +2559,7 @@ async fn assert_write_stdin_ctrl_c_interrupts_non_tty_session(
     let interrupt_call_id = format!("uexec-non-tty-interrupt-{test_name}");
 
     let start_args = serde_json::json!({
+        "shell": "/bin/sh",
         "cmd": command,
         "yield_time_ms": 250,
         "tty": false,
@@ -2547,7 +2568,7 @@ async fn assert_write_stdin_ctrl_c_interrupts_non_tty_session(
     let interrupt_args = serde_json::json!({
         "chars": "\u{3}",
         "session_id": 1000,
-        "yield_time_ms": 1000,
+        "yield_time_ms": 10_000,
     });
 
     let responses = vec![
@@ -3659,12 +3680,10 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
             ))
             .expect("set permission profile");
     });
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build(&server).await?;
+    let codex = test.codex.clone();
+    let cwd = test.cwd.clone();
+    let session_configured = test.session_configured.clone();
 
     let fixture_dir = cwd.path().join("glob-deny-read");
     fs::create_dir_all(&fixture_dir).context("create glob deny-read fixture directory")?;

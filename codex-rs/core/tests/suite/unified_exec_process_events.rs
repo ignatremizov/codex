@@ -77,6 +77,9 @@ enum PushedExecScenario {
     ReplayGap,
 }
 
+#[path = "network_approval_completion.rs"]
+mod network_approval_completion;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManagedNetworkScenario {
     None,

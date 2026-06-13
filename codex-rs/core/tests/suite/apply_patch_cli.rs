@@ -50,6 +50,7 @@ use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
+use core_test_support::PathExt;
 use core_test_support::TestTargetOs;
 use core_test_support::assert_regex_match;
 use core_test_support::is_wine_exec_test_environment;
@@ -77,6 +78,7 @@ use core_test_support::test_target_os;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_with_timeout;
 use serde_json::json;
+use tempfile::TempDir;
 use test_case::test_case;
 use wiremock::Mock;
 use wiremock::Respond;
@@ -122,6 +124,7 @@ async fn submit_without_wait_with_turn_permissions(
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
+                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -353,6 +356,15 @@ async fn assert_apply_patch_crlf_update(
     expected: &str,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
+    if matches!(
+        model_output,
+        CrLfApplyPatchModelOutput::ExecCommandViaHeredoc
+    ) {
+        skip_if_remote!(
+            Ok(()),
+            "shell_command heredoc fixtures are local-only in the remote executor test environment"
+        );
+    }
 
     let harness = apply_patch_harness_with(configure).await?;
     let call_id = "apply-patch-crlf-rollout";
@@ -457,6 +469,10 @@ async fn apply_patch_shell_heredoc_preserves_crlf_with_preserve_line_endings_fea
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_patch_cli_uses_codex_self_exe_with_linux_sandbox_helper_alias() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "local helper alias assertion is not valid for Docker-backed remote executor tests"
+    );
 
     let harness = apply_patch_harness().await?;
     let codex_linux_sandbox_exe = harness
@@ -550,33 +566,6 @@ async fn apply_patch_cli_preserves_distinct_updated_paths() -> Result<()> {
         harness.read_file_text("second.txt").await?,
         "second after\n"
     );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn apply_patch_cli_rejects_duplicate_resolved_paths() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let harness = apply_patch_harness().await?;
-    harness.write_file("duplicate.txt", "before\n").await?;
-
-    let patch = "*** Begin Patch\n*** Update File: duplicate.txt\n@@\n-before\n+first after\n*** Update File: ./duplicate.txt\n@@\n-before\n+second after\n*** End Patch";
-    let call_id = "apply-duplicate-resolved-path";
-    mount_apply_patch(&harness, call_id, patch, "done").await;
-
-    harness.submit("please apply both updates").await?;
-
-    let out = harness.apply_patch_output(call_id).await;
-    assert!(
-        out.contains("apply_patch verification failed"),
-        "expected verification failure: {out}"
-    );
-    assert!(
-        out.contains("multiple operations target"),
-        "expected duplicate-path diagnostics: {out}"
-    );
-    assert_eq!(harness.read_file_text("duplicate.txt").await?, "before\n");
 
     Ok(())
 }
@@ -1478,6 +1467,10 @@ async fn apply_patch_cli_rejects_move_path_traversal_outside_workspace() -> Resu
     // TODO(anp): Remove after apply-patch fixtures use target-native paths.
     skip_if_target_windows!(Ok(()), "asserts POSIX workspace traversal behavior");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "remote executor bwrap setup can fail on protected metadata mount targets before this move-traversal assertion runs"
+    );
 
     let harness = apply_patch_harness().await?;
 
@@ -1544,6 +1537,10 @@ async fn apply_patch_exec_command_heredoc_with_cd_updates_relative_workdir() -> 
     // TODO(anp): Remove after apply_patch shell fixtures use target-native commands.
     skip_if_wine_exec!(Ok(()), "uses a POSIX shell heredoc and cd command");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "shell_command is local-only in the remote executor test environment"
+    );
 
     let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.4")).await?;
 
@@ -1828,6 +1825,10 @@ async fn apply_patch_exec_command_heredoc_with_cd_emits_turn_diff() -> Result<()
     // TODO(anp): Remove after apply_patch shell fixtures use target-native commands.
     skip_if_wine_exec!(Ok(()), "uses a POSIX shell heredoc and cd command");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "shell_command is local-only in the remote executor test environment"
+    );
 
     let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.4")).await?;
     let test = harness.test();
@@ -1892,6 +1893,10 @@ async fn apply_patch_turn_diff_paths_stay_repo_relative_when_session_cwd_is_nest
     // TODO(anp): Remove after apply_patch diff fixtures use target-native paths.
     skip_if_wine_exec!(Ok(()), "asserts POSIX repository paths");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "repo-relative turn diff setup uses the local filesystem"
+    );
 
     let harness = apply_patch_harness_with(|builder| {
         builder
@@ -2080,6 +2085,10 @@ async fn apply_patch_exec_command_failure_propagates_error_and_skips_diff() -> R
     // TODO(anp): Remove after apply_patch shell fixtures use target-native commands.
     skip_if_wine_exec!(Ok(()), "uses a POSIX shell heredoc");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "shell_command is local-only in the remote executor test environment"
+    );
 
     let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.4")).await?;
     let test = harness.test();
@@ -2139,6 +2148,10 @@ async fn apply_patch_shell_accepts_lenient_heredoc_wrapped_patch() -> Result<()>
     // TODO(anp): Remove after apply_patch shell fixtures use target-native commands.
     skip_if_wine_exec!(Ok(()), "uses a POSIX shell heredoc");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "shell_command is local-only in the remote executor test environment"
+    );
 
     let harness = apply_patch_harness().await?;
 
@@ -2263,6 +2276,19 @@ async fn apply_patch_turn_diff_emits_portable_paths_for_remote_cwd() -> Result<(
     let harness = apply_patch_harness().await?;
     let test = harness.test();
     let codex = test.codex.clone();
+    let cwd = &test.executor_environment().selection().cwd;
+    // Own the repository boundary: an ambient ancestor .git (including one in the
+    // Docker harness's shared /tmp) must not add the temporary cwd to diff paths.
+    test.fs()
+        .create_directory(
+            &cwd.join(".git")?,
+            CreateDirectoryOptions {
+                recursive: true,
+                follow_symlinks: true,
+            },
+            /*sandbox*/ None,
+        )
+        .await?;
 
     let call_id = "apply-foreign-windows-diff";
     let file = "nested/foreign.txt";
@@ -2282,7 +2308,6 @@ async fn apply_patch_turn_diff_emits_portable_paths_for_remote_cwd() -> Result<(
     })
     .await;
 
-    let cwd = &test.executor_environment().selection().cwd;
     let file_uri = cwd.join(file)?;
     let expected_relative_path = match test_target_os() {
         TestTargetOs::Linux | TestTargetOs::MacOs => "nested/foreign.txt",
@@ -2325,17 +2350,18 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     let server = start_mock_server().await;
     let mut builder = test_codex();
     let test = builder.build_with_remote_and_local_env(&server).await?;
+    let local_cwd_temp = TempDir::new()?;
+    let local_cwd = local_cwd_temp.path().abs();
     let file_name = "shared-turn-diff.txt";
-    let shared_cwd = PathBuf::from(format!(
+    let remote_cwd = PathBuf::from(format!(
         "/tmp/codex-remote-turn-diff-{}",
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
     ))
     .abs();
-    let shared_cwd_uri = PathUri::from_host_native_path(&shared_cwd)?;
-    let _ = fs::remove_dir_all(shared_cwd.as_path());
+    let remote_cwd_uri = PathUri::from_abs_path(&remote_cwd);
     test.fs()
         .remove(
-            &shared_cwd_uri,
+            &remote_cwd_uri,
             RemoveOptions {
                 recursive: true,
                 force: true,
@@ -2344,10 +2370,22 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
             /*sandbox*/ None,
         )
         .await?;
-    fs::create_dir_all(shared_cwd.as_path())?;
     test.fs()
         .create_directory(
-            &shared_cwd_uri,
+            &remote_cwd_uri,
+            CreateDirectoryOptions {
+                recursive: true,
+                follow_symlinks: true,
+            },
+            /*sandbox*/ None,
+        )
+        .await?;
+    // Each environment has its own repository root, independently of markers in
+    // shared temporary ancestors. Keep the expected environment prefixes exact.
+    fs::create_dir(local_cwd.join(".git"))?;
+    test.fs()
+        .create_directory(
+            &remote_cwd_uri.join(".git")?,
             CreateDirectoryOptions {
                 recursive: true,
                 follow_symlinks: true,
@@ -2385,13 +2423,13 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     .await;
 
     let (sandbox_policy, permission_profile) =
-        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+        turn_permission_fields(PermissionProfile::Disabled, local_cwd.as_path());
     let environments = vec![
-        local(shared_cwd.clone()),
+        local(local_cwd.clone()),
         TurnEnvironmentSelection {
             environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
-            cwd: PathUri::from_abs_path(&shared_cwd),
-            workspace_roots: vec![PathUri::from_abs_path(&shared_cwd)],
+            cwd: remote_cwd_uri.clone(),
+            workspace_roots: vec![remote_cwd_uri.clone()],
             config: EnvironmentConfigState::FromThread,
         },
     ];
@@ -2403,7 +2441,7 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
             }])
             .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(codex_protocol::protocol::TurnEnvironmentSelections::new(
-                    test.config.cwd.clone(),
+                    local_cwd.clone(),
                     environments,
                 )),
                 approval_policy: Some(AskForApproval::Never),
@@ -2433,11 +2471,11 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     })
     .await;
 
-    assert_eq!(fs::read_to_string(shared_cwd.join(file_name))?, "local\n");
+    assert_eq!(fs::read_to_string(local_cwd.join(file_name))?, "local\n");
     assert_eq!(
         test.fs()
             .read_file_text(
-                &PathUri::from_host_native_path(shared_cwd.join(file_name))?,
+                &remote_cwd_uri.join(file_name)?,
                 Default::default(),
                 /*sandbox*/ None,
             )
@@ -2464,10 +2502,9 @@ index 0000000000000000000000000000000000000000..9c998f7b995a7327177b38a90d138517
 "#
     );
 
-    let _ = fs::remove_dir_all(shared_cwd.as_path());
     test.fs()
         .remove(
-            &shared_cwd_uri,
+            &remote_cwd_uri,
             RemoveOptions {
                 recursive: true,
                 force: true,

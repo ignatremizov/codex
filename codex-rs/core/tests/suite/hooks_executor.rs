@@ -8,6 +8,7 @@ use codex_core::TurnInputRequest;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::ExecServerRuntimePaths;
+use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_features::Feature;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -58,8 +59,6 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::body_partial_json;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
-
-use super::rmcp_client::remote_aware_environment_id;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn thread_plugin_selection_disables_executor_hooks_without_disabling_their_server()
@@ -781,7 +780,7 @@ async fn executor_plugin_hook_fixture(
             .expect("disable ordinary hooks");
         let node_repl: McpServerConfig = serde_json::from_value(json!({
             "url": node_repl_url,
-            "environment_id": remote_aware_environment_id(),
+            "environment_id": LOCAL_ENVIRONMENT_ID,
         }))
         .expect("valid Node REPL MCP server configuration");
         config
@@ -793,7 +792,8 @@ async fn executor_plugin_hook_fixture(
             )
             .expect("configure Node REPL MCP server");
     });
-    let test = builder.build_with_auto_env(&server).await?;
+    // This fixture attaches a LOCAL_ENVIRONMENT_ID Node REPL server explicitly.
+    let test = builder.build(&server).await?;
     wait_for_mcp_server(&test.codex, "node_repl").await?;
 
     let mut plugin_roots = Vec::new();
