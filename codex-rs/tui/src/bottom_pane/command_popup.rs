@@ -607,6 +607,7 @@ mod tests {
                 collaboration_modes_enabled: false,
                 connectors_enabled: false,
                 plugins_command_enabled: false,
+                token_activity_command_enabled: false,
                 service_tier_commands_enabled: false,
                 goal_command_enabled: false,
                 personality_command_enabled: true,
