@@ -89,10 +89,31 @@ async fn stopping_while_the_offer_is_pending_resets_the_session() {
     let observed_abort = abort.clone();
     chat.realtime_conversation.phase = RealtimeConversationPhase::Starting;
     chat.realtime_conversation.startup_abort = Some(abort);
+    let microphone = crate::dictation::session::MicReservation::default();
+    chat.realtime_conversation._microphone_lease = microphone.acquire();
+    assert!(microphone.acquire().is_none());
 
     let (mut restored, _, _, mut ops) = make_chatwidget_manual_with_sender().await;
     let callback = chat.app_event_tx.clone();
     chat.park_voice();
+    let thread_id = ThreadId::new();
+    callback.send(AppEvent::RealtimeMicrophoneReady {
+        thread_id,
+        attempt_id: 42,
+        lease: Err("synthetic cleanup timeout".into()),
+    });
+    let Ok(AppEvent::RealtimeMicrophoneReady {
+        thread_id: observed_thread,
+        attempt_id,
+        lease,
+    }) = events.try_recv()
+    else {
+        panic!("parked sender must forward microphone readiness to its owner");
+    };
+    assert_eq!(
+        (observed_thread, attempt_id, lease.err()),
+        (thread_id, 42, Some("synthetic cleanup timeout".into()))
+    );
     callback.send(AppEvent::ResetTranscriptForThreadSwitch);
     assert!(events.try_recv().is_err());
     callback.send(AppEvent::RefreshRateLimits {
@@ -109,7 +130,9 @@ async fn stopping_while_the_offer_is_pending_resets_the_session() {
     restored.resume_background_voice(&mut chat);
     drop(chat);
     assert!(!observed_abort.is_aborted());
+    assert!(microphone.acquire().is_none());
     restored.stop_realtime_conversation();
+    assert!(microphone.acquire().is_some());
 
     assert_eq!(
         (

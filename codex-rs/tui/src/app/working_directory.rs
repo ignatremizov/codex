@@ -153,6 +153,7 @@ impl App {
         )>,
         destination_config: DestinationConfig,
     ) {
+        self.chat_widget.cancel_dictation();
         if self.config.ephemeral || !cwd.as_path().is_dir() {
             return self.working_directory_error("This task cannot be safely replaced.");
         }
@@ -373,7 +374,10 @@ impl App {
             return;
         }
         let local_settings = self.local_settings.reloaded(&config);
-        let keymap = match RuntimeKeymap::from_config(&local_settings.tui.keymap) {
+        let keymap = match RuntimeKeymap::from_config_with_features(
+            &local_settings.tui.keymap,
+            crate::dictation::keymap_features(&local_settings),
+        ) {
             Ok(keymap) => keymap,
             Err(error) => return self.chat_widget.add_error_message(error),
         };

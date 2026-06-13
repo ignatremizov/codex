@@ -671,8 +671,11 @@ async fn picker_provider_filter(
 }
 
 fn picker_runtime_keymap(config: &crate::local_settings::LocalSettings) -> Result<RuntimeKeymap> {
-    RuntimeKeymap::from_config(&config.tui.keymap)
-        .map_err(|err| color_eyre::eyre::eyre!("invalid keymap configuration: {err}"))
+    RuntimeKeymap::from_config_with_features(
+        &config.tui.keymap,
+        crate::dictation::keymap_features(config),
+    )
+    .map_err(|err| color_eyre::eyre::eyre!("invalid keymap configuration: {err}"))
 }
 
 fn picker_cwd_filter(

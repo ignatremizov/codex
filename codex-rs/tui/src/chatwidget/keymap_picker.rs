@@ -17,6 +17,7 @@ use super::ChatWidget;
 use crate::app_event::KeymapCaptureMode;
 use crate::app_event::KeymapEditIntent;
 use crate::keymap::RuntimeKeymap;
+use crate::keymap::RuntimeKeymapFeatures;
 use crate::keymap_setup;
 
 impl ChatWidget {
@@ -27,7 +28,10 @@ impl ChatWidget {
     /// overrides. If the config is invalid, the user sees the parse error instead of a partial
     /// picker that could commit edits against stale runtime state.
     pub(crate) fn open_keymap_picker(&mut self) {
-        match RuntimeKeymap::from_config(&self.local_settings.tui.keymap) {
+        match RuntimeKeymap::from_config_with_features(
+            &self.local_settings.tui.keymap,
+            self.runtime_keymap_features(),
+        ) {
             Ok(runtime_keymap) => {
                 let params = keymap_setup::build_keymap_picker_params_with_filter(
                     &runtime_keymap,
@@ -154,6 +158,13 @@ impl ChatWidget {
     fn keymap_action_filter(&self) -> keymap_setup::KeymapActionFilter {
         keymap_setup::KeymapActionFilter {
             fast_mode_enabled: self.fast_mode_enabled(),
+            voice_transcription_enabled: self.runtime_keymap_features().voice_transcription_enabled,
+        }
+    }
+
+    pub(super) fn runtime_keymap_features(&self) -> RuntimeKeymapFeatures {
+        RuntimeKeymapFeatures {
+            voice_transcription_enabled: self.dictation_enabled(),
         }
     }
 
@@ -171,6 +182,7 @@ impl ChatWidget {
         self.local_settings.tui.keymap = keymap_config;
         self.copy_last_response_binding = runtime_keymap.app.copy.clone();
         self.chat_keymap = runtime_keymap.chat.clone();
+        self.dictation_keymap = runtime_keymap.composer.toggle_dictation.clone();
         self.bottom_pane.set_keymap_bindings(runtime_keymap);
         self.update_realtime_footer();
         self.request_redraw();

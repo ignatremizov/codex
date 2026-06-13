@@ -83,10 +83,16 @@ fn external_cancellation_interrupts_startup() -> Result<()> {
     fs::write(root.join("hold-initialization"), [])?;
     let (abort, registration) = AbortHandle::new_pair();
     let (result, received) = std::sync::mpsc::sync_channel(/*bound*/ 1);
+    let microphone = std::sync::Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1));
+    let reservation = microphone.clone().try_acquire_owned()?;
     let startup = thread::spawn(move || {
-        let _ = result.send(RealtimeWebrtcSession::start(registration));
+        let _ = result.send(RealtimeWebrtcSession::start_with_resource_guard(
+            registration,
+            reservation,
+        ));
     });
     common::wait_for(|| root.join("initializing").exists())?;
+    assert!(microphone.clone().try_acquire_owned().is_err());
     abort.abort();
     assert!(
         received
@@ -96,6 +102,7 @@ fn external_cancellation_interrupts_startup() -> Result<()> {
     startup.join().expect("startup thread");
     #[cfg(unix)]
     common::wait_for_helper_reaped(&root)?;
+    common::wait_for(|| microphone.clone().try_acquire_owned().is_ok())?;
     Ok(())
 }
 
@@ -106,9 +113,13 @@ fn last_owner_drop_reaps_helper() -> Result<()> {
         return Ok(());
     };
     let (_abort, registration) = AbortHandle::new_pair();
-    let started = RealtimeWebrtcSession::start(registration)?;
+    let microphone = std::sync::Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1));
+    let reservation = microphone.clone().try_acquire_owned()?;
+    let started = RealtimeWebrtcSession::start_with_resource_guard(registration, reservation)?;
+    assert!(microphone.clone().try_acquire_owned().is_err());
     drop(started);
-    common::wait_for_helper_reaped(&root)
+    common::wait_for_helper_reaped(&root)?;
+    common::wait_for(|| microphone.clone().try_acquire_owned().is_ok())
 }
 
 #[test]

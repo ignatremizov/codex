@@ -781,6 +781,7 @@ impl App {
     }
 
     pub(super) async fn reset_thread_event_state(&mut self) {
+        self.chat_widget.cancel_dictation();
         let voice_owner = self.voice_owner_thread_id();
         if voice_owner.is_some() {
             for (thread_id, channel) in &self.thread_event_channels {

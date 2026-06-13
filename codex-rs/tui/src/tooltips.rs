@@ -1,6 +1,7 @@
 use crate::keymap::RuntimeKeymap;
 use crate::keymap::keymap_action_id;
 use crate::terminal_hyperlinks::HyperlinkLine;
+#[cfg(test)]
 use codex_config::types::TuiKeymap;
 use codex_features::FEATURES;
 use codex_features::Feature;
@@ -58,9 +59,19 @@ fn experimental_tooltips(
 }
 
 /// Pick a random tooltip to show to the user when starting Codex.
-pub(crate) fn get_tooltip(plan: Option<PlanType>, keymap: &TuiKeymap) -> Option<String> {
+pub(crate) fn get_tooltip(
+    plan: Option<PlanType>,
+    settings: &crate::local_settings::LocalSettings,
+) -> Option<String> {
     let mut rng = rand::rng();
-    preferred_tooltip(&mut rng, plan).or_else(|| pick_tooltip(&mut rng, keymap))
+    preferred_tooltip(&mut rng, plan).or_else(|| {
+        let keymap = RuntimeKeymap::from_config_with_features(
+            &settings.tui.keymap,
+            crate::dictation::keymap_features(settings),
+        )
+        .ok();
+        resolved_tooltips(keymap.as_ref()).choose(&mut rng)
+    })
 }
 
 /// Apply the shared announcement and promotion policy before falling back to local tips.
@@ -121,6 +132,7 @@ fn app_tooltip() -> Option<&'static str> {
     }
 }
 
+#[cfg(test)]
 fn pick_tooltip<R: Rng + ?Sized>(rng: &mut R, keymap: &TuiKeymap) -> Option<String> {
     // Resolve current settings for each new tip; never replace an invalid or unbound keymap
     // with defaults, or cache shortcut text across /keymap edits.

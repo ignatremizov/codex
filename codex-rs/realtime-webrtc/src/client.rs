@@ -153,6 +153,14 @@ impl VoiceHost {
     }
 
     pub async fn connect(package: &CodexPackageLayout, build_commit: &str) -> Result<Self> {
+        Self::connect_with_resource_guard(package, build_commit, ()).await
+    }
+
+    pub(crate) async fn connect_with_resource_guard(
+        package: &CodexPackageLayout,
+        build_commit: &str,
+        resource_guard: impl Send + 'static,
+    ) -> Result<Self> {
         let root = package.package_dir.as_path().canonicalize()?;
         let name = if cfg!(windows) {
             "codex-voice-host.exe"
@@ -189,11 +197,14 @@ impl VoiceHost {
             &[],
         )
         .await?;
+        // The pipe spawner does not suspend between process creation and publishing this
+        // receiver. Transfer device ownership before the first cancellable handshake await.
+        let exit = retain_resource_until_exit(exit_rx, resource_guard);
         drop(stderr_rx); // Drain and discard diagnostics rather than logging untyped child output.
         let mut host = Self {
             process: session,
             output: MessageReader::new(stdout_rx),
-            exit: exit_rx,
+            exit,
             observed_exit: None,
         };
         host.exchange(
@@ -277,6 +288,36 @@ impl VoiceHost {
             Err(error) => Err(error.into()),
         }
     }
+}
+
+/// Relay exit without tying the device reservation to a cancellable session future.
+/// The process-lifetime runtime owns this task even when startup or shutdown is abandoned.
+fn retain_resource_until_exit(
+    exit: oneshot::Receiver<i32>,
+    resource_guard: impl Send + 'static,
+) -> oneshot::Receiver<i32> {
+    let (completed, receiver) = oneshot::channel();
+    tokio::spawn(async move {
+        match exit.await {
+            Ok(code) if code != -1 => {
+                drop(resource_guard);
+                let _ = completed.send(code);
+            }
+            result => {
+                // The pipe waiter uses -1 for a failed wait. Neither that nor a lost
+                // notification proves device release. Report the failure but retain the
+                // reservation for the remaining runtime lifetime; don't silently retry.
+                if let Ok(code) = result {
+                    let _ = completed.send(code);
+                } else {
+                    drop(completed);
+                }
+                std::future::pending::<()>().await;
+                drop(resource_guard);
+            }
+        }
+    });
+    receiver
 }
 
 fn child_environment(vars: impl Iterator<Item = (OsString, OsString)>) -> HashMap<String, String> {
