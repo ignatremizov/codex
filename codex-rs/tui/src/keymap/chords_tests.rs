@@ -5,6 +5,7 @@ use super::dispatch_binding;
 use crate::key_hint;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::RuntimeKeymap;
+use crate::keymap::RuntimeKeymapFeatures;
 use crate::keymap::bindings::KeymapContext;
 use crate::keymap::bindings::keymap_action_ids;
 use crate::keymap::keymap_action_id;
@@ -178,6 +179,66 @@ fn composer_chord_inherits_global_fallback() {
         actual.chords.configured_specs(action),
         Some(["ctrl-x enter".to_string()].as_slice())
     );
+}
+
+#[test]
+fn dictation_chords_are_feature_gated_and_dispatch_when_enabled() {
+    let mut config = TuiKeymap::default();
+    config.composer.toggle_dictation = Some(binding("ctrl-x ctrl-d"));
+
+    let disabled = RuntimeKeymap::from_config(&config).expect("disabled dictation chord ignored");
+    let action = keymap_action_id("composer", "toggle_dictation").expect("known action");
+    assert!(disabled.chords.configured_specs(action).is_none());
+    assert!(disabled.composer.toggle_dictation.is_empty());
+
+    let enabled = RuntimeKeymap::from_config_with_features(
+        &config,
+        RuntimeKeymapFeatures {
+            voice_transcription_enabled: true,
+        },
+    )
+    .expect("enabled dictation chord");
+    assert_eq!(
+        enabled.chords.configured_specs(action),
+        Some(["ctrl-x ctrl-d".to_string()].as_slice())
+    );
+    let mut matcher = KeyChordMatcher::default();
+    let contexts = KeymapContextSet::new(KeymapContext::Composer);
+    assert!(matches!(
+        matcher.advance(
+            key_event(key_hint::ctrl(KeyCode::Char('x'))),
+            &enabled.chords,
+            contexts
+        ),
+        KeyChordMatch::Pending(_)
+    ));
+    let KeyChordMatch::Completed(event) = matcher.advance(
+        key_event(key_hint::ctrl(KeyCode::Char('d'))),
+        &enabled.chords,
+        contexts,
+    ) else {
+        panic!("enabled dictation chord must dispatch");
+    };
+    assert!(enabled.composer.toggle_dictation.is_pressed(event));
+}
+
+#[test]
+fn disabled_dictation_chords_do_not_reserve_their_prefix() {
+    let mut config = TuiKeymap::default();
+    config.composer.toggle_dictation = Some(binding("ctrl-x ctrl-d"));
+    config.global.toggle_raw_output = Some(binding("ctrl-x"));
+
+    RuntimeKeymap::from_config(&config)
+        .expect("disabled dictation chord must not shadow a configured single binding");
+    let error = RuntimeKeymap::from_config_with_features(
+        &config,
+        RuntimeKeymapFeatures {
+            voice_transcription_enabled: true,
+        },
+    )
+    .expect_err("enabled dictation chord should reserve its prefix");
+    assert!(error.contains("composer.toggle_dictation"), "{error}");
+    assert!(error.contains("toggle_raw_output"), "{error}");
 }
 
 #[test]

@@ -1743,6 +1743,37 @@ impl TextArea {
         self.replace_element_payload_by_id(self.elements[idx].id, new)
     }
 
+    /// Rename the exact element without losing a selection outside it.
+    pub(crate) fn replace_element_id(&mut self, id: u64, new: &str) -> bool {
+        let filtered = self.filter_line_breaks(new);
+        let new = filtered.as_ref();
+        let Some(idx) = self.elements.iter().position(|element| element.id == id) else {
+            return false;
+        };
+        let range = self.elements[idx].range.clone();
+        if self.text.get(range.clone()) == Some(new) {
+            return true;
+        }
+        let selected = self
+            .mouse_selection_range()
+            .unwrap_or(self.cursor_pos..self.cursor_pos);
+        let cursor = self.cursor_pos;
+        let selection = if selected.end <= range.start || selected.start >= range.end {
+            self.mouse_selection.take()
+        } else {
+            None
+        };
+        let replaced = self.replace_element_payload_by_id(id, new);
+        if let Some(mut selection) = selection {
+            selection.rebase_after_replacement(range.clone(), new.len());
+            self.mouse_selection = Some(selection);
+            if selected.end <= range.start {
+                self.cursor_pos = cursor;
+            }
+        }
+        replaced
+    }
+
     pub(crate) fn replace_element_payload_by_id(&mut self, id: u64, new: &str) -> bool {
         let Some(idx) = self.elements.iter().position(|element| element.id == id) else {
             return false;
