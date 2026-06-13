@@ -29,10 +29,13 @@ In the codex-rs folder where the rust code lives:
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
 - Do not add tests for values that are statically defined.
 - Do not add negative tests for logic that was removed.
-- Do not add general product or user-facing documentation to the `docs/` folder. The official Codex documentation lives elsewhere. The exception is app-server API documentation, which is covered by the app-server guidance below.
+- When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
 - Prefer private modules and explicitly exported public crate API.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
 - When working with MCP tool calls, prefer using `codex-rs/codex-mcp/src/mcp_connection_manager.rs` to handle mutation of tools and tool calls. Aim to minimize the footprint of changes and leverage existing abstractions rather than plumbing code through multiple levels of function calls.
+- When working with MCP server registrations or plugin MCP config, route contributions through `codex-rs/codex-mcp/src/catalog.rs` and parse plugin config with `codex-rs/codex-mcp/src/plugin_config.rs`. Keep config, compatibility, plugin, and extension registrations in the catalog instead of adding parallel maps, and keep registrations thread-scoped when they depend on thread environments.
+- When working with executor-owned plugin or skill resources, resolve them through `codex-rs/plugin/src/provider.rs` and `codex-rs/core-plugins/src/provider.rs`, preserving the owning `environment_id` and resource authority. Do not convert remote resources to host paths except at an explicit current-host boundary.
+- When touching executor filesystem APIs or remote environment file access, use `codex_utils_path_uri::PathUri` and `ExecutorFileSystem` APIs. Keep URI segment operations in `PathUri` (`join`, `parent`, `basename`) and do not reintroduce exec-server `fs/join`/`fs/parent` RPCs or host `PathBuf` assumptions across environment boundaries.
 - Do not call `reset_client_session` unnecessarily; let the incremental check logic decide whether to reuse the previous request.
 - If you change Rust dependencies (`Cargo.toml` or `Cargo.lock`), run `just bazel-lock-update` from the
   repo root to refresh `MODULE.bazel.lock`, and include that lockfile update in the same change. CI
@@ -60,6 +63,7 @@ In the codex-rs folder where the rust code lives:
   - Avoid adding new standalone methods to `codex-rs/tui/src/chatwidget.rs` unless the change is
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
 - When running Rust commands (e.g. `just fix` or `just test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
+- For large GitHub Actions artifacts, prefer downloading the artifact ZIP directly with `gh api repos/<owner>/<repo>/actions/artifacts/<artifact_id>/zip > artifact.zip`. `gh run download` can stay quiet for 20+ minutes while still making progress, so do not assume it is stuck or kill it solely because there is no terminal output.
 
 Run `just fmt` (in the `codex-rs` directory) automatically after you have finished making code changes anywhere in this repository; do not ask for approval to run it. Additionally, run the tests:
 
@@ -297,7 +301,7 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 
 ### Development Workflow
 
-- Update app-server docs/examples when API behavior changes (at minimum `app-server/README.md`).
+- Update docs/examples when API behavior changes (at minimum `app-server/README.md`).
 - Regenerate schema fixtures when API shapes change:
   `just write-app-server-schema`
   (and `just write-app-server-schema --experimental` when experimental API fixtures are affected).
