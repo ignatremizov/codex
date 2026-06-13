@@ -37,6 +37,13 @@ impl ChatWidget {
             return;
         }
 
+        if self.handle_dictation_shortcut(key_event) {
+            self.bottom_pane.clear_quit_shortcut_hint();
+            self.quit_shortcut_expires_at = None;
+            self.quit_shortcut_key = None;
+            return;
+        }
+
         if key_event.kind == KeyEventKind::Press
             && self.copy_last_response_binding.is_pressed(key_event)
         {
@@ -159,6 +166,10 @@ impl ChatWidget {
             return;
         }
 
+        if self.handle_dictation_submit_key(key_event) {
+            return;
+        }
+
         match key_event {
             KeyEvent {
                 code: KeyCode::BackTab,
@@ -234,7 +245,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn can_launch_external_editor(&self) -> bool {
-        self.bottom_pane.can_launch_external_editor()
+        self.bottom_pane.can_launch_external_editor() && !self.dictation.is_active()
     }
 
     pub(crate) fn can_run_ctrl_l_clear_now(&mut self) -> bool {

@@ -63,6 +63,7 @@ const KEYMAP_COMMON_ACTIONS: &[(&str, &str)] = &[
     ("chat", "interrupt_turn"),
     ("editor", "insert_newline"),
     ("composer", "queue"),
+    ("composer", "toggle_dictation"),
     ("global", "toggle_fast_mode"),
     ("global", "open_external_editor"),
     ("global", "copy"),
@@ -92,7 +93,7 @@ const KEYMAP_CONTEXT_TABS: &[KeymapContextTab] = &[
     KeymapContextTab {
         id: "composer-shortcuts",
         label: "Composer",
-        description: "Composer submission and queue shortcuts.",
+        description: "Composer submission, queue, and dictation shortcuts.",
         contexts: &["composer"],
     },
     KeymapContextTab {
