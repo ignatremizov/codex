@@ -197,13 +197,56 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
             });
             LOGGER.write_json_line(value);
         }
-        // Noise or control flow – record variant only
-        other => {
+        AppEvent::DictationChunkTranscriptionComplete { id, sequence, text } => {
             let value = json!({
                 "ts": now_ts(),
                 "dir": "to_tui",
                 "kind": "app_event",
-                "variant": format!("{other:?}").split('(').next().unwrap_or("app_event"),
+                "variant": "DictationChunkTranscriptionComplete",
+                "id": id,
+                "sequence": sequence,
+                "text_chars": text.chars().count(),
+            });
+            LOGGER.write_json_line(value);
+        }
+        AppEvent::DictationChunkTranscriptionFailed {
+            id,
+            sequence,
+            error,
+        } => {
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": "DictationChunkTranscriptionFailed",
+                "id": id,
+                "sequence": sequence,
+                "error": error,
+            });
+            LOGGER.write_json_line(value);
+        }
+        AppEvent::DictationChunksFlushed { id, final_sequence } => {
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": "DictationChunksFlushed",
+                "id": id,
+                "final_sequence": final_sequence,
+            });
+            LOGGER.write_json_line(value);
+        }
+        // Noise or control flow – record variant only
+        other => {
+            let variant = format!("{other:?}");
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": variant
+                    .split(['(', ' ', '{'])
+                    .next()
+                    .unwrap_or("app_event"),
             });
             LOGGER.write_json_line(value);
         }
