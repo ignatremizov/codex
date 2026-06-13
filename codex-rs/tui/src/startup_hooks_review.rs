@@ -26,6 +26,7 @@ use crate::hooks_rpc::hook_needs_review;
 use crate::hooks_rpc::hooks_list_entry_for_cwd;
 use crate::hooks_rpc::write_hook_trusts;
 use crate::keymap::RuntimeKeymap;
+use crate::keymap::RuntimeKeymapFeatures;
 use crate::legacy_core::config::Config;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
@@ -86,8 +87,13 @@ async fn run_startup_hooks_review_app(
     config: &Config,
     entry: HooksListEntry,
 ) -> Result<StartupHooksReviewOutcome> {
-    let keymap = RuntimeKeymap::from_config(&config.tui_keymap)
-        .map_err(|err| color_eyre::eyre::eyre!(err))?;
+    let keymap = RuntimeKeymap::from_config_with_features(
+        &config.tui_keymap,
+        RuntimeKeymapFeatures {
+            voice_transcription_enabled: crate::voice_availability::transcription_enabled(config),
+        },
+    )
+    .map_err(|err| color_eyre::eyre::eyre!(err))?;
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
     let app_event_tx = AppEventSender::new(tx_raw);
     let mut trust_all_error = None;
