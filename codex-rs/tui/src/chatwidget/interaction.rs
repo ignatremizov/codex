@@ -34,6 +34,13 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
+        if self
+            .dictation
+            .as_ref()
+            .is_some_and(|session| !self.bottom_pane.has_dictation_element(session.element))
+        {
+            self.cancel_dictation();
+        }
         if self.handle_startup_submission_key(key_event) {
             return;
         }
@@ -115,6 +122,20 @@ impl ChatWidget {
             return;
         }
 
+        if key_event.kind == KeyEventKind::Press
+            && self.dictation_keymap.is_pressed(key_event)
+            && self.bottom_pane.no_modal_or_popup_active()
+        {
+            self.toggle_dictation();
+            return;
+        }
+        if self.dictation.is_some()
+            && (key_hint::plain(KeyCode::Esc).is_press(key_event)
+                || key_hint::ctrl(KeyCode::Char('c')).is_press(key_event))
+        {
+            self.cancel_dictation();
+            return;
+        }
         if self.handle_realtime_microphone_shortcut(key_event) {
             return;
         }
@@ -282,6 +303,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn apply_external_edit(&mut self, text: String) {
+        self.cancel_dictation();
         self.bottom_pane.apply_external_edit(text);
         self.refresh_startup_recovery();
         self.request_redraw();

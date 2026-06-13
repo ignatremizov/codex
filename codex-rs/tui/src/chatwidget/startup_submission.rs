@@ -41,6 +41,7 @@ impl ChatWidget {
             ]));
         }
         if pending_draft.is_some()
+            || self.dictation.is_some()
             || !self.is_session_configured()
             || self
                 .effective_collaboration_mode()

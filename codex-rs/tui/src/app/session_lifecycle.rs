@@ -795,6 +795,7 @@ impl App {
     }
 
     pub(super) fn reset_thread_event_state(&mut self) {
+        self.chat_widget.cancel_dictation();
         self.abort_all_thread_event_listeners();
         self.thread_event_channels.clear();
         self.pending_realtime_speech_replay.clear();

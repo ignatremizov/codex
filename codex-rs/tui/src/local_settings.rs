@@ -17,6 +17,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LocalSettings {
+    pub(crate) voice_transcription_enabled: bool,
     pub(crate) tui: Tui,
     pub(crate) transcript_mode: TranscriptMode,
     pub(crate) history: History,
@@ -54,6 +55,9 @@ impl LocalSettings {
             config.animations
         };
         Self {
+            voice_transcription_enabled: config
+                .features
+                .enabled(codex_features::Feature::VoiceTranscription),
             transcript_mode: TranscriptMode::resolve(
                 config.tui_fullscreen_transcript,
                 config.tui_alternate_screen != codex_config::types::AltScreenMode::Never,

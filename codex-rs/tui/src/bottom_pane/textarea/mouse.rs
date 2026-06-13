@@ -15,6 +15,17 @@ pub(super) struct MouseSelection {
     moved: bool,
 }
 
+impl MouseSelection {
+    /// Rebase an anchor known to be outside an asynchronously renamed element.
+    pub(super) fn rebase_after_replacement(&mut self, range: Range<usize>, inserted_len: usize) {
+        if self.origin.start >= range.end {
+            let delta = inserted_len as isize - range.len() as isize;
+            self.origin.start = self.origin.start.saturating_add_signed(delta);
+            self.origin.end = self.origin.end.saturating_add_signed(delta);
+        }
+    }
+}
+
 impl TextArea {
     pub(in crate::bottom_pane) fn contains_mouse(&self, event: MouseEvent) -> bool {
         self.rendered_area

@@ -300,6 +300,60 @@ impl RefreshTokenError {
     }
 }
 
+/// A retained authentication manager for browser ChatGPT consumers.
+///
+/// Construct once for a recording or other bounded operation so token refresh uses the same
+/// resolved credential source. Consumers must validate the concrete auth variant and account;
+/// the shared manager also supports authentication modes other than browser ChatGPT.
+pub struct ChatgptAuthSession {
+    inner: Arc<AuthManager>,
+    expected_account_id: Option<String>,
+}
+
+impl ChatgptAuthSession {
+    /// Capture a manager from the already-resolved configuration without API-key environment auth.
+    pub async fn from_config(
+        config: &impl AuthManagerConfig,
+    ) -> Result<Self, AuthManagerInitializationError> {
+        let inner =
+            AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await?;
+        let expected_account_id = inner.auth_cached().and_then(|auth| auth.get_account_id());
+        Ok(Self {
+            inner,
+            expected_account_id,
+        })
+    }
+
+    /// Revalidate the captured source before every use, failing closed on logout/account changes.
+    ///
+    /// Unlike the general manager accessor, this never returns stale cached credentials after a
+    /// failed proactive refresh. Audio must not be sent under a superseded browser login.
+    pub async fn auth(&self) -> Result<Option<CodexAuth>, RefreshTokenError> {
+        if matches!(
+            self.inner
+                .reload_if_account_id_matches(self.expected_account_id.as_deref())
+                .await,
+            ReloadOutcome::Skipped
+        ) {
+            return Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                RefreshTokenFailedReason::Other,
+                REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE.to_string(),
+            )));
+        }
+        if let Some(auth) = self.inner.auth_cached()
+            && AuthManager::should_refresh_proactively(&auth)
+        {
+            self.inner.refresh_token().await?;
+        }
+        Ok(self.inner.auth_cached())
+    }
+
+    /// Refresh through the captured manager, retaining source and account-change safeguards.
+    pub async fn refresh_token(&self) -> Result<(), RefreshTokenError> {
+        self.inner.refresh_token().await
+    }
+}
+
 impl From<RefreshTokenError> for std::io::Error {
     fn from(err: RefreshTokenError) -> Self {
         match err {
@@ -3072,6 +3126,10 @@ fn auth_config_from(config: &impl AuthManagerConfig) -> AuthConfig {
         auth_route_config: config.auth_route_config(),
     }
 }
+
+#[cfg(test)]
+#[path = "chatgpt_session_tests.rs"]
+mod chatgpt_session_tests;
 
 #[cfg(test)]
 #[path = "auth_tests.rs"]

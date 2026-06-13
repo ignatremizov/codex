@@ -6,6 +6,31 @@ use codex_config::types::SessionPickerViewMode;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn dictation_preference_changes_only_on_local_reload() -> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .build()
+        .await?;
+    config
+        .features
+        .enable(codex_features::Feature::VoiceTranscription);
+    let local = LocalSettings::from(&config);
+    config
+        .features
+        .disable(codex_features::Feature::VoiceTranscription);
+    assert_eq!(
+        (
+            crate::dictation::keymap_features(&local).voice_transcription_enabled,
+            local.reloaded(&config).voice_transcription_enabled,
+        ),
+        (crate::dictation::is_supported(), false),
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn compaction_detail_preference_tracks_local_reload() -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
     let mut local: Option<LocalSettings> = None;

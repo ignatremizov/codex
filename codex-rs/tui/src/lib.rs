@@ -136,6 +136,7 @@ mod assistant_directives;
 mod auto_review_denials;
 mod cwd_prompt;
 mod debug_config;
+mod dictation;
 mod diff_model;
 mod diff_render;
 mod dynamic_tools;

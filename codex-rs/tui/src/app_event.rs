@@ -1083,6 +1083,16 @@ pub(crate) enum AppEvent {
 
     /// Move visible completed voice captions into history in one app event.
     CommitRealtimeTranscriptHistory,
+    DictationUpdate {
+        generation: u64,
+        element: u64,
+        update: crate::dictation::session::Update,
+    },
+    RealtimeMicrophoneReady {
+        thread_id: ThreadId,
+        attempt_id: u64,
+        lease: Result<crate::dictation::session::MicLease, String>,
+    },
 
     /// Finish buffering initial resume replay after all replay events have been queued.
     EndInitialHistoryReplayBuffer,

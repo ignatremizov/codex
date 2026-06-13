@@ -144,6 +144,22 @@ fn log_inbound_app_event_with(logger: &SessionLogger, event: &AppEvent) {
     }
 
     match event {
+        // Dictation contains private draft text and potentially complete HTTP diagnostic bodies.
+        // Keep the recording identity for routing diagnostics, never its payload or audio.
+        AppEvent::DictationUpdate {
+            generation,
+            element,
+            ..
+        } => {
+            logger.write_json_line(json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": "DictationUpdate",
+                "generation": generation,
+                "element": element,
+            }));
+        }
         AppEvent::NewSession { .. } => {
             let value = json!({
                 "ts": now_ts(),

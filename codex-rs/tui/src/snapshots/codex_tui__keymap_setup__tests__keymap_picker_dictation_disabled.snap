@@ -1,0 +1,39 @@
+---
+source: tui/src/keymap_setup.rs
+expression: "render_picker(disabled_params, 120)"
+---
+
+  Keymap
+  Composer submission, queue, and dictation shortcuts.
+  5 actions.
+
+   All   Common   Customized (0)   Unbound (5)   App   Composer   Editor   Vim   Navigation   Agents   Approval      ›
+
+  Type to search shortcuts
+
+› Composer       Submit                     enter
+  Composer       Queue                      tab
+  Composer       Toggle Shortcuts           ?, shift-?
+  Composer       History Search Previous    ctrl-r
+  Composer       History Search Next        ctrl-s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  left/right group · enter edit shortcut · * custom · - unbound · esc close

@@ -4867,6 +4867,7 @@ dependencies = [
  "codex-worktree",
  "color-eyre",
  "core_test_support",
+ "cpal",
  "crossterm",
  "derive_more 2.1.1",
  "diffy",
@@ -4919,6 +4920,7 @@ dependencies = [
  "uuid",
  "vt100",
  "webbrowser",
+ "webrtc-vad",
  "which 8.0.0",
  "windows-sys 0.52.0",
  "winsplit",
@@ -17019,6 +17021,15 @@ dependencies = [
  "quinn-udp 0.6.1",
  "rtc",
  "tokio",
+]
+
+[[package]]
+name = "webrtc-vad"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39a1e40fd6ca90be95459152a2537f2ba4286ee1b13073f7ebcaa74fc94e3008"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

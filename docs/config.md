@@ -179,6 +179,10 @@ Plan preset. The string value `none` means "no reasoning" (an explicit Plan
 override), not "inherit the global default". There is currently no separate
 config value for "follow the global default in Plan mode".
 
+## Editable dictation and realtime voice
+
+The fork's optional `features.voice_transcription` enables plain-text dictation into the TUI composer. It is separate from `/voice`, which starts or stops upstream's live realtime WebRTC conversation. Dictation does not submit the resulting text automatically. See [Editable composer dictation](dictation.md) for authentication, shortcuts, and recording behavior.
+
 ## Realtime start instructions
 
 `experimental_realtime_start_instructions` supplies a fallback override for the

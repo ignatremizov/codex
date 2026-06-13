@@ -71,7 +71,19 @@ pub(super) async fn load(
         .is_none_or(|items| !items.is_empty());
     let default_tui_settings = codex_config::types::Tui::default();
     let tui_settings = config_toml.tui.as_ref().unwrap_or(&default_tui_settings);
-    let keymap = RuntimeKeymap::from_config(&tui_settings.keymap).map_err(io::Error::other)?;
+    let mut features = codex_features::Features::with_defaults();
+    if let Some(configured) = &config_toml.features {
+        features.apply_map(&configured.entries());
+    }
+    let keymap = RuntimeKeymap::from_config_with_features(
+        &tui_settings.keymap,
+        crate::keymap::RuntimeKeymapFeatures {
+            voice_transcription_enabled: features
+                .enabled(codex_features::Feature::VoiceTranscription)
+                && crate::dictation::is_supported(),
+        },
+    )
+    .map_err(io::Error::other)?;
     let disable_paste_burst = tui_settings
         .disable_paste_burst
         .or(config_toml.disable_paste_burst)

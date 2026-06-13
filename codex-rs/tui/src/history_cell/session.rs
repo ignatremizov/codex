@@ -223,9 +223,7 @@ pub(crate) fn new_session_info(
     } else {
         if local_settings.tui.show_tooltips
             && let Some(tooltips) = tooltip_override
-                .or_else(|| {
-                    tooltips::get_tooltip(auth_plan, show_fast_status, &local_settings.tui.keymap)
-                })
+                .or_else(|| tooltips::get_tooltip(auth_plan, show_fast_status, local_settings))
                 .map(|tip| TooltipHistoryCell::new(tip, &config.cwd))
         {
             parts.push(Box::new(tooltips));

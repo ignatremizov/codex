@@ -4,6 +4,64 @@ use pretty_assertions::assert_eq;
 
 use super::child_environment;
 
+#[tokio::test]
+async fn device_reservation_outlives_cancelled_session_until_helper_exit() -> anyhow::Result<()> {
+    let microphone = std::sync::Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1));
+    let reservation = microphone.clone().acquire_owned().await?;
+    let (reaped, exit) = tokio::sync::oneshot::channel();
+    let receiver = super::retain_resource_until_exit(exit, reservation);
+    drop(receiver);
+    assert!(microphone.clone().try_acquire_owned().is_err());
+    reaped
+        .send(0)
+        .map_err(|_| anyhow::anyhow!("lost exit waiter"))?;
+    let _released = tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 1),
+        microphone.acquire(),
+    )
+    .await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn acknowledged_helper_exit_releases_reservation_before_delivery() -> anyhow::Result<()> {
+    let microphone = std::sync::Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1));
+    let reservation = microphone.clone().acquire_owned().await?;
+    let (reaped, exit) = tokio::sync::oneshot::channel();
+    let receiver = super::retain_resource_until_exit(exit, reservation);
+    reaped
+        .send(7)
+        .map_err(|_| anyhow::anyhow!("lost exit waiter"))?;
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 1), receiver).await??,
+        7
+    );
+    assert!(microphone.try_acquire_owned().is_ok());
+    Ok(())
+}
+
+#[tokio::test]
+async fn lost_or_failed_exit_does_not_authorize_device_reuse() -> anyhow::Result<()> {
+    for outcome in [None, Some(-1)] {
+        let microphone = std::sync::Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1));
+        let reservation = microphone.clone().acquire_owned().await?;
+        let (reaped, exit) = tokio::sync::oneshot::channel();
+        let receiver = super::retain_resource_until_exit(exit, reservation);
+        if let Some(code) = outcome {
+            reaped
+                .send(code)
+                .map_err(|_| anyhow::anyhow!("lost exit waiter"))?;
+        } else {
+            drop(reaped);
+        }
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 1), receiver).await?;
+        assert_eq!(result.ok(), outcome);
+        assert!(microphone.try_acquire_owned().is_err());
+    }
+    Ok(())
+}
+
 #[test]
 fn forwards_only_explicit_device_network_and_os_inputs() {
     let input = [
