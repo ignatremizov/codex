@@ -94,6 +94,16 @@ impl RealtimeWebrtcSession {
 
     /// Called off the UI thread. Cancellation also owns startup before a handle is returned.
     pub fn start(abort: AbortRegistration) -> Result<StartedRealtimeWebrtcSession> {
+        Self::start_with_resource_guard(abort, ())
+    }
+
+    /// Retain a caller's device reservation until the helper has actually exited, including
+    /// cancellation during startup and after the UI has dropped its last session handle.
+    /// An unavailable exit acknowledgement keeps the reservation rather than authorizing reuse.
+    pub fn start_with_resource_guard(
+        abort: AbortRegistration,
+        resource_guard: impl Send + 'static,
+    ) -> Result<StartedRealtimeWebrtcSession> {
         let package = codex_install_context::InstallContext::current()
             .package_layout
             .clone()
@@ -136,7 +146,12 @@ impl RealtimeWebrtcSession {
                 let task = async {
                     let host = report_failure(
                         ConnectionError::HelperStartup,
-                        VoiceHost::connect(&package, &build_commit).await,
+                        VoiceHost::connect_with_resource_guard(
+                            &package,
+                            &build_commit,
+                            resource_guard,
+                        )
+                        .await,
                     )?;
                     let host = report_failure(
                         ConnectionError::RuntimeInitialization,

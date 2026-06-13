@@ -44,7 +44,12 @@ pub(super) async fn check(
         return Err(io::Error::other(issue));
     }
     startup.flush_pending_events().await?;
-    let keymap = RuntimeKeymap::from_config(&config.tui_keymap).map_err(io::Error::other)?;
+    let local_settings = crate::local_settings::LocalSettings::from(config);
+    let keymap = RuntimeKeymap::from_config_with_features(
+        &local_settings.tui.keymap,
+        crate::dictation::keymap_features(&local_settings),
+    )
+    .map_err(io::Error::other)?;
     let mut view = recovery_view(&issue, managed_daemon, &keymap);
     let mut chord_matcher = crate::keymap::KeyChordMatcher::default();
     let tui = startup.tui_mut();

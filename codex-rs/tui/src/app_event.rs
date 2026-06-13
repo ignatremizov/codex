@@ -1111,6 +1111,16 @@ pub(crate) enum AppEvent {
 
     /// Move visible completed voice captions into history in one app event.
     CommitRealtimeTranscriptHistory,
+    DictationUpdate {
+        generation: u64,
+        element: u64,
+        update: crate::dictation::session::Update,
+    },
+    RealtimeMicrophoneReady {
+        thread_id: ThreadId,
+        attempt_id: u64,
+        lease: Result<crate::dictation::session::MicLease, String>,
+    },
 
     VoiceControl {
         thread_id: Option<ThreadId>,

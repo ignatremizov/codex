@@ -58,6 +58,13 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) -> KeyEventAction {
+        if self
+            .dictation
+            .as_ref()
+            .is_some_and(|session| !self.bottom_pane.has_dictation_element(session.element))
+        {
+            self.cancel_dictation();
+        }
         if self.handle_startup_submission_key(key_event) {
             return KeyEventAction::None;
         }
@@ -128,6 +135,22 @@ impl ChatWidget {
             self.quit_shortcut_expires_at = None;
             self.quit_shortcut_key = None;
             return self.prepare_last_response_copy();
+        }
+
+        // Realtime voice shortcuts belong to App so they reach a parked voice owner.
+        if key_event.kind == KeyEventKind::Press
+            && self.dictation_keymap.is_pressed(key_event)
+            && self.bottom_pane.no_modal_or_popup_active()
+        {
+            self.toggle_dictation();
+            return KeyEventAction::None;
+        }
+        if self.dictation.is_some()
+            && (key_hint::plain(KeyCode::Esc).is_press(key_event)
+                || key_hint::ctrl(KeyCode::Char('c')).is_press(key_event))
+        {
+            self.cancel_dictation();
+            return KeyEventAction::None;
         }
 
         match key_event {
@@ -277,6 +300,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn apply_external_edit(&mut self, text: String) {
+        self.cancel_dictation();
         self.bottom_pane.apply_external_edit(text);
         self.refresh_startup_recovery();
         self.request_redraw();

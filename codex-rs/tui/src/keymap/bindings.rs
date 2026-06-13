@@ -298,6 +298,7 @@ define_runtime_action_bindings! {
         submit,
         queue,
         toggle_shortcuts,
+        toggle_dictation,
         history_search_previous,
         history_search_next,
     ],

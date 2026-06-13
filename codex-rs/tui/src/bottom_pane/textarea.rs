@@ -1666,6 +1666,39 @@ impl TextArea {
             return false;
         };
 
+        self.replace_element_at_index(idx, new)
+    }
+
+    /// Rename the exact element, even when another placeholder has identical text.
+    pub(crate) fn replace_element_id(&mut self, id: u64, new: &str) -> bool {
+        let Some(idx) = self.elements.iter().position(|element| element.id == id) else {
+            return false;
+        };
+        let range = self.elements[idx].range.clone();
+        if self.text.get(range.clone()) == Some(new) {
+            return true;
+        }
+        let selected = self
+            .mouse_selection_range()
+            .unwrap_or(self.cursor_pos..self.cursor_pos);
+        let cursor = self.cursor_pos;
+        let selection = if selected.end <= range.start || selected.start >= range.end {
+            self.mouse_selection.take()
+        } else {
+            None
+        };
+        let replaced = self.replace_element_at_index(idx, new);
+        if let Some(mut selection) = selection {
+            selection.rebase_after_replacement(range.clone(), new.len());
+            self.mouse_selection = Some(selection);
+            if selected.end <= range.start {
+                self.cursor_pos = cursor;
+            }
+        }
+        replaced
+    }
+
+    fn replace_element_at_index(&mut self, idx: usize, new: &str) -> bool {
         let range = self.elements[idx].range.clone();
         let start = range.start;
         let end = range.end;

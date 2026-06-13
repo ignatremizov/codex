@@ -35,6 +35,9 @@ impl App {
         if matches!(event, AppEvent::ForkCurrentSession { .. }) {
             self.chat_widget.fork_in_progress = false;
         }
+        if self.reconnect.offline {
+            self.chat_widget.cancel_dictation();
+        }
         if self.reconnect.offline
             && !matches!(
                 &event,
@@ -623,6 +626,7 @@ impl App {
                 if self.chat_widget.thread_id() != Some(thread_id) {
                     return Ok(AppRunControl::Continue);
                 }
+                self.chat_widget.cancel_dictation();
                 if self.app_server_target.uses_remote_workspace()
                     && (!prompt.local_images.is_empty()
                         || prompt.text.trim_start().starts_with(['/', '!']))
@@ -826,6 +830,14 @@ impl App {
                 tui.defer_thread_switch_clear();
                 self.pending_thread_switch_resets -= 1;
             }
+            AppEvent::DictationUpdate { generation, element, update } => {
+                self.chat_widget.on_dictation_update(generation, element, update);
+            }
+            AppEvent::RealtimeMicrophoneReady { thread_id, attempt_id, lease } => {
+                if let Some(owner) = self.voice_widget_for_thread(thread_id) {
+                    owner.on_realtime_microphone_ready(thread_id, attempt_id, lease);
+                }
+            }
             AppEvent::CommitRealtimeTranscriptHistory => {
                 for cell in self.chat_widget.take_realtime_transcript_history() {
                     self.insert_history_cell(tui, cell);
@@ -996,6 +1008,7 @@ impl App {
                 }
             },
             AppEvent::FatalExitRequest(message) => {
+                self.chat_widget.cancel_dictation();
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::ImagesPrepared(id) => {
@@ -3256,7 +3269,10 @@ impl App {
             }
         };
 
-        let runtime_keymap = match RuntimeKeymap::from_config(&keymap_config) {
+        let runtime_keymap = match RuntimeKeymap::from_config_with_features(
+            &keymap_config,
+            crate::dictation::keymap_features(&self.local_settings),
+        ) {
             Ok(runtime_keymap) => runtime_keymap,
             Err(err) => {
                 let params = crate::keymap_setup::build_keymap_conflict_params(
@@ -3321,7 +3337,10 @@ impl App {
             }
         };
 
-        let runtime_keymap = match RuntimeKeymap::from_config(&keymap_config) {
+        let runtime_keymap = match RuntimeKeymap::from_config_with_features(
+            &keymap_config,
+            crate::dictation::keymap_features(&self.local_settings),
+        ) {
             Ok(runtime_keymap) => runtime_keymap,
             Err(err) => {
                 self.app_event_tx.send(AppEvent::FollowTranscript);
@@ -3366,6 +3385,7 @@ impl App {
         app_server: &mut AppServerSession,
         mode: ExitMode,
     ) -> AppRunControl {
+        self.chat_widget.cancel_dictation();
         for (request_id, (_, task)) in self.dynamic_tool_tasks.drain() {
             task.abort();
             let response = crate::dynamic_tools::failure_response(

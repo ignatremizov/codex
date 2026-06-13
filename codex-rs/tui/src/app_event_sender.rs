@@ -49,7 +49,8 @@ impl AppEventSender {
                     AppCommand::RealtimeConversationStart { .. }
                         | AppCommand::RealtimeConversationStop { .. }
                         | AppCommand::RealtimeConversationSpeech { .. }
-                ) | AppEvent::RealtimeWebrtcOfferCreated { .. }
+                ) | AppEvent::RealtimeMicrophoneReady { .. }
+                    | AppEvent::RealtimeWebrtcOfferCreated { .. }
                     | AppEvent::RealtimeWebrtcConnected { .. }
                     | AppEvent::StopRealtimeConversation { .. }
                     | AppEvent::RealtimeConversationStateChanged
