@@ -200,7 +200,10 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
                 rebuilt.push_str(suffix);
                 rebuilt
             } else {
-                line
+                line.replace(
+                    &format!("v{}", crate::version::CODEX_CLI_VERSION_FOR_DISPLAY),
+                    "v[[ver]]",
+                )
             }
         })
         .collect()
@@ -1565,7 +1568,7 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
         .expect("timestamp");
     let remote_connection = RemoteConnectionStatus {
         address: "unix:///tmp/codex-home/app-server-control/app-server-control.sock".to_string(),
-        version: "v0.133.0".to_string(),
+        version: "v0.140.0".to_string(),
     };
 
     let model_slug = get_model_offline_for_tests(config.model.as_deref());
