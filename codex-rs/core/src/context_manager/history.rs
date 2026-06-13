@@ -25,6 +25,7 @@ use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
 use codex_utils_output_truncation::truncate_function_output_items_with_policy;
 use codex_utils_output_truncation::truncate_text;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::LazyLock;
@@ -48,6 +49,7 @@ pub(crate) struct ContextManager {
     /// also clear this when it trims a mixed initial-context developer bundle
     /// whose non-diff fragments no longer exist in the surviving history.
     reference_context_item: Option<TurnContextItem>,
+    code_mode_exec_output_token_limits: HashMap<String, usize>,
 }
 
 impl ContextManager {
@@ -59,6 +61,7 @@ impl ContextManager {
                 &None, &None, /*model_context_window*/ None,
             ),
             reference_context_item: None,
+            code_mode_exec_output_token_limits: HashMap::new(),
         }
     }
 
@@ -97,6 +100,20 @@ impl ContextManager {
             let item_ref = item.deref();
             if !is_api_message(item_ref) {
                 continue;
+            }
+
+            if let ResponseItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+                ..
+            } = item_ref
+                && name == codex_code_mode::PUBLIC_TOOL_NAME
+                && let Ok(parsed) = codex_code_mode::parse_exec_source(input)
+                && let Some(max_output_tokens) = parsed.max_output_tokens
+            {
+                self.code_mode_exec_output_token_limits
+                    .insert(call_id.clone(), max_output_tokens);
             }
 
             let processed = self.process_item(item_ref, policy);
@@ -335,7 +352,7 @@ impl ContextManager {
         normalize::strip_images_when_unsupported(input_modalities, &mut self.items);
     }
 
-    fn process_item(&self, item: &ResponseItem, policy: TruncationPolicy) -> ResponseItem {
+    fn process_item(&mut self, item: &ResponseItem, policy: TruncationPolicy) -> ResponseItem {
         let policy_with_serialization_budget = policy * 1.2;
         match item {
             ResponseItem::FunctionCallOutput { call_id, output } => {
@@ -351,11 +368,19 @@ impl ContextManager {
                 call_id,
                 name,
                 output,
-            } => ResponseItem::CustomToolCallOutput {
-                call_id: call_id.clone(),
-                name: name.clone(),
-                output: truncate_function_output_payload(output, policy_with_serialization_budget),
-            },
+            } => {
+                let policy = self
+                    .code_mode_exec_output_token_limits
+                    .remove(call_id)
+                    .filter(|max_output_tokens| *max_output_tokens > policy.token_budget())
+                    .map(TruncationPolicy::Tokens)
+                    .unwrap_or(policy);
+                ResponseItem::CustomToolCallOutput {
+                    call_id: call_id.clone(),
+                    name: name.clone(),
+                    output: truncate_function_output_payload(output, policy * 1.2),
+                }
+            }
             ResponseItem::Message { .. }
             | ResponseItem::AgentMessage { .. }
             | ResponseItem::Reasoning { .. }
