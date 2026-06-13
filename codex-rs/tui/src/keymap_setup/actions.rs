@@ -68,11 +68,13 @@ const fn gated_action(
 #[derive(Clone, Copy, Debug)]
 enum KeymapActionFeature {
     FastMode,
+    VoiceTranscription,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct KeymapActionFilter {
     pub(crate) fast_mode_enabled: bool,
+    pub(crate) voice_transcription_enabled: bool,
 }
 
 impl KeymapActionDescriptor {
@@ -80,6 +82,7 @@ impl KeymapActionDescriptor {
         match self.required_feature {
             None => true,
             Some(KeymapActionFeature::FastMode) => filter.fast_mode_enabled,
+            Some(KeymapActionFeature::VoiceTranscription) => filter.voice_transcription_enabled,
         }
     }
 }
@@ -100,6 +103,7 @@ pub(super) const KEYMAP_ACTIONS: &[KeymapActionDescriptor] = &[
     action("composer", "Composer", "submit", "Submit the current composer draft."),
     action("composer", "Composer", "queue", "Queue the draft while a task is running."),
     action("composer", "Composer", "toggle_shortcuts", "Show or hide the composer shortcut overlay."),
+    gated_action("composer", "Composer", "toggle_dictation", "Start or stop voice dictation.", KeymapActionFeature::VoiceTranscription),
     action("composer", "Composer", "history_search_previous", "Open history search or move to the previous match."),
     action("composer", "Composer", "history_search_next", "Move to the next history search match."),
     action("editor", "Editor", "insert_newline", "Insert a newline in the editor."),
@@ -243,6 +247,7 @@ pub(super) fn binding_slot<'a>(
         ("composer", "submit") => Some(&mut keymap.composer.submit),
         ("composer", "queue") => Some(&mut keymap.composer.queue),
         ("composer", "toggle_shortcuts") => Some(&mut keymap.composer.toggle_shortcuts),
+        ("composer", "toggle_dictation") => Some(&mut keymap.composer.toggle_dictation),
         ("composer", "history_search_previous") => Some(&mut keymap.composer.history_search_previous),
         ("composer", "history_search_next") => Some(&mut keymap.composer.history_search_next),
         ("editor", "insert_newline") => Some(&mut keymap.editor.insert_newline),
@@ -368,6 +373,7 @@ pub(super) fn bindings_for_action<'a>(
         ("composer", "submit") => Some(runtime_keymap.composer.submit.as_slice()),
         ("composer", "queue") => Some(runtime_keymap.composer.queue.as_slice()),
         ("composer", "toggle_shortcuts") => Some(runtime_keymap.composer.toggle_shortcuts.as_slice()),
+        ("composer", "toggle_dictation") => Some(runtime_keymap.composer.toggle_dictation.as_slice()),
         ("composer", "history_search_previous") => Some(runtime_keymap.composer.history_search_previous.as_slice()),
         ("composer", "history_search_next") => Some(runtime_keymap.composer.history_search_next.as_slice()),
         ("editor", "insert_newline") => Some(runtime_keymap.editor.insert_newline.as_slice()),

@@ -54,6 +54,11 @@ pub(crate) struct RuntimeKeymap {
     pub(crate) approval: ApprovalKeymap,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RuntimeKeymapFeatures {
+    pub(crate) voice_transcription_enabled: bool,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct AppKeymap {
     /// Open transcript overlay.
@@ -103,6 +108,8 @@ pub(crate) struct ComposerKeymap {
     pub(crate) queue: Vec<KeyBinding>,
     /// Toggle composer shortcut overlay.
     pub(crate) toggle_shortcuts: Vec<KeyBinding>,
+    /// Start or stop composer voice dictation.
+    pub(crate) toggle_dictation: Vec<KeyBinding>,
     /// Open reverse history search or move to the previous match.
     pub(crate) history_search_previous: Vec<KeyBinding>,
     /// Move to the next match in reverse history search.
@@ -373,7 +380,7 @@ impl RuntimeKeymap {
         Self::built_in_defaults()
     }
 
-    /// Resolve a runtime keymap from config, applying precedence and validation.
+    /// Resolve a runtime keymap from config with optional feature-gated actions disabled.
     ///
     /// Returns an error when:
     ///
@@ -383,7 +390,16 @@ impl RuntimeKeymap {
     /// The error text includes the relevant config path and a concrete next step.
     /// Calling code should not merge bindings across unrelated contexts before
     /// dispatch, or conflict guarantees from this resolver no longer hold.
+    #[cfg(test)]
     pub(crate) fn from_config(keymap: &TuiKeymap) -> Result<Self, String> {
+        Self::from_config_with_features(keymap, RuntimeKeymapFeatures::default())
+    }
+
+    /// Resolve a runtime keymap using the active feature set.
+    pub(crate) fn from_config_with_features(
+        keymap: &TuiKeymap,
+        features: RuntimeKeymapFeatures,
+    ) -> Result<Self, String> {
         let defaults = Self::built_in_defaults();
 
         let app = AppKeymap {
@@ -451,6 +467,11 @@ impl RuntimeKeymap {
             submit: resolve_with_global!(keymap, defaults, composer, submit),
             queue: resolve_with_global!(keymap, defaults, composer, queue),
             toggle_shortcuts: resolve_with_global!(keymap, defaults, composer, toggle_shortcuts),
+            toggle_dictation: if features.voice_transcription_enabled {
+                resolve_local!(keymap, defaults, composer, toggle_dictation)
+            } else {
+                Vec::new()
+            },
             history_search_previous: resolve_local!(
                 keymap,
                 defaults,
@@ -936,6 +957,7 @@ impl RuntimeKeymap {
                     plain(KeyCode::Char('?')),
                     shift(KeyCode::Char('?'))
                 ],
+                toggle_dictation: default_bindings![alt(KeyCode::Char('m'))],
                 history_search_previous: default_bindings![ctrl(KeyCode::Char('r'))],
                 history_search_next: default_bindings![ctrl(KeyCode::Char('s'))],
             },
@@ -1195,6 +1217,10 @@ impl RuntimeKeymap {
                     self.composer.toggle_shortcuts.as_slice(),
                 ),
                 (
+                    "composer.toggle_dictation",
+                    self.composer.toggle_dictation.as_slice(),
+                ),
+                (
                     "composer.history_search_previous",
                     self.composer.history_search_previous.as_slice(),
                 ),
@@ -1236,6 +1262,10 @@ impl RuntimeKeymap {
                 (
                     "composer.toggle_shortcuts",
                     self.composer.toggle_shortcuts.as_slice(),
+                ),
+                (
+                    "composer.toggle_dictation",
+                    self.composer.toggle_dictation.as_slice(),
                 ),
                 (
                     "composer.history_search_previous",
@@ -1338,6 +1368,10 @@ impl RuntimeKeymap {
                     self.chat.increase_reasoning_effort.as_slice(),
                 ),
                 ("composer.submit", self.composer.submit.as_slice()),
+                (
+                    "composer.toggle_dictation",
+                    self.composer.toggle_dictation.as_slice(),
+                ),
                 ("toggle_vim_mode", self.app.toggle_vim_mode.as_slice()),
                 ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
                 ("toggle_raw_output", self.app.toggle_raw_output.as_slice()),
@@ -2235,6 +2269,10 @@ mod tests {
             runtime.composer.history_search_next,
             vec![key_hint::ctrl(KeyCode::Char('s'))]
         );
+        assert_eq!(
+            runtime.composer.toggle_dictation,
+            vec![key_hint::alt(KeyCode::Char('m'))]
+        );
         assert_eq!(runtime.editor.kill_whole_line, Vec::new());
     }
 
@@ -2682,6 +2720,30 @@ mod tests {
         keymap.global.toggle_fast_mode = Some(one("ctrl-l"));
 
         expect_conflict(&keymap, "clear_terminal", "toggle_fast_mode");
+    }
+
+    #[test]
+    fn toggle_dictation_default_is_not_reserved_when_voice_feature_is_disabled() {
+        let mut keymap = TuiKeymap::default();
+        keymap.global.toggle_raw_output = Some(one("alt-m"));
+
+        let runtime =
+            RuntimeKeymap::from_config(&keymap).expect("disabled dictation should not conflict");
+        assert_eq!(
+            runtime.app.toggle_raw_output,
+            vec![key_hint::alt(KeyCode::Char('m'))]
+        );
+        assert!(runtime.composer.toggle_dictation.is_empty());
+
+        let err = RuntimeKeymap::from_config_with_features(
+            &keymap,
+            RuntimeKeymapFeatures {
+                voice_transcription_enabled: true,
+            },
+        )
+        .expect_err("enabled dictation should reserve its default binding");
+        assert!(err.contains("toggle_raw_output"));
+        assert!(err.contains("composer.toggle_dictation"));
     }
 
     #[test]

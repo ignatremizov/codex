@@ -139,6 +139,8 @@ pub struct TuiComposerKeymap {
     pub queue: Option<KeybindingsSpec>,
     /// Toggle the composer shortcut overlay.
     pub toggle_shortcuts: Option<KeybindingsSpec>,
+    /// Start or stop voice dictation in the composer.
+    pub toggle_dictation: Option<KeybindingsSpec>,
     /// Open reverse history search or move to the previous match.
     pub history_search_previous: Option<KeybindingsSpec>,
     /// Move to the next match in reverse history search.
