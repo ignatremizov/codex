@@ -92,7 +92,14 @@ impl App {
         {
             return;
         }
-        let keymap = match RuntimeKeymap::from_config(&config.tui_keymap) {
+        let keymap = match RuntimeKeymap::from_config_with_features(
+            &config.tui_keymap,
+            crate::keymap::RuntimeKeymapFeatures {
+                voice_transcription_enabled: crate::voice_availability::transcription_enabled(
+                    &config,
+                ),
+            },
+        ) {
             Ok(keymap) => keymap,
             Err(error) => return self.chat_widget.add_error_message(error),
         };

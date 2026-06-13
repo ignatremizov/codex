@@ -5,7 +5,7 @@
 //! workspace.
 
 use codex_http_client::BuildRouteAwareHttpClientError;
-use codex_http_client::ClientRouteClass;
+pub use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClient;
 use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;

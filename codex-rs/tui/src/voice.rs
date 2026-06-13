@@ -12,18 +12,73 @@ use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering;
 use tracing::error;
 
+#[path = "voice/chunked.rs"]
+mod chunked;
+#[path = "voice/transcription.rs"]
+mod transcription;
+
+use chunked::ChunkedRecordingMessage;
+use chunked::ChunkedRecordingSink;
+pub(crate) use transcription::validate_transcription_auth;
+
 const MODEL_AUDIO_SAMPLE_RATE: u32 = 24_000;
 const MODEL_AUDIO_CHANNELS: u16 = 1;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedAudio {
+    pub data: Vec<i16>,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
 pub struct VoiceCapture {
     stream: Option<cpal::Stream>,
+    chunked_recording: Option<ChunkedRecordingSink>,
     stopped: Arc<AtomicBool>,
     last_peak: Arc<AtomicU16>,
 }
 
 impl VoiceCapture {
+    pub fn start_chunked_recording(
+        config: &Config,
+        placeholder_id: String,
+        tx: AppEventSender,
+    ) -> Result<Self, String> {
+        let transcription_config = config.clone();
+        let (device, stream_config) = select_input_device_and_config(config)?;
+
+        let sample_rate = stream_config.sample_rate().0;
+        let channels = stream_config.channels();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let last_peak = Arc::new(AtomicU16::new(0));
+        let chunked_recording = ChunkedRecordingSink::start(
+            sample_rate,
+            channels,
+            placeholder_id,
+            transcription_config,
+            tx,
+        );
+
+        let stream = build_chunked_recording_input_stream(
+            &device,
+            &stream_config,
+            chunked_recording.sender(),
+            last_peak.clone(),
+        )?;
+        stream
+            .play()
+            .map_err(|e| format!("failed to start input stream: {e}"))?;
+
+        Ok(Self {
+            stream: Some(stream),
+            chunked_recording: Some(chunked_recording),
+            stopped,
+            last_peak,
+        })
+    }
+
     pub fn start_realtime(config: &Config, tx: AppEventSender) -> Result<Self, String> {
-        let (device, config) = select_realtime_input_device_and_config(config)?;
+        let (device, config) = select_input_device_and_config(config)?;
 
         let sample_rate = config.sample_rate().0;
         let channels = config.channels();
@@ -44,6 +99,7 @@ impl VoiceCapture {
 
         Ok(Self {
             stream: Some(stream),
+            chunked_recording: None,
             stopped,
             last_peak,
         })
@@ -54,10 +110,32 @@ impl VoiceCapture {
         self.stopped.store(true, Ordering::SeqCst);
         // Dropping the stream stops capture.
         self.stream.take();
+        if let Some(chunked_recording) = self.chunked_recording.take() {
+            chunked_recording.cancel();
+        }
+    }
+
+    pub fn stop_chunked_recording(mut self) -> Result<(), String> {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.stream.take();
+        let chunked_recording = self
+            .chunked_recording
+            .take()
+            .ok_or_else(|| "voice capture was not recording chunked audio".to_string())?;
+        chunked_recording.finish();
+        Ok(())
     }
 
     pub fn stopped_flag(&self) -> Arc<AtomicBool> {
         self.stopped.clone()
+    }
+
+    pub(crate) fn chunked_recording_cancellation_token(
+        &self,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.chunked_recording
+            .as_ref()
+            .map(ChunkedRecordingSink::cancellation_token)
     }
 
     pub fn last_peak_arc(&self) -> Arc<AtomicU16> {
@@ -128,10 +206,76 @@ impl RecordingMeterState {
 // Voice input helpers
 // -------------------------
 
-fn select_realtime_input_device_and_config(
+fn select_input_device_and_config(
     config: &Config,
 ) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
     crate::audio_device::select_configured_input_device_and_config(config)
+}
+
+pub(super) fn clip_duration_seconds(audio: &RecordedAudio) -> f32 {
+    if audio.sample_rate == 0 || audio.channels == 0 {
+        return 0.0;
+    }
+    audio.data.len() as f32 / f32::from(audio.channels) / audio.sample_rate as f32
+}
+
+fn build_chunked_recording_input_stream(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    tx: std::sync::mpsc::Sender<ChunkedRecordingMessage>,
+    last_peak: Arc<AtomicU16>,
+) -> Result<cpal::Stream, String> {
+    match config.sample_format() {
+        cpal::SampleFormat::F32 => device
+            .build_input_stream(
+                &config.clone().into(),
+                move |input: &[f32], _| {
+                    let peak = peak_f32(input);
+                    last_peak.store(peak, Ordering::Relaxed);
+                    let samples = input.iter().copied().map(f32_to_i16).collect::<Vec<_>>();
+                    send_chunked_recording_samples(&tx, samples);
+                },
+                move |err| error!("audio input error: {err}"),
+                None,
+            )
+            .map_err(|e| format!("failed to build input stream: {e}")),
+        cpal::SampleFormat::I16 => device
+            .build_input_stream(
+                &config.clone().into(),
+                move |input: &[i16], _| {
+                    let peak = peak_i16(input);
+                    last_peak.store(peak, Ordering::Relaxed);
+                    send_chunked_recording_samples(&tx, input.to_vec());
+                },
+                move |err| error!("audio input error: {err}"),
+                None,
+            )
+            .map_err(|e| format!("failed to build input stream: {e}")),
+        cpal::SampleFormat::U16 => device
+            .build_input_stream(
+                &config.clone().into(),
+                move |input: &[u16], _| {
+                    let mut samples = Vec::with_capacity(input.len());
+                    let peak = convert_u16_to_i16_and_peak(input, &mut samples);
+                    last_peak.store(peak, Ordering::Relaxed);
+                    send_chunked_recording_samples(&tx, samples);
+                },
+                move |err| error!("audio input error: {err}"),
+                None,
+            )
+            .map_err(|e| format!("failed to build input stream: {e}")),
+        _ => Err("unsupported input sample format".to_string()),
+    }
+}
+
+fn send_chunked_recording_samples(
+    tx: &std::sync::mpsc::Sender<ChunkedRecordingMessage>,
+    samples: Vec<i16>,
+) {
+    if samples.is_empty() {
+        return;
+    }
+    let _ = tx.send(ChunkedRecordingMessage::Samples(samples));
 }
 
 fn build_realtime_input_stream(
@@ -410,7 +554,7 @@ fn fill_output_u16(output: &mut [u16], queue: &Arc<Mutex<VecDeque<i16>>>) {
     output.fill(32768);
 }
 
-fn convert_pcm16(
+pub(super) fn convert_pcm16(
     input: &[i16],
     input_sample_rate: u32,
     input_channels: u16,

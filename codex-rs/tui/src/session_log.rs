@@ -215,6 +215,45 @@ fn log_inbound_app_event_with(logger: &SessionLogger, event: &AppEvent) {
             });
             logger.write_json_line(value);
         }
+        AppEvent::DictationChunkTranscriptionComplete { id, sequence, text } => {
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": "DictationChunkTranscriptionComplete",
+                "id": id,
+                "sequence": sequence,
+                "text_chars": text.chars().count(),
+            });
+            logger.write_json_line(value);
+        }
+        AppEvent::DictationChunkTranscriptionFailed {
+            id,
+            sequence,
+            error,
+        } => {
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": "DictationChunkTranscriptionFailed",
+                "id": id,
+                "sequence": sequence,
+                "error": error,
+            });
+            logger.write_json_line(value);
+        }
+        AppEvent::DictationChunksFlushed { id, final_sequence } => {
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": "DictationChunksFlushed",
+                "id": id,
+                "final_sequence": final_sequence,
+            });
+            logger.write_json_line(value);
+        }
         // Noise or control flow – record variant only
         other => {
             let variant: &'static str = other.into();
