@@ -137,6 +137,10 @@ enum StartupRetry {
 
 #[derive(Default)]
 pub(super) struct RealtimeConversationUiState {
+    // Device preferences are captured at admission, including asynchronous cleanup waits.
+    audio_selection: codex_realtime_webrtc::AudioDeviceSelection,
+    // UI phase and native helper each retain ownership until their own shutdown completes.
+    _microphone_lease: Option<crate::dictation::session::MicLease>,
     startup_retry: StartupRetry,
     pub(super) phase: RealtimeConversationPhase,
     recover_late_transcripts: bool,
@@ -322,6 +326,24 @@ impl ChatWidget {
         let Some(audio) = self.realtime_audio_settings() else {
             return;
         };
+        self.realtime_conversation.audio_selection = codex_realtime_webrtc::AudioDeviceSelection {
+            microphone: audio.microphone,
+            speaker: audio.speaker,
+            channel: audio
+                .microphone_channel
+                .map(|channels| channels.as_slice().to_vec()),
+        };
+        if self.dictation.is_some() {
+            self.add_error_message("Finish or cancel dictation before starting voice.".into());
+            return;
+        }
+        let lease = crate::dictation::session::MicReservation::shared().acquire();
+        if lease.is_none() && self.realtime_conversation.startup_retry != StartupRetry::Used {
+            self.add_error_message(
+                "Microphone cleanup is still in progress. Try again shortly.".into(),
+            );
+            return;
+        }
         self.realtime_conversation.recover_late_transcripts = false;
         self.realtime_conversation.attempt_id =
             NEXT_REALTIME_ATTEMPT_ID.fetch_add(1, Ordering::Relaxed);
@@ -332,31 +354,73 @@ impl ChatWidget {
         self.realtime_conversation.phase = RealtimeConversationPhase::Starting;
         self.update_realtime_footer();
         let app_event_tx = self.app_event_tx.clone();
-        let selection = codex_realtime_webrtc::AudioDeviceSelection {
-            microphone: audio.microphone,
-            speaker: audio.speaker,
-            channel: audio
-                .microphone_channel
-                .map(|channels| channels.as_slice().to_vec()),
+        if let Some(lease) = lease {
+            self.on_realtime_microphone_ready(thread_id, attempt_id, Ok(lease));
+        } else {
+            // Existing one-shot retry waits for acknowledged cleanup; user stop or widget
+            // replacement aborts the waiter, and the attempt ID rejects an already queued result.
+            tokio::spawn(async move {
+                if let Ok(lease) = futures::future::Abortable::new(
+                    crate::dictation::session::MicReservation::shared().acquire_after_release(),
+                    abort_registration,
+                )
+                .await
+                {
+                    app_event_tx.send(AppEvent::RealtimeMicrophoneReady {
+                        thread_id,
+                        attempt_id,
+                        lease,
+                    });
+                }
+            });
+        }
+        self.request_redraw();
+    }
+
+    pub(crate) fn on_realtime_microphone_ready(
+        &mut self,
+        thread_id: ThreadId,
+        attempt_id: u64,
+        lease: Result<crate::dictation::session::MicLease, String>,
+    ) {
+        if self.realtime_conversation.phase != RealtimeConversationPhase::Starting
+            || self.realtime_conversation.attempt_id != attempt_id
+            || self.realtime_conversation.thread_id != Some(thread_id)
+            || self.thread_id() != Some(thread_id)
+        {
+            return;
+        }
+        let lease = match lease {
+            Ok(lease) => lease,
+            Err(error) => {
+                self.on_realtime_error(error);
+                return;
+            }
         };
+        self.realtime_conversation._microphone_lease = Some(lease.clone());
+        let (startup_abort, abort_registration) = AbortHandle::new_pair();
+        self.realtime_conversation.startup_abort = Some(startup_abort);
+        let app_event_tx = self.app_event_tx.clone();
+        let selection = self.realtime_conversation.audio_selection.clone();
         std::thread::spawn(move || {
-            let result =
-                RealtimeWebrtcSession::start(abort_registration, selection).map_err(|error| {
-                    RealtimeWebrtcStartupFailure {
-                        cause: error
-                            .downcast_ref::<codex_realtime_webrtc::ConnectionError>()
-                            .copied()
-                            .unwrap_or(codex_realtime_webrtc::ConnectionError::Failed),
-                        message: error.to_string(),
-                    }
-                });
+            let result = RealtimeWebrtcSession::start_with_resource_guard(
+                abort_registration,
+                selection,
+                lease,
+            )
+            .map_err(|error| RealtimeWebrtcStartupFailure {
+                cause: error
+                    .downcast_ref::<codex_realtime_webrtc::ConnectionError>()
+                    .copied()
+                    .unwrap_or(codex_realtime_webrtc::ConnectionError::Failed),
+                message: error.to_string(),
+            });
             app_event_tx.send(AppEvent::RealtimeWebrtcOfferCreated {
                 thread_id,
                 attempt_id,
                 result,
             });
         });
-        self.request_redraw();
     }
 
     pub(crate) fn stop_realtime_conversation(&mut self) {

@@ -24,6 +24,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LocalSettings {
     pub(crate) audio: Result<codex_config::config_toml::RealtimeAudioToml, String>,
+    pub(crate) voice_transcription_enabled: bool,
     pub(crate) tui: Tui,
     pub(crate) transcript_mode: TranscriptMode,
     pub(crate) history: History,
@@ -51,6 +52,9 @@ impl LocalSettings {
     ) -> Self {
         let mut settings = Self {
             audio: Ok(Default::default()),
+            voice_transcription_enabled: config
+                .features
+                .enabled(codex_features::Feature::VoiceTranscription),
             transcript_mode: TranscriptMode::resolve(
                 config.tui_fullscreen_transcript,
                 config.tui_alternate_screen != codex_config::types::AltScreenMode::Never,
@@ -127,7 +131,13 @@ impl LocalSettings {
         );
         tui.session_picker_view = Some(tui.session_picker_view.unwrap_or_default());
         tui.screen_reader_detection_done = None;
+        let mut features = codex_features::Features::with_defaults();
+        if let Some(configured) = &config.features {
+            features.apply_map(&configured.entries());
+        }
         let mut settings = Self {
+            voice_transcription_enabled: features
+                .enabled(codex_features::Feature::VoiceTranscription),
             audio: Ok(Default::default()),
             transcript_mode: TranscriptMode::resolve(
                 tui.fullscreen_transcript,

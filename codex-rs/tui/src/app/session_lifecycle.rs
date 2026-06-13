@@ -797,6 +797,7 @@ impl App {
     }
 
     pub(super) async fn reset_thread_event_state(&mut self) {
+        self.chat_widget.cancel_dictation();
         let voice_owner = self.voice_owner_thread_id();
         let mut previous_pending = std::mem::take(&mut self.pending_app_server_requests);
         // Move retained tasks' approvals to background routing before clearing request bookkeeping.

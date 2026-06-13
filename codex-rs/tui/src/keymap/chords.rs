@@ -9,6 +9,7 @@
 
 use super::MAIN_RESERVED_BINDINGS;
 use super::RuntimeKeymap;
+use super::RuntimeKeymapFeatures;
 use super::TRANSCRIPT_BACKTRACK_RESERVED_BINDINGS;
 use super::bindings::KeymapActionId;
 use super::bindings::KeymapContext;
@@ -233,10 +234,19 @@ pub(crate) struct RuntimeChordKeymap {
 }
 
 impl RuntimeChordKeymap {
-    pub(super) fn from_config(keymap: &TuiKeymap) -> Result<Self, String> {
+    pub(super) fn from_config(
+        keymap: &TuiKeymap,
+        features: RuntimeKeymapFeatures,
+    ) -> Result<Self, String> {
         let mut keymap_chords = Self::default();
         let mut leader_bindings = Vec::new();
         for action in keymap_action_ids() {
+            if action.context == KeymapContext::Composer
+                && action.action == "toggle_dictation"
+                && !features.voice_transcription_enabled
+            {
+                continue;
+            }
             let Some(configured) = effective_configured_binding(keymap, action) else {
                 continue;
             };
