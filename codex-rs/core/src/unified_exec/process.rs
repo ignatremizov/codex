@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot::error::TryRecvError;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -323,14 +324,14 @@ impl UnifiedExecProcess {
             stderr_rx,
             mut exit_rx,
         } = spawned;
-        let output_rx = codex_utils_pty::combine_output_receivers(stdout_rx, stderr_rx);
         let mut managed = Self::new(
             ProcessHandle::Local(Box::new(process_handle)),
             sandbox_type,
             Some(spawn_lifecycle),
         );
         managed.output_task = Some(Self::spawn_local_output_task(
-            output_rx,
+            stdout_rx,
+            stderr_rx,
             Arc::clone(&managed.output_buffer),
             Arc::clone(&managed.output_notify),
             Arc::clone(&managed.output_closed),
@@ -497,7 +498,8 @@ impl UnifiedExecProcess {
     }
 
     fn spawn_local_output_task(
-        mut receiver: tokio::sync::broadcast::Receiver<Vec<u8>>,
+        mut stdout_rx: mpsc::Receiver<Vec<u8>>,
+        mut stderr_rx: mpsc::Receiver<Vec<u8>>,
         buffer: OutputBuffer,
         output_notify: Arc<Notify>,
         output_closed: Arc<AtomicBool>,
@@ -505,23 +507,37 @@ impl UnifiedExecProcess {
         output_tx: broadcast::Sender<Vec<u8>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
+            let mut stdout_open = true;
+            let mut stderr_open = true;
             loop {
-                match receiver.recv().await {
-                    Ok(chunk) => {
-                        let mut guard = buffer.lock().await;
-                        guard.push_chunk(chunk.clone());
-                        drop(guard);
-                        let _ = output_tx.send(chunk);
-                        output_notify.notify_waiters();
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        output_closed.store(true, Ordering::Release);
-                        output_closed_notify.notify_waiters();
-                        break;
-                    }
+                let chunk = tokio::select! {
+                    stdout = stdout_rx.recv(), if stdout_open => match stdout {
+                        Some(chunk) => Some(chunk),
+                        None => {
+                            stdout_open = false;
+                            None
+                        }
+                    },
+                    stderr = stderr_rx.recv(), if stderr_open => match stderr {
+                        Some(chunk) => Some(chunk),
+                        None => {
+                            stderr_open = false;
+                            None
+                        }
+                    },
+                    else => break,
                 };
+
+                if let Some(chunk) = chunk {
+                    let mut guard = buffer.lock().await;
+                    guard.push_chunk(chunk.clone());
+                    drop(guard);
+                    let _ = output_tx.send(chunk);
+                    output_notify.notify_waiters();
+                }
             }
+            output_closed.store(true, Ordering::Release);
+            output_closed_notify.notify_waiters();
         })
     }
 
