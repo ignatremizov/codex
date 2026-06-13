@@ -7,9 +7,9 @@
 //! keeps the main transcript/event surface from also owning the `/keymap` navigation details.
 //!
 //! The important invariant is that any accepted keymap edit must update three places together:
-//! the stored `Config.tui_keymap`, the cached copy-response binding used by app-level shortcuts,
-//! and the bottom pane's runtime keymap bindings. Updating only one of those would make the UI
-//! appear to accept a remap while some handlers still respond to the old keys.
+//! the stored `Config.tui_keymap`, cached app-level bindings, and the bottom pane's runtime keymap
+//! bindings. Updating only one of those would make the UI appear to accept a remap while some
+//! handlers still respond to the old keys.
 
 use codex_config::types::TuiKeymap;
 use codex_terminal_detection::terminal_info;
@@ -18,6 +18,7 @@ use super::ChatWidget;
 use super::queued_message_edit_hint_binding;
 use crate::app_event::KeymapEditIntent;
 use crate::keymap::RuntimeKeymap;
+use crate::keymap::RuntimeKeymapFeatures;
 use crate::keymap_setup;
 
 impl ChatWidget {
@@ -28,7 +29,10 @@ impl ChatWidget {
     /// overrides. If the config is invalid, the user sees the parse error instead of a partial
     /// picker that could commit edits against stale runtime state.
     pub(crate) fn open_keymap_picker(&mut self) {
-        match RuntimeKeymap::from_config(&self.config.tui_keymap) {
+        match RuntimeKeymap::from_config_with_features(
+            &self.config.tui_keymap,
+            self.runtime_keymap_features(),
+        ) {
             Ok(runtime_keymap) => {
                 let params = keymap_setup::build_keymap_picker_params_with_filter(
                     &runtime_keymap,
@@ -152,13 +156,22 @@ impl ChatWidget {
     fn keymap_action_filter(&self) -> keymap_setup::KeymapActionFilter {
         keymap_setup::KeymapActionFilter {
             fast_mode_enabled: self.fast_mode_enabled(),
+            voice_transcription_enabled: self.runtime_keymap_features().voice_transcription_enabled,
+        }
+    }
+
+    pub(super) fn runtime_keymap_features(&self) -> RuntimeKeymapFeatures {
+        RuntimeKeymapFeatures {
+            voice_transcription_enabled: crate::voice_availability::transcription_enabled(
+                &self.config,
+            ),
         }
     }
 
     /// Applies a committed keymap edit to the live chat widget.
     ///
     /// The caller is responsible for persisting the config file before invoking this method. This
-    /// method updates the in-memory config, app-level copy binding cache, and bottom-pane keymap
+    /// method updates the in-memory config, app-level binding caches, and bottom-pane keymap
     /// bindings as one unit; callers that update only `self.config.tui_keymap` would leave visible
     /// picker state and active key handlers disagreeing until the next restart.
     pub(crate) fn apply_keymap_update(
@@ -169,6 +182,7 @@ impl ChatWidget {
         self.config.tui_keymap = keymap_config;
         self.copy_last_response_binding = runtime_keymap.app.copy.clone();
         self.chat_keymap = runtime_keymap.chat.clone();
+        self.dictation_keymap = runtime_keymap.composer.toggle_dictation.clone();
         self.queued_message_edit_hint_binding = queued_message_edit_hint_binding(
             &self.chat_keymap.edit_queued_message,
             terminal_info(),
