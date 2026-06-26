@@ -1283,6 +1283,7 @@ async fn spawn_agent_numeric_fork_from_compacted_paginated_parent_clamps_to_prov
                     phase: None,
                     internal_chat_message_metadata_passthrough: None,
                 }]),
+                compaction_summary_tokens: None,
                 window_number: None,
                 first_window_id: None,
                 previous_window_id: None,
@@ -1609,6 +1610,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: Some(replacement_history),
+                compaction_summary_tokens: None,
                 window_number: None,
                 first_window_id: None,
                 previous_window_id: None,
