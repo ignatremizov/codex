@@ -3880,6 +3880,7 @@ mod tests {
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: None,
+                compaction_summary_tokens: None,
                 window_number: None,
                 first_window_id: None,
                 previous_window_id: None,
@@ -3929,6 +3930,7 @@ mod tests {
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
                 replacement_history: None,
+                compaction_summary_tokens: None,
                 window_number: None,
                 first_window_id: None,
                 previous_window_id: None,

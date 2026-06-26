@@ -46,6 +46,7 @@ use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 #[path = "compact_remote_v2_attempt.rs"]
 mod attempt;
@@ -313,7 +314,15 @@ async fn run_remote_compact_task_inner_impl(
         token_usage,
         owned_client_session: _owned_client_session,
     } = attempt;
+    let compaction_summary_tokens = token_usage.as_ref().map(|usage| usage.output_tokens);
     if let Some(token_usage) = token_usage {
+        info!(
+            turn_id = %turn_context.sub_id,
+            compaction_summary_tokens = token_usage.output_tokens,
+            active_context_tokens_before = token_usage.input_tokens,
+            cached_input_tokens = token_usage.cached_input_tokens,
+            "remote compaction v2 token usage"
+        );
         sess.record_rollout_budget_usage(&token_usage)?;
         analytics_details.active_context_tokens_before = Some(token_usage.input_tokens);
         analytics_details.compaction_summary_tokens = Some(token_usage.output_tokens);
@@ -346,6 +355,7 @@ async fn run_remote_compact_task_inner_impl(
         world_state_baseline,
         CompactedHistoryMetadata {
             message: String::new(),
+            compaction_summary_tokens,
             window_number: new_window_number,
             window_ids: new_window_ids,
         },

@@ -325,6 +325,7 @@ async fn run_remote_compact_task_inner_impl(
         world_state_baseline,
         CompactedHistoryMetadata {
             message: String::new(),
+            compaction_summary_tokens: None,
             window_number: new_window_number,
             window_ids: new_window_ids,
         },

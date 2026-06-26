@@ -88,6 +88,7 @@ pub(crate) enum InitialContextInjection {
 /// `CompactedItem`, ensuring the live and persisted histories remain identical.
 pub(crate) struct CompactedHistoryMetadata {
     pub(crate) message: String,
+    pub(crate) compaction_summary_tokens: Option<i64>,
     pub(crate) window_number: u64,
     pub(crate) window_ids: AutoCompactWindowIds,
 }
@@ -441,6 +442,7 @@ async fn run_compact_task_inner_impl(
         world_state_baseline,
         CompactedHistoryMetadata {
             message: summary_text,
+            compaction_summary_tokens: None,
             window_number,
             window_ids,
         },
