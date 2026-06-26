@@ -318,6 +318,7 @@ async fn run_remote_compact_task_inner_impl(
     let compacted_item = CompactedItem {
         message: String::new(),
         replacement_history: Some(new_history.clone()),
+        compaction_summary_tokens: None,
         window_number: Some(new_window_number),
         first_window_id: Some(new_window_ids.first_window_id.to_string()),
         previous_window_id: new_window_ids.previous_window_id.map(|id| id.to_string()),

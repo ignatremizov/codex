@@ -3552,6 +3552,7 @@ impl Session {
             CompactedItem {
                 message: String::new(),
                 replacement_history: None,
+                compaction_summary_tokens: None,
                 window_number: Some(window_number),
                 first_window_id: Some(window_ids.first_window_id.to_string()),
                 previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
