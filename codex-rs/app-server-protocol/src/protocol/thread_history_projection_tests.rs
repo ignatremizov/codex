@@ -235,6 +235,7 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
+        compaction_summary_tokens: None,
         window_number: None,
         first_window_id: None,
         previous_window_id: None,

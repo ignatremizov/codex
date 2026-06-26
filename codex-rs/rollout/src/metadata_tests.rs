@@ -296,6 +296,7 @@ fn builder_from_items_falls_back_to_filename() {
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
+        compaction_summary_tokens: None,
         window_number: None,
         first_window_id: None,
         previous_window_id: None,

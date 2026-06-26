@@ -208,6 +208,8 @@ pub struct CompactedItem {
     pub guardian_history: Option<GuardianHistoryCheckpoint>,
     pub retained_context: Option<RetainedContext>,
     pub mcp_resource_origins: Option<McpResourceOriginCheckpoint>,
+    /// Server-reported output token count for the compaction summary, when available.
+    pub compaction_summary_tokens: Option<i64>,
     pub window_number: Option<u64>,
     pub first_window_id: Option<String>,
     pub previous_window_id: Option<String>,

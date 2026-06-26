@@ -28,6 +28,7 @@ use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::RealtimeOutputModality;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::user_input::UserInput;
+use codex_rollout::RolloutRecorder;
 use core_test_support::responses;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
@@ -288,7 +289,19 @@ async fn remote_compact_v2_retains_metadata_from_resumed_history() -> Result<()>
                         "encrypted_content": "ANNOTATED_V2_COMPACTION_SUMMARY",
                     },
                 }),
-                responses::ev_completed("response-compact"),
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "response-compact",
+                        "usage": {
+                            "input_tokens": 123,
+                            "input_tokens_details": null,
+                            "output_tokens": 321,
+                            "output_tokens_details": null,
+                            "total_tokens": 444
+                        }
+                    }
+                }),
             ]),
             sse(vec![responses::ev_completed("response-after")]),
         ],
@@ -323,6 +336,8 @@ async fn remote_compact_v2_retains_metadata_from_resumed_history() -> Result<()>
     wait_for_turn_complete(&resumed.codex).await;
     resumed.submit_turn("continue after compaction").await?;
     resumed.codex.shutdown_and_wait().await?;
+    let (history, _, parse_errors) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    assert_eq!(parse_errors, 0);
 
     let requests = response_mock.requests();
     let compact_request = &requests[1];
@@ -337,6 +352,17 @@ async fn remote_compact_v2_retains_metadata_from_resumed_history() -> Result<()>
         "ANNOTATED_V2_COMPACTION_SUMMARY"
     );
     assert!(requests[2].body_contains_text("continue after compaction"));
+    let compacted = history
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::Compacted(item) => Some((
+                item.compaction_response_id.as_deref(),
+                item.compaction_summary_tokens,
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(compacted, vec![(Some("response-compact"), Some(321))]);
 
     Ok(())
 }

@@ -885,6 +885,7 @@ fn compacted(message: &str, replacement_history: Option<Vec<ResponseItem>>) -> R
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
+        compaction_summary_tokens: None,
         window_number: Some(1),
         first_window_id: None,
         previous_window_id: None,
