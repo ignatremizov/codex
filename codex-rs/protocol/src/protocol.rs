@@ -3211,6 +3211,9 @@ pub struct CompactedItem {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement_history: Option<Vec<ResponseItem>>,
+    /// Server-reported output token count for the compaction summary, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_summary_tokens: Option<i64>,
     /// Monotonic position of this context window within the thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_number: Option<u64>,

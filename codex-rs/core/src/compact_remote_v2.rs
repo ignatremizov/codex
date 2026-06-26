@@ -305,7 +305,15 @@ async fn run_remote_compact_task_inner_impl(
         compaction_output,
         token_usage,
     } = compaction_output_result?;
+    let compaction_summary_tokens = token_usage.as_ref().map(|usage| usage.output_tokens);
     if let Some(token_usage) = token_usage {
+        info!(
+            turn_id = %turn_context.sub_id,
+            compaction_summary_tokens = token_usage.output_tokens,
+            active_context_tokens_before = token_usage.input_tokens,
+            cached_input_tokens = token_usage.cached_input_tokens,
+            "remote compaction v2 token usage"
+        );
         sess.record_rollout_budget_usage(&token_usage)?;
         analytics_details.active_context_tokens_before = Some(token_usage.input_tokens);
         analytics_details.compaction_summary_tokens = Some(token_usage.output_tokens);
@@ -332,6 +340,7 @@ async fn run_remote_compact_task_inner_impl(
     let compacted_item = CompactedItem {
         message: String::new(),
         replacement_history: Some(new_history.clone()),
+        compaction_summary_tokens,
         window_number: Some(new_window_number),
         first_window_id: Some(new_window_ids.first_window_id.to_string()),
         previous_window_id: new_window_ids.previous_window_id.map(|id| id.to_string()),
