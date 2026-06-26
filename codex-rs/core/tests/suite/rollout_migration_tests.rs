@@ -124,6 +124,7 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
                 retained_context: None,
                 guardian_history: None,
                 mcp_resource_origins: None,
+                compaction_summary_tokens: None,
                 window_number: Some(window),
                 first_window_id: None,
                 previous_window_id: None,

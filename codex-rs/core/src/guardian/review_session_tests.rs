@@ -91,6 +91,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
             /*world_state_baseline*/ None,
             crate::compact::CompactedHistoryMetadata {
                 message: String::new(),
+                compaction_summary_tokens: None,
                 window_number,
                 window_ids,
                 compaction_response_id: None,

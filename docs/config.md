@@ -148,6 +148,8 @@ Each attempt has its own 15-minute startup and inference deadline. Cleanup can t
 
 Completed compaction records also expose the skill names in the latest model-visible inventory in the installed history. This is descriptive metadata, not a new skill activation or discovery mechanism. Older records without the inventory decode as an empty list. `tui.show_compact_summary` controls presentation of the decoded text as it does local compacted output.
 
+Remote V2 rollout checkpoints retain the service's reported output-token count as optional `compaction_summary_tokens` metadata. This is the compaction response's usage, not the display decoder's usage or an estimate of the visible text. Older checkpoints, local compaction, and responses without usage leave it absent; it does not affect model context.
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.

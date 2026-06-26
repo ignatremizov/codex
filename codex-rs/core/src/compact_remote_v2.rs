@@ -325,6 +325,7 @@ async fn run_remote_compact_task_inner_impl(
         token_usage,
         owned_client_session: _owned_client_session,
     } = attempt;
+    let compaction_summary_tokens = token_usage.as_ref().map(|usage| usage.output_tokens);
     if let Some(token_usage) = token_usage {
         sess.record_rollout_budget_usage(&token_usage)?;
         analytics_details.active_context_tokens_before = Some(token_usage.input_tokens);
@@ -378,6 +379,7 @@ async fn run_remote_compact_task_inner_impl(
             world_state_baseline,
             CompactedHistoryMetadata {
                 message: String::new(),
+                compaction_summary_tokens,
                 window_number: new_window_number,
                 window_ids: new_window_ids,
                 compaction_response_id: Some(compaction_response_id),
