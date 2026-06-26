@@ -390,6 +390,7 @@ fn compacted(message: &str, replacement_history: Option<Vec<ResponseItem>>) -> R
     RolloutItem::Compacted(CompactedItem {
         message: message.to_string(),
         replacement_history,
+        compaction_summary_tokens: None,
         window_number: Some(1),
         first_window_id: None,
         previous_window_id: None,
