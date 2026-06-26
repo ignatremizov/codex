@@ -22,6 +22,7 @@ impl<'de> Deserialize<'de> for CompactedItem {
         Ok(Self {
             message: serialized.message,
             replacement_history: serialized.replacement_history,
+            compaction_summary_tokens: serialized.compaction_summary_tokens,
             window_number,
             first_window_id: serialized.first_window_id,
             previous_window_id: serialized.previous_window_id,
@@ -35,6 +36,8 @@ struct SerializedCompactedItem {
     message: String,
     #[serde(default)]
     replacement_history: Option<Vec<ResponseItem>>,
+    #[serde(default)]
+    compaction_summary_tokens: Option<i64>,
     #[serde(default)]
     window_number: Option<u64>,
     #[serde(default)]
@@ -64,6 +67,7 @@ mod tests {
         let item = CompactedItem {
             message: "summary".to_string(),
             replacement_history: None,
+            compaction_summary_tokens: Some(1234),
             window_number: Some(3),
             first_window_id: Some("019b3f6e-0000-7000-8000-000000000001".to_string()),
             previous_window_id: Some("019b3f6e-0000-7000-8000-000000000002".to_string()),
@@ -74,6 +78,7 @@ mod tests {
             serde_json::to_value(item)?,
             json!({
                 "message": "summary",
+                "compaction_summary_tokens": 1234,
                 "window_number": 3,
                 "first_window_id": "019b3f6e-0000-7000-8000-000000000001",
                 "previous_window_id": "019b3f6e-0000-7000-8000-000000000002",
@@ -95,6 +100,7 @@ mod tests {
             CompactedItem {
                 message: "summary".to_string(),
                 replacement_history: None,
+                compaction_summary_tokens: None,
                 window_number: Some(3),
                 first_window_id: None,
                 previous_window_id: None,
