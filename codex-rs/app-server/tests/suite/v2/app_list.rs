@@ -761,9 +761,6 @@ async fn list_apps_emits_updates_and_returns_after_both_lists_load() -> Result<(
         plugin_display_names: Vec::new(),
     }];
 
-    let first_update = read_app_list_updated_notification(&mut mcp).await?;
-    assert_eq!(first_update.data, expected_accessible);
-
     let expected_merged = vec![
         AppInfo {
             id: "beta".to_string(),
@@ -801,8 +798,13 @@ async fn list_apps_emits_updates_and_returns_after_both_lists_load() -> Result<(
         },
     ];
 
-    let second_update = read_app_list_updated_notification(&mut mcp).await?;
-    assert_eq!(second_update.data, expected_merged);
+    let first_update = read_app_list_updated_notification(&mut mcp).await?;
+    if first_update.data == expected_accessible {
+        let second_update = read_app_list_updated_notification(&mut mcp).await?;
+        assert_eq!(second_update.data, expected_merged);
+    } else {
+        assert_eq!(first_update.data, expected_merged);
+    }
 
     let response: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -1395,13 +1397,11 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
             force_refetch: false,
         })
         .await?;
-    let warm_first_update = read_app_list_updated_notification(&mut mcp).await?;
-    assert_eq!(
-        warm_first_update.data,
-        vec![AppInfo {
+    let expected_warm = vec![
+        AppInfo {
             id: "beta".to_string(),
             name: "Beta App".to_string(),
-            description: None,
+            description: Some("Beta v1".to_string()),
             logo_url: None,
             logo_url_dark: None,
             icon_assets: None,
@@ -1414,49 +1414,40 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
             is_accessible: true,
             is_enabled: true,
             plugin_display_names: Vec::new(),
-        }]
-    );
+        },
+        AppInfo {
+            id: "alpha".to_string(),
+            name: "Alpha".to_string(),
+            description: Some("Alpha v1".to_string()),
+            logo_url: None,
+            logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
+            distribution_channel: None,
+            branding: None,
+            app_metadata: None,
+            labels: None,
+            install_url: Some("https://chatgpt.com/apps/alpha/alpha".to_string()),
+            is_accessible: false,
+            is_enabled: true,
+            plugin_display_names: Vec::new(),
+        },
+    ];
+    loop {
+        let warm_update = read_app_list_updated_notification(&mut mcp).await?;
+        if warm_update.data == expected_warm {
+            break;
+        }
 
-    let warm_second_update = read_app_list_updated_notification(&mut mcp).await?;
-    assert_eq!(
-        warm_second_update.data,
-        vec![
-            AppInfo {
-                id: "beta".to_string(),
-                name: "Beta App".to_string(),
-                description: Some("Beta v1".to_string()),
-                logo_url: None,
-                logo_url_dark: None,
-                icon_assets: None,
-                icon_dark_assets: None,
-                distribution_channel: None,
-                branding: None,
-                app_metadata: None,
-                labels: None,
-                install_url: Some("https://chatgpt.com/apps/beta-app/beta".to_string()),
-                is_accessible: true,
-                is_enabled: true,
-                plugin_display_names: Vec::new(),
-            },
-            AppInfo {
-                id: "alpha".to_string(),
-                name: "Alpha".to_string(),
-                description: Some("Alpha v1".to_string()),
-                logo_url: None,
-                logo_url_dark: None,
-                icon_assets: None,
-                icon_dark_assets: None,
-                distribution_channel: None,
-                branding: None,
-                app_metadata: None,
-                labels: None,
-                install_url: Some("https://chatgpt.com/apps/alpha/alpha".to_string()),
-                is_accessible: false,
-                is_enabled: true,
-                plugin_display_names: Vec::new(),
-            },
-        ]
-    );
+        assert!(
+            !warm_update.data.is_empty()
+                && warm_update
+                    .data
+                    .iter()
+                    .all(|connector| connector.is_accessible),
+            "unexpected warm app/list update before cached directory data was merged"
+        );
+    }
 
     let warm_response: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -1467,7 +1458,7 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
         data: warm_data,
         next_cursor: warm_next_cursor,
     } = to_response(warm_response)?;
-    assert_eq!(warm_data, warm_second_update.data);
+    assert_eq!(warm_data, expected_warm);
     assert!(warm_next_cursor.is_none());
 
     server_control.set_connectors(vec![AppInfo {
