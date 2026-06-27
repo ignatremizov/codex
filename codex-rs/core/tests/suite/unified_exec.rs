@@ -19,6 +19,7 @@ use codex_protocol::user_input::UserInput;
 use codex_utils_path_uri::PathUri;
 use core_test_support::TempDirExt;
 use core_test_support::assert_regex_match;
+use core_test_support::is_remote_test_environment;
 use core_test_support::managed_network_requirements_loader;
 use core_test_support::process::process_is_alive;
 use core_test_support::process::wait_for_pid_file;
@@ -989,7 +990,7 @@ async fn wait_for_unified_exec_end(
     call_id: &str,
     response_mock: &core_test_support::responses::ResponseMock,
 ) -> (codex_protocol::protocol::ExecCommandEndEvent, bool) {
-    let timeout = if core_test_support::get_remote_test_env().is_some() {
+    let timeout = if is_remote_test_environment() {
         std::time::Duration::from_secs(45)
     } else {
         std::time::Duration::from_secs(15)
