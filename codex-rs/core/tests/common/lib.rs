@@ -352,7 +352,7 @@ where
     loop {
         // Allow a bit more time to accommodate async startup work (e.g. config IO, tool discovery).
         // Docker-backed remote executor tests can take longer to produce the first matching event.
-        let minimum_wait = if get_remote_test_env().is_some() {
+        let minimum_wait = if is_remote_test_environment() {
             Duration::from_secs(/*secs*/ 300)
         } else {
             Duration::from_secs(/*secs*/ 10)
