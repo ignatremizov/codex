@@ -1108,9 +1108,7 @@ async fn exec_command_routes_to_selected_remote_environment() -> Result<()> {
         Ok(()),
         "Docker-backed remote exec-server process completion is not stable in manual verify"
     );
-    let Some(_remote_env) = get_remote_test_env() else {
-        return Ok(());
-    };
+    skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
     let test = unified_exec_test(&server).await?;
@@ -1505,7 +1503,7 @@ async fn apply_patch_approvals_are_remembered_per_environment() -> Result<()> {
     );
     let local_target_path = local_cwd.path().join(&path_suffix).abs();
     let remote_target_path = remote_cwd.join(&path_suffix).abs();
-    let remote_target_path_uri = PathUri::from_path(&remote_target_path)?;
+    let remote_target_path_uri = PathUri::from_abs_path(&remote_target_path);
     let _ = fs::remove_file(&local_target_path);
     test.fs()
         .remove(

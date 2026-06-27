@@ -579,9 +579,9 @@ async fn view_image_routes_to_selected_remote_environment() -> anyhow::Result<()
         Ok(()),
         "Docker-backed remote exec-server process completion is not stable in manual verify"
     );
-    let Some(_remote_env) = get_remote_test_env() else {
+    if !is_remote_test_environment() {
         return Ok(());
-    };
+    }
 
     let server = start_mock_server().await;
     let mut builder = test_codex();
