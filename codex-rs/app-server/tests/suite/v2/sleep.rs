@@ -125,6 +125,7 @@ async fn external_sleep_polls_current_time_and_emits_items() -> Result<()> {
             thread_id: thread.id.clone(),
             turn_id: turn.id.clone(),
             started_at_ms: started.started_at_ms,
+            deadline_at_ms: None,
         }
     );
     assert_eq!(

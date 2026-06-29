@@ -1,6 +1,14 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+fn future_deadline_at_ms(offset_ms: u128) -> i64 {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock should be after Unix epoch")
+        .as_millis();
+    i64::try_from(now_ms + offset_ms).expect("deadline should fit in i64")
+}
+
 #[tokio::test]
 async fn exec_approval_emits_proposed_command_and_decision_history() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -722,6 +730,169 @@ async fn unified_exec_wait_status_header_updates_on_late_command_display() {
         .expect("status indicator should be visible");
     assert_eq!(status.header(), "Waiting for background terminal");
     assert_eq!(status.details(), Some("sleep 5"));
+}
+
+#[tokio::test]
+async fn unified_exec_wait_status_renders_countdown() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+    chat.unified_exec_processes.push(UnifiedExecProcessSummary {
+        key: "proc-1".to_string(),
+        call_id: "call-1".to_string(),
+        command_display: "sleep 60".to_string(),
+        recent_chunks: Vec::new(),
+    });
+    let deadline_at_ms = future_deadline_at_ms(60_000);
+
+    chat.handle_server_notification(
+        ServerNotification::TerminalInteraction(
+            codex_app_server_protocol::TerminalInteractionNotification {
+                thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+                turn_id: "turn-1".to_string(),
+                item_id: "call-1".to_string(),
+                process_id: "proc-1".to_string(),
+                stdin: String::new(),
+                deadline_at_ms: Some(deadline_at_ms),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        rendered.contains("Waiting for background terminal (1m 00s left"),
+        "expected countdown in status row, got:\n{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn unified_exec_initial_status_renders_countdown() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+    let command = vec![
+        "bash".to_string(),
+        "-lc".to_string(),
+        "sleep 60".to_string(),
+    ];
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            deadline_at_ms: Some(future_deadline_at_ms(60_000)),
+            item: AppServerThreadItem::CommandExecution {
+                id: "call-1".to_string(),
+                command: codex_shell_command::parse_command::shlex_join(&command),
+                cwd: chat.config.cwd.clone().into(),
+                process_id: Some("proc-1".to_string()),
+                source: ExecCommandSource::UnifiedExecStartup,
+                status: AppServerCommandExecutionStatus::InProgress,
+                command_actions: Vec::new(),
+                aggregated_output: None,
+                exit_code: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        rendered.contains("Working (1m 00s left"),
+        "expected initial unified exec countdown in status row, got:\n{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn unified_exec_wait_countdown_survives_status_refresh() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+    chat.unified_exec_processes.push(UnifiedExecProcessSummary {
+        key: "proc-1".to_string(),
+        call_id: "call-1".to_string(),
+        command_display: "sleep 60".to_string(),
+        recent_chunks: Vec::new(),
+    });
+
+    chat.handle_server_notification(
+        ServerNotification::TerminalInteraction(
+            codex_app_server_protocol::TerminalInteractionNotification {
+                thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+                turn_id: "turn-1".to_string(),
+                item_id: "call-1".to_string(),
+                process_id: "proc-1".to_string(),
+                stdin: String::new(),
+                deadline_at_ms: Some(future_deadline_at_ms(60_000)),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    chat.set_status(
+        "Waiting for background terminal".to_string(),
+        Some("sleep 60".to_string()),
+        StatusDetailsCapitalization::Preserve,
+        /*details_max_lines*/ 1,
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        rendered.contains("Waiting for background terminal (1m 00s left"),
+        "expected countdown to survive status refresh, got:\n{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn unrelated_unified_exec_completion_preserves_collab_wait_countdown() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+    let sender_thread_id = ThreadId::new();
+    let receiver_thread_id = ThreadId::new();
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            deadline_at_ms: Some(future_deadline_at_ms(60_000)),
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "wait-1".to_string(),
+                tool: AppServerCollabAgentTool::Wait,
+                status: AppServerCollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cwd = chat.config.cwd.clone();
+    handle_exec_end(
+        &mut chat,
+        AppServerThreadItem::CommandExecution {
+            id: "call-other".to_string(),
+            command: "sleep 1".to_string(),
+            cwd: cwd.into(),
+            process_id: Some("proc-other".to_string()),
+            source: ExecCommandSource::UnifiedExecStartup,
+            status: AppServerCommandExecutionStatus::Completed,
+            command_actions: Vec::new(),
+            aggregated_output: None,
+            exit_code: Some(0),
+            duration_ms: Some(5),
+        },
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        rendered.contains("1m 00s left"),
+        "expected unrelated exec completion to preserve collab wait countdown, got:\n{rendered}"
+    );
 }
 
 #[tokio::test]

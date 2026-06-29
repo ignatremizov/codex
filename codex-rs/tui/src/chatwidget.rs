@@ -412,6 +412,7 @@ mod side;
 use self::safety_buffering::SafetyBufferingState;
 mod status_state;
 mod windows_sandbox_prompts;
+use self::status_state::StatusCountdownOwner;
 use self::status_state::StatusIndicatorState;
 use self::status_state::StatusState;
 use self::status_state::TerminalTitleStatusKind;
