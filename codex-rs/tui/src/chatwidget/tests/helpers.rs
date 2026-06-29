@@ -1054,6 +1054,7 @@ pub(super) fn terminal_interaction(
                 item_id: call_id.to_string(),
                 process_id: process_id.to_string(),
                 stdin: stdin.to_string(),
+                deadline_at_ms: None,
             },
         ),
         /*replay_kind*/ None,

@@ -1431,6 +1431,10 @@ pub struct ItemStartedNotification {
     /// Unix timestamp (in milliseconds) when this item lifecycle started.
     #[ts(type = "number")]
     pub started_at_ms: i64,
+    /// Advisory Unix-millisecond estimate for the current wait, or null when unavailable.
+    /// This is not a process deadline and must not be restored as live state during replay.
+    #[ts(type = "number | null")]
+    pub deadline_at_ms: Option<i64>,
 }
 impl ItemStartedNotification {
     pub fn new(
@@ -1443,6 +1447,7 @@ impl ItemStartedNotification {
             thread_id,
             turn_id,
             started_at_ms,
+            deadline_at_ms: None,
             item: ThreadItem {
                 payload,
                 started_at_ms: Some(started_at_ms),
@@ -1622,6 +1627,9 @@ pub struct TerminalInteractionNotification {
     pub item_id: String,
     pub process_id: String,
     pub stdin: String,
+    /// Advisory Unix-millisecond empty-poll estimate, or null when cleared or unavailable.
+    #[ts(type = "number | null")]
+    pub deadline_at_ms: Option<i64>,
 }
 
 #[serde_as]

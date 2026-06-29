@@ -20,6 +20,7 @@ use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::TerminalInteractionNotification;
 use crate::protocol::v2::ThreadItemPayload;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
+use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 use std::collections::HashMap;
 
@@ -219,12 +220,10 @@ pub fn item_event_to_server_notification(
                 reasoning_effort: None,
                 agents_states: HashMap::new(),
             };
-            ServerNotification::ItemStarted(ItemStartedNotification::new(
-                thread_id,
-                turn_id,
-                item,
-                begin_event.started_at_ms,
-            ))
+            ServerNotification::ItemStarted(ItemStartedNotification {
+                deadline_at_ms: begin_event.deadline_at_ms,
+                ..ItemStartedNotification::new(thread_id, turn_id, item, begin_event.started_at_ms)
+            })
         }
         EventMsg::CollabWaitingEnd(end_event) => {
             let status = if end_event.statuses.values().any(|status| {
@@ -412,12 +411,36 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::ItemStarted(item_started_event) => {
-            ServerNotification::ItemStarted(ItemStartedNotification::new(
-                thread_id,
-                turn_id,
-                ThreadItemPayload::from(item_started_event.item),
-                item_started_event.started_at_ms,
-            ))
+            let deadline_at_ms = match &item_started_event.item {
+                TurnItem::CommandExecution(item) => item.deadline_at_ms,
+                TurnItem::CollabAgentToolCall(item) => item.deadline_at_ms,
+                TurnItem::UserMessage(_)
+                | TurnItem::FunctionCallOutput(_)
+                | TurnItem::HookPrompt(_)
+                | TurnItem::AgentMessage(_)
+                | TurnItem::Plan(_)
+                | TurnItem::Reasoning(_)
+                | TurnItem::DynamicToolCall(_)
+                | TurnItem::SubAgentActivity(_)
+                | TurnItem::WebSearch(_)
+                | TurnItem::ImageView(_)
+                | TurnItem::Extension(_)
+                | TurnItem::ImageGeneration(_)
+                | TurnItem::EnteredReviewMode(_)
+                | TurnItem::ExitedReviewMode(_)
+                | TurnItem::FileChange(_)
+                | TurnItem::McpToolCall(_)
+                | TurnItem::ContextCompaction(_) => None,
+            };
+            ServerNotification::ItemStarted(ItemStartedNotification {
+                deadline_at_ms,
+                ..ItemStartedNotification::new(
+                    thread_id,
+                    turn_id,
+                    ThreadItemPayload::from(item_started_event.item),
+                    item_started_event.started_at_ms,
+                )
+            })
         }
         EventMsg::ItemCompleted(item_completed_event) => {
             ServerNotification::ItemCompleted(ItemCompletedNotification::new(
@@ -445,12 +468,15 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::ExecCommandBegin(exec_command_begin_event) => {
-            ServerNotification::ItemStarted(ItemStartedNotification::new(
-                thread_id,
-                turn_id,
-                build_command_execution_begin_item(&exec_command_begin_event),
-                exec_command_begin_event.started_at_ms,
-            ))
+            ServerNotification::ItemStarted(ItemStartedNotification {
+                deadline_at_ms: exec_command_begin_event.deadline_at_ms,
+                ..ItemStartedNotification::new(
+                    thread_id,
+                    turn_id,
+                    build_command_execution_begin_item(&exec_command_begin_event),
+                    exec_command_begin_event.started_at_ms,
+                )
+            })
         }
         EventMsg::ExecCommandOutputDelta(exec_command_output_delta_event) => {
             let item_id = exec_command_output_delta_event.call_id;
@@ -471,6 +497,7 @@ pub fn item_event_to_server_notification(
                 item_id: terminal_event.call_id,
                 process_id: terminal_event.process_id,
                 stdin: terminal_event.stdin,
+                deadline_at_ms: terminal_event.deadline_at_ms,
             })
         }
         EventMsg::ExecCommandEnd(exec_command_end_event) => {
@@ -485,6 +512,10 @@ pub fn item_event_to_server_notification(
         _ => unreachable!("unsupported item event"),
     }
 }
+
+#[cfg(test)]
+#[path = "event_mapping_deadline_tests.rs"]
+mod deadline_tests;
 
 #[cfg(test)]
 mod tests {
