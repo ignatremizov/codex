@@ -174,6 +174,7 @@ async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommand
             ctx.turn,
             &TurnItem::CommandExecution(CommandExecutionItem {
                 id: ctx.call_id.to_string(),
+                deadline_at_ms: exec_input.deadline_at_ms,
                 model_context: ctx.model_context.cloned(),
                 sandbox_type: ctx.sandbox_type,
                 plugin_id,
@@ -209,6 +210,7 @@ pub(crate) enum ToolEmitter {
         parsed_cmd: Vec<ParsedCommand>,
         process_id: Option<String>,
         plugin_attribution: Option<PluginCommandAttribution>,
+        deadline_at_ms: Option<i64>,
     },
 }
 
@@ -231,6 +233,7 @@ impl ToolEmitter {
         source: ExecCommandSource,
         process_id: Option<String>,
         plugin_attribution: Option<PluginCommandAttribution>,
+        deadline_at_ms: Option<i64>,
     ) -> Self {
         let parsed_cmd = parse_command(command);
         Self::UnifiedExec {
@@ -240,6 +243,7 @@ impl ToolEmitter {
             parsed_cmd,
             process_id,
             plugin_attribution,
+            deadline_at_ms,
         }
     }
 
@@ -361,20 +365,22 @@ impl ToolEmitter {
                     parsed_cmd,
                     process_id,
                     plugin_attribution,
+                    deadline_at_ms,
                 },
                 stage,
             ) => {
                 emit_exec_stage(
                     ctx,
-                    ExecCommandInput::new(
+                    ExecCommandInput {
                         command,
                         cwd,
                         parsed_cmd,
-                        *source,
-                        /*interaction_input*/ None,
-                        process_id.as_deref(),
-                        plugin_attribution.as_ref(),
-                    ),
+                        source: *source,
+                        interaction_input: None,
+                        process_id: process_id.as_deref(),
+                        plugin_attribution: plugin_attribution.as_ref(),
+                        deadline_at_ms: *deadline_at_ms,
+                    },
                     stage,
                 )
                 .await;
@@ -486,28 +492,7 @@ struct ExecCommandInput<'a> {
     interaction_input: Option<&'a str>,
     process_id: Option<&'a str>,
     plugin_attribution: Option<&'a PluginCommandAttribution>,
-}
-
-impl<'a> ExecCommandInput<'a> {
-    fn new(
-        command: &'a [String],
-        cwd: &'a PathUri,
-        parsed_cmd: &'a [ParsedCommand],
-        source: ExecCommandSource,
-        interaction_input: Option<&'a str>,
-        process_id: Option<&'a str>,
-        plugin_attribution: Option<&'a PluginCommandAttribution>,
-    ) -> Self {
-        Self {
-            command,
-            cwd,
-            parsed_cmd,
-            source,
-            interaction_input,
-            process_id,
-            plugin_attribution,
-        }
-    }
+    deadline_at_ms: Option<i64>,
 }
 
 struct ExecCommandResult {
@@ -589,6 +574,7 @@ async fn emit_exec_end(
             ctx.turn,
             TurnItem::CommandExecution(CommandExecutionItem {
                 id: ctx.call_id.to_string(),
+                deadline_at_ms: None,
                 model_context: ctx.model_context.cloned(),
                 sandbox_type: ctx.sandbox_type,
                 plugin_id,

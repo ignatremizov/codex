@@ -51,6 +51,7 @@ async fn refreshed_active_reasoning_accepts_later_deltas_and_complete_summary() 
         {
             let mut store = channel.store.lock().await;
             store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+                deadline_at_ms: None,
                 thread_id: thread_id.to_string(),
                 turn_id: turn.id.clone(),
                 item: ThreadItem::Reasoning {
@@ -72,6 +73,7 @@ async fn refreshed_active_reasoning_accepts_later_deltas_and_complete_summary() 
             assert_eq!(store.buffer.len(), capacity.min(/*other*/ 2));
             if voice_handoff {
                 store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+                    deadline_at_ms: None,
                     thread_id: thread_id.to_string(),
                     turn_id: turn.id.clone(),
                     item: ThreadItem::UserMessage {
@@ -234,6 +236,7 @@ fn evicted_voice_delegation_marker_still_suppresses_private_replay() {
     };
     store.push_notification(ServerNotification::ItemStarted(
         codex_app_server_protocol::ItemStartedNotification {
+            deadline_at_ms: None,
             thread_id: "thread".into(),
             turn_id: "voice-turn".into(),
             started_at_ms: 0,
@@ -454,6 +457,7 @@ fn snapshot_keeps_typed_item_completed_after_voice_handoff() {
     for item in [typed.clone(), marker, private.clone()] {
         store.push_notification(ServerNotification::ItemStarted(
             codex_app_server_protocol::ItemStartedNotification {
+                deadline_at_ms: None,
                 thread_id: "thread".into(),
                 turn_id: "shared".into(),
                 started_at_ms: 0,
@@ -492,6 +496,7 @@ async fn evicted_voice_marker_survives_widget_snapshot_for_late_reasoning() {
     let mut store = ThreadEventStore::new(/*capacity*/ 1);
     store.push_notification(ServerNotification::ItemStarted(
         codex_app_server_protocol::ItemStartedNotification {
+            deadline_at_ms: None,
             thread_id: thread_id.to_string(),
             turn_id: "voice-turn".into(),
             started_at_ms: 0,

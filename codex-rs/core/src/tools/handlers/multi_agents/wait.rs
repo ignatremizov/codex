@@ -5,6 +5,8 @@ use crate::session::session::Session;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
 use codex_protocol::error::CodexErr;
+
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::error::CodexErrorDetails;
 use codex_tools::ToolSpec;
 use futures::FutureExt;
@@ -102,6 +104,7 @@ impl Handler {
             ms => ms.clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
         };
 
+        let deadline_at_ms = now_unix_timestamp_ms().checked_add(timeout_ms);
         session
             .emit_turn_item_started(
                 &turn,
@@ -109,6 +112,7 @@ impl Handler {
                     id: call_id.clone(),
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::InProgress,
+                    deadline_at_ms,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
                     receiver_agents: receiver_agents.clone(),
@@ -154,6 +158,7 @@ impl Handler {
                                 id: call_id.clone(),
                                 tool: CollabAgentTool::Wait,
                                 status: wait_tool_call_status(&statuses),
+                                deadline_at_ms: None,
                                 sender_thread_id: session.thread_id,
                                 receiver_thread_ids: statuses.keys().copied().collect(),
                                 receiver_agents: wait_receiver_agents(&statuses, &receiver_agents),
@@ -225,6 +230,7 @@ impl Handler {
                     id: call_id,
                     tool: CollabAgentTool::Wait,
                     status: wait_tool_call_status(&statuses_by_id),
+                    deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: statuses_by_id.keys().copied().collect(),
                     receiver_agents: wait_receiver_agents(&statuses_by_id, &receiver_agents),
