@@ -7,4 +7,8 @@ export type ItemStartedNotification = { item: ThreadItem, threadId: string, turn
 /**
  * Unix timestamp (in milliseconds) when this item lifecycle started.
  */
-startedAtMs: number, };
+startedAtMs: number,
+/**
+ * Unix timestamp (in milliseconds) when a waiting item should report back.
+ */
+deadlineAtMs: number | null, };

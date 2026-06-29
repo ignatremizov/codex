@@ -251,6 +251,8 @@ mod computer_activity_tests;
 mod config_errors;
 #[path = "tests/copy_export_picker_tests.rs"]
 mod copy_export_picker_tests;
+#[path = "tests/countdown_tests.rs"]
+mod countdown_tests;
 #[path = "tests/dynamic_activity_tests.rs"]
 mod dynamic_activity_tests;
 mod exec_flow;

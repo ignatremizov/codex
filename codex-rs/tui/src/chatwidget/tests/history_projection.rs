@@ -311,6 +311,7 @@ async fn snapshot_formatter_live_and_buffered_patch_notifications_render_once() 
         drain_insert_history(&mut rx);
         chat.handle_server_notification(
             ServerNotification::ItemStarted(ItemStartedNotification {
+                deadline_at_ms: None,
                 thread_id: "thread".to_string(),
                 turn_id: "turn".to_string(),
                 item: patch_item(AppServerPatchApplyStatus::InProgress),

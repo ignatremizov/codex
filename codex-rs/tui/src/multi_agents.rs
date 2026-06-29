@@ -73,6 +73,9 @@ pub(crate) struct SpawnRequestSummary {
     pub(crate) reasoning_effort: ReasoningEffortConfig,
 }
 
+mod wait_status;
+pub(crate) use wait_status::wait_status_summary;
+
 pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
     let dot = if is_closed {
         "•".into()

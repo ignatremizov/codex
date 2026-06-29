@@ -91,6 +91,9 @@ impl WriteStdinHandler {
         let args: WriteStdinArgs = parse_arguments(&arguments)?;
         let context =
             UnifiedExecContext::new(session.clone(), step_context, cancellation_token, call_id);
+        let yield_time_ms = args
+            .yield_time_ms
+            .unwrap_or(turn.unified_exec_write_stdin_yield_time_ms);
         let response = session
             .services
             .unified_exec_manager
@@ -99,9 +102,7 @@ impl WriteStdinHandler {
                 WriteStdinRequest {
                     process_id: args.session_id,
                     input: &args.chars,
-                    yield_time_ms: args
-                        .yield_time_ms
-                        .unwrap_or(turn.unified_exec_write_stdin_yield_time_ms),
+                    yield_time_ms,
                     max_output_tokens: args.max_output_tokens,
                     truncation_policy: context
                         .step_context

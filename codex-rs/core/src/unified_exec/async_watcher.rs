@@ -378,6 +378,7 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
         ExecCommandSource::UnifiedExecStartup,
         process_id,
         plugin_attribution,
+        /*deadline_at_ms*/ None,
     );
     emitter
         .emit(
@@ -436,6 +437,7 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
         ExecCommandSource::UnifiedExecStartup,
         process_id,
         plugin_attribution,
+        /*deadline_at_ms*/ None,
     );
     emitter
         .emit(

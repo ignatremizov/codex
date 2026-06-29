@@ -3593,6 +3593,10 @@ pub struct ExecCommandBeginEvent {
     pub turn_id: String,
     #[serde(default)]
     pub started_at_ms: i64,
+    /// Advisory Unix-millisecond wait estimate; not a command execution timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number", optional)]
+    pub deadline_at_ms: Option<i64>,
     /// The command to be executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
@@ -3699,6 +3703,10 @@ pub struct TerminalInteractionEvent {
     pub process_id: String,
     /// Stdin sent to the running session.
     pub stdin: String,
+    /// Advisory Unix-millisecond estimate for an empty poll; absent when cleared or unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number", optional)]
+    pub deadline_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -4427,6 +4435,10 @@ pub struct SubAgentActivityEvent {
 pub struct CollabWaitingBeginEvent {
     #[serde(default)]
     pub started_at_ms: i64,
+    /// Advisory Unix-millisecond estimate for this bounded wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number", optional)]
+    pub deadline_at_ms: Option<i64>,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receivers.
@@ -4524,6 +4536,10 @@ pub struct CollabResumeEndEvent {
     /// resume.
     pub status: AgentStatus,
 }
+
+#[cfg(test)]
+#[path = "deadline_tests.rs"]
+mod deadline_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5604,6 +5620,7 @@ mod tests {
             item: TurnItem::CommandExecution(CommandExecutionItem {
                 model_context: None,
                 id: "exec-1".into(),
+                deadline_at_ms: Some(500),
                 plugin_id: Some("sample@openai-curated".into()),
                 script_path: Some("scripts/run.py".into()),
                 process_id: Some("pid-1".into()),
@@ -5631,6 +5648,7 @@ mod tests {
             item: TurnItem::CommandExecution(CommandExecutionItem {
                 model_context: None,
                 id: "exec-1".into(),
+                deadline_at_ms: None,
                 plugin_id: Some("sample@openai-curated".into()),
                 script_path: Some("scripts/run.py".into()),
                 process_id: Some("pid-1".into()),
@@ -5659,6 +5677,7 @@ mod tests {
                 script_path,
                 turn_id,
                 started_at_ms: 10,
+                deadline_at_ms: Some(500),
                 ..
             })] if call_id == "exec-1"
                 && plugin_id.as_deref() == Some("sample@openai-curated")

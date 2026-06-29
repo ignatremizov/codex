@@ -233,6 +233,7 @@ async fn item_lifecycle_notifications_publish_command_execution_event() {
                         thread_id: "thread-1".to_string(),
                         turn_id: "turn-1".to_string(),
                         started_at_ms: 1_000,
+                        deadline_at_ms: None,
                         item: {
                             let mut item = sample_command_execution_item(
                                 CommandExecutionStatus::InProgress,
@@ -381,6 +382,7 @@ async fn collaborator_tool_events_keep_response_ids_when_completion_races_sampli
                         thread_id: "thread-1".into(),
                         turn_id: "turn-1".into(),
                         started_at_ms: 1_000,
+                        deadline_at_ms: None,
                         item: item.clone(),
                     },
                 ))),
@@ -697,6 +699,7 @@ async fn mcp_elicitation_classification_survives_turn_completion_and_preserves_c
                         thread_id: "thread-2".to_string(),
                         turn_id: "turn-2".to_string(),
                         started_at_ms: 998,
+                        deadline_at_ms: None,
                         item: item.clone(),
                     },
                 ))),
@@ -869,6 +872,7 @@ async fn image_generation_events_preserve_transparent_background_metadata() {
                         thread_id: "thread-2".to_string(),
                         turn_id: "turn-2".to_string(),
                         started_at_ms: 998,
+                        deadline_at_ms: None,
                         item: item.clone(),
                     },
                 ))),

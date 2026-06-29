@@ -15,10 +15,17 @@ impl ChatWidget {
         if let Err(cell) = self.absorb_activity_detail(Box::new(cell)) {
             self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
         }
-        self.restore_reasoning_status_header();
+        if self.status_state.countdown_owner.is_none() {
+            self.restore_reasoning_status_header();
+        }
     }
 
-    pub(super) fn on_command_execution_started(&mut self, item: ThreadItem) {
+    pub(super) fn on_command_execution_started(
+        &mut self,
+        item: ThreadItem,
+        deadline_at_ms: Option<i64>,
+        turn_id: &str,
+    ) {
         let ThreadItem::CommandExecution {
             id,
             command,
@@ -41,6 +48,16 @@ impl ChatWidget {
             }
             // Unified exec may be parsed as Unknown; keep the working indicator visible regardless.
             self.bottom_pane.ensure_status_indicator();
+            if let Some(deadline_at_ms) = deadline_at_ms {
+                self.set_status_countdown_deadline_at_ms(
+                    StatusCountdownOwner::UnifiedExec {
+                        turn_id: turn_id.to_string(),
+                        item_id: id.clone(),
+                        process_id: process_id.as_deref().unwrap_or(id).to_string(),
+                    },
+                    deadline_at_ms,
+                );
+            }
             if !is_standard_tool_call(&parsed_cmd) {
                 return;
             }
@@ -73,16 +90,60 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn on_terminal_interaction(&mut self, process_id: String, stdin: String) {
-        if !self.bottom_pane.is_task_running() {
+    pub(super) fn on_terminal_interaction(
+        &mut self,
+        turn_id: String,
+        item_id: String,
+        process_id: String,
+        stdin: String,
+        deadline_at_ms: Option<i64>,
+    ) {
+        if !self.bottom_pane.is_task_running() || !self.turn_lifecycle.agent_turn_running {
+            return;
+        }
+        if self
+            .turn_lifecycle
+            .last_turn_id
+            .as_ref()
+            .is_some_and(|current| current != &turn_id)
+        {
+            return;
+        }
+        let countdown_owner = StatusCountdownOwner::UnifiedExec {
+            turn_id,
+            item_id: item_id.clone(),
+            process_id: process_id.clone(),
+        };
+        if self
+            .unified_exec_processes
+            .iter()
+            .any(|process| process.key == process_id && process.call_id != item_id)
+        {
             return;
         }
         let command_display = self
             .unified_exec_processes
             .iter()
-            .find(|process| process.key == process_id)
+            .find(|process| process.key == process_id && process.call_id == item_id)
             .map(|process| process.command_display.clone());
         if stdin.is_empty() && command_display.is_none() {
+            return;
+        }
+        if stdin.is_empty()
+            && (self.status_state.compaction.is_some()
+                || self.status_state.retry_status_header.is_some()
+                || !self.status_state.pending_guardian_review_status.is_empty())
+        {
+            self.clear_status_countdown_if_owner(&countdown_owner);
+            return;
+        }
+        // A missing estimate may be an ordinary result or an unrepresentable begin. It cannot
+        // claim countdown ownership or replace another wait's header.
+        if stdin.is_empty()
+            && deadline_at_ms.is_none()
+            && self.status_state.countdown_owner.is_some()
+        {
+            self.clear_status_countdown_if_owner(&countdown_owner);
             return;
         }
 
@@ -96,12 +157,24 @@ impl ChatWidget {
                 .set_interrupt_hint_visible(/*visible*/ true);
             self.status_state.terminal_title_status_kind =
                 TerminalTitleStatusKind::WaitingForBackgroundTerminal;
+            if self
+                .unified_exec_wait_streak
+                .as_ref()
+                .is_some_and(|wait| wait.process_id != process_id)
+            {
+                self.flush_unified_exec_wait_streak();
+            }
             self.set_status(
                 "Waiting for background terminal".to_string(),
                 command_display.clone(),
                 StatusDetailsCapitalization::Preserve,
                 /*details_max_lines*/ 1,
             );
+            if let Some(deadline_at_ms) = deadline_at_ms {
+                self.set_status_countdown_deadline_at_ms(countdown_owner.clone(), deadline_at_ms);
+            } else {
+                self.clear_status_countdown_if_owner(&countdown_owner);
+            }
             match &mut self.unified_exec_wait_streak {
                 Some(wait) if wait.process_id == process_id => {
                     wait.update_command_display(command_display);
@@ -123,6 +196,7 @@ impl ChatWidget {
                 .as_ref()
                 .is_some_and(|wait| wait.process_id == process_id)
             {
+                self.clear_status_countdown_if_owner(&countdown_owner);
                 self.flush_unified_exec_wait_streak();
             }
             self.add_to_history(history_cell::new_unified_exec_interaction(
@@ -132,7 +206,7 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn on_command_execution_completed(&mut self, item: ThreadItem) {
+    pub(super) fn on_command_execution_completed(&mut self, item: ThreadItem, turn_id: &str) {
         let ThreadItem::CommandExecution {
             id,
             process_id,
@@ -143,12 +217,24 @@ impl ChatWidget {
             return;
         };
         if is_unified_exec_source(*source) {
-            if let Some(process_id) = process_id.as_deref()
-                && self
-                    .unified_exec_wait_streak
-                    .as_ref()
-                    .is_some_and(|wait| wait.process_id == process_id)
-            {
+            let owner = StatusCountdownOwner::UnifiedExec {
+                turn_id: turn_id.to_string(),
+                item_id: id.clone(),
+                process_id: process_id.as_deref().unwrap_or(id).to_string(),
+            };
+            self.clear_status_countdown_if_owner(&owner);
+            let matching_process = self.unified_exec_processes.iter().any(|process| {
+                process.key == process_id.as_deref().unwrap_or(id) && process.call_id == *id
+            });
+            let completed_wait_streak = process_id.as_deref().is_some_and(|process_id| {
+                matching_process
+                    && self
+                        .unified_exec_wait_streak
+                        .as_ref()
+                        .is_some_and(|wait| wait.process_id == process_id)
+            });
+            if completed_wait_streak {
+                // Flushing historical detail must not reset another wait's live header.
                 self.flush_unified_exec_wait_streak();
             }
             self.track_unified_exec_process_end(id, process_id.as_deref());
@@ -199,7 +285,7 @@ impl ChatWidget {
         let key = process_id.unwrap_or(call_id);
         let before = self.unified_exec_processes.len();
         self.unified_exec_processes
-            .retain(|process| process.key != key);
+            .retain(|process| process.key != key || process.call_id != call_id);
         if self.unified_exec_processes.len() != before {
             self.sync_unified_exec_footer();
         }

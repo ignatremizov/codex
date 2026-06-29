@@ -7,6 +7,20 @@ use tokio::time::Duration;
 use tokio::time::Instant;
 
 #[test]
+fn advisory_wait_estimates_use_checked_millisecond_arithmetic() {
+    assert_eq!(
+        [
+            advisory_deadline_at_ms(/*now_ms*/ 42, Duration::from_millis(250)),
+            advisory_deadline_at_ms(/*now_ms*/ 42, Duration::from_secs(120)),
+            advisory_deadline_at_ms(i64::MAX, Duration::from_millis(1)),
+            advisory_deadline_at_ms(/*now_ms*/ 42, Duration::from_millis(u64::MAX)),
+            advisory_deadline_at_ms(/*now_ms*/ 42, Duration::MAX),
+        ],
+        [Some(292), Some(120_042), None, None, None]
+    );
+}
+
+#[test]
 fn unified_exec_env_injects_defaults() {
     let env = apply_unified_exec_env(HashMap::new());
     let expected = HashMap::from([

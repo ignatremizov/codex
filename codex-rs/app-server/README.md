@@ -1,3 +1,22 @@
+# Advisory wait countdowns
+
+`item/started` and `item/commandExecution/terminalInteraction` include nullable
+`deadlineAtMs` metadata, expressed as Unix milliseconds. It estimates the current
+initial command wait, empty terminal poll, or agent wait—not the lifetime of a
+process. Initial command estimates use the actual completion timeout when one
+applies, otherwise the clamped initial yield window. Unrepresentable estimates
+are null. Pauses and scheduling can extend the actual wait.
+
+Empty terminal polls announce their estimate after acquiring and revalidating the
+process's interaction lock, then clear it with null before releasing that lock on
+ordinary success or failure. `itemId` remains the original exec item ID, not a
+poll ID. Clients should match the turn, exec item, and process identity, clear
+countdowns on turn finalization or status replacement, and never restore them
+as live countdowns during history replay. Cancellation releases the lock without
+terminating the process or sending a delayed clear. An individually cancelled
+poll with no subsequent visible lifecycle event may retain its advisory estimate
+until expiry; an interrupted turn clears it immediately.
+
 # Goal mutation and fork semantics
 
 `thread/goal/set` preserves an existing goal's identity and accumulated usage when

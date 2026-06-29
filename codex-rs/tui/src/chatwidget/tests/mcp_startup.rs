@@ -494,6 +494,44 @@ async fn pending_mcp_startup_does_not_unblock_foreground_compaction() {
 }
 
 #[tokio::test]
+async fn turn_completion_clears_wait_countdown_while_mcp_startup_continues() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+
+    chat.set_mcp_startup_expected_servers(["schaltwerk".to_string()]);
+    notify_mcp_status(&mut chat, "schaltwerk", McpServerStartupState::Starting);
+    begin_unified_exec_startup(&mut chat, "call-1", "proc-1", "sleep 60");
+    chat.handle_server_notification(
+        ServerNotification::TerminalInteraction(
+            codex_app_server_protocol::TerminalInteractionNotification {
+                thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+                turn_id: "turn-1".to_string(),
+                item_id: "call-1".to_string(),
+                process_id: "proc-1".to_string(),
+                stdin: String::new(),
+                deadline_at_ms: Some(chrono::Utc::now().timestamp_millis() + 60_000),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let waiting = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        waiting.contains(" left"),
+        "expected active wait countdown before turn completion, got:\n{waiting}"
+    );
+
+    handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
+
+    assert!(chat.bottom_pane.is_task_running());
+    let completed = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        !completed.contains("s left"),
+        "expected turn completion to clear wait countdown, got:\n{completed}"
+    );
+}
+
+#[tokio::test]
 async fn turn_start_preserves_active_mcp_startup_header() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_mcp_startup_expected_servers(["schaltwerk".to_string()]);

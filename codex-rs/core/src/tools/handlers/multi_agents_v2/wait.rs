@@ -2,6 +2,7 @@ use super::*;
 use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_tools::ToolSpec;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -73,6 +74,7 @@ impl Handler {
             .subscribe_activity(turn_state.as_deref())
             .await;
 
+        let deadline_at_ms = now_unix_timestamp_ms().checked_add(timeout_ms);
         session
             .emit_turn_item_started(
                 &turn,
@@ -80,6 +82,7 @@ impl Handler {
                     id: call_id.clone(),
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::InProgress,
+                    deadline_at_ms,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: Vec::new(),
                     receiver_agents: Vec::new(),
@@ -102,6 +105,7 @@ impl Handler {
                     id: call_id,
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::Completed,
+                    deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: Vec::new(),
                     receiver_agents: Vec::new(),

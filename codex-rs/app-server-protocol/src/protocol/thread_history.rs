@@ -2465,6 +2465,7 @@ mod tests {
             aggregated_output: Some("hello world\n".to_string()),
             exit_code: Some(0),
             duration: Some(Duration::from_millis(12)),
+            deadline_at_ms: None,
             formatted_output: Some("hello world\n".to_string()),
         });
         let events = vec![

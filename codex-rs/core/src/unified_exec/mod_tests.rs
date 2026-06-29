@@ -685,139 +685,152 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyhow::Result<()> {
-    let (session, turn) = test_session_and_turn().await;
-    let manager = &session.services.unified_exec_manager;
-    let process_id = manager.allocate_process_id().await;
-    let (terminate_started_tx, _terminate_started_rx) = watch::channel(false);
-    let allow_terminate = Arc::new(Notify::new());
-    let process = blocking_terminate_unified_process(
-        process_id,
-        terminate_started_tx,
-        Arc::clone(&allow_terminate),
-    )
-    .await?;
-    #[allow(deprecated)]
-    let cwd = turn.cwd.clone();
-    let last_used = Instant::now() - Duration::from_secs(1);
-    manager.process_store.lock().await.processes.insert(
-        process_id,
-        ProcessEntry {
-            process: Arc::clone(&process),
-            plugin_metrics_sidecar: None,
-            call_id: "call".to_string(),
+    for failure in [None, Some("executor stream failed")] {
+        let (session, turn, events) =
+            crate::session::tests::make_session_and_context_with_rx().await;
+        let manager = &session.services.unified_exec_manager;
+        let process_id = manager.allocate_process_id().await;
+        let (terminate_started_tx, _terminate_started_rx) = watch::channel(false);
+        let allow_terminate = Arc::new(Notify::new());
+        let process = blocking_terminate_unified_process(
             process_id,
-            cwd: cwd.into(),
-            initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            hook_command: "sleep 60".to_string(),
-            tty: true,
-            environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
-            permissions: TerminalPermissions::for_launch(
-                turn.initial_environments
-                    .primary()
-                    .expect("turn environment"),
-                &turn,
-                TerminalSandboxSource::Native,
-                SandboxPermissions::UseDefault,
-                /*additional_permissions*/ None,
-                /*internal_permissions*/ None,
-            ),
-            network_approval: None,
-            session: Arc::downgrade(&session),
-            last_used,
-        },
-    );
-
-    let poll_task = tokio::spawn({
-        let session = Arc::clone(&session);
-        let turn = Arc::clone(&turn);
-        async move {
-            write_stdin(
-                &session,
-                &turn,
+            terminate_started_tx,
+            Arc::clone(&allow_terminate),
+        )
+        .await?;
+        #[allow(deprecated)]
+        let cwd = turn.cwd.clone();
+        let last_used = Instant::now() - Duration::from_secs(1);
+        manager.process_store.lock().await.processes.insert(
+            process_id,
+            ProcessEntry {
+                process: Arc::clone(&process),
+                plugin_metrics_sidecar: None,
+                call_id: "call".to_string(),
                 process_id,
-                "",
-                /*yield_time_ms*/ u64::MAX,
-            )
+                cwd: cwd.into(),
+                initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                hook_command: "sleep 60".to_string(),
+                tty: true,
+                environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
+                permissions: TerminalPermissions::for_launch(
+                    turn.initial_environments
+                        .primary()
+                        .expect("turn environment"),
+                    &turn,
+                    TerminalSandboxSource::Native,
+                    SandboxPermissions::UseDefault,
+                    /*additional_permissions*/ None,
+                    /*internal_permissions*/ None,
+                ),
+                network_approval: None,
+                session: Arc::downgrade(&session),
+                last_used,
+            },
+        );
+
+        let spawn_poll = || {
+            tokio::spawn({
+                let session = Arc::clone(&session);
+                let turn = Arc::clone(&turn);
+                async move {
+                    session.services.unified_exec_manager.write_stdin(
+                &UnifiedExecContext::new(
+                    Arc::clone(&session),
+                    crate::session::step_context::StepContext::for_test_with_current_settings(
+                        Arc::clone(&turn),
+                    ),
+                    tokio_util::sync::CancellationToken::new(),
+                    "poll-call".to_string(),
+                ),
+                WriteStdinRequest {
+                    process_id,
+                    input: "",
+                    yield_time_ms: u64::MAX,
+                    max_output_tokens: None,
+                    truncation_policy: TruncationPolicy::Tokens(10_000),
+                    interaction_event: Some(WriteStdinInteractionEvent {
+                        session: &session,
+                        turn: &turn,
+                    }),
+                },
+            ).await
+                }
+            })
+        };
+        let next_interaction = || async {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let event = events.recv().await.expect("event channel stays open");
+                    if let codex_protocol::protocol::EventMsg::TerminalInteraction(interaction) =
+                        event.msg
+                    {
+                        break interaction;
+                    }
+                }
+            })
             .await
-        }
-    });
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let poll_started = manager
-                .process_store
-                .lock()
-                .await
-                .processes
-                .get(&process_id)
-                .is_some_and(|entry| entry.last_used != last_used);
-            if poll_started {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("poll should clone process handles");
+            .expect("poll lifecycle event should arrive")
+        };
+        let poll_task = spawn_poll();
+        let first_begin = next_interaction().await;
+        assert!(process.interaction_lock().try_lock_owned().is_err());
 
-    poll_task.abort();
-    let cancelled = tokio::time::timeout(Duration::from_secs(2), poll_task)
-        .await
-        .expect("cancelling a poll should not wait for the process to exit")
-        .expect_err("the polling task should be cancelled");
-    assert!(cancelled.is_cancelled());
-    assert!(!process.has_exited());
-    assert!(process.interaction_lock().try_lock_owned().is_ok());
-    manager
-        .process_store
-        .lock()
-        .await
-        .processes
-        .get_mut(&process_id)
-        .expect("cancelling a poll should retain the process")
-        .last_used = last_used;
-
-    let poll_task = tokio::spawn({
-        let session = Arc::clone(&session);
-        let turn = Arc::clone(&turn);
-        async move {
-            write_stdin(
-                &session,
-                &turn,
-                process_id,
-                "",
-                /*yield_time_ms*/ u64::MAX,
-            )
+        poll_task.abort();
+        let cancelled = tokio::time::timeout(Duration::from_secs(2), poll_task)
             .await
-        }
-    });
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let poll_started = manager
-                .process_store
-                .lock()
-                .await
-                .processes
-                .get(&process_id)
-                .is_some_and(|entry| entry.last_used != last_used);
-            if poll_started {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("a later poll should acquire the released lock and clone process handles");
+            .expect("cancelling a poll should not wait for the process to exit")
+            .expect_err("the polling task should be cancelled");
+        assert!(cancelled.is_cancelled());
+        assert!(!process.has_exited());
+        assert!(process.interaction_lock().try_lock_owned().is_ok());
+        assert!(
+            events.try_recv().is_err(),
+            "abort must not enqueue a delayed clear"
+        );
 
-    manager.release_process_id(process_id).await;
-    allow_terminate.notify_one();
-    process.terminate_confirmed().await?;
+        let poll_task = spawn_poll();
+        let second_begin = next_interaction().await;
 
-    let output = tokio::time::timeout(Duration::from_secs(2), poll_task)
-        .await
-        .expect("poll should finish")
-        .expect("poll task should not panic")?;
-    assert_eq!(output.process_id, None);
-    assert!(manager.process_store.lock().await.processes.is_empty());
+        allow_terminate.notify_one();
+        if let Some(message) = failure {
+            process.fail_and_terminate(message.to_string());
+        } else {
+            manager.release_process_id(process_id).await;
+            process.terminate_confirmed().await?;
+        }
+
+        let output = tokio::time::timeout(Duration::from_secs(2), poll_task)
+            .await
+            .expect("poll should finish")
+            .expect("poll task should not panic");
+        if let Some(message) = failure {
+            assert!(
+                output
+                    .expect_err("failed stream should fail the poll")
+                    .to_string()
+                    .contains(message)
+            );
+        } else {
+            assert_eq!(output?.process_id, None);
+        }
+        assert!(manager.process_store.lock().await.processes.is_empty());
+        let clear = next_interaction().await;
+        let expected = codex_protocol::protocol::TerminalInteractionEvent {
+            call_id: "call".to_string(),
+            process_id: process_id.to_string(),
+            stdin: String::new(),
+            deadline_at_ms: None,
+        };
+        assert_eq!(
+            [first_begin, second_begin, clear],
+            [expected.clone(), expected.clone(), expected]
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "only one ordinary-result clear is emitted"
+        );
+    }
 
     Ok(())
 }

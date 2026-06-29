@@ -162,7 +162,29 @@ impl ChatWidget {
                 }
             }
             ServerNotification::TerminalInteraction(notification) => {
-                self.on_terminal_interaction(notification.process_id, notification.stdin)
+                if replay_kind.is_none() {
+                    self.on_terminal_interaction(
+                        notification.turn_id,
+                        notification.item_id,
+                        notification.process_id,
+                        notification.stdin,
+                        notification.deadline_at_ms,
+                    );
+                } else if !notification.stdin.is_empty() {
+                    // Replay may retain authored stdin history, but cannot mutate a live wait.
+                    let command_display = self
+                        .unified_exec_processes
+                        .iter()
+                        .find(|process| {
+                            process.key == notification.process_id
+                                && process.call_id == notification.item_id
+                        })
+                        .map(|process| process.command_display.clone());
+                    self.add_to_history(history_cell::new_unified_exec_interaction(
+                        command_display,
+                        notification.stdin,
+                    ));
+                }
             }
             ServerNotification::CommandExecutionOutputDelta(notification) => {
                 self.on_exec_command_output_delta(&notification.item_id, &notification.delta);
@@ -531,6 +553,25 @@ impl ChatWidget {
         notification: ItemStartedNotification,
         replay_kind: Option<ReplayKind>,
     ) {
+        let deadline_at_ms = replay_kind
+            .is_none()
+            .then_some(notification.deadline_at_ms)
+            .flatten();
+        // ItemStarted is an explicit replacement, including an unbounded or unrepresentable
+        // estimate. TerminalInteraction has no such discriminator and only clears its owner.
+        if replay_kind.is_none()
+            && self
+                .turn_lifecycle
+                .last_turn_id
+                .as_deref()
+                .is_none_or(|current| current == notification.turn_id)
+            && matches!(
+                &notification.item,
+                ThreadItem::CommandExecution { .. } | ThreadItem::CollabAgentToolCall { .. }
+            )
+        {
+            self.clear_status_countdown();
+        }
         self.restore_realtime_transcripts_before_turn(&notification.turn_id);
         match notification.item {
             ThreadItem::UserMessage { content, .. } if replay_kind.is_none() => {
@@ -576,7 +617,9 @@ impl ChatWidget {
                 };
                 self.on_context_compaction_started(id, notification.turn_id, elapsed);
             }
-            item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_started(item),
+            item @ ThreadItem::CommandExecution { .. } => {
+                self.on_command_execution_started(item, deadline_at_ms, &notification.turn_id);
+            }
             ThreadItem::FileChange { id: _, changes, .. } => {
                 self.on_patch_apply_begin(file_update_changes_to_display(changes));
             }
@@ -598,17 +641,21 @@ impl ChatWidget {
                 model,
                 reasoning_effort,
                 agents_states,
-            } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-            }),
+            } => self.on_collab_agent_tool_call(
+                ThreadItem::CollabAgentToolCall {
+                    id,
+                    tool,
+                    status,
+                    sender_thread_id,
+                    receiver_thread_ids,
+                    prompt,
+                    model,
+                    reasoning_effort,
+                    agents_states,
+                },
+                deadline_at_ms,
+                &notification.turn_id,
+            ),
             ThreadItem::EnteredReviewMode { review, .. } if replay_kind.is_none() => {
                 self.enter_review_mode_with_hint(review, /*from_replay*/ false);
             }
@@ -650,7 +697,9 @@ impl ChatWidget {
             return;
         }
         match notification.item {
-            item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_completed(item),
+            item @ ThreadItem::CommandExecution { .. } => {
+                self.on_command_execution_completed(item, &notification.turn_id)
+            }
             item => self.handle_thread_item(
                 item,
                 notification.turn_id,

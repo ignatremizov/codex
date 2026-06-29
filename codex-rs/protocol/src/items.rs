@@ -247,6 +247,10 @@ pub struct CommandExecutionItem {
     #[ts(skip)]
     pub model_context: Option<ModelInvocationContext>,
     pub id: String,
+    /// Advisory Unix-millisecond estimate for the current wait, not a process deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number", optional)]
+    pub deadline_at_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub plugin_id: Option<String>,
@@ -341,6 +345,10 @@ pub enum CollabAgentToolCallStatus {
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct CollabAgentToolCallItem {
     pub id: String,
+    /// Advisory Unix-millisecond estimate for a bounded wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number", optional)]
+    pub deadline_at_ms: Option<i64>,
     pub tool: CollabAgentTool,
     pub status: CollabAgentToolCallStatus,
     pub sender_thread_id: ThreadId,

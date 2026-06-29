@@ -22,6 +22,7 @@ fn complete_subagent(chat: &mut ChatWidget, id: &str) {
     };
     for notification in [
         ServerNotification::ItemStarted(ItemStartedNotification {
+            deadline_at_ms: None,
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,

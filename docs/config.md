@@ -27,6 +27,8 @@ background_terminal_max_timeout = 300000
 
 Omitting this setting leaves requested empty-poll windows uncapped. A configured value below 5000, including zero, is raised to 5000. It does not cap non-empty writes or change the configured default yield window. In particular, omitting a per-call `yield_time_ms` still uses the default 250 ms shown above, raised to 5000 ms for an empty poll—not an indefinite wait for process exit.
 
+Wait countdowns are advisory estimates, not process deadlines. Pauses or scheduling can extend the actual wait, and unrepresentable deadlines have no countdown. Cancelling a poll does not terminate its process. Turn interruption clears the countdown, but an individually cancelled poll without a subsequent visible lifecycle event can retain its estimate until it expires. History replay does not restart countdowns.
+
 ## Lifecycle hooks
 
 Admins can set top-level `allow_managed_hooks_only = true` in
