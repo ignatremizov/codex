@@ -102,9 +102,11 @@ impl ChatWidget {
                 }
             }
             ServerNotification::ReasoningSummaryPartAdded(_) => self.on_reasoning_section_break(),
-            ServerNotification::TerminalInteraction(notification) => {
-                self.on_terminal_interaction(notification.process_id, notification.stdin)
-            }
+            ServerNotification::TerminalInteraction(notification) => self.on_terminal_interaction(
+                notification.process_id,
+                notification.stdin,
+                notification.deadline_at_ms,
+            ),
             ServerNotification::CommandExecutionOutputDelta(notification) => {
                 self.on_exec_command_output_delta(&notification.item_id, &notification.delta);
             }
@@ -338,8 +340,11 @@ impl ChatWidget {
         notification: ItemStartedNotification,
         from_replay: bool,
     ) {
+        let deadline_at_ms = notification.deadline_at_ms;
         match notification.item {
-            item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_started(item),
+            item @ ThreadItem::CommandExecution { .. } => {
+                self.on_command_execution_started(item, deadline_at_ms);
+            }
             ThreadItem::FileChange { id: _, changes, .. } => {
                 self.on_patch_apply_begin(file_update_changes_to_display(changes));
             }
@@ -360,17 +365,20 @@ impl ChatWidget {
                 model,
                 reasoning_effort,
                 agents_states,
-            } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-            }),
+            } => self.on_collab_agent_tool_call(
+                ThreadItem::CollabAgentToolCall {
+                    id,
+                    tool,
+                    status,
+                    sender_thread_id,
+                    receiver_thread_ids,
+                    prompt,
+                    model,
+                    reasoning_effort,
+                    agents_states,
+                },
+                deadline_at_ms,
+            ),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             ThreadItem::EnteredReviewMode { review, .. } if !from_replay => {
                 self.enter_review_mode_with_hint(review, /*from_replay*/ false);
