@@ -1614,7 +1614,7 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
     ))
     .abs();
-    let remote_cwd_uri = PathUri::from_path(&remote_cwd)?;
+    let remote_cwd_uri = PathUri::from_abs_path(&remote_cwd);
     test.fs()
         .remove(
             &remote_cwd_uri,
@@ -1716,7 +1716,7 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     assert_eq!(
         test.fs()
             .read_file_text(
-                &PathUri::from_path(remote_cwd.join(file_name))?,
+                &PathUri::from_abs_path(&remote_cwd.join(file_name)),
                 /*sandbox*/ None,
             )
             .await?,
