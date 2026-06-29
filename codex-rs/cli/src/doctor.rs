@@ -3942,26 +3942,23 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_check_validates_remote_stdio_cwd() {
-        let missing_cwd: McpServerConfig = toml::from_str(
+        let mut relative_server: McpServerConfig = toml::from_str(
             r#"
                 command = "echo"
-                environment_id = "remote"
-                required = true
-            "#,
-        )
-        .expect("should deserialize remote MCP config without cwd");
-        let relative_cwd: McpServerConfig = toml::from_str(
-            r#"
-                command = "echo"
-                environment_id = "remote"
                 cwd = "relative"
                 required = true
             "#,
         )
-        .expect("should deserialize remote MCP config with relative cwd");
+        .expect("should deserialize local relative MCP config");
+        relative_server.environment_id = "remote".to_string();
+        let mut missing_server = relative_server.clone();
+        let McpServerTransportConfig::Stdio { cwd, .. } = &mut missing_server.transport else {
+            unreachable!("test fixture should use stdio transport");
+        };
+        *cwd = None;
         let servers = HashMap::from([
-            ("missing".to_string(), missing_cwd),
-            ("relative".to_string(), relative_cwd),
+            ("missing".to_string(), missing_server),
+            ("relative".to_string(), relative_server),
         ]);
 
         let check = mcp_check_from_servers(&servers).await;
