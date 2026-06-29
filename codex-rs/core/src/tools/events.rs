@@ -3,16 +3,19 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::sandboxing::ToolError;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_apply_patch::AppliedPatchDelta;
 use codex_core_plugins::PluginCommandAttribution;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::SandboxErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::items::CommandExecutionItem;
+use codex_protocol::items::CommandExecutionStatus;
 use codex_protocol::items::FileChangeItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandBeginEvent;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::FileChange;
@@ -101,6 +104,28 @@ fn tracker_update_for_known_delta<'a>(
 
 async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommandInput<'_>) {
     let (plugin_id, script_path) = plugin_attribution_fields(exec_input.plugin_attribution);
+    if matches!(exec_input.source, ExecCommandSource::UnifiedExecInteraction) {
+        ctx.session
+            .send_event(
+                ctx.turn,
+                EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                    call_id: ctx.call_id.to_string(),
+                    plugin_id,
+                    script_path,
+                    process_id: exec_input.process_id.map(str::to_owned),
+                    turn_id: ctx.turn.sub_id.clone(),
+                    started_at_ms: now_unix_timestamp_ms(),
+                    deadline_at_ms: exec_input.deadline_at_ms,
+                    command: exec_input.command.to_vec(),
+                    cwd: exec_input.cwd.clone(),
+                    parsed_cmd: exec_input.parsed_cmd.to_vec(),
+                    source: exec_input.source,
+                    interaction_input: exec_input.interaction_input.map(str::to_owned),
+                }),
+            )
+            .await;
+        return;
+    }
     ctx.session
         .emit_turn_item_started(
             ctx.turn,
@@ -146,6 +171,7 @@ pub(crate) enum ToolEmitter {
         parsed_cmd: Vec<ParsedCommand>,
         process_id: Option<String>,
         plugin_attribution: Option<PluginCommandAttribution>,
+        deadline_at_ms: Option<i64>,
     },
 }
 
@@ -184,6 +210,7 @@ impl ToolEmitter {
         source: ExecCommandSource,
         process_id: Option<String>,
         plugin_attribution: Option<PluginCommandAttribution>,
+        deadline_at_ms: Option<i64>,
     ) -> Self {
         let parsed_cmd = parse_command(command);
         Self::UnifiedExec {
@@ -193,6 +220,7 @@ impl ToolEmitter {
             parsed_cmd,
             process_id,
             plugin_attribution,
+            deadline_at_ms,
         }
     }
 
@@ -219,6 +247,7 @@ impl ToolEmitter {
                         /*interaction_input*/ None,
                         /*process_id*/ None,
                         plugin_attribution.as_ref(),
+                        /*deadline_at_ms*/ None,
                     ),
                     stage,
                 )
@@ -341,6 +370,7 @@ impl ToolEmitter {
                     parsed_cmd,
                     process_id,
                     plugin_attribution,
+                    deadline_at_ms,
                 },
                 stage,
             ) => {
@@ -354,6 +384,7 @@ impl ToolEmitter {
                         /*interaction_input*/ None,
                         process_id.as_deref(),
                         plugin_attribution.as_ref(),
+                        *deadline_at_ms,
                     ),
                     stage,
                 )
@@ -468,6 +499,7 @@ struct ExecCommandInput<'a> {
     interaction_input: Option<&'a str>,
     process_id: Option<&'a str>,
     plugin_attribution: Option<&'a PluginCommandAttribution>,
+    deadline_at_ms: Option<i64>,
 }
 
 impl<'a> ExecCommandInput<'a> {
@@ -479,6 +511,7 @@ impl<'a> ExecCommandInput<'a> {
         interaction_input: Option<&'a str>,
         process_id: Option<&'a str>,
         plugin_attribution: Option<&'a PluginCommandAttribution>,
+        deadline_at_ms: Option<i64>,
     ) -> Self {
         Self {
             command,
@@ -488,6 +521,7 @@ impl<'a> ExecCommandInput<'a> {
             interaction_input,
             process_id,
             plugin_attribution,
+            deadline_at_ms,
         }
     }
 }

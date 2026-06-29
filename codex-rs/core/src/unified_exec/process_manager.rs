@@ -36,6 +36,7 @@ use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
 use crate::turn_timing::now_unix_timestamp_ms;
+use crate::turn_timing::now_unix_timestamp_ms;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
@@ -469,12 +470,17 @@ impl UnifiedExecProcessManager {
                 .turn
                 .plugin_attribution_for_command(&request.command, &cwd)
         });
+        let yield_time_ms = clamp_yield_time(request.yield_time_ms);
+        let deadline_at_ms = i64::try_from(yield_time_ms)
+            .ok()
+            .and_then(|yield_time_ms| now_unix_timestamp_ms().checked_add(yield_time_ms));
         let emitter = ToolEmitter::unified_exec(
             &request.command,
             cwd.clone(),
             ExecCommandSource::UnifiedExecStartup,
             Some(request.process_id.to_string()),
             plugin_attribution.clone(),
+            deadline_at_ms,
         );
         emitter.emit(event_ctx, ToolEventStage::Begin).await;
 
@@ -863,6 +869,7 @@ impl UnifiedExecProcessManager {
                     .unwrap_or(request.process_id)
                     .to_string(),
                 stdin: request.input.to_string(),
+                deadline_at_ms: None,
             };
             session
                 .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))

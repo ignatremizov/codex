@@ -49,6 +49,7 @@ async fn handle_close_agent(
                 id: call_id.clone(),
                 tool: CollabAgentTool::CloseAgent,
                 status: CollabAgentToolCallStatus::InProgress,
+                deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![agent_id],
                 receiver_agents: Vec::new(),
@@ -80,6 +81,7 @@ async fn handle_close_agent(
                         id: call_id.clone(),
                         tool: CollabAgentTool::CloseAgent,
                         status: collab_tool_call_status(&status, Some(agent_id)),
+                        deadline_at_ms: None,
                         sender_thread_id: session.thread_id(),
                         receiver_thread_ids: vec![agent_id],
                         receiver_agents: vec![CollabAgentRef {
@@ -108,6 +110,7 @@ async fn handle_close_agent(
                 id: call_id,
                 tool: CollabAgentTool::CloseAgent,
                 status: collab_tool_call_status(&status, Some(agent_id)),
+                deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![agent_id],
                 receiver_agents: vec![CollabAgentRef {

@@ -1369,6 +1369,7 @@ async fn start_command_execution_item(
             thread_id: conversation_id.to_string(),
             turn_id,
             started_at_ms: now_unix_timestamp_ms(),
+            deadline_at_ms: None,
             item: ThreadItem::CommandExecution {
                 id: item_id,
                 plugin_id,
