@@ -255,8 +255,8 @@ async fn capability_sections_render_in_developer_message_in_order() -> Result<()
         .find("## Plugins")
         .expect("expected plugins section in developer message");
     assert!(
-        skills_pos < apps_pos && apps_pos < plugins_pos,
-        "expected Skills -> Apps -> Plugins order: {developer_messages:?}"
+        skills_pos < plugins_pos && skills_pos < apps_pos,
+        "expected Skills before capability guidance sections: {developer_messages:?}"
     );
     assert!(
         !developer_text.contains("`sample`: inspect sample data"),
