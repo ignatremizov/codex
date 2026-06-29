@@ -43,6 +43,7 @@ use crate::tools::runtimes::unified_exec::UnifiedExecRuntime;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
+use crate::turn_timing::now_unix_timestamp_ms;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
@@ -108,6 +109,12 @@ const INTERRUPT: &str = "\u{3}";
 
 fn deadline_after(start: Instant, timeout_ms: u64) -> Option<Instant> {
     start.checked_add(Duration::from_millis(timeout_ms))
+}
+
+fn advisory_deadline_at_ms(now_ms: i64, wait: Duration) -> Option<i64> {
+    i64::try_from(wait.as_millis())
+        .ok()
+        .and_then(|wait_ms| now_ms.checked_add(wait_ms))
 }
 
 fn extend_deadline(deadline: &mut Option<Instant>, extension: Duration) {
@@ -593,12 +600,19 @@ impl UnifiedExecProcessManager {
                     .plugin_attribution_for_command(&request.command, &cwd)
             })
         };
+        let yield_time_ms = clamp_yield_time(request.yield_time_ms);
+        let wait = completion.as_ref().map_or_else(
+            || Duration::from_millis(yield_time_ms),
+            |completion| completion.timeout,
+        );
+        let deadline_at_ms = advisory_deadline_at_ms(now_unix_timestamp_ms(), wait);
         let emitter = ToolEmitter::unified_exec(
             &request.command,
             cwd.clone(),
             ExecCommandSource::UnifiedExecStartup,
             Some(request.process_id.to_string()),
             plugin_attribution.clone(),
+            deadline_at_ms,
         );
         emitter.emit(event_ctx, ToolEventStage::Begin).await;
 
@@ -639,14 +653,9 @@ impl UnifiedExecProcessManager {
             }
         };
 
-        let yield_time_ms = clamp_yield_time(request.yield_time_ms);
         // For the initial exec_command call, we both stream output to events
         // (via start_streaming_output above) and collect a snapshot here for
         // the tool response body.
-        let wait = completion.as_ref().map_or_else(
-            || Duration::from_millis(yield_time_ms),
-            |completion| completion.timeout,
-        );
         let deadline =
             Some(start.checked_add(wait).ok_or_else(|| {
                 UnifiedExecError::process_failed("timeout_ms is too large".into())
@@ -990,143 +999,191 @@ impl UnifiedExecProcessManager {
         } = self
             .prepare_process_handles(process_id, &locked_process)
             .await?;
-        let mut status_after_write = None;
+        let yield_time_ms =
+            self.effective_write_stdin_yield_time_ms(request.input, request.yield_time_ms);
+        // Emit only after acquiring and revalidating the exact process. The original
+        // exec call ID identifies a process, not an individual poll.
+        let empty_poll_event = request
+            .interaction_event
+            .as_ref()
+            .filter(|_| request.input.is_empty());
+        let poll_call_id = call_id.clone();
+        if let Some(event) = empty_poll_event {
+            let deadline_at_ms = advisory_deadline_at_ms(
+                now_unix_timestamp_ms(),
+                Duration::from_millis(yield_time_ms),
+            );
+            event
+                .session
+                .send_event(
+                    event.turn,
+                    EventMsg::TerminalInteraction(TerminalInteractionEvent {
+                        call_id: poll_call_id.clone(),
+                        process_id: process_id.to_string(),
+                        stdin: String::new(),
+                        deadline_at_ms,
+                    }),
+                )
+                .await;
+        }
+        let result = async {
+            let mut status_after_write = None;
 
-        if !request.input.is_empty() {
-            if !tty {
-                if request.input == INTERRUPT {
-                    process.interrupt().await?;
-                } else {
-                    return Err(UnifiedExecError::StdinClosed);
-                }
-            } else {
-                match process.write(request.input.as_bytes()).await {
-                    Ok(()) => {
-                        // Give the remote process a brief window to react so that we are
-                        // more likely to capture its output in the poll below.
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+            if !request.input.is_empty() {
+                if !tty {
+                    if request.input == INTERRUPT {
+                        process.interrupt().await?;
+                    } else {
+                        return Err(UnifiedExecError::StdinClosed);
                     }
-                    Err(err) => {
-                        let status = self.refresh_process_state(process_id).await;
-                        if matches!(status, ProcessStatus::Exited { .. }) {
-                            status_after_write = Some(status);
-                        } else if matches!(err, UnifiedExecError::ProcessFailed { .. }) {
-                            process.terminate();
-                            self.release_process_id(process_id).await;
-                            return Err(err);
-                        } else {
-                            return Err(err);
+                } else {
+                    match process.write(request.input.as_bytes()).await {
+                        Ok(()) => {
+                            // Give the remote process a brief window to react so that we are
+                            // more likely to capture its output in the poll below.
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        Err(err) => {
+                            let status = self.refresh_process_state(process_id).await;
+                            if matches!(status, ProcessStatus::Exited { .. }) {
+                                status_after_write = Some(status);
+                            } else if matches!(err, UnifiedExecError::ProcessFailed { .. }) {
+                                process.terminate();
+                                self.release_process_id(process_id).await;
+                                return Err(err);
+                            } else {
+                                return Err(err);
+                            }
                         }
                     }
                 }
             }
-        }
 
-        let yield_time_ms =
-            self.effective_write_stdin_yield_time_ms(request.input, request.yield_time_ms);
-        let start = Instant::now();
-        let deadline = deadline_after(start, yield_time_ms);
-        let collected_output =
-            Self::collect_output_until_deadline(&output, pause_state, deadline).await;
-        let wall_time = Instant::now().saturating_duration_since(start);
+            let start = Instant::now();
+            let deadline = deadline_after(start, yield_time_ms);
+            let collected_output =
+                Self::collect_output_until_deadline(&output, pause_state, deadline).await;
+            let wall_time = Instant::now().saturating_duration_since(start);
 
-        let original_token_count = usize::try_from(approx_tokens_from_byte_count(
-            collected_output.total_bytes(),
-        ))
-        .unwrap_or(usize::MAX);
-        let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
-        let collected = collected_output.to_bytes_with_omission_marker();
-        let chunk_id = generate_chunk_id();
-        if network_approval
-            .as_ref()
-            .is_some_and(DeferredNetworkApproval::is_cancelled)
-        {
-            let message =
-                network_denial_message_for_session(session.as_ref(), network_approval.clone())
-                    .await;
-            self.release_process_id(process_id).await;
-            return Err(fail_process_with_message(process.as_ref(), message));
-        }
-        if let Some(message) = process.failure_message() {
-            let finish_result = finish_deferred_network_approval_for_session(
-                session.as_ref(),
-                network_approval.clone(),
-            )
-            .await;
-            self.release_process_id(process_id).await;
-            if let Err(message) = finish_result {
+            let original_token_count = usize::try_from(approx_tokens_from_byte_count(
+                collected_output.total_bytes(),
+            ))
+            .unwrap_or(usize::MAX);
+            let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
+            let collected = collected_output.to_bytes_with_omission_marker();
+            let chunk_id = generate_chunk_id();
+            if network_approval
+                .as_ref()
+                .is_some_and(DeferredNetworkApproval::is_cancelled)
+            {
+                let message =
+                    network_denial_message_for_session(session.as_ref(), network_approval.clone())
+                        .await;
+                self.release_process_id(process_id).await;
                 return Err(fail_process_with_message(process.as_ref(), message));
             }
-            return Err(UnifiedExecError::process_failed(message));
-        }
-
-        // After polling, refresh_process_state tells us whether the PTY is
-        // still alive or has exited and been removed from the store; we thread
-        // that through so the handler can tag or suppress TerminalInteraction
-        // with an appropriate process_id and exit_code.
-        let status = if let Some(status) = status_after_write {
-            status
-        } else {
-            self.refresh_process_state(process_id).await
-        };
-        let (process_id, exit_code, event_call_id) = match status {
-            ProcessStatus::Alive {
-                exit_code,
-                call_id,
-                process_id,
-            } => (Some(process_id), exit_code, call_id),
-            ProcessStatus::Exited { exit_code, entry } => {
-                let call_id = entry.call_id.clone();
-                if let Err(message) =
-                    finish_network_approval_after_process_exit_for_entry(&entry).await
-                {
-                    return Err(fail_process_with_message(entry.process.as_ref(), message));
+            if let Some(message) = process.failure_message() {
+                let finish_result = finish_deferred_network_approval_for_session(
+                    session.as_ref(),
+                    network_approval.clone(),
+                )
+                .await;
+                self.release_process_id(process_id).await;
+                if let Err(message) = finish_result {
+                    return Err(fail_process_with_message(process.as_ref(), message));
                 }
-                (None, exit_code, call_id)
+                return Err(UnifiedExecError::process_failed(message));
             }
-            ProcessStatus::Unknown => {
-                if process.has_exited() {
-                    (None, process.exit_code(), call_id)
-                } else {
-                    return Err(UnifiedExecError::UnknownProcessId {
-                        process_id: request.process_id,
-                    });
-                }
-            }
-        };
 
-        let response = ExecCommandToolOutput {
-            event_call_id,
-            chunk_id,
-            wall_time,
-            raw_output: collected,
-            truncation_policy: request.truncation_policy,
-            max_output_tokens: request.max_output_tokens,
-            process_id,
-            exit_code,
-            original_token_count: Some(original_token_count),
-            output_omitted_bytes,
-            hook_command: Some(hook_command),
-        };
-
-        let should_emit_interaction = !request.input.is_empty() || response.process_id.is_some();
-        if should_emit_interaction
-            && let Some(WriteStdinInteractionEvent { session, turn }) = request.interaction_event
-        {
-            let interaction = TerminalInteractionEvent {
-                call_id: response.event_call_id.clone(),
-                process_id: response
-                    .process_id
-                    .unwrap_or(request.process_id)
-                    .to_string(),
-                stdin: request.input.to_string(),
+            // After polling, refresh_process_state tells us whether the PTY is
+            // still alive or has exited and been removed from the store; we thread
+            // that through so the handler can tag or suppress TerminalInteraction
+            // with an appropriate process_id and exit_code.
+            let status = if let Some(status) = status_after_write {
+                status
+            } else {
+                self.refresh_process_state(process_id).await
             };
-            session
-                .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
+            let (process_id, exit_code, event_call_id) = match status {
+                ProcessStatus::Alive {
+                    exit_code,
+                    call_id,
+                    process_id,
+                } => (Some(process_id), exit_code, call_id),
+                ProcessStatus::Exited { exit_code, entry } => {
+                    let call_id = entry.call_id.clone();
+                    if let Err(message) =
+                        finish_network_approval_after_process_exit_for_entry(&entry).await
+                    {
+                        return Err(fail_process_with_message(entry.process.as_ref(), message));
+                    }
+                    (None, exit_code, call_id)
+                }
+                ProcessStatus::Unknown => {
+                    if process.has_exited() {
+                        (None, process.exit_code(), call_id)
+                    } else {
+                        return Err(UnifiedExecError::UnknownProcessId {
+                            process_id: request.process_id,
+                        });
+                    }
+                }
+            };
+
+            let response = ExecCommandToolOutput {
+                event_call_id,
+                chunk_id,
+                wall_time,
+                raw_output: collected,
+                truncation_policy: request.truncation_policy,
+                max_output_tokens: request.max_output_tokens,
+                process_id,
+                exit_code,
+                original_token_count: Some(original_token_count),
+                output_omitted_bytes,
+                hook_command: Some(hook_command),
+            };
+
+            if !request.input.is_empty()
+                && let Some(WriteStdinInteractionEvent { session, turn }) =
+                    request.interaction_event.as_ref()
+            {
+                let interaction = TerminalInteractionEvent {
+                    call_id: response.event_call_id.clone(),
+                    process_id: response
+                        .process_id
+                        .unwrap_or(request.process_id)
+                        .to_string(),
+                    stdin: request.input.to_string(),
+                    deadline_at_ms: None,
+                };
+                session
+                    .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
+                    .await;
+            }
+
+            Ok(response)
+        }
+        .await;
+        // Ordinary completion and errors clear before unlocking. Cancellation drops
+        // this future and the lock immediately; UI turn/status lifecycle backstops
+        // clear its advisory estimate. Never enqueue a delayed clear from Drop:
+        // it could erase a newer poll's estimate for this same process.
+        if let Some(event) = empty_poll_event {
+            event
+                .session
+                .send_event(
+                    event.turn,
+                    EventMsg::TerminalInteraction(TerminalInteractionEvent {
+                        call_id: poll_call_id,
+                        process_id: process_id.to_string(),
+                        stdin: String::new(),
+                        deadline_at_ms: None,
+                    }),
+                )
                 .await;
         }
-
-        Ok(response)
+        result
     }
 
     async fn refresh_process_state(&self, process_id: i32) -> ProcessStatus {

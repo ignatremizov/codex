@@ -628,6 +628,7 @@ pub(super) fn handle_agent_message_delta(chat: &mut ChatWidget, delta: impl Into
 pub(super) fn handle_agent_reasoning_started(chat: &mut ChatWidget, id: impl Into<String>) {
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
+            deadline_at_ms: None,
             thread_id: thread_id(chat),
             turn_id: chat
                 .turn_lifecycle
@@ -698,6 +699,7 @@ pub(super) fn handle_entered_review_mode(chat: &mut ChatWidget, review: impl Int
                 .clone()
                 .unwrap_or_else(|| "turn-1".to_string()),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: AppServerThreadItem::EnteredReviewMode {
                 id: "review-start".to_string(),
                 review: review.into(),
@@ -785,6 +787,7 @@ pub(super) fn handle_patch_apply_begin(
             thread_id: thread_id(chat),
             turn_id: turn_id.into(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: AppServerThreadItem::FileChange {
                 id: call_id.into(),
                 changes: file_update_changes_from_tui(changes),
@@ -1020,6 +1023,7 @@ pub(super) fn handle_exec_begin(chat: &mut ChatWidget, item: AppServerThreadItem
                 .clone()
                 .unwrap_or_else(|| "turn-1".to_string()),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item,
         }),
         /*replay_kind*/ None,
@@ -1044,6 +1048,7 @@ pub(super) fn terminal_interaction(
                 item_id: call_id.to_string(),
                 process_id: process_id.to_string(),
                 stdin: stdin.to_string(),
+                deadline_at_ms: None,
             },
         ),
         /*replay_kind*/ None,

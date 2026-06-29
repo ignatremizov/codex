@@ -6,6 +6,8 @@ use std::time::Instant;
 
 #[derive(Debug)]
 pub(crate) struct StatusTimer {
+    /// Advisory wait estimate; unlike turn accounting this is never paused by a UI modal.
+    pub(crate) countdown_deadline: Option<Instant>,
     /// Optional wall-clock origin for the displayed phase, without resetting turn accounting.
     pub(crate) display_started_at: Option<Instant>,
     pub(super) elapsed_running: Duration,
@@ -16,6 +18,7 @@ pub(crate) struct StatusTimer {
 impl Default for StatusTimer {
     fn default() -> Self {
         Self {
+            countdown_deadline: None,
             display_started_at: None,
             elapsed_running: Duration::ZERO,
             last_resume_at: Instant::now(),
@@ -25,6 +28,15 @@ impl Default for StatusTimer {
 }
 
 impl StatusTimer {
+    pub(super) fn countdown_remaining_seconds_at(&self, now: Instant) -> Option<u64> {
+        self.countdown_deadline
+            .filter(|deadline| *deadline > now)
+            .map(|deadline| {
+                let remaining = deadline.saturating_duration_since(now);
+                remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)
+            })
+    }
+
     pub(crate) fn reset(&mut self, elapsed: Duration) {
         self.elapsed_running = elapsed;
         self.last_resume_at = Instant::now();

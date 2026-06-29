@@ -556,6 +556,7 @@ async fn turn_event_counts_completed_tool_items() {
                         thread_id: "thread-2".to_string(),
                         turn_id: "turn-2".to_string(),
                         started_at_ms: 998,
+                        deadline_at_ms: None,
                         item: item.clone(),
                     },
                 ))),

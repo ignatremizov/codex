@@ -823,6 +823,7 @@ async fn subagent_tool_items_inherit_parent_connection_metadata() {
                     thread_id: "thread-subagent".to_string(),
                     turn_id: "turn-subagent".to_string(),
                     started_at_ms: 1_000,
+                    deadline_at_ms: None,
                     item: sample_command_execution_item(
                         CommandExecutionStatus::InProgress,
                         /*exit_code*/ None,

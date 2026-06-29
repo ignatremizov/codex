@@ -881,6 +881,7 @@ async fn unrendered_buffered_items_do_not_consume_retained_captions() {
             events: vec![
                 ThreadBufferedEvent::Notification(Box::new(ServerNotification::ItemStarted(
                     ItemStartedNotification {
+                        deadline_at_ms: None,
                         item: user_item("started-user", "started only"),
                         thread_id: source.to_string(),
                         turn_id: "started".into(),
@@ -1433,6 +1434,7 @@ fn send_item(
 ) {
     let notification = match kind {
         ItemEventKind::Started => ServerNotification::ItemStarted(ItemStartedNotification {
+            deadline_at_ms: None,
             thread_id: thread_id.to_string(),
             turn_id: turn_id.to_string(),
             item,

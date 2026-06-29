@@ -91,6 +91,7 @@ async fn in_progress_voice_replay_restores_the_late_reasoning_guard() {
     );
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
+            deadline_at_ms: None,
             thread_id: thread_id.to_string(),
             turn_id: "buffered-voice-turn".into(),
             item: voice_request,

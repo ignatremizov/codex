@@ -543,6 +543,7 @@ pub(super) async fn ingest_completed_command_execution_item(
                     thread_id: thread_id.to_string(),
                     turn_id: "turn-1".to_string(),
                     started_at_ms: 1_000,
+                    deadline_at_ms: None,
                     item: sample_command_execution_item_with_id(
                         item_id,
                         CommandExecutionStatus::InProgress,

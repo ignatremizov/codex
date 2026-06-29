@@ -1775,7 +1775,7 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
     // TODO(anp): Remove after unified-exec fixtures use target-native commands.
-    skip_if_target_windows!(Ok(()), "uses bash and a POSIX sleep command");
+    skip_if_target_windows!(Ok(()), "uses bash and POSIX interactive input");
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_host_windows!(Ok(()));
@@ -1788,8 +1788,9 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
     let open_call_id = "uexec-open-session";
     let open_args = json!({
         "shell": "bash".to_string(),
-        "cmd": "sleep 0.1".to_string(),
+        "cmd": "read -r line".to_string(),
         "yield_time_ms": 10,
+        "tty": true,
     });
 
     let poll_call_id = "uexec-poll-empty";
@@ -1820,11 +1821,24 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
         ]),
         sse(vec![
             ev_response_created("resp-3"),
-            ev_assistant_message("msg-1", "complete"),
+            ev_function_call(
+                "uexec-close-session",
+                "write_stdin",
+                &serde_json::to_string(&json!({
+                    "chars": "\n",
+                    "session_id": 1000,
+                    "yield_time_ms": 500,
+                }))?,
+            ),
             ev_completed("resp-3"),
         ]),
+        sse(vec![
+            ev_response_created("resp-4"),
+            ev_assistant_message("msg-1", "complete"),
+            ev_completed("resp-4"),
+        ]),
     ];
-    mount_sse_sequence(&server, responses).await;
+    let request_log = mount_sse_sequence(&server, responses).await;
 
     submit_unified_exec_turn(
         &test,
@@ -1846,7 +1860,9 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
             EventMsg::ExecCommandEnd(event) if event.call_id == open_call_id => {
                 end_events.push(event);
             }
-            EventMsg::TerminalInteraction(event) if event.call_id == open_call_id => {
+            EventMsg::TerminalInteraction(event)
+                if event.call_id == open_call_id && event.stdin.is_empty() =>
+            {
                 terminal_interactions.push(event);
             }
             EventMsg::TurnComplete(_) => {
@@ -1870,14 +1886,47 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
         1,
         "expected end event for the write_stdin call"
     );
-    assert!(
-        terminal_interactions.is_empty(),
-        "completed empty polls should not emit terminal interactions: {terminal_interactions:?}"
+    let estimate = terminal_interactions
+        .first()
+        .and_then(|event| event.deadline_at_ms)
+        .expect("the empty poll should announce its bounded wait");
+    assert_eq!(
+        terminal_interactions,
+        vec![
+            codex_protocol::protocol::TerminalInteractionEvent {
+                call_id: open_call_id.to_string(),
+                process_id: "1000".to_string(),
+                stdin: String::new(),
+                deadline_at_ms: Some(estimate),
+            },
+            codex_protocol::protocol::TerminalInteractionEvent {
+                call_id: open_call_id.to_string(),
+                process_id: "1000".to_string(),
+                stdin: String::new(),
+                deadline_at_ms: None,
+            },
+        ],
+        "the successful poll must clear its estimate before the next interaction"
+    );
+    let requests = request_log
+        .requests()
+        .into_iter()
+        .map(|request| request.body_json())
+        .collect::<Vec<_>>();
+    let outputs = collect_tool_outputs(&requests)?;
+    assert_eq!(
+        outputs
+            .get(poll_call_id)
+            .expect("empty poll output")
+            .process_id
+            .as_deref(),
+        Some("1000")
     );
 
     let open_event = &begin_events[0];
 
-    assert_command(&open_event.command, "-lc", "sleep 0.1");
+    assert_command(&open_event.command, "-lc", "read -r line");
+    assert!(open_event.deadline_at_ms.is_some());
 
     assert!(
         open_event.interaction_input.is_none(),

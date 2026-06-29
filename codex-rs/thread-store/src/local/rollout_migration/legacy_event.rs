@@ -288,6 +288,7 @@ pub(super) fn completed_item(
                     .then(|| event.aggregated_output.clone()),
                 exit_code: Some(event.exit_code),
                 duration: Some(event.duration),
+                deadline_at_ms: None,
                 formatted_output: (!event.formatted_output.is_empty())
                     .then(|| event.formatted_output.clone()),
             }),
