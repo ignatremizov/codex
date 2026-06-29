@@ -757,6 +757,7 @@ async fn ingest_completed_command_execution_item(
                     thread_id: thread_id.to_string(),
                     turn_id: "turn-1".to_string(),
                     started_at_ms: 1_000,
+                    deadline_at_ms: None,
                     item: sample_command_execution_item_with_id(
                         item_id,
                         CommandExecutionStatus::InProgress,
@@ -2284,6 +2285,7 @@ async fn item_lifecycle_notifications_publish_command_execution_event() {
                     thread_id: "thread-1".to_string(),
                     turn_id: "turn-1".to_string(),
                     started_at_ms: 1_000,
+                    deadline_at_ms: None,
                     item: sample_command_execution_item(
                         CommandExecutionStatus::InProgress,
                         /*exit_code*/ None,
@@ -3142,6 +3144,7 @@ async fn subagent_tool_items_inherit_parent_connection_metadata() {
                     thread_id: "thread-subagent".to_string(),
                     turn_id: "turn-subagent".to_string(),
                     started_at_ms: 1_000,
+                    deadline_at_ms: None,
                     item: sample_command_execution_item(
                         CommandExecutionStatus::InProgress,
                         /*exit_code*/ None,
@@ -4441,6 +4444,7 @@ async fn turn_event_counts_completed_tool_items() {
                         thread_id: "thread-2".to_string(),
                         turn_id: "turn-2".to_string(),
                         started_at_ms: 998,
+                        deadline_at_ms: None,
                         item: item.clone(),
                     },
                 ))),

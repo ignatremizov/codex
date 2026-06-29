@@ -156,6 +156,7 @@ async fn live_app_server_review_prompt_item_is_not_rendered() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: review_mode_item.clone(),
         }),
         /*replay_kind*/ None,
