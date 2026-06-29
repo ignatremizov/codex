@@ -114,9 +114,17 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    pub(super) fn on_collab_agent_tool_call(&mut self, item: ThreadItem) {
+    pub(super) fn on_collab_agent_tool_call(
+        &mut self,
+        item: ThreadItem,
+        deadline_at_ms: Option<i64>,
+    ) {
         let ThreadItem::CollabAgentToolCall {
-            id, tool, status, ..
+            id,
+            tool,
+            status,
+            receiver_thread_ids,
+            ..
         } = &item
         else {
             return;
@@ -136,12 +144,58 @@ impl ChatWidget {
             None
         };
 
+        let wait_status = if deadline_at_ms.is_some()
+            && matches!(tool, CollabAgentTool::Wait)
+            && matches!(status, CollabAgentToolCallStatus::InProgress)
+        {
+            Some(multi_agents::wait_status_summary(
+                receiver_thread_ids,
+                &mut |thread_id| self.collab_agent_metadata(thread_id),
+            ))
+        } else {
+            None
+        };
+
         if let Some(cell) = multi_agents::tool_call_history_cell(
             &item,
             cached_spawn_request.as_ref(),
             |thread_id| self.collab_agent_metadata(thread_id),
         ) {
             self.on_collab_event(cell);
+        }
+
+        if let Some(wait_status) = wait_status {
+            self.bottom_pane.ensure_status_indicator();
+            self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Working;
+            self.set_status(
+                wait_status.header,
+                wait_status.details,
+                StatusDetailsCapitalization::Preserve,
+                wait_status.details_max_lines,
+            );
+            if let Some(deadline_at_ms) = deadline_at_ms {
+                self.set_status_countdown_deadline_at_ms(
+                    StatusCountdownOwner::CollabWait {
+                        call_id: id.clone(),
+                    },
+                    deadline_at_ms,
+                );
+            }
+        } else if matches!(tool, CollabAgentTool::Wait)
+            && !matches!(status, CollabAgentToolCallStatus::InProgress)
+        {
+            self.clear_status_countdown_if_owner(&StatusCountdownOwner::CollabWait {
+                call_id: id.clone(),
+            });
+            if self
+                .status_state
+                .current_status
+                .header
+                .starts_with("Waiting for")
+                && self.status_state.current_status.header != "Waiting for background terminal"
+            {
+                self.set_status_header("Working".to_string());
+            }
         }
     }
 

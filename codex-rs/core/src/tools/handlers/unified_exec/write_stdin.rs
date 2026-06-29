@@ -8,10 +8,13 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::sandboxing::ToolError;
+use crate::turn_timing::now_unix_timestamp_ms;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::TerminalInteractionEvent;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
@@ -91,7 +94,36 @@ impl WriteStdinHandler {
         let args: WriteStdinArgs = parse_arguments(&arguments)?;
         let context =
             UnifiedExecContext::new(session.clone(), step_context, cancellation_token, call_id);
-        let response = session
+        let yield_time_ms = args
+            .yield_time_ms
+            .unwrap_or(turn.unified_exec_write_stdin_yield_time_ms);
+        let mut empty_poll_started = None;
+        if args.chars.is_empty()
+            && let Ok((process_id, event_call_id)) = session
+                .services
+                .unified_exec_manager
+                .process_event_metadata(args.session_id)
+                .await
+        {
+            empty_poll_started = Some((process_id, event_call_id.clone()));
+            let effective_yield_time_ms = session
+                .services
+                .unified_exec_manager
+                .effective_write_stdin_yield_time_ms(&args.chars, yield_time_ms);
+            let deadline_at_ms = i64::try_from(effective_yield_time_ms)
+                .ok()
+                .and_then(|yield_time_ms| now_unix_timestamp_ms().checked_add(yield_time_ms));
+            let interaction = TerminalInteractionEvent {
+                call_id: event_call_id,
+                process_id: process_id.to_string(),
+                stdin: String::new(),
+                deadline_at_ms,
+            };
+            session
+                .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
+                .await;
+        }
+        let response = match session
             .services
             .unified_exec_manager
             .write_stdin(
@@ -99,9 +131,7 @@ impl WriteStdinHandler {
                 WriteStdinRequest {
                     process_id: args.session_id,
                     input: &args.chars,
-                    yield_time_ms: args
-                        .yield_time_ms
-                        .unwrap_or(turn.unified_exec_write_stdin_yield_time_ms),
+                    yield_time_ms,
                     max_output_tokens: args.max_output_tokens,
                     truncation_policy: turn.model_info().truncation_policy.into(),
                     interaction_event: Some(WriteStdinInteractionEvent {
@@ -111,7 +141,20 @@ impl WriteStdinHandler {
                 },
             )
             .await
-            .map_err(|err| {
+        {
+            Ok(response) => response,
+            Err(err) => {
+                if let Some((process_id, event_call_id)) = empty_poll_started.as_ref() {
+                    let interaction = TerminalInteractionEvent {
+                        call_id: event_call_id.clone(),
+                        process_id: process_id.to_string(),
+                        stdin: String::new(),
+                        deadline_at_ms: None,
+                    };
+                    session
+                        .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
+                        .await;
+                }
                 let message = match err {
                     UnifiedExecError::StdinApproval(ToolError::Rejected(reason)) => {
                         format!("write_stdin rejected: {reason}")
@@ -121,8 +164,9 @@ impl WriteStdinHandler {
                     }
                     err => format!("write_stdin failed: {err}"),
                 };
-                FunctionCallError::RespondToModel(message)
-            })?;
+                return Err(FunctionCallError::RespondToModel(message));
+            }
+        };
 
         Ok(boxed_tool_output(response))
     }

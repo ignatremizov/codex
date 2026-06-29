@@ -60,6 +60,7 @@ pub(crate) struct StatusIndicatorWidget {
     hook_status_message: Option<String>,
     show_interrupt_hint: bool,
     interrupt_binding: Option<ShortcutHint>,
+    countdown_deadline: Option<Instant>,
 
     app_event_tx: AppEventSender,
     frame_requester: FrameRequester,
@@ -97,6 +98,7 @@ impl StatusIndicatorWidget {
             hook_status_message: None,
             show_interrupt_hint: true,
             interrupt_binding: Some(key_hint::plain(KeyCode::Esc).into()),
+            countdown_deadline: None,
             app_event_tx,
             frame_requester,
             animations_enabled,
@@ -146,6 +148,13 @@ impl StatusIndicatorWidget {
         self.hook_status_message = message;
     }
 
+    pub(crate) fn update_countdown_deadline(&mut self, deadline: Option<Instant>) {
+        self.countdown_deadline = deadline;
+        if deadline.is_some() {
+            self.frame_requester.schedule_frame();
+        }
+    }
+
     pub(crate) fn header(&self) -> &str {
         &self.header
     }
@@ -165,6 +174,16 @@ impl StatusIndicatorWidget {
 
     pub(crate) fn with_timer<'a>(&'a self, timer: &'a StatusTimer) -> impl Renderable + 'a {
         StatusIndicator { row: self, timer }
+    }
+
+    fn countdown_remaining_seconds_at(&self, now: Instant) -> Option<u64> {
+        self.countdown_deadline.and_then(|deadline| {
+            if deadline <= now {
+                return None;
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            Some(remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0))
+        })
     }
 
     /// Wrap the details text into a fixed width and return the lines, truncating if necessary.
@@ -213,6 +232,9 @@ impl StatusIndicator<'_> {
         let now = Instant::now();
         let elapsed_duration = self.timer.elapsed_at(now);
         let pretty_elapsed = fmt_elapsed_compact(elapsed_duration.as_secs());
+        let pretty_remaining = row
+            .countdown_remaining_seconds_at(now)
+            .map(fmt_elapsed_compact);
         let motion_mode = MotionMode::from_animations_enabled(row.animations_enabled);
 
         let mut spans = Vec::with_capacity(5);
@@ -228,7 +250,19 @@ impl StatusIndicator<'_> {
         if !spans.is_empty() {
             spans.push(" ".into());
         }
-        if row.show_interrupt_hint
+        if let Some(pretty_remaining) = pretty_remaining.as_deref() {
+            if row.show_interrupt_hint
+                && let Some(interrupt_binding) = row.interrupt_binding
+            {
+                spans.extend(vec![
+                    format!("({pretty_remaining} left • ").dim(),
+                    interrupt_binding.into(),
+                    " to interrupt)".dim(),
+                ]);
+            } else {
+                spans.push(format!("({pretty_remaining} left)").dim());
+            }
+        } else if row.show_interrupt_hint
             && let Some(interrupt_binding) = row.interrupt_binding
         {
             spans.extend(vec![
@@ -284,6 +318,14 @@ impl Renderable for StatusIndicator<'_> {
             self.row
                 .frame_requester
                 .schedule_frame_in(Duration::from_millis(32));
+        } else if self
+            .row
+            .countdown_deadline
+            .is_some_and(|deadline| deadline > Instant::now())
+        {
+            self.row
+                .frame_requester
+                .schedule_frame_in(Duration::from_secs(1));
         }
         Paragraph::new(Text::from(self.lines(area.width))).render(area, buf);
     }
@@ -403,6 +445,58 @@ mod tests {
             .collect::<String>();
 
         assert!(line.starts_with("Working (0s • esc to interrupt)"));
+    }
+
+    #[test]
+    fn countdown_replaces_elapsed_segment() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+        );
+        w.update_header("Waiting".to_string());
+        w.update_countdown_deadline(Some(Instant::now() + Duration::from_secs(60)));
+        let mut timer = StatusTimer::default();
+        timer.pause_at(timer.last_resume_at);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+        terminal
+            .draw(|f| w.with_timer(&timer).render(f.area(), f.buffer_mut()))
+            .expect("draw");
+        let line = terminal.backend().buffer().content()[..80]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        assert!(line.starts_with("Waiting (1m 00s left • esc to interrupt)"));
+    }
+
+    #[test]
+    fn expired_countdown_falls_back_to_elapsed_segment() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+        );
+        w.update_countdown_deadline(Some(Instant::now() - Duration::from_secs(1)));
+        let mut timer = StatusTimer::default();
+        timer.elapsed_running = Duration::from_secs(7);
+        timer.pause_at(timer.last_resume_at);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+        terminal
+            .draw(|f| w.with_timer(&timer).render(f.area(), f.buffer_mut()))
+            .expect("draw");
+        let line = terminal.backend().buffer().content()[..80]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        assert!(line.starts_with("Working (7s • esc to interrupt)"));
     }
 
     #[test]

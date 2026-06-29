@@ -1049,6 +1049,13 @@ impl BottomPane {
         false
     }
 
+    pub(crate) fn update_status_countdown_deadline(&mut self, deadline: Option<Instant>) {
+        if let Some(status) = self.status.as_mut() {
+            status.update_countdown_deadline(deadline);
+            self.request_redraw();
+        }
+    }
+
     /// Show the transient "press again to quit" hint for `key`.
     ///
     /// `ChatWidget` owns the quit shortcut state machine (it decides when quit is

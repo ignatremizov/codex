@@ -554,12 +554,17 @@ impl UnifiedExecProcessManager {
                     .plugin_attribution_for_command(&request.command, &cwd)
             })
         };
+        let yield_time_ms = clamp_yield_time(request.yield_time_ms);
+        let deadline_at_ms = i64::try_from(yield_time_ms)
+            .ok()
+            .and_then(|yield_time_ms| now_unix_timestamp_ms().checked_add(yield_time_ms));
         let emitter = ToolEmitter::unified_exec(
             &request.command,
             cwd.clone(),
             ExecCommandSource::UnifiedExecStartup,
             Some(request.process_id.to_string()),
             plugin_attribution.clone(),
+            deadline_at_ms,
         );
         emitter.emit(event_ctx, ToolEventStage::Begin).await;
 
@@ -600,7 +605,6 @@ impl UnifiedExecProcessManager {
             }
         };
 
-        let yield_time_ms = clamp_yield_time(request.yield_time_ms);
         // For the initial exec_command call, we both stream output to events
         // (via start_streaming_output above) and collect a snapshot here for
         // the tool response body.
@@ -1041,6 +1045,7 @@ impl UnifiedExecProcessManager {
                     .unwrap_or(request.process_id)
                     .to_string(),
                 stdin: request.input.to_string(),
+                deadline_at_ms: None,
             };
             session
                 .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
