@@ -255,6 +255,7 @@ impl ThreadEventStore {
             {
                 self.active_reasoning_item =
                     Some(codex_app_server_protocol::ItemStartedNotification {
+                        deadline_at_ms: None,
                         thread_id: started.thread_id.clone(),
                         turn_id: started.turn_id.clone(),
                         item: ThreadItem::Reasoning {
@@ -1065,12 +1066,14 @@ mod tests {
             content: Vec::new(),
         };
         store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+            deadline_at_ms: None,
             thread_id: thread_id.clone(),
             turn_id: turn_id.clone(),
             item: typed,
             started_at_ms: 0,
         }));
         store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+            deadline_at_ms: None,
             thread_id: thread_id.clone(),
             turn_id: turn_id.clone(),
             item: ThreadItem::UserMessage {
@@ -1091,6 +1094,7 @@ mod tests {
         ] {
             if id == "private-reasoning" {
                 store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+                    deadline_at_ms: None,
                     thread_id: thread_id.clone(),
                     turn_id: turn_id.clone(),
                     item: ThreadItem::Reasoning {
