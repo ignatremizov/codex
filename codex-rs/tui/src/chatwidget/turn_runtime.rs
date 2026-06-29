@@ -178,6 +178,7 @@ impl ChatWidget {
         self.clear_active_hook_cell();
         self.turn_lifecycle.finish();
         self.clear_safety_buffering();
+        self.clear_status_countdown();
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
@@ -322,6 +323,7 @@ impl ChatWidget {
         // Reset running state and clear streaming buffers.
         self.input_queue.user_turn_pending_start = false;
         self.turn_lifecycle.finish();
+        self.clear_status_countdown();
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();

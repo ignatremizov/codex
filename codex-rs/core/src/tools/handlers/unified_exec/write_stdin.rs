@@ -7,6 +7,7 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
+use crate::turn_timing::now_unix_timestamp_ms;
 use crate::unified_exec::WriteStdinRequest;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TerminalInteractionEvent;
@@ -71,33 +72,82 @@ impl WriteStdinHandler {
         };
 
         let args: WriteStdinArgs = parse_arguments(&arguments)?;
-        let response = session
+        let yield_time_ms = args
+            .yield_time_ms
+            .unwrap_or(turn.unified_exec_write_stdin_yield_time_ms);
+        let mut empty_poll_started = None;
+        if args.chars.is_empty()
+            && let Ok((process_id, event_call_id)) = session
+                .services
+                .unified_exec_manager
+                .process_event_metadata(args.session_id)
+                .await
+        {
+            empty_poll_started = Some((process_id, event_call_id.clone()));
+            let effective_yield_time_ms = session
+                .services
+                .unified_exec_manager
+                .effective_write_stdin_yield_time_ms(&args.chars, yield_time_ms);
+            let deadline_at_ms = i64::try_from(effective_yield_time_ms)
+                .ok()
+                .and_then(|yield_time_ms| now_unix_timestamp_ms().checked_add(yield_time_ms));
+            let interaction = TerminalInteractionEvent {
+                call_id: event_call_id,
+                process_id: process_id.to_string(),
+                stdin: String::new(),
+                deadline_at_ms,
+            };
+            session
+                .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
+                .await;
+        }
+        let response = match session
             .services
             .unified_exec_manager
             .write_stdin(WriteStdinRequest {
                 process_id: args.session_id,
                 input: &args.chars,
-                yield_time_ms: args
-                    .yield_time_ms
-                    .unwrap_or(turn.unified_exec_write_stdin_yield_time_ms),
+                yield_time_ms,
                 max_output_tokens: args.max_output_tokens,
                 truncation_policy: turn.model_info.truncation_policy.into(),
             })
             .await
-            .map_err(|err| {
-                FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
-            })?;
+        {
+            Ok(response) => response,
+            Err(err) => {
+                if let Some((process_id, event_call_id)) = empty_poll_started.as_ref() {
+                    let interaction = TerminalInteractionEvent {
+                        call_id: event_call_id.clone(),
+                        process_id: process_id.to_string(),
+                        stdin: String::new(),
+                        deadline_at_ms: None,
+                    };
+                    session
+                        .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
+                        .await;
+                }
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "write_stdin failed: {err}"
+                )));
+            }
+        };
 
-        // Empty stdin is a background poll, so emit it only while there is
-        // still a live process for the UI to wait on. Non-empty stdin is a real
+        // Empty stdin is a background poll, so emit the completion only if the
+        // process was visible before or after the poll. Non-empty stdin is a real
         // terminal interaction and should remain visible even if it completes
         // the process before the response returns.
-        if !args.chars.is_empty() || response.process_id.is_some() {
-            let process_id = response.process_id.unwrap_or(args.session_id);
+        if !args.chars.is_empty() || response.process_id.is_some() || empty_poll_started.is_some() {
+            let empty_poll_started_process_id =
+                empty_poll_started.map(|(process_id, _event_call_id)| process_id);
+            let process_id = response
+                .process_id
+                .or(empty_poll_started_process_id)
+                .unwrap_or(args.session_id);
             let interaction = TerminalInteractionEvent {
                 call_id: response.event_call_id.clone(),
                 process_id: process_id.to_string(),
                 stdin: args.chars.clone(),
+                deadline_at_ms: None,
             };
             session
                 .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
