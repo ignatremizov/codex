@@ -77,6 +77,7 @@ impl ChatWidget {
     pub(super) fn on_task_started(&mut self) {
         self.status_state.program_status_after_turn =
             crate::terminal_program_status::ProgramStatus::Idle;
+        self.clear_status_countdown();
         self.bottom_pane.dismiss_composer_sparkle();
         self.clear_context_compaction();
         self.input_queue.user_turn_pending_start = false;
@@ -195,6 +196,7 @@ impl ChatWidget {
             crate::terminal_program_status::ProgramStatus::Done
         };
         self.clear_safety_buffering();
+        self.clear_status_countdown();
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
@@ -360,6 +362,7 @@ impl ChatWidget {
         } else {
             crate::terminal_program_status::ProgramStatus::Error
         };
+        self.clear_status_countdown();
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();

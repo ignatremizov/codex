@@ -204,6 +204,7 @@ pub(crate) async fn execute_user_shell_command(
                 aggregated_output: None,
                 exit_code: None,
                 duration: None,
+                deadline_at_ms: None,
             }),
         )
         .await;
@@ -282,6 +283,7 @@ pub(crate) async fn execute_user_shell_command(
                         aggregated_output: Some(aborted_message.clone()),
                         exit_code: Some(-1),
                         duration: Some(Duration::ZERO),
+                        deadline_at_ms: None,
                     }),
                 )
                 .await;
@@ -310,6 +312,7 @@ pub(crate) async fn execute_user_shell_command(
                         aggregated_output: Some(output.aggregated_output.text.clone()),
                         exit_code: Some(output.exit_code),
                         duration: Some(output.duration),
+                        deadline_at_ms: None,
                     }),
                 )
                 .await;
@@ -347,6 +350,7 @@ pub(crate) async fn execute_user_shell_command(
                         aggregated_output: Some(exec_output.aggregated_output.text.clone()),
                         exit_code: Some(exec_output.exit_code),
                         duration: Some(exec_output.duration),
+                        deadline_at_ms: None,
                     }),
                 )
                 .await;

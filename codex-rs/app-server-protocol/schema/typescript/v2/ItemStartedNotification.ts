@@ -7,4 +7,9 @@ export type ItemStartedNotification = { item: ThreadItem, threadId: string, turn
 /**
  * Unix timestamp (in milliseconds) when this item lifecycle started.
  */
-startedAtMs: number, };
+startedAtMs: number,
+/**
+ * Advisory Unix-millisecond estimate for the current wait, or null when unavailable.
+ * This is not a process deadline and must not be restored as live state during replay.
+ */
+deadlineAtMs: number | null, };

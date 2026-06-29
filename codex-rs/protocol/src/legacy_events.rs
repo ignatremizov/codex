@@ -197,6 +197,7 @@ impl CommandExecutionItem {
             process_id: self.process_id.clone(),
             turn_id,
             started_at_ms,
+            deadline_at_ms: self.deadline_at_ms,
             command: self.command.clone(),
             cwd: self.cwd.clone(),
             parsed_cmd: self.parsed_cmd.clone(),
@@ -315,6 +316,7 @@ impl CollabAgentToolCallItem {
             }),
             CollabAgentTool::Wait => Some(EventMsg::CollabWaitingBegin(CollabWaitingBeginEvent {
                 started_at_ms,
+                deadline_at_ms: self.deadline_at_ms,
                 sender_thread_id: self.sender_thread_id,
                 receiver_thread_ids: self.receiver_thread_ids.clone(),
                 receiver_agents: self.receiver_agents.clone(),
