@@ -1,6 +1,14 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+fn future_deadline_at_ms(offset_ms: u128) -> i64 {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock should be after Unix epoch")
+        .as_millis();
+    i64::try_from(now_ms + offset_ms).expect("deadline should fit in i64")
+}
+
 fn notify_mcp_status(chat: &mut ChatWidget, name: &str, status: McpServerStartupState) {
     chat.handle_server_notification(
         ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
@@ -140,6 +148,44 @@ async fn mcp_startup_complete_does_not_clear_running_task() {
     assert!(chat.bottom_pane.is_task_running());
     assert!(chat.bottom_pane.status_indicator_visible());
     assert_eq!(chat.status_state.current_status.header, "Working");
+}
+
+#[tokio::test]
+async fn turn_completion_clears_wait_countdown_while_mcp_startup_continues() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+
+    chat.set_mcp_startup_expected_servers(["schaltwerk".to_string()]);
+    notify_mcp_status(&mut chat, "schaltwerk", McpServerStartupState::Starting);
+    begin_unified_exec_startup(&mut chat, "call-1", "proc-1", "sleep 60");
+    chat.handle_server_notification(
+        ServerNotification::TerminalInteraction(
+            codex_app_server_protocol::TerminalInteractionNotification {
+                thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+                turn_id: "turn-1".to_string(),
+                item_id: "call-1".to_string(),
+                process_id: "proc-1".to_string(),
+                stdin: String::new(),
+                deadline_at_ms: Some(future_deadline_at_ms(60_000)),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let waiting = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        waiting.contains("1m 00s left"),
+        "expected active wait countdown before turn completion, got:\n{waiting}"
+    );
+
+    handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
+
+    assert!(chat.bottom_pane.is_task_running());
+    let completed = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        !completed.contains("s left"),
+        "expected turn completion to clear wait countdown, got:\n{completed}"
+    );
 }
 
 #[tokio::test]
