@@ -1284,6 +1284,7 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
             thread_id: ThreadId::new().to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: ThreadItem::CollabAgentToolCall {
                 id: "wait-1".to_string(),
                 tool: codex_app_server_protocol::CollabAgentTool::Wait,
@@ -2699,6 +2700,7 @@ async fn inactive_thread_file_change_approval_recovers_buffered_changes() {
             thread_id: thread_id.to_string(),
             turn_id: "turn-approval".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: ThreadItem::FileChange {
                 id: "patch-approval".to_string(),
                 changes: vec![FileUpdateChange {
@@ -6143,6 +6145,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                         thread_id: "thread-1".to_string(),
                         turn_id: "turn-1".to_string(),
                         started_at_ms: 0,
+                        deadline_at_ms: None,
                         item: ThreadItem::CollabAgentToolCall {
                             id: "wait-1".to_string(),
                             tool: codex_app_server_protocol::CollabAgentTool::Wait,

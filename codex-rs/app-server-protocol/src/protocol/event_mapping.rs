@@ -90,6 +90,7 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 item,
                 started_at_ms: begin_event.started_at_ms,
+                deadline_at_ms: None,
             })
         }
         EventMsg::CollabAgentSpawnEnd(end_event) => {
@@ -149,6 +150,7 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 item,
                 started_at_ms: begin_event.started_at_ms,
+                deadline_at_ms: None,
             })
         }
         EventMsg::CollabAgentInteractionEnd(end_event) => {
@@ -215,6 +217,7 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 item,
                 started_at_ms: begin_event.started_at_ms,
+                deadline_at_ms: begin_event.deadline_at_ms,
             })
         }
         EventMsg::CollabWaitingEnd(end_event) => {
@@ -270,6 +273,7 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 item,
                 started_at_ms: begin_event.started_at_ms,
+                deadline_at_ms: None,
             })
         }
         EventMsg::CollabCloseEnd(end_event) => {
@@ -322,6 +326,7 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 item,
                 started_at_ms: begin_event.started_at_ms,
+                deadline_at_ms: None,
             })
         }
         EventMsg::CollabResumeEnd(end_event) => {
@@ -400,11 +405,16 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::ItemStarted(item_started_event) => {
+            let deadline_at_ms = match &item_started_event.item {
+                codex_protocol::items::TurnItem::CollabAgentToolCall(item) => item.deadline_at_ms,
+                _ => None,
+            };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
                 turn_id,
                 item: item_started_event.item.into(),
                 started_at_ms: item_started_event.started_at_ms,
+                deadline_at_ms,
             })
         }
         EventMsg::ItemCompleted(item_completed_event) => {
@@ -437,6 +447,7 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 item: build_command_execution_begin_item(&exec_command_begin_event),
                 started_at_ms: exec_command_begin_event.started_at_ms,
+                deadline_at_ms: exec_command_begin_event.deadline_at_ms,
             })
         }
         EventMsg::ExecCommandOutputDelta(exec_command_output_delta_event) => {
@@ -458,6 +469,7 @@ pub fn item_event_to_server_notification(
                 item_id: terminal_event.call_id,
                 process_id: terminal_event.process_id,
                 stdin: terminal_event.stdin,
+                deadline_at_ms: terminal_event.deadline_at_ms,
             })
         }
         EventMsg::ExecCommandEnd(exec_command_end_event) => {
@@ -536,6 +548,7 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
                 started_at_ms: event.started_at_ms,
+                deadline_at_ms: None,
                 item: ThreadItem::CollabAgentToolCall {
                     id: event.call_id,
                     tool: CollabAgentTool::ResumeAgent,

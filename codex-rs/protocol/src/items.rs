@@ -270,6 +270,10 @@ pub struct CollabAgentToolCallItem {
     pub id: String,
     pub tool: CollabAgentTool,
     pub status: CollabAgentToolCallStatus,
+    /// Unix timestamp in milliseconds when a wait-agent call should report back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deadline_at_ms: Option<i64>,
     pub sender_thread_id: ThreadId,
     #[serde(default)]
     pub receiver_thread_ids: Vec<ThreadId>,

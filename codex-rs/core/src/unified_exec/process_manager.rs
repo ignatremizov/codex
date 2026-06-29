@@ -35,6 +35,7 @@ use crate::tools::runtimes::unified_exec::UnifiedExecRuntime;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
+use crate::turn_timing::now_unix_timestamp_ms;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
 use crate::unified_exec::MAX_YIELD_TIME_MS;
@@ -444,6 +445,10 @@ impl UnifiedExecProcessManager {
         }
 
         let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+        let yield_time_ms = clamp_yield_time(request.yield_time_ms);
+        let deadline_at_ms = i64::try_from(yield_time_ms)
+            .ok()
+            .and_then(|yield_time_ms| now_unix_timestamp_ms().checked_add(yield_time_ms));
         let event_ctx = ToolEventCtx::new(
             context.session.as_ref(),
             context.turn.as_ref(),
@@ -455,6 +460,7 @@ impl UnifiedExecProcessManager {
             cwd.clone(),
             ExecCommandSource::UnifiedExecStartup,
             Some(request.process_id.to_string()),
+            deadline_at_ms,
         );
         emitter.emit(event_ctx, ToolEventStage::Begin).await;
 
@@ -486,7 +492,6 @@ impl UnifiedExecProcessManager {
             None
         };
 
-        let yield_time_ms = clamp_yield_time(request.yield_time_ms);
         // For the initial exec_command call, we both stream output to events
         // (via start_streaming_output above) and collect a snapshot here for
         // the tool response body.
@@ -717,18 +722,8 @@ impl UnifiedExecProcessManager {
             }
         }
 
-        let yield_time_ms = {
-            // Empty polls use configurable background timeout bounds. Non-empty
-            // writes keep a fixed max cap so interactive stdin remains responsive.
-            let time_ms = request.yield_time_ms.max(MIN_YIELD_TIME_MS);
-            if request.input.is_empty() {
-                let time_ms = time_ms.max(MIN_EMPTY_YIELD_TIME_MS);
-                self.max_write_stdin_yield_time_ms
-                    .map_or(time_ms, |max_timeout_ms| time_ms.min(max_timeout_ms))
-            } else {
-                time_ms.min(MAX_YIELD_TIME_MS)
-            }
-        };
+        let yield_time_ms =
+            self.effective_write_stdin_yield_time_ms(request.input, request.yield_time_ms);
         let start = Instant::now();
         let deadline = deadline_after(start, yield_time_ms);
         let collected_output = Self::collect_output_until_deadline(
@@ -889,6 +884,35 @@ impl UnifiedExecProcessManager {
             process_id: entry.process_id,
             tty: entry.tty,
         })
+    }
+
+    pub(crate) fn effective_write_stdin_yield_time_ms(
+        &self,
+        input: &str,
+        yield_time_ms: u64,
+    ) -> u64 {
+        // Empty polls use configurable background timeout bounds. Non-empty
+        // writes keep a fixed max cap so interactive stdin remains responsive.
+        let time_ms = yield_time_ms.max(MIN_YIELD_TIME_MS);
+        if input.is_empty() {
+            let time_ms = time_ms.max(MIN_EMPTY_YIELD_TIME_MS);
+            self.max_write_stdin_yield_time_ms
+                .map_or(time_ms, |max_timeout_ms| time_ms.min(max_timeout_ms))
+        } else {
+            time_ms.min(MAX_YIELD_TIME_MS)
+        }
+    }
+
+    pub(crate) async fn process_event_metadata(
+        &self,
+        process_id: i32,
+    ) -> Result<(i32, String), UnifiedExecError> {
+        let store = self.process_store.lock().await;
+        let entry = store
+            .processes
+            .get(&process_id)
+            .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
+        Ok((entry.process_id, entry.call_id.clone()))
     }
 
     #[allow(clippy::too_many_arguments)]
