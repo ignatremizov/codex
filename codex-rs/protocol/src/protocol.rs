@@ -3521,6 +3521,10 @@ pub struct ExecCommandBeginEvent {
     pub turn_id: String,
     #[serde(default)]
     pub started_at_ms: i64,
+    /// Unix timestamp in milliseconds when this command wait should report back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deadline_at_ms: Option<i64>,
     /// The command to be executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
@@ -3619,6 +3623,10 @@ pub struct TerminalInteractionEvent {
     pub process_id: String,
     /// Stdin sent to the running session.
     pub stdin: String,
+    /// Unix timestamp in milliseconds when this wait/poll should report back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deadline_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -4319,6 +4327,10 @@ pub struct SubAgentActivityEvent {
 pub struct CollabWaitingBeginEvent {
     #[serde(default)]
     pub started_at_ms: i64,
+    /// Unix timestamp in milliseconds when this wait should report back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deadline_at_ms: Option<i64>,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receivers.

@@ -1238,6 +1238,10 @@ pub struct ItemStartedNotification {
     /// Unix timestamp (in milliseconds) when this item lifecycle started.
     #[ts(type = "number")]
     pub started_at_ms: i64,
+    /// Unix timestamp (in milliseconds) when a waiting item should report back.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub deadline_at_ms: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1400,6 +1404,10 @@ pub struct TerminalInteractionNotification {
     pub item_id: String,
     pub process_id: String,
     pub stdin: String,
+    /// Unix timestamp (in milliseconds) when this background wait should report back.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub deadline_at_ms: Option<i64>,
 }
 
 #[serde_as]

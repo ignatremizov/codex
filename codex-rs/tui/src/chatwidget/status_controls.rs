@@ -64,6 +64,28 @@ impl ChatWidget {
         );
     }
 
+    pub(super) fn set_status_countdown_deadline_at_ms(
+        &mut self,
+        owner: StatusCountdownOwner,
+        deadline_at_ms: i64,
+    ) {
+        self.status_state.countdown_owner = Some(owner);
+        self.bottom_pane
+            .update_status_countdown_deadline(deadline_at_ms_to_instant(deadline_at_ms));
+    }
+
+    pub(super) fn clear_status_countdown_if_owner(&mut self, owner: &StatusCountdownOwner) {
+        if self.status_state.countdown_owner.as_ref() == Some(owner) {
+            self.clear_status_countdown();
+        }
+    }
+
+    pub(super) fn clear_status_countdown(&mut self) {
+        self.status_state.countdown_owner = None;
+        self.bottom_pane
+            .update_status_countdown_deadline(/*deadline*/ None);
+    }
+
     /// Sets the currently rendered footer status-line value.
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
         self.bottom_pane.set_status_line(status_line);
@@ -401,4 +423,15 @@ impl ChatWidget {
             Some(effort) => effort.as_str().to_string(),
         }
     }
+}
+
+fn deadline_at_ms_to_instant(deadline_at_ms: i64) -> Option<Instant> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())?;
+    let remaining_ms = deadline_at_ms.saturating_sub(now_ms).max(0);
+    u64::try_from(remaining_ms)
+        .ok()
+        .and_then(|remaining_ms| Instant::now().checked_add(Duration::from_millis(remaining_ms)))
 }

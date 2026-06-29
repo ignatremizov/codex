@@ -2773,6 +2773,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         id: "collab-1".to_string(),
         tool: CoreCollabAgentTool::SendInput,
         status: CoreCollabAgentToolCallStatus::Completed,
+        deadline_at_ms: None,
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
         receiver_agents: Vec::new(),
