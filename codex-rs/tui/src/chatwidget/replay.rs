@@ -379,7 +379,12 @@ impl ChatWidget {
             item @ ThreadItemPayload::CommandExecution {
                 status: codex_app_server_protocol::CommandExecutionStatus::InProgress,
                 ..
-            } => self.on_command_execution_started(item, render_source),
+            } => self.on_command_execution_started(
+                item,
+                render_source,
+                /*deadline_at_ms*/ None,
+                &turn_id,
+            ),
             item @ ThreadItemPayload::CommandExecution {
                 source: ExecCommandSource::Agent | ExecCommandSource::UnifiedExecStartup,
                 status:
@@ -388,7 +393,7 @@ impl ChatWidget {
                 ..
             } if from_replay => self.handle_command_execution_completed_now(item),
             item @ ThreadItemPayload::CommandExecution { .. } => {
-                self.on_command_execution_completed(item)
+                self.on_command_execution_completed(item, &turn_id)
             }
             ThreadItemPayload::FileChange {
                 status: codex_app_server_protocol::PatchApplyStatus::InProgress,
@@ -474,17 +479,21 @@ impl ChatWidget {
                 model,
                 reasoning_effort,
                 agents_states,
-            } => self.on_collab_agent_tool_call(ThreadItemPayload::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-            }),
+            } => self.on_collab_agent_tool_call(
+                ThreadItemPayload::CollabAgentToolCall {
+                    id,
+                    tool,
+                    status,
+                    sender_thread_id,
+                    receiver_thread_ids,
+                    prompt,
+                    model,
+                    reasoning_effort,
+                    agents_states,
+                },
+                /*deadline_at_ms*/ None,
+                &turn_id,
+            ),
             item @ ThreadItemPayload::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             item @ ThreadItemPayload::DynamicToolCall { .. } => self.on_dynamic_tool_item(item),
             ThreadItemPayload::Sleep(_) => {}

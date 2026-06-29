@@ -1900,6 +1900,7 @@ async fn thread_items_list_defers_requested_outputs() -> Result<()> {
             "turn",
             CoreTurnItem::CommandExecution(CommandExecutionItem {
                 id: id.to_string(),
+                deadline_at_ms: None,
                 command: vec!["ls".to_string()],
                 cwd: codex_home.path().abs().into(),
                 parsed_cmd: Vec::new(),

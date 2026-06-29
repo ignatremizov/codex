@@ -37,6 +37,20 @@ pub(super) enum TerminalTitleStatusKind {
     Thinking,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum StatusCountdownOwner {
+    CollabWait {
+        turn_id: String,
+        call_id: String,
+    },
+    /// The item ID identifies the process incarnation, not an individual poll.
+    UnifiedExec {
+        turn_id: String,
+        item_id: String,
+        process_id: String,
+    },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct PendingGuardianReviewStatus {
     entries: Vec<PendingGuardianReviewStatusEntry>,
@@ -117,6 +131,7 @@ pub(super) struct StatusState {
     pub(super) reasoning_resume_turn_id: Option<String>,
     pub(super) compaction: Option<super::compaction::ActiveCompaction>,
     pub(super) current_status: StatusIndicatorState,
+    pub(super) countdown_owner: Option<StatusCountdownOwner>,
     pub(super) pending_guardian_review_status: PendingGuardianReviewStatus,
     pub(super) terminal_title_status_kind: TerminalTitleStatusKind,
     /// Result of the latest live turn until the user interacts again. Active
@@ -133,6 +148,7 @@ impl Default for StatusState {
             reasoning_resume_turn_id: None,
             compaction: None,
             current_status: StatusIndicatorState::working(),
+            countdown_owner: None,
             pending_guardian_review_status: PendingGuardianReviewStatus::default(),
             terminal_title_status_kind: TerminalTitleStatusKind::Working,
             program_status_after_turn: ProgramStatus::Idle,
