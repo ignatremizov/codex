@@ -36,6 +36,13 @@ pub(super) enum TerminalTitleStatusKind {
     Thinking,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum StatusCountdownOwner {
+    CollabWait { call_id: String },
+    UnifiedExecInitial { process_key: String },
+    UnifiedExecWait { process_id: String },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct PendingGuardianReviewStatus {
     entries: Vec<PendingGuardianReviewStatusEntry>,
@@ -107,6 +114,7 @@ impl PendingGuardianReviewStatus {
 #[derive(Debug)]
 pub(super) struct StatusState {
     pub(super) current_status: StatusIndicatorState,
+    pub(super) countdown_owner: Option<StatusCountdownOwner>,
     pub(super) pending_guardian_review_status: PendingGuardianReviewStatus,
     pub(super) terminal_title_status_kind: TerminalTitleStatusKind,
     pub(super) retry_status_header: Option<String>,
@@ -117,6 +125,7 @@ impl Default for StatusState {
     fn default() -> Self {
         Self {
             current_status: StatusIndicatorState::working(),
+            countdown_owner: None,
             pending_guardian_review_status: PendingGuardianReviewStatus::default(),
             terminal_title_status_kind: TerminalTitleStatusKind::Working,
             retry_status_header: None,
