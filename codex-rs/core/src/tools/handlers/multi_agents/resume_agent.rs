@@ -67,6 +67,7 @@ async fn handle_resume_agent(
                 id: call_id.clone(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::InProgress,
+                deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![receiver_thread_id],
                 receiver_agents: vec![CollabAgentRef {
@@ -130,6 +131,7 @@ async fn handle_resume_agent(
                 id: call_id,
                 tool: CollabAgentTool::ResumeAgent,
                 status: collab_tool_call_status(&status, Some(receiver_thread_id)),
+                deadline_at_ms: None,
                 sender_thread_id: session.thread_id(),
                 receiver_thread_ids: vec![receiver_thread_id],
                 receiver_agents: vec![CollabAgentRef {
