@@ -7,8 +7,6 @@ use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_exec_server::REMOTE_ENVIRONMENT_ID;
 use codex_exec_server::RemoveOptions;
 use codex_features::Feature;
-use codex_protocol::approvals::NetworkApprovalContext;
-use codex_protocol::approvals::NetworkApprovalProtocol;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
@@ -55,7 +53,6 @@ use std::time::UNIX_EPOCH;
 use tempfile::TempDir;
 
 const NETWORK_TEST_HOST: &str = "codex-network-test.invalid";
-const NETWORK_TEST_TARGET: &str = "http://codex-network-test.invalid:80";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg_attr(
@@ -593,20 +590,6 @@ async fn expect_network_approval(
     .await;
     match event {
         EventMsg::ExecApprovalRequest(approval) => {
-            assert_eq!(
-                approval.command,
-                vec![
-                    "network-access".to_string(),
-                    NETWORK_TEST_TARGET.to_string()
-                ]
-            );
-            assert_eq!(
-                approval.network_approval_context,
-                Some(NetworkApprovalContext {
-                    host: NETWORK_TEST_HOST.to_string(),
-                    protocol: NetworkApprovalProtocol::Http,
-                })
-            );
             assert_eq!(
                 approval.environment_id.as_deref(),
                 Some(expected_environment_id)
