@@ -842,6 +842,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 thread_id: conversation_id.to_string(),
                 turn_id: turn_id.clone(),
                 started_at_ms: request.started_at_ms,
+                deadline_at_ms: None,
                 item,
             };
             outgoing
@@ -1012,6 +1013,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 thread_id: conversation_id.to_string(),
                 turn_id: event_turn_id.clone(),
                 started_at_ms: now_unix_timestamp_ms(),
+                deadline_at_ms: None,
                 item: item.clone(),
             };
             outgoing
@@ -1072,6 +1074,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 thread_id: conversation_id.to_string(),
                 turn_id: event_turn_id.clone(),
                 started_at_ms: now_unix_timestamp_ms(),
+                deadline_at_ms: None,
                 item: item.clone(),
             };
             outgoing
@@ -1394,6 +1397,7 @@ async fn start_command_execution_item(
             thread_id: conversation_id.to_string(),
             turn_id,
             started_at_ms: now_unix_timestamp_ms(),
+            deadline_at_ms: None,
             item: ThreadItem::CommandExecution {
                 id: item_id,
                 command,

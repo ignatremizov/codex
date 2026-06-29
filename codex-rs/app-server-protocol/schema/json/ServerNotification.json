@@ -2366,6 +2366,15 @@
     },
     "ItemStartedNotification": {
       "properties": {
+        "deadlineAtMs": {
+          "default": null,
+          "description": "Unix timestamp (in milliseconds) when a waiting item should report back.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "item": {
           "$ref": "#/definitions/ThreadItem"
         },
@@ -3579,6 +3588,15 @@
     },
     "TerminalInteractionNotification": {
       "properties": {
+        "deadlineAtMs": {
+          "default": null,
+          "description": "Unix timestamp (in milliseconds) when this background wait should report back.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },

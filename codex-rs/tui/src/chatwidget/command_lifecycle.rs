@@ -72,7 +72,12 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn on_terminal_interaction(&mut self, process_id: String, stdin: String) {
+    pub(super) fn on_terminal_interaction(
+        &mut self,
+        process_id: String,
+        stdin: String,
+        deadline_at_ms: Option<i64>,
+    ) {
         if !self.bottom_pane.is_task_running() {
             return;
         }
@@ -101,6 +106,7 @@ impl ChatWidget {
                 StatusDetailsCapitalization::Preserve,
                 /*details_max_lines*/ 1,
             );
+            self.set_status_countdown_deadline_at_ms(deadline_at_ms);
             match &mut self.unified_exec_wait_streak {
                 Some(wait) if wait.process_id == process_id => {
                     wait.update_command_display(command_display);
@@ -123,6 +129,7 @@ impl ChatWidget {
                 .is_some_and(|wait| wait.process_id == process_id)
             {
                 self.flush_unified_exec_wait_streak();
+                self.set_status_countdown_deadline_at_ms(/*deadline_at_ms*/ None);
             }
             self.add_to_history(history_cell::new_unified_exec_interaction(
                 command_display,
@@ -149,6 +156,7 @@ impl ChatWidget {
                     .is_some_and(|wait| wait.process_id == process_id)
             {
                 self.flush_unified_exec_wait_streak();
+                self.set_status_countdown_deadline_at_ms(/*deadline_at_ms*/ None);
             }
             self.track_unified_exec_process_end(id, process_id.as_deref());
             if !self.bottom_pane.is_task_running() {

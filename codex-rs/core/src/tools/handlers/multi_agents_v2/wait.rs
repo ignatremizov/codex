@@ -75,11 +75,13 @@ impl Handler {
             .subscribe_activity(turn_state.as_deref())
             .await;
 
+        let started_at_ms = now_unix_timestamp_ms();
         session
             .send_event(
                 &turn,
                 CollabWaitingBeginEvent {
-                    started_at_ms: now_unix_timestamp_ms(),
+                    started_at_ms,
+                    deadline_at_ms: started_at_ms.checked_add(timeout_ms),
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: Vec::new(),
                     receiver_agents: Vec::new(),

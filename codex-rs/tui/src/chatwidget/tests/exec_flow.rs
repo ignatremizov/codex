@@ -725,6 +725,43 @@ async fn unified_exec_wait_status_header_updates_on_late_command_display() {
 }
 
 #[tokio::test]
+async fn unified_exec_wait_status_renders_countdown() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+    chat.unified_exec_processes.push(UnifiedExecProcessSummary {
+        key: "proc-1".to_string(),
+        call_id: "call-1".to_string(),
+        command_display: "sleep 60".to_string(),
+        recent_chunks: Vec::new(),
+    });
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock should be after Unix epoch")
+        .as_millis();
+    let deadline_at_ms = i64::try_from(now_ms + 60_000).expect("deadline should fit in i64");
+
+    chat.handle_server_notification(
+        ServerNotification::TerminalInteraction(
+            codex_app_server_protocol::TerminalInteractionNotification {
+                thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+                turn_id: "turn-1".to_string(),
+                item_id: "call-1".to_string(),
+                process_id: "proc-1".to_string(),
+                stdin: String::new(),
+                deadline_at_ms: Some(deadline_at_ms),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        rendered.contains("Waiting for background terminal (1m 00s left"),
+        "expected countdown in status row, got:\n{rendered}"
+    );
+}
+
+#[tokio::test]
 async fn unified_exec_empty_poll_for_finished_process_does_not_show_waiting_status() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();

@@ -940,6 +940,14 @@ impl BottomPane {
         if let Some(status) = self.status.as_mut() {
             status.update_header(header);
             status.update_details(details, details_capitalization, details_max_lines.max(1));
+            status.update_countdown_deadline(/*deadline*/ None);
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn update_status_countdown_deadline(&mut self, deadline: Option<Instant>) {
+        if let Some(status) = self.status.as_mut() {
+            status.update_countdown_deadline(deadline);
             self.request_redraw();
         }
     }

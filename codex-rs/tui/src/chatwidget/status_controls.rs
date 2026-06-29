@@ -64,6 +64,11 @@ impl ChatWidget {
         );
     }
 
+    pub(super) fn set_status_countdown_deadline_at_ms(&mut self, deadline_at_ms: Option<i64>) {
+        self.bottom_pane
+            .update_status_countdown_deadline(deadline_at_ms.and_then(deadline_at_ms_to_instant));
+    }
+
     /// Sets the currently rendered footer status-line value.
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
         self.bottom_pane.set_status_line(status_line);
@@ -401,4 +406,15 @@ impl ChatWidget {
             Some(effort) => effort.as_str().to_string(),
         }
     }
+}
+
+fn deadline_at_ms_to_instant(deadline_at_ms: i64) -> Option<Instant> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())?;
+    let remaining_ms = deadline_at_ms.saturating_sub(now_ms).max(0);
+    u64::try_from(remaining_ms)
+        .ok()
+        .and_then(|remaining_ms| Instant::now().checked_add(Duration::from_millis(remaining_ms)))
 }

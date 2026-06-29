@@ -96,11 +96,13 @@ impl Handler {
             ms => ms.clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
         };
 
+        let started_at_ms = now_unix_timestamp_ms();
         session
             .send_event(
                 &turn,
                 CollabWaitingBeginEvent {
-                    started_at_ms: now_unix_timestamp_ms(),
+                    started_at_ms,
+                    deadline_at_ms: started_at_ms.checked_add(timeout_ms),
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
                     receiver_agents: receiver_agents.clone(),
