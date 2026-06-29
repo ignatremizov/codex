@@ -76,6 +76,7 @@ impl ChatWidget {
         }
         self.restore_active_reasoning_item(
             codex_app_server_protocol::ItemStartedNotification {
+                deadline_at_ms: None,
                 thread_id: self.thread_id.map(|id| id.to_string()).unwrap_or_default(),
                 turn_id: turn_id.clone(),
                 item: ThreadItem::Reasoning {
@@ -178,6 +179,7 @@ impl ChatWidget {
                 {
                     self.restore_active_reasoning_item(
                         codex_app_server_protocol::ItemStartedNotification {
+                            deadline_at_ms: None,
                             thread_id: self.thread_id.map(|id| id.to_string()).unwrap_or_default(),
                             turn_id: turn_id.clone(),
                             item: ThreadItem::Reasoning {
@@ -379,7 +381,7 @@ impl ChatWidget {
             item @ ThreadItem::CommandExecution {
                 status: codex_app_server_protocol::CommandExecutionStatus::InProgress,
                 ..
-            } => self.on_command_execution_started(item),
+            } => self.on_command_execution_started(item, /*deadline_at_ms*/ None, &turn_id),
             item @ ThreadItem::CommandExecution {
                 source: ExecCommandSource::Agent | ExecCommandSource::UnifiedExecStartup,
                 status:
@@ -387,7 +389,9 @@ impl ChatWidget {
                     | codex_app_server_protocol::CommandExecutionStatus::Failed,
                 ..
             } if from_replay => self.handle_command_execution_completed_now(item),
-            item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_completed(item),
+            item @ ThreadItem::CommandExecution { .. } => {
+                self.on_command_execution_completed(item, &turn_id)
+            }
             ThreadItem::FileChange {
                 status: codex_app_server_protocol::PatchApplyStatus::InProgress,
                 ..
@@ -473,17 +477,21 @@ impl ChatWidget {
                 model,
                 reasoning_effort,
                 agents_states,
-            } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-            }),
+            } => self.on_collab_agent_tool_call(
+                ThreadItem::CollabAgentToolCall {
+                    id,
+                    tool,
+                    status,
+                    sender_thread_id,
+                    receiver_thread_ids,
+                    prompt,
+                    model,
+                    reasoning_effort,
+                    agents_states,
+                },
+                /*deadline_at_ms*/ None,
+                &turn_id,
+            ),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             item @ ThreadItem::DynamicToolCall { .. } => self.on_dynamic_tool_item(item),
             ThreadItem::Sleep(_) => {}

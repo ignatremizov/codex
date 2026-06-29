@@ -220,8 +220,11 @@ impl StatusIndicator<'_> {
     // Share width decisions between height measurement and rendering, including
     // wide Unicode characters, remapped interrupt hints, and elapsed-time text.
     fn lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.lines_at(width, Instant::now())
+    }
+
+    fn lines_at(&self, width: u16, now: Instant) -> Vec<Line<'static>> {
         let row = self.row;
-        let now = Instant::now();
         let elapsed_duration = self.timer.display_started_at.map_or_else(
             || self.timer.elapsed_at(now),
             |started_at| now.saturating_duration_since(started_at),
@@ -231,6 +234,10 @@ impl StatusIndicator<'_> {
             MotionMode::from_animations_enabled(row.animations_enabled && row.effects.progress);
         let shimmer =
             MotionMode::from_animations_enabled(row.animations_enabled && row.effects.shimmer);
+        let pretty_remaining = self
+            .timer
+            .countdown_remaining_seconds_at(now)
+            .map(fmt_elapsed_compact);
 
         let mut spans = Vec::with_capacity(5);
         if let Some(indicator) = activity_indicator(
@@ -249,7 +256,17 @@ impl StatusIndicator<'_> {
         if !spans.is_empty() {
             spans.push(" ".into());
         }
-        if row.show_interrupt_hint
+        if let Some(pretty_remaining) = pretty_remaining.as_deref() {
+            if row.show_interrupt_hint
+                && let Some(interrupt_binding) = row.interrupt_binding
+            {
+                spans.push(format!("({pretty_remaining} left • ").dim());
+                spans.extend(interrupt_binding.spans());
+                spans.push(" to interrupt)".dim());
+            } else {
+                spans.push(format!("({pretty_remaining} left)").dim());
+            }
+        } else if row.show_interrupt_hint
             && let Some(interrupt_binding) = row.interrupt_binding
         {
             spans.push(format!("({pretty_elapsed} • ").dim());
@@ -299,7 +316,13 @@ impl Renderable for StatusIndicator<'_> {
         if area.is_empty() {
             return;
         }
-        if self.row.animations_enabled || self.timer.display_started_at.is_some() {
+        if self.row.animations_enabled
+            || self.timer.display_started_at.is_some()
+            || self
+                .timer
+                .countdown_remaining_seconds_at(Instant::now())
+                .is_some()
+        {
             let interval_ms = if self.row.animations_enabled
                 && (self.row.effects.progress || self.row.effects.shimmer)
             {
@@ -314,6 +337,10 @@ impl Renderable for StatusIndicator<'_> {
         Paragraph::new(Text::from(self.lines(area.width))).render(area, buf);
     }
 }
+
+#[cfg(test)]
+#[path = "status_indicator_widget/countdown_tests.rs"]
+mod countdown_tests;
 
 #[cfg(test)]
 mod tests {

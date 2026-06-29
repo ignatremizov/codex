@@ -311,6 +311,7 @@ async fn completed_background_tool_item_emits_after_turn_event() {
                     thread_id: "thread-2".to_string(),
                     turn_id: "turn-2".to_string(),
                     started_at_ms: 998,
+                    deadline_at_ms: None,
                     item: sample_command_execution_item(
                         CommandExecutionStatus::InProgress,
                         /*exit_code*/ None,

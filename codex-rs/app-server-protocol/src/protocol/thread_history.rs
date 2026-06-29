@@ -2472,6 +2472,7 @@ mod tests {
             aggregated_output: Some("hello world\n".to_string()),
             exit_code: Some(0),
             duration: Some(Duration::from_millis(12)),
+            deadline_at_ms: None,
             formatted_output: Some("hello world\n".to_string()),
         });
         let events = vec![
@@ -2490,6 +2491,7 @@ mod tests {
                 process_id: Some("pid-1".to_string()),
                 turn_id: turn_id.to_string(),
                 started_at_ms: 0,
+                deadline_at_ms: None,
                 command: command.clone(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 parsed_cmd: parsed_cmd.clone(),

@@ -138,6 +138,7 @@ async fn resumed_trailing_reasoning_is_kept_when_no_more_reasoning_arrives() {
             app.chat_widget.handle_server_notification(
                 ServerNotification::ItemStarted(
                     codex_app_server_protocol::ItemStartedNotification {
+                        deadline_at_ms: None,
                         thread_id: thread_id.to_string(),
                         turn_id: "turn".into(),
                         started_at_ms: 0,

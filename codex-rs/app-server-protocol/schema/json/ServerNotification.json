@@ -2754,6 +2754,14 @@
     },
     "ItemStartedNotification": {
       "properties": {
+        "deadlineAtMs": {
+          "description": "Advisory Unix-millisecond estimate for the current wait, or null when unavailable. This is not a process deadline and must not be restored as live state during replay.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "item": {
           "$ref": "#/definitions/ThreadItem"
         },
@@ -4136,6 +4144,14 @@
     },
     "TerminalInteractionNotification": {
       "properties": {
+        "deadlineAtMs": {
+          "description": "Advisory Unix-millisecond empty-poll estimate, or null when cleared or unavailable.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },

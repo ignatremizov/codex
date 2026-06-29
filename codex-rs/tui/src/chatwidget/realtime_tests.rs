@@ -93,6 +93,7 @@ fn agent_item(item_id: &str, text: &str, phase: Option<MessagePhase>) -> ThreadI
 fn start_item(chat: &mut ChatWidget, thread_id: ThreadId, turn_id: &str, item: ThreadItem) {
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
+            deadline_at_ms: None,
             thread_id: thread_id.to_string(),
             turn_id: turn_id.to_string(),
             item,

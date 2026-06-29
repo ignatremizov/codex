@@ -11299,6 +11299,13 @@ class TerminalInteractionNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    deadline_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="deadlineAtMs",
+            description="Advisory Unix-millisecond empty-poll estimate, or null when cleared or unavailable.",
+        ),
+    ] = None
     item_id: Annotated[str, Field(alias="itemId")]
     process_id: Annotated[str, Field(alias="processId")]
     stdin: str
@@ -11763,6 +11770,13 @@ class ItemStartedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    deadline_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="deadlineAtMs",
+            description="Advisory Unix-millisecond estimate for the current wait, or null when unavailable. This is not a process deadline and must not be restored as live state during replay.",
+        ),
+    ] = None
     item: ThreadItem
     started_at_ms: Annotated[
         int,

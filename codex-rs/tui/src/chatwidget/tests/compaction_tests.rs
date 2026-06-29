@@ -10,6 +10,7 @@ fn normalize_compaction_snapshot(text: String) -> String {
 
 fn compaction_started(id: &str) -> ServerNotification {
     ServerNotification::ItemStarted(ItemStartedNotification {
+        deadline_at_ms: None,
         thread_id: "thread-1".to_string(),
         turn_id: "turn-1".to_string(),
         started_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -382,7 +383,23 @@ async fn compaction_status_survives_follow_up_and_preserves_turn_time() {
         chat.bottom_pane.status_widget().unwrap().header(),
         "Working"
     );
-    assert!(chat.bottom_pane.status_elapsed().unwrap() >= Duration::from_secs(/*secs*/ 600));
+    // Assert the visible turn clock, not the removed status-widget-owned timer.
+    let status = render_bottom_popup(&chat, /*width*/ 80);
+    let clock = regex_lite::Regex::new(r"Working \((?:(\d+)h )?(?:(\d+)m )?(\d+)s")
+        .expect("working-clock pattern");
+    let elapsed = clock.captures(&status).expect("restored working clock");
+    let seconds = [(1, 3600), (2, 60), (3, 1)]
+        .into_iter()
+        .map(|(group, scale)| {
+            elapsed.get(group).map_or(0, |part| {
+                part.as_str().parse::<u64>().expect("elapsed digits") * scale
+            })
+        })
+        .sum::<u64>();
+    assert!(
+        seconds >= 600,
+        "turn clock was reset after compaction: {status}"
+    );
 }
 
 #[tokio::test]
