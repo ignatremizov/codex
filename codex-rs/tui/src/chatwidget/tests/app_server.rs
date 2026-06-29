@@ -738,6 +738,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: AppServerThreadItem::CollabAgentToolCall {
                 id: "call-spawn".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
@@ -1413,6 +1414,7 @@ async fn live_app_server_file_change_item_started_preserves_changes() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: item.clone(),
         }),
         /*replay_kind*/ None,
@@ -1454,6 +1456,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: AppServerThreadItem::CommandExecution {
                 model_context: None,
                 sandbox_type: None,
@@ -1583,6 +1586,7 @@ async fn live_app_server_sub_agent_activity_renders_once() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: activity.clone(),
         }),
         /*replay_kind*/ None,
@@ -1628,6 +1632,7 @@ async fn live_app_server_collab_wait_items_render_history() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: AppServerThreadItem::CollabAgentToolCall {
                 id: "wait-1".to_string(),
                 tool: AppServerCollabAgentTool::Wait,
@@ -1705,6 +1710,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: AppServerThreadItem::CollabAgentToolCall {
                 id: "spawn-1".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,

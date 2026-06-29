@@ -456,6 +456,7 @@ async fn paginated_command_history_caps_aggregated_output() {
         sandbox_type: None,
         model_context: None,
         id: "exec-1".to_string(),
+        deadline_at_ms: None,
         plugin_id: None,
         script_path: None,
         process_id: None,
