@@ -313,6 +313,7 @@ fn projected_items_report_post_projection_bytes() {
             sandbox_type: None,
             model_context: None,
             id: "exec".to_string(),
+            deadline_at_ms: None,
             plugin_id: None,
             script_path: None,
             process_id: None,

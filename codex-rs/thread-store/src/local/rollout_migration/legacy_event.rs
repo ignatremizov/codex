@@ -290,6 +290,7 @@ pub(super) fn completed_item(
                     .then(|| event.aggregated_output.clone()),
                 exit_code: Some(event.exit_code),
                 duration: Some(event.duration),
+                deadline_at_ms: None,
             }),
             Some(event.turn_id.clone()),
         )),

@@ -3414,6 +3414,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         aggregated_output: Some("done\n".to_string()),
         exit_code: Some(0),
         duration: Some(Duration::from_millis(5)),
+        deadline_at_ms: None,
     });
 
     assert_eq!(
@@ -3501,6 +3502,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         agents_states: [(receiver_thread_id, CoreAgentStatus::Completed(None))]
             .into_iter()
             .collect(),
+        deadline_at_ms: None,
     });
 
     assert_eq!(

@@ -38,6 +38,9 @@ impl ChatWidget {
         } else {
             (header, details, details_max_lines)
         };
+        if header != self.status_state.current_status.header {
+            self.clear_status_countdown();
+        }
         let details = details
             .filter(|details| !details.is_empty())
             .map(|details| {

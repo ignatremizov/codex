@@ -44,6 +44,7 @@ pub(super) async fn with_launch_failure_events(
         ExecCommandSource::UnifiedExecStartup,
         /*process_id*/ None,
         plugin_attribution,
+        /*deadline_at_ms*/ None,
     );
     let session = Arc::clone(&ctx.session);
     let step_context = Arc::clone(&ctx.step_context);

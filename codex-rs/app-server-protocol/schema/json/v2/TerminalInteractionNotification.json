@@ -1,6 +1,14 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "properties": {
+    "deadlineAtMs": {
+      "description": "Advisory Unix-millisecond empty-poll estimate, or null when cleared or unavailable.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "itemId": {
       "type": "string"
     },
