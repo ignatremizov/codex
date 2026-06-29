@@ -59,6 +59,7 @@ fn exec_command_trace_payloads_use_inferred_native_cwd() -> anyhow::Result<()> {
         process_id: Some("process-1".to_string()),
         turn_id: "turn-1".to_string(),
         started_at_ms: 1234,
+        deadline_at_ms: None,
         command: vec!["pwd".to_string()],
         cwd: "file:///C:/windows".parse()?,
         parsed_cmd: Vec::new(),

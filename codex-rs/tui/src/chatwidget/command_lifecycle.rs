@@ -17,7 +17,11 @@ impl ChatWidget {
         self.restore_reasoning_status_header();
     }
 
-    pub(super) fn on_command_execution_started(&mut self, item: ThreadItem) {
+    pub(super) fn on_command_execution_started(
+        &mut self,
+        item: ThreadItem,
+        deadline_at_ms: Option<i64>,
+    ) {
         let ThreadItem::CommandExecution {
             id,
             command,
@@ -40,6 +44,14 @@ impl ChatWidget {
             }
             // Unified exec may be parsed as Unknown; keep the working indicator visible regardless.
             self.bottom_pane.ensure_status_indicator();
+            if let Some(deadline_at_ms) = deadline_at_ms {
+                self.set_status_countdown_deadline_at_ms(
+                    StatusCountdownOwner::UnifiedExecInitial {
+                        process_key: process_id.as_deref().unwrap_or(id).to_string(),
+                    },
+                    deadline_at_ms,
+                );
+            }
             if !is_standard_tool_call(&parsed_cmd) {
                 return;
             }
@@ -72,7 +84,12 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn on_terminal_interaction(&mut self, process_id: String, stdin: String) {
+    pub(super) fn on_terminal_interaction(
+        &mut self,
+        process_id: String,
+        stdin: String,
+        deadline_at_ms: Option<i64>,
+    ) {
         if !self.bottom_pane.is_task_running() {
             return;
         }
@@ -101,6 +118,14 @@ impl ChatWidget {
                 StatusDetailsCapitalization::Preserve,
                 /*details_max_lines*/ 1,
             );
+            let countdown_owner = StatusCountdownOwner::UnifiedExecWait {
+                process_id: process_id.clone(),
+            };
+            if let Some(deadline_at_ms) = deadline_at_ms {
+                self.set_status_countdown_deadline_at_ms(countdown_owner.clone(), deadline_at_ms);
+            } else {
+                self.clear_status_countdown_if_owner(&countdown_owner);
+            }
             match &mut self.unified_exec_wait_streak {
                 Some(wait) if wait.process_id == process_id => {
                     wait.update_command_display(command_display);
@@ -123,6 +148,9 @@ impl ChatWidget {
                 .is_some_and(|wait| wait.process_id == process_id)
             {
                 self.flush_unified_exec_wait_streak();
+                self.clear_status_countdown_if_owner(&StatusCountdownOwner::UnifiedExecWait {
+                    process_id,
+                });
             }
             self.add_to_history(history_cell::new_unified_exec_interaction(
                 command_display,
@@ -142,14 +170,27 @@ impl ChatWidget {
             return;
         };
         if is_unified_exec_source(*source) {
-            if let Some(process_id) = process_id.as_deref()
-                && self
-                    .unified_exec_wait_streak
+            let initial_owner = StatusCountdownOwner::UnifiedExecInitial {
+                process_key: process_id.as_deref().unwrap_or(id).to_string(),
+            };
+            let completed_wait_streak = process_id.as_deref().is_some_and(|process_id| {
+                self.unified_exec_wait_streak
                     .as_ref()
                     .is_some_and(|wait| wait.process_id == process_id)
-            {
+            });
+            if completed_wait_streak {
+                let wait_owner =
+                    process_id
+                        .as_deref()
+                        .map(|process_id| StatusCountdownOwner::UnifiedExecWait {
+                            process_id: process_id.to_string(),
+                        });
                 self.flush_unified_exec_wait_streak();
+                if let Some(wait_owner) = wait_owner {
+                    self.clear_status_countdown_if_owner(&wait_owner);
+                }
             }
+            self.clear_status_countdown_if_owner(&initial_owner);
             self.track_unified_exec_process_end(id, process_id.as_deref());
             if !self.bottom_pane.is_task_running() {
                 return;

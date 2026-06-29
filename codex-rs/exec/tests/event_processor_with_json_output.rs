@@ -217,6 +217,7 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
     assert_eq!(
         started,
@@ -442,6 +443,7 @@ fn web_search_start_and_completion_reuse_item_id() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
 
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
@@ -519,6 +521,7 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
@@ -661,6 +664,7 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
@@ -757,6 +761,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
             thread_id: "thread-parent".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
@@ -983,6 +988,7 @@ fn agent_message_item_started_is_ignored() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
 
     assert_eq!(
@@ -1369,6 +1375,7 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
         }));
     assert_eq!(
         started,
