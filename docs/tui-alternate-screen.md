@@ -113,6 +113,8 @@ The owned alternate-screen viewport supports transcript navigation directly.
 The `global.open_transcript` action defaults to Ctrl+T; the runtime keymap can
 remap it. Transcript presentation and terminal scrollback are distinct surfaces.
 
+In inline mode, switching threads or agents reconstructs only a recent tail of native terminal scrollback: at most `max(160, terminal height × 5)` rows, including the wrapped earlier-history notice. This one-time switch budget is independent of `tui.terminal_resize_reflow_max_rows`, including when ordinary resize replay is uncapped. It does not remove retained history or restrict the transcript pager, and later ordinary resize replay continues to use the configured limit. The owned alternate-screen viewport does not perform this native-scrollback reconstruction.
+
 ## For Developers
 
 When modifying TUI code, remember:
