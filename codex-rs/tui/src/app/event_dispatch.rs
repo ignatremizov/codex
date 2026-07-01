@@ -763,7 +763,9 @@ impl App {
                 self.begin_initial_history_replay_buffer();
             }
             AppEvent::BeginThreadSwitchHistoryReplayBuffer => {
-                self.begin_thread_switch_history_replay_buffer();
+                self.begin_thread_switch_history_replay_buffer(
+                    tui.terminal.last_known_screen_size.height,
+                );
             }
             AppEvent::ResetTranscriptForThreadSwitch => {
                 self.reset_for_thread_switch(tui)?;
