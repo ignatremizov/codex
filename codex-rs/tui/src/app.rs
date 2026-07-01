@@ -529,6 +529,7 @@ struct InitialHistoryReplayBuffer {
     retained_lines: VecDeque<crate::terminal_hyperlinks::HyperlinkLine>,
     render_from_transcript_tail: bool,
     was_truncated: bool,
+    transcript_tail_max_rows: Option<usize>,
 }
 
 pub(crate) struct App {
