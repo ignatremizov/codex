@@ -30,6 +30,9 @@ use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::transcript_reflow::TRANSCRIPT_REFLOW_DEBOUNCE;
 use crate::tui;
 
+const THREAD_SWITCH_REPLAY_MIN_ROWS: usize = 160;
+const THREAD_SWITCH_REPLAY_VISIBLE_HEIGHT_MULTIPLIER: usize = 5;
+
 struct ReflowCellDisplay {
     lines: Vec<HyperlinkLine>,
     is_stream_continuation: bool,
@@ -122,14 +125,18 @@ impl App {
 
     /// Start retaining a thread-switch transcript replay without rendering each historical cell.
     ///
-    /// Thread switches already rebuild `transcript_cells` from source. When a row cap exists, we can
-    /// defer terminal writes until the replay is complete and reuse the resize-reflow tail renderer
-    /// so only the rows the terminal would retain are formatted and inserted.
-    pub(super) fn begin_thread_switch_history_replay_buffer(&mut self) {
-        if self.resize_reflow_max_rows().is_some() && self.overlay.is_none() {
+    /// Thread switches already rebuild `transcript_cells` from source. Defer terminal writes until
+    /// the replay is complete and only render the recent visible tail, avoiding a full scrollback
+    /// rewrite for long agent rollouts.
+    pub(super) fn begin_thread_switch_history_replay_buffer(&mut self, visible_rows: u16) {
+        if self.overlay.is_none() {
+            let transcript_tail_max_rows = usize::from(visible_rows)
+                .saturating_mul(THREAD_SWITCH_REPLAY_VISIBLE_HEIGHT_MULTIPLIER)
+                .max(THREAD_SWITCH_REPLAY_MIN_ROWS);
             self.initial_history_replay_buffer = Some(InitialHistoryReplayBuffer {
                 retained_lines: VecDeque::new(),
                 render_from_transcript_tail: true,
+                transcript_tail_max_rows: Some(transcript_tail_max_rows),
             });
         }
     }
@@ -147,7 +154,12 @@ impl App {
         if buffer.retained_lines.is_empty() {
             if buffer.render_from_transcript_tail {
                 let width = tui.terminal.last_known_screen_size.width;
-                let reflowed_lines = self.render_transcript_lines_for_reflow(width).lines;
+                let reflowed_lines = self
+                    .render_transcript_lines_for_reflow_with_row_cap(
+                        width,
+                        buffer.transcript_tail_max_rows,
+                    )
+                    .lines;
                 if !reflowed_lines.is_empty() {
                     tui.insert_history_hyperlink_lines_with_wrap_policy(
                         reflowed_lines,
@@ -460,7 +472,14 @@ impl App {
     /// were a new top-level history item. The final row trim happens after separators are restored,
     /// so the returned rows obey the cap exactly.
     pub(super) fn render_transcript_lines_for_reflow(&mut self, width: u16) -> ReflowRenderResult {
-        let row_cap = self.resize_reflow_max_rows();
+        self.render_transcript_lines_for_reflow_with_row_cap(width, self.resize_reflow_max_rows())
+    }
+
+    fn render_transcript_lines_for_reflow_with_row_cap(
+        &mut self,
+        width: u16,
+        row_cap: Option<usize>,
+    ) -> ReflowRenderResult {
         let mut cell_displays = VecDeque::new();
         let mut rendered_rows = 0usize;
         let mut start = self.transcript_cells.len();
