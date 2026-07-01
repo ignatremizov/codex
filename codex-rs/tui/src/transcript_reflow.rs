@@ -30,6 +30,7 @@ pub(crate) struct TranscriptReflowState {
     pending_reflow_width: Option<u16>,
     pending_until: Option<Instant>,
     visible_history_rows: Option<u16>,
+    pending_row_cap: Option<usize>,
     ran_during_stream: bool,
     resize_requested_during_stream: bool,
 }
@@ -102,6 +103,12 @@ impl TranscriptReflowState {
     pub(crate) fn schedule_immediate(&mut self) {
         self.pending_reflow_width = None;
         self.pending_until = Some(Instant::now());
+        self.pending_row_cap = None;
+    }
+
+    pub(crate) fn schedule_immediate_with_row_cap(&mut self, row_cap: Option<usize>) {
+        self.schedule_immediate();
+        self.pending_row_cap = row_cap;
     }
 
     #[cfg(test)]
@@ -124,6 +131,11 @@ impl TranscriptReflowState {
     pub(crate) fn clear_pending_reflow(&mut self) {
         self.pending_until = None;
         self.pending_reflow_width = None;
+        self.pending_row_cap = None;
+    }
+
+    pub(crate) fn take_pending_row_cap(&mut self) -> Option<usize> {
+        self.pending_row_cap.take()
     }
 
     /// Remember the terminal width that actually rebuilt transcript scrollback.
@@ -289,6 +301,18 @@ mod tests {
         state.clear_pending_reflow();
 
         assert!(state.reflow_needed_for_width(/*width*/ 100));
+    }
+
+    #[test]
+    fn immediate_reflow_row_cap_is_consumed_once() {
+        let mut state = TranscriptReflowState::default();
+        state.set_visible_history_rows(/*rows*/ 19);
+        state.schedule_immediate_with_row_cap(Some(160));
+
+        assert_eq!(state.take_pending_row_cap(), Some(160));
+        assert_eq!(state.take_pending_row_cap(), None);
+        assert_eq!(state.visible_history_rows(), Some(19));
+        assert!(state.has_pending_reflow());
     }
 
     #[test]

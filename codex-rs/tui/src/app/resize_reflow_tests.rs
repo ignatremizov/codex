@@ -179,6 +179,39 @@ async fn capped_resize_reflow_prepends_transcript_notice_without_changing_transc
 }
 
 #[tokio::test]
+async fn thread_switch_tail_cap_includes_transcript_notice_within_its_row_budget() {
+    let mut app = make_test_app().await;
+    app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Disabled;
+    app.transcript_cells = plain_history_cells(/*count*/ 12);
+
+    let rendered = app.render_transcript_lines_for_reflow_with_row_cap(
+        /*width*/ 80,
+        /*row_cap*/ Some(8),
+    );
+
+    assert_eq!(rendered.lines.len(), 8);
+    assert_eq!(app.transcript_cells.len(), 12);
+    insta::assert_snapshot!(
+        rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        @r"
+    Earlier messages are available — press ctrl + t to view the full transcript
+    cell 8
+
+    cell 9
+
+    cell 10
+
+    cell 11
+    "
+    );
+}
+
+#[tokio::test]
 async fn capped_resize_reflow_counts_wrapped_notice_rows() {
     let mut app = make_test_app().await;
     app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(8);
