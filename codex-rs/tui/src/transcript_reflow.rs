@@ -30,6 +30,7 @@ pub(crate) struct TranscriptReflowState {
     pending_reflow_width: Option<u16>,
     pending_until: Option<Instant>,
     visible_history_rows: Option<u16>,
+    pending_thread_switch_max_rows: Option<usize>,
     ran_during_stream: bool,
     resize_requested_during_stream: bool,
 }
@@ -104,6 +105,12 @@ impl TranscriptReflowState {
         self.pending_until = Some(Instant::now());
     }
 
+    /// Keep the switch budget until the replay runs, even if resize or consolidation reschedules it.
+    pub(crate) fn schedule_thread_switch(&mut self, max_rows: usize) {
+        self.schedule_immediate();
+        self.pending_thread_switch_max_rows = Some(max_rows);
+    }
+
     #[cfg(test)]
     pub(crate) fn set_due_for_test(&mut self) {
         self.pending_until = Some(Instant::now() - Duration::from_millis(1));
@@ -124,6 +131,11 @@ impl TranscriptReflowState {
     pub(crate) fn clear_pending_reflow(&mut self) {
         self.pending_until = None;
         self.pending_reflow_width = None;
+        self.pending_thread_switch_max_rows = None;
+    }
+
+    pub(crate) fn take_thread_switch_max_rows(&mut self) -> Option<usize> {
+        self.pending_thread_switch_max_rows.take()
     }
 
     /// Remember the terminal width that actually rebuilt transcript scrollback.
@@ -188,6 +200,7 @@ pub(crate) struct TranscriptWidthChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn visible_history_rows_are_cached_for_resize_replay() {
@@ -289,6 +302,20 @@ mod tests {
         state.clear_pending_reflow();
 
         assert!(state.reflow_needed_for_width(/*width*/ 100));
+    }
+
+    #[test]
+    fn immediate_reflow_row_cap_is_consumed_once() {
+        let mut state = TranscriptReflowState::default();
+        state.set_visible_history_rows(/*rows*/ 19);
+        state.schedule_thread_switch(/*max_rows*/ 160);
+        state.schedule_debounced(/*target_width*/ Some(100));
+        state.schedule_immediate();
+
+        assert_eq!(state.take_thread_switch_max_rows(), Some(160));
+        assert_eq!(state.take_thread_switch_max_rows(), None);
+        assert_eq!(state.visible_history_rows(), Some(19));
+        assert!(state.has_pending_reflow());
     }
 
     #[test]
