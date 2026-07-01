@@ -4813,28 +4813,35 @@ async fn required_stream_reflow_during_capped_initial_replay_survives_transcript
 }
 
 #[tokio::test]
-async fn thread_switch_replay_buffer_uses_transcript_tail_mode_when_row_cap_present() {
+async fn thread_switch_replay_buffer_uses_visible_tail_minimum() {
     let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
     app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(3);
 
-    app.begin_thread_switch_history_replay_buffer();
+    app.begin_thread_switch_history_replay_buffer(/*visible_rows*/ 24);
 
     let buffer = app
         .initial_history_replay_buffer
         .as_ref()
         .expect("thread switch replay buffer should be active");
     assert!(buffer.render_from_transcript_tail);
+    assert_eq!(buffer.transcript_tail_max_rows, Some(160));
     assert!(buffer.retained_lines.is_empty());
 }
 
 #[tokio::test]
-async fn thread_switch_replay_buffer_is_disabled_without_row_cap() {
+async fn thread_switch_replay_buffer_caps_tail_without_resize_row_cap() {
     let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
     app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Disabled;
 
-    app.begin_thread_switch_history_replay_buffer();
+    app.begin_thread_switch_history_replay_buffer(/*visible_rows*/ 40);
 
-    assert!(app.initial_history_replay_buffer.is_none());
+    let buffer = app
+        .initial_history_replay_buffer
+        .as_ref()
+        .expect("thread switch replay buffer should be active");
+    assert!(buffer.render_from_transcript_tail);
+    assert_eq!(buffer.transcript_tail_max_rows, Some(200));
+    assert!(buffer.retained_lines.is_empty());
 }
 
 #[tokio::test]

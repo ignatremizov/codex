@@ -306,7 +306,9 @@ impl App {
                 self.begin_initial_history_replay_buffer();
             }
             AppEvent::BeginThreadSwitchHistoryReplayBuffer => {
-                self.begin_thread_switch_history_replay_buffer();
+                self.begin_thread_switch_history_replay_buffer(
+                    tui.terminal.last_known_screen_size.height,
+                );
             }
             AppEvent::InsertHistoryCell(cell) => {
                 self.insert_history_cell(tui, cell);
