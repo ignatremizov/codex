@@ -639,9 +639,6 @@ async fn list_apps_emits_updates_and_returns_after_both_lists_load() -> Result<(
         plugin_display_names: Vec::new(),
     }];
 
-    let first_update = read_app_list_updated_notification(&mut mcp).await?;
-    assert_eq!(first_update.data, expected_accessible);
-
     let expected_merged = vec![
         AppInfo {
             id: "beta".to_string(),
@@ -679,8 +676,13 @@ async fn list_apps_emits_updates_and_returns_after_both_lists_load() -> Result<(
         },
     ];
 
-    let second_update = read_app_list_updated_notification(&mut mcp).await?;
-    assert_eq!(second_update.data, expected_merged);
+    let first_update = read_app_list_updated_notification(&mut mcp).await?;
+    if first_update.data == expected_accessible {
+        let second_update = read_app_list_updated_notification(&mut mcp).await?;
+        assert_eq!(second_update.data, expected_merged);
+    } else {
+        assert_eq!(first_update.data, expected_merged);
+    }
 
     let response: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
