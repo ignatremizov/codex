@@ -162,6 +162,158 @@ async fn live_fork_keeps_instructions_when_source_is_unloaded_during_setup() {
         .expect("shutdown fork");
 }
 
+#[tokio::test]
+async fn explicit_fork_source_bounds_live_instructions_history_initialization_and_attachments() {
+    let home = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = home.path().abs();
+    config.cwd = config.codex_home.abs();
+    let state_db = init_state_db(&config).await.expect("state database");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db),
+    );
+    let thread_instructions = Instructions {
+        text: "instructions owned by the active-home source".to_string(),
+        source: None,
+    };
+    let source = manager
+        .start_thread(StartThreadOptions {
+            environments: Some(Vec::new()),
+            history_mode: Some(ThreadHistoryMode::Legacy),
+            thread_instructions_provider: Some(Arc::new(ParentInstructionsProvider(
+                thread_instructions.clone(),
+            ))),
+            ..StartThreadOptions::new(config.clone())
+        })
+        .await
+        .expect("start source");
+    source.thread.ensure_rollout_materialized().await;
+    source.thread.flush_rollout().await.expect("flush source");
+    let source_path = source.thread.rollout_path().expect("source rollout");
+    let source_history = RolloutRecorder::get_rollout_history(&source_path)
+        .await
+        .expect("read source");
+    let history_items = Arc::new(source_history.get_rollout_items().to_vec());
+    // Keep the collision in the current home: an external-home scope gate alone
+    // must not hide a same-ID lookup of a different rollout in this store.
+    let same_home_collision_path = config
+        .codex_home
+        .join("different-source.jsonl")
+        .to_path_buf();
+    std::fs::copy(&source_path, &same_home_collision_path).expect("copy same-home source");
+    let normalized_source = source_path
+        .parent()
+        .expect("source directory")
+        .join(".")
+        .join(source_path.file_name().expect("source filename"));
+    let store = &manager.state.thread_store;
+    assert!(store.supports_thread_attachments());
+    store
+        .add_thread_attachment(codex_thread_store::AddThreadAttachmentParams {
+            thread_id: source.thread_id,
+            attachment_type: "issue".to_string(),
+            identity_key: "active-home-only".to_string(),
+            payload: serde_json::json!({"title": "source attachment"}),
+        })
+        .await
+        .expect("attach source metadata");
+
+    for source_is_live in [true, false] {
+        if !source_is_live {
+            assert!(
+                manager
+                    .remove_thread_if_matches(&source.thread_id, &source.thread)
+                    .await
+                    .is_some()
+            );
+            source
+                .thread
+                .shutdown_and_wait()
+                .await
+                .expect("shutdown source");
+        }
+        for (rollout_path, same_source) in [
+            (None, true),
+            (Some(normalized_source.clone()), true),
+            (Some(same_home_collision_path.clone()), false),
+        ] {
+            let fork = manager
+                .fork_thread_from_history(
+                    ForkSnapshot::Interrupted,
+                    StartThreadOptions {
+                        environments: Some(Vec::new()),
+                        history_mode: Some(ThreadHistoryMode::Legacy),
+                        ..StartThreadOptions::new(config.clone())
+                    },
+                    InitialHistory::Resumed(ResumedHistory {
+                        history_revision: None,
+                        conversation_id: source.thread_id,
+                        history: Arc::clone(&history_items),
+                        rollout_path,
+                    }),
+                )
+                .await
+                .expect("fork selected source");
+            let inherited = fork.thread.session.inherited_instructions().await;
+            assert_eq!(
+                inherited.thread,
+                (source_is_live && same_source).then(|| thread_instructions.clone())
+            );
+            let turn = fork.thread.session.new_default_turn().await;
+            let metadata = fork.thread.session.with_window_and_fork_metadata(
+                &turn,
+                crate::responses_metadata::CodexResponsesMetadata::new(
+                    "test-installation".to_string(),
+                    "test-session".to_string(),
+                    fork.thread_id.to_string(),
+                    "test-window".to_string(),
+                ),
+                1,
+                uuid::Uuid::new_v4(),
+            );
+            if source_is_live && same_source {
+                assert!(matches!(
+                    metadata.history_initialization,
+                    Some(HistoryInitialization::WarmFork)
+                ));
+            } else {
+                assert!(matches!(
+                    metadata.history_initialization,
+                    Some(HistoryInitialization::ColdFork)
+                ));
+            }
+            let attachments = store
+                .list_thread_attachments(codex_thread_store::ListThreadAttachmentsParams {
+                    thread_id: fork.thread_id,
+                    cursor: None,
+                    limit: 10,
+                })
+                .await
+                .expect("list child attachments")
+                .attachments;
+            assert_eq!(
+                attachments
+                    .iter()
+                    .map(|attachment| attachment.identity_key.as_str())
+                    .collect::<Vec<_>>(),
+                if same_source {
+                    vec!["active-home-only"]
+                } else {
+                    Vec::new()
+                }
+            );
+            fork.thread
+                .shutdown_and_wait()
+                .await
+                .expect("shutdown fork");
+        }
+    }
+}
+
 async fn startup_fixture() -> (tempfile::TempDir, Config, ThreadManager) {
     let home = tempdir().unwrap();
     let mut config = test_config().await;

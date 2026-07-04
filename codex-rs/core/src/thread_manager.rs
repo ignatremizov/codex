@@ -126,6 +126,7 @@ use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -438,6 +439,8 @@ struct ThreadSpawnRequest {
     parent_originator: Option<String>,
     prepared_child: Option<PreparedChildOrigin>,
     forked_from_thread_id: Option<ThreadId>,
+    // Lineage alone does not identify an explicitly selected rollout's live source.
+    fork_source_rollout_path: Option<PathBuf>,
     fork_persistence: ForkPersistence,
     inherited_environments: Option<TurnEnvironmentSnapshot>,
     inherited_instructions: Option<SessionInstructions>,
@@ -461,6 +464,7 @@ impl ThreadSpawnRequest {
             parent_originator: None,
             prepared_child: None,
             forked_from_thread_id: None,
+            fork_source_rollout_path: None,
             fork_persistence: ForkPersistence::Copied,
             inherited_environments: None,
             inherited_instructions: None,
@@ -1766,6 +1770,10 @@ impl ThreadManager {
             InitialHistory::Forked(_) => history.forked_from_id(),
             InitialHistory::New | InitialHistory::Cleared => None,
         };
+        let source_rollout_path = match &history {
+            InitialHistory::Resumed(resumed) => resumed.rollout_path.clone(),
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
+        };
         // Capture the live source before later startup work can unload it. Keep
         // the fork's own providers, not the source's task-bound callback.
         let instructions = self
@@ -1777,19 +1785,26 @@ impl ThreadManager {
                     .unwrap_or(&self.state.session_source),
                 /*parent_thread_id*/ None,
                 source_thread_id,
+                source_rollout_path.as_deref(),
                 options.thread_instructions_provider.clone(),
             )
             .await;
-        let multi_agent_version = self
-            .state
-            .effective_multi_agent_version_for_spawn(
-                &history,
-                /*session_source*/ None,
-                /*parent_thread_id*/ None,
-                source_thread_id,
-                &options.config,
-            )
-            .await;
+        let multi_agent_version =
+            if let Some(version) = options.config.multi_agent_version_override() {
+                version
+            } else {
+                self.state
+                    .multi_agent_version_for_spawn(
+                        &history,
+                        /*session_source*/ None,
+                        /*parent_thread_id*/ None,
+                        source_thread_id,
+                        source_rollout_path.as_deref(),
+                        &options.config,
+                    )
+                    .await
+                    .unwrap_or_else(|| options.config.multi_agent_version_from_features())
+            };
         let interrupted_marker = InterruptedTurnHistoryMarker::from_config_and_version(
             &options.config,
             multi_agent_version,
@@ -1799,6 +1814,7 @@ impl ThreadManager {
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
         request.forked_from_thread_id = source_thread_id;
+        request.fork_source_rollout_path = source_rollout_path;
         request.fork_persistence = fork_persistence;
         request.inherited_instructions = Some(instructions);
         Box::pin(self.state.spawn_thread(request)).await
@@ -1986,6 +2002,43 @@ impl ThreadManagerState {
             })
     }
 
+    async fn thread_for_fork_source(
+        &self,
+        thread_id: ThreadId,
+        source_rollout_path: Option<&Path>,
+    ) -> Option<Arc<CodexThread>> {
+        let thread = self.get_thread(thread_id).await.ok()?;
+        if let Some(source_path) = source_rollout_path
+            && !thread
+                .rollout_path()
+                .as_deref()
+                .is_some_and(|path| same_rollout_source(path, source_path))
+        {
+            return None;
+        }
+        Some(thread)
+    }
+
+    async fn stored_fork_source_matches(
+        &self,
+        thread_id: ThreadId,
+        source_rollout_path: Option<&Path>,
+    ) -> bool {
+        let Some(source_path) = source_rollout_path else {
+            return true;
+        };
+        self.thread_store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: true,
+                include_history: false,
+            })
+            .await
+            .ok()
+            .and_then(|thread| thread.rollout_path)
+            .is_some_and(|path| same_rollout_source(&path, source_path))
+    }
+
     pub(crate) async fn effective_multi_agent_version_for_spawn(
         &self,
         initial_history: &InitialHistory,
@@ -2002,18 +2055,21 @@ impl ThreadManagerState {
             session_source,
             parent_thread_id,
             forked_from_thread_id,
+            /*fork_source_rollout_path*/ None,
             config,
         )
         .await
         .unwrap_or_else(|| config.multi_agent_version_from_features())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn multi_agent_version_for_spawn(
         &self,
         initial_history: &InitialHistory,
         session_source: Option<&SessionSource>,
         parent_thread_id: Option<ThreadId>,
         forked_from_thread_id: Option<ThreadId>,
+        fork_source_rollout_path: Option<&Path>,
         config: &Config,
     ) -> Option<MultiAgentVersion> {
         let inherited_multi_agent_version = self
@@ -2022,6 +2078,7 @@ impl ThreadManagerState {
                 session_source,
                 parent_thread_id,
                 forked_from_thread_id,
+                fork_source_rollout_path,
             )
             .await;
         let configured_multi_agent_version = config.multi_agent_version_from_features();
@@ -2046,22 +2103,28 @@ impl ThreadManagerState {
         session_source: Option<&SessionSource>,
         parent_thread_id: Option<ThreadId>,
         forked_from_thread_id: Option<ThreadId>,
+        fork_source_rollout_path: Option<&Path>,
     ) -> Option<MultiAgentVersion> {
-        let inherited_thread_id = match session_source {
+        let (inherited_thread_id, inherited_source_path) = match session_source {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id, ..
-            })) => Some(*parent_thread_id),
+            })) => (Some(*parent_thread_id), None),
             _ => match initial_history {
-                InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
-                InitialHistory::Forked(_) => forked_from_thread_id.or(parent_thread_id),
-                InitialHistory::New | InitialHistory::Cleared => parent_thread_id,
+                InitialHistory::Resumed(resumed) => {
+                    (Some(resumed.conversation_id), fork_source_rollout_path)
+                }
+                InitialHistory::Forked(_) if forked_from_thread_id.is_some() => {
+                    (forked_from_thread_id, fork_source_rollout_path)
+                }
+                InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => {
+                    (parent_thread_id, None)
+                }
             },
         };
         let inherited_multi_agent_version = match inherited_thread_id {
             Some(thread_id) => self
-                .get_thread(thread_id)
+                .thread_for_fork_source(thread_id, inherited_source_path)
                 .await
-                .ok()
                 .and_then(|thread| thread.multi_agent_version()),
             None => None,
         };
@@ -2082,18 +2145,23 @@ impl ThreadManagerState {
         session_source: &SessionSource,
         parent_thread_id: Option<ThreadId>,
         forked_from_thread_id: Option<ThreadId>,
+        fork_source_rollout_path: Option<&Path>,
         thread_provider: Option<Arc<dyn ThreadInstructionsProvider>>,
     ) -> SessionInstructions {
-        let inherited_thread_id = match session_source {
+        let (inherited_thread_id, inherited_source_path) = match session_source {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id, ..
-            }) => Some(*parent_thread_id),
-            _ => parent_thread_id.or(forked_from_thread_id),
+            }) => (Some(*parent_thread_id), None),
+            _ if parent_thread_id.is_some() => (parent_thread_id, None),
+            _ => (forked_from_thread_id, fork_source_rollout_path),
         };
         let inherited = match inherited_thread_id {
-            Some(thread_id) => match self.get_thread(thread_id).await {
-                Ok(thread) => thread.session.inherited_instructions().await,
-                Err(_) => SessionInstructions::default(),
+            Some(thread_id) => match self
+                .thread_for_fork_source(thread_id, inherited_source_path)
+                .await
+            {
+                Some(thread) => thread.session.inherited_instructions().await,
+                None => SessionInstructions::default(),
             },
             None => SessionInstructions::default(),
         };
@@ -2114,18 +2182,24 @@ impl ThreadManagerState {
         session_source: &SessionSource,
         parent_thread_id: Option<ThreadId>,
         forked_from_thread_id: Option<ThreadId>,
+        fork_source_rollout_path: Option<&Path>,
     ) -> Option<String> {
-        let inherited_thread_id = match session_source {
+        let (inherited_thread_id, inherited_source_path) = match session_source {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id, ..
-            }) => Some(*parent_thread_id),
-            _ => parent_thread_id.or(forked_from_thread_id),
+            }) => (Some(*parent_thread_id), None),
+            _ if parent_thread_id.is_some() => (parent_thread_id, None),
+            _ => (forked_from_thread_id, fork_source_rollout_path),
         };
-        let thread = self.get_thread(inherited_thread_id?).await.ok()?;
+        let thread_id = inherited_thread_id?;
+        let thread = self
+            .thread_for_fork_source(thread_id, inherited_source_path)
+            .await?;
         let originator = thread.config_snapshot().await.originator;
         (!originator.is_empty()).then_some(originator)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn effective_originator(
         &self,
         initial_history: &InitialHistory,
@@ -2133,6 +2207,7 @@ impl ThreadManagerState {
         session_source: &SessionSource,
         parent_thread_id: Option<ThreadId>,
         forked_from_thread_id: Option<ThreadId>,
+        fork_source_rollout_path: Option<&Path>,
         parent_originator: Option<String>,
     ) -> String {
         let persisted_originator = initial_history.get_session_originator();
@@ -2142,6 +2217,7 @@ impl ThreadManagerState {
                     session_source,
                     parent_thread_id,
                     forked_from_thread_id,
+                    fork_source_rollout_path,
                 )
                 .await
             }
@@ -2150,6 +2226,7 @@ impl ThreadManagerState {
                     session_source,
                     parent_thread_id,
                     forked_from_thread_id,
+                    fork_source_rollout_path,
                 )
                 .await
             }
@@ -2330,6 +2407,7 @@ impl ThreadManagerState {
             parent_originator,
             prepared_child,
             forked_from_thread_id,
+            fork_source_rollout_path,
             fork_persistence,
             inherited_environments,
             inherited_instructions,
@@ -2343,7 +2421,9 @@ impl ThreadManagerState {
             InitialHistory::New | InitialHistory::Forked(_)
         ) && let Some(source_thread_id) = forked_from_thread_id
         {
-            if let Ok(source) = self.get_thread(source_thread_id).await
+            if let Some(source) = self
+                .thread_for_fork_source(source_thread_id, fork_source_rollout_path.as_deref())
+                .await
                 && source.agent_status().await != AgentStatus::Shutdown
             {
                 HistoryInitialization::WarmFork
@@ -2528,6 +2608,7 @@ impl ThreadManagerState {
                     &session_source,
                     parent_thread_id,
                     forked_from_thread_id,
+                    fork_source_rollout_path.as_deref(),
                     thread_instructions_provider,
                 )
                 .await
@@ -2553,6 +2634,7 @@ impl ThreadManagerState {
                     Some(&session_source),
                     parent_thread_id,
                     forked_from_thread_id,
+                    fork_source_rollout_path.as_deref(),
                     &config,
                 )
                 .await,
@@ -2567,6 +2649,7 @@ impl ThreadManagerState {
                     &session_source,
                     parent_thread_id,
                     forked_from_thread_id,
+                    fork_source_rollout_path.as_deref(),
                     parent_originator,
                 )
                 .await,
@@ -2700,6 +2783,9 @@ impl ThreadManagerState {
         if let Some(source_thread_id) = startup_context.attachment_source
             && session.live_thread().is_some()
             && self.thread_store.supports_thread_attachments()
+            && self
+                .stored_fork_source_matches(source_thread_id, fork_source_rollout_path.as_deref())
+                .await
         {
             // Fork initialization already handles persistence. Copy current membership before
             // registration, but do not fail the conversation fork for attachment metadata errors.
@@ -2813,6 +2899,13 @@ impl ThreadManagerState {
     pub(crate) fn notify_thread_created(&self, thread_id: ThreadId) {
         let _ = self.thread_created_tx.send(thread_id);
     }
+}
+
+fn same_rollout_source(actual: &Path, expected: &Path) -> bool {
+    crate::path_utils::paths_match_after_normalization(
+        codex_rollout::plain_rollout_path(actual).as_path(),
+        codex_rollout::plain_rollout_path(expected).as_path(),
+    )
 }
 
 fn stored_thread_to_initial_history(

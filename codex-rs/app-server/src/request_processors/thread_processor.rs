@@ -119,6 +119,12 @@ struct ThreadRevertRuntimeSnapshot {
     client_mcp_extensions: ClientMcpExtensions,
 }
 
+#[derive(Clone, Copy)]
+enum ArchivedThreadReadPolicy {
+    Reject,
+    Allow,
+}
+
 fn collect_resume_override_mismatches(
     request: &ThreadResumeParams,
     config_snapshot: &ThreadConfigSnapshot,
@@ -2476,6 +2482,7 @@ impl ThreadRequestProcessor {
                 thread_id_string.as_str(),
                 /*path*/ None,
                 /*include_history*/ false,
+                ArchivedThreadReadPolicy::Reject,
             )
             .await?;
         let (thread_history, resume_source_thread) = self
@@ -3990,6 +3997,7 @@ impl ThreadRequestProcessor {
                     &thread_id,
                     path.as_ref(),
                     /*include_history*/ false,
+                    ArchivedThreadReadPolicy::Reject,
                 )
                 .await
             {
@@ -4568,6 +4576,7 @@ impl ThreadRequestProcessor {
                     &params.thread_id,
                     /*path*/ None,
                     /*include_history*/ false,
+                    ArchivedThreadReadPolicy::Reject,
                 )
                 .await?;
             Some((existing_thread_id, existing_thread, source_thread))
@@ -4577,6 +4586,7 @@ impl ThreadRequestProcessor {
                     &params.thread_id,
                     params.path.as_ref(),
                     /*include_history*/ false,
+                    ArchivedThreadReadPolicy::Reject,
                 )
                 .await?;
             let existing_thread_id = source_thread.thread_id;
@@ -4679,6 +4689,7 @@ impl ThreadRequestProcessor {
                         &source_thread_id,
                         source_rollout_path.as_ref(),
                         /*include_history*/ true,
+                        ArchivedThreadReadPolicy::Reject,
                     )
                     .await?;
             }
@@ -4897,6 +4908,7 @@ impl ThreadRequestProcessor {
                 &thread_id,
                 rollout_path.as_ref(),
                 /*include_history*/ true,
+                ArchivedThreadReadPolicy::Reject,
             )
             .await?;
         let history = self
@@ -4910,6 +4922,7 @@ impl ThreadRequestProcessor {
         thread_id: &str,
         path: Option<&PathBuf>,
         include_history: bool,
+        archived_policy: ArchivedThreadReadPolicy,
     ) -> Result<StoredThread, JSONRPCErrorError> {
         let result = if let Some(path) = path {
             self.thread_store
@@ -4961,7 +4974,9 @@ impl ThreadRequestProcessor {
                 )));
             }
         }
-        if stored_thread.archived_at.is_some() {
+        if matches!(archived_policy, ArchivedThreadReadPolicy::Reject)
+            && stored_thread.archived_at.is_some()
+        {
             let thread_id = stored_thread.thread_id;
             return Err(invalid_request(format!(
                 "session {thread_id} is archived. Run `codex unarchive {thread_id}` to unarchive it first."
@@ -5235,13 +5250,33 @@ impl ThreadRequestProcessor {
                 &thread_id,
                 path.as_ref(),
                 /*include_history*/ false,
+                if path.is_some() {
+                    ArchivedThreadReadPolicy::Allow
+                } else {
+                    ArchivedThreadReadPolicy::Reject
+                },
             )
             .await?;
         let loaded_parent = self
             .thread_manager
             .get_thread(source_thread.thread_id)
             .await
-            .ok();
+            .ok()
+            .filter(|parent| {
+                // An imported rollout can share an ID with a different active-home thread.
+                // Borrow live state only when it belongs to the actual requested source.
+                path.is_none()
+                    || source_thread
+                        .rollout_path
+                        .as_ref()
+                        .zip(parent.rollout_path().as_ref())
+                        .is_some_and(|(source_path, parent_path)| {
+                            path_utils::paths_match_after_normalization(
+                                codex_rollout::plain_rollout_path(source_path).as_path(),
+                                codex_rollout::plain_rollout_path(parent_path).as_path(),
+                            )
+                        })
+            });
         let inherited_fork = if experimental_prediction_mode {
             // Keep inherited state and its preparation off the fork handler's stack.
             let (mut options, settings) = Box::pin(async {
@@ -5376,6 +5411,11 @@ impl ThreadRequestProcessor {
                     &thread_id,
                     path.as_ref(),
                     /*include_history*/ true,
+                    if path.is_some() {
+                        ArchivedThreadReadPolicy::Allow
+                    } else {
+                        ArchivedThreadReadPolicy::Reject
+                    },
                 )
                 .await?;
             Arc::new(
@@ -5661,9 +5701,33 @@ impl ThreadRequestProcessor {
                 .await
                 .map_err(|err| core_thread_write_error("inherit source thread name", err))?;
         }
+        let source_goal_matches_active_store =
+            if defer_goal_continuation && goals_enabled && path.is_some() {
+                // Goals belong to the active store, not to every imported rollout with the same ID.
+                self.thread_store
+                    .read_thread(StoreReadThreadParams {
+                        thread_id: source_thread_id,
+                        include_archived: true,
+                        include_history: false,
+                    })
+                    .await
+                    .ok()
+                    .and_then(|stored| stored.rollout_path)
+                    .as_ref()
+                    .zip(source_thread.rollout_path.as_ref())
+                    .is_some_and(|(active_path, source_path)| {
+                        path_utils::paths_match_after_normalization(
+                            codex_rollout::plain_rollout_path(active_path).as_path(),
+                            codex_rollout::plain_rollout_path(source_path).as_path(),
+                        )
+                    })
+            } else {
+                true
+            };
         let inherited_goal = if defer_goal_continuation
             && session_configured.rollout_path.is_some()
             && goals_enabled
+            && source_goal_matches_active_store
         {
             if let Some(state_db) = forked_thread.state_db().or_else(|| self.state_db.clone()) {
                 self.thread_goal_processor

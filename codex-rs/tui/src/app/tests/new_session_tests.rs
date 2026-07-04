@@ -478,6 +478,7 @@ async fn backend_handoff_errors_are_snapshotted() -> Result<()> {
     let target = crate::resume_picker::SessionTarget {
         backend_id: destination_id,
         path: None,
+        source_rollout_path: None,
         thread_id: ThreadId::new(),
         cwd: None,
         history_mode: None,
@@ -536,6 +537,7 @@ async fn resumed_backend_handoff_detaches_through_the_source_connection() -> Res
     let target = crate::resume_picker::SessionTarget {
         backend_id: destination_id,
         path: None,
+        source_rollout_path: None,
         thread_id: resumed_id,
         cwd: Some(resumed.session.cwd.to_path_buf()),
         history_mode: None,
@@ -685,6 +687,7 @@ async fn provider_continuation_starts_current_provider_and_drafts_saved_referenc
         let target = crate::resume_picker::SessionTarget {
             backend_id: server.backend_id(),
             path: None,
+            source_rollout_path: None,
             thread_id: source_id,
             cwd: None,
             history_mode: None,

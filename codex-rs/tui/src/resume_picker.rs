@@ -116,6 +116,8 @@ pub struct SessionTarget {
     /// Logical owner of the native thread ID, retained across connection replacement.
     pub(crate) backend_id: crate::backend_id::BackendId,
     pub path: Option<PathBuf>,
+    /// Explicit fork source, not an ordinary picker/resume path hint.
+    pub source_rollout_path: Option<PathBuf>,
     pub thread_id: ThreadId,
     /// Working directory reported by `thread/list` or `thread/read` at selection time.
     pub cwd: Option<PathBuf>,
@@ -1059,6 +1061,7 @@ fn spawn_app_server_source(backend: AppServerPickerBackend) -> sources::Source {
                         .map(|response| SessionTarget {
                             backend_id: app_server.backend_id(),
                             path: response.thread.path,
+                            source_rollout_path: None,
                             thread_id,
                             cwd: Some(response.thread.cwd.to_path_buf()),
                             history_mode: Some(response.thread.history_mode),
@@ -1643,6 +1646,7 @@ impl PickerState {
                         return Ok(Some(self.action.selection(SessionTarget {
                             backend_id: row.backend_id.unwrap_or(self.backend_id),
                             path,
+                            source_rollout_path: None,
                             thread_id,
                             cwd: row.cwd.clone(),
                             history_mode: row.history_mode,
@@ -7432,6 +7436,7 @@ session_picker_view = "dense"
             Some(SessionSelection::Resume(SessionTarget {
                 backend_id: _,
                 path: None,
+                source_rollout_path: None,
                 thread_id: selected_thread_id,
                 cwd: None,
                 history_mode: None,

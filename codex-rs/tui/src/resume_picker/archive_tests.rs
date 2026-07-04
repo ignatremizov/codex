@@ -279,6 +279,7 @@ async fn archived_session_restore_resumes_after_completion() {
         Ok(SessionTarget {
             backend_id: state.backend_id,
             path: None,
+            source_rollout_path: None,
             thread_id,
             cwd: None,
             history_mode: None,
@@ -290,6 +291,7 @@ async fn archived_session_restore_resumes_after_completion() {
         Some(SessionSelection::Resume(SessionTarget {
             backend_id: _,
             path: None,
+            source_rollout_path: None,
             thread_id: resumed_thread_id,
             cwd: None,
             history_mode: None,

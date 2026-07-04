@@ -82,6 +82,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
 use codex_rollout::RolloutRecorder;
@@ -1258,6 +1259,362 @@ async fn thread_fork_can_load_source_by_path() -> Result<()> {
     assert_eq!(thread.preview, preview);
     assert_eq!(thread.model_provider, "mock_provider");
     assert_eq!(thread.turns.len(), 1, "expected copied fork history");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_fork_can_load_source_by_path_from_another_home() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let source_home = TempDir::new()?;
+    let active_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(active_home.path())?;
+
+    let preview = "Cross-home source message";
+    let conversation_id = create_fake_rollout(
+        source_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        preview,
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let source_path = source_home
+        .path()
+        .join("sessions")
+        .join("2025")
+        .join("01")
+        .join("05")
+        .join(format!(
+            "rollout-2025-01-05T12-00-00-{conversation_id}.jsonl"
+        ));
+    let source_contents = std::fs::read_to_string(source_path.as_path())?;
+    let active_path = active_home
+        .path()
+        .join("sessions")
+        .join("2025")
+        .join("01")
+        .join("05")
+        .join(format!(
+            "rollout-2025-01-05T12-00-00-{conversation_id}.jsonl"
+        ));
+    std::fs::create_dir_all(active_path.parent().expect("active rollout parent"))?;
+    std::fs::write(
+        active_path.as_path(),
+        source_contents.replace(preview, "Active-home collision"),
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(active_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: "not-a-valid-thread-id".to_string(),
+            path: Some(source_path.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let fork_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    let ThreadForkResponse { thread, .. } = to_response::<ThreadForkResponse>(fork_resp)?;
+
+    assert_ne!(thread.id, conversation_id);
+    assert_eq!(thread.forked_from_id, Some(conversation_id));
+    assert_eq!(thread.preview, preview);
+    assert_eq!(thread.model_provider, "mock_provider");
+    assert_eq!(thread.turns.len(), 1, "expected copied fork history");
+    assert!(
+        thread
+            .path
+            .as_ref()
+            .expect("forked thread path")
+            .starts_with(active_home.path()),
+        "forked rollout should be created under the active home"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source_path.as_path())?,
+        source_contents,
+        "cross-home fork should not mutate the source rollout"
+    );
+
+    Ok(())
+}
+
+#[test_case(false, false, false; "id_cold")]
+#[test_case(true, false, false; "same_path_cold")]
+#[test_case(false, false, true; "id_loaded")]
+#[test_case(true, false, true; "same_path_loaded")]
+#[test_case(true, true, true; "external_same_id_loaded")]
+#[tokio::test]
+async fn thread_fork_borrows_runtime_and_goals_only_from_the_actual_source(
+    explicit_path: bool,
+    external_source: bool,
+    keep_parent_loaded: bool,
+) -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let source_home = TempDir::new()?;
+    let active_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .enable_feature(Feature::Goals)
+        .disable_feature(Feature::MultiAgentV2)
+        .write(active_home.path())?;
+
+    let source_preview = "External source history";
+    let active_preview = "Active-home history";
+    let filename_ts = "2025-01-05T12-00-00";
+    let conversation_id = create_fake_rollout(
+        source_home.path(),
+        filename_ts,
+        "2025-01-05T12:00:00Z",
+        source_preview,
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let source_path = rollout_path(source_home.path(), filename_ts, &conversation_id);
+    let unfinished_turn_id = "unfinished-source-turn";
+    append_rollout_item_to_path(
+        &source_path,
+        &RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
+            turn_id: unfinished_turn_id.to_string(),
+            root_turn_id: None,
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        })),
+    )
+    .await?;
+    append_rollout_item_to_path(
+        &source_path,
+        &RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: "Unfinished source message".to_string(),
+            ..Default::default()
+        })),
+    )
+    .await?;
+    assert_eq!(
+        read_session_meta_line(&source_path)
+            .await?
+            .meta
+            .multi_agent_version,
+        None,
+        "the imported legacy source must exercise the missing-version fallback"
+    );
+    let source_contents = std::fs::read_to_string(&source_path)?;
+    let active_path = rollout_path(active_home.path(), filename_ts, &conversation_id);
+    std::fs::create_dir_all(active_path.parent().expect("active rollout parent"))?;
+    std::fs::write(
+        &active_path,
+        source_contents.replace(source_preview, active_preview),
+    )?;
+    let mut active_meta = read_session_meta_line(&active_path).await?;
+    active_meta.meta.multi_agent_version = Some(MultiAgentVersion::V2);
+    append_rollout_item_to_path(
+        &active_path,
+        &RolloutItem::SessionMeta(Box::new(active_meta)),
+    )
+    .await?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(active_home.path())
+        .without_auto_env()
+        .without_managed_config()
+        .build_initialized()
+        .await?;
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let ThreadResumeResponse { thread: parent, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+    assert_eq!(parent.id, conversation_id);
+    assert_eq!(parent.preview, active_preview);
+
+    let source_thread_id = ThreadId::from_string(&conversation_id)?;
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(active_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
+    let active_goal = state_db
+        .thread_goals()
+        .replace_thread_goal(
+            source_thread_id,
+            "Active-home goal must not leak into an imported source",
+            codex_state::ThreadGoalStatus::Paused,
+            /*token_budget*/ Some(173),
+        )
+        .await?;
+    if !keep_parent_loaded {
+        timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+        mcp = TestAppServer::builder()
+            .with_codex_home(active_home.path())
+            .without_auto_env()
+            .without_managed_config()
+            .build_initialized()
+            .await?;
+    }
+    let requested_path = if !explicit_path {
+        None
+    } else if external_source {
+        Some(source_path.clone())
+    } else {
+        Some(
+            active_path
+                .parent()
+                .expect("active rollout parent")
+                .join(".")
+                .join(active_path.file_name().expect("active rollout file")),
+        )
+    };
+
+    for before_turn_id in [None, Some(unfinished_turn_id.to_string())] {
+        let fork_id = mcp
+            .send_thread_fork_request(ThreadForkParams {
+                thread_id: conversation_id.clone(),
+                path: requested_path.clone(),
+                before_turn_id,
+                defer_goal_continuation: true,
+                ..Default::default()
+            })
+            .await?;
+        let ThreadForkResponse { thread: child, .. } =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(fork_id)).await??;
+        let child_path = child.path.as_ref().expect("fork rollout path");
+        assert!(child_path.starts_with(active_home.path()));
+        assert_ne!(child.id, conversation_id);
+        assert_eq!(child.forked_from_id, Some(conversation_id.clone()));
+        assert_eq!(
+            child.preview,
+            if external_source {
+                source_preview
+            } else {
+                active_preview
+            }
+        );
+        assert_eq!(
+            read_session_meta_line(child_path.as_path())
+                .await?
+                .meta
+                .multi_agent_version,
+            Some(if external_source {
+                MultiAgentVersion::V1
+            } else {
+                MultiAgentVersion::V2
+            }),
+            "a colliding live runtime must not supply the imported source's version"
+        );
+        let child_thread_id = ThreadId::from_string(&child.id)?;
+        let expected_goal = if external_source {
+            None
+        } else {
+            let mut goal = active_goal.clone();
+            goal.thread_id = child_thread_id;
+            Some(goal)
+        };
+        assert_eq!(
+            state_db
+                .thread_goals()
+                .get_thread_goal(child_thread_id)
+                .await?,
+            expected_goal,
+            "goal inheritance must use the same actual source identity"
+        );
+    }
+    assert_eq!(
+        state_db
+            .thread_goals()
+            .get_thread_goal(source_thread_id)
+            .await?,
+        Some(active_goal),
+        "forking must preserve the active source goal"
+    );
+    assert_eq!(std::fs::read_to_string(&source_path)?, source_contents);
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .expect("received requests")
+            .iter()
+            .any(|request| request.url.path().ends_with("/responses")),
+        "loading and forking saved sources must not start inference"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_fork_can_load_archived_source_by_path() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+
+    let preview = "Archived source message";
+    let conversation_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        preview,
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let original_path = codex_home
+        .path()
+        .join("sessions")
+        .join("2025")
+        .join("01")
+        .join("05")
+        .join(format!(
+            "rollout-2025-01-05T12-00-00-{conversation_id}.jsonl"
+        ));
+    let archived_dir = codex_home.path().join(ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir_all(archived_dir.as_path())?;
+    let archived_path = archived_dir.join(
+        original_path
+            .file_name()
+            .expect("rollout file name should exist"),
+    );
+    std::fs::rename(original_path.as_path(), archived_path.as_path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: "not-a-valid-thread-id".to_string(),
+            path: Some(archived_path.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let fork_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    let ThreadForkResponse { thread, .. } = to_response::<ThreadForkResponse>(fork_resp)?;
+
+    assert_ne!(thread.id, conversation_id);
+    assert_eq!(thread.forked_from_id, Some(conversation_id));
+    assert_eq!(thread.preview, preview);
+    assert_eq!(thread.model_provider, "mock_provider");
+    assert_eq!(thread.turns.len(), 1, "expected copied fork history");
+    assert!(
+        archived_path.exists(),
+        "forking from archived source path should not move the source rollout"
+    );
 
     Ok(())
 }
@@ -2774,8 +3131,9 @@ async fn pathless_ephemeral_thread_rejects_codex_home_path_after_reload() -> Res
         app_server.read_stream_until_error_message(RequestId::Integer(fork_id)),
     )
     .await??;
+    assert_eq!(fork_err.error.code, -32600);
     assert!(
-        fork_err.error.message.contains("path is a directory"),
+        fork_err.error.message.contains("is not a regular file"),
         "unexpected fork error: {}",
         fork_err.error.message
     );

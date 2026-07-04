@@ -1964,6 +1964,7 @@ enabled = false
             backend_id: server.backend_id(),
             thread_id: ThreadId::new(),
             path: None,
+            source_rollout_path: None,
             cwd: None,
             history_mode: None,
         };
