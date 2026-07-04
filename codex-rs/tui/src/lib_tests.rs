@@ -445,6 +445,7 @@ async fn startup_resume_and_fork_use_configured_or_explicit_cwd() -> color_eyre:
         let target_session = resume_picker::SessionTarget {
             backend_id,
             path: Some(rollout_path),
+            source_rollout_path: None,
             thread_id,
             cwd: Some(session_cwd.clone()),
             history_mode: None,
@@ -553,6 +554,7 @@ async fn startup_remote_current_cwd_without_override_is_rejected() -> color_eyre
         &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
             backend_id,
             path: None,
+            source_rollout_path: None,
             thread_id: ThreadId::new(),
             cwd: None,
             history_mode: None,
@@ -576,6 +578,7 @@ async fn startup_remote_current_cwd_without_override_is_rejected() -> color_eyre
         &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
             backend_id,
             path: None,
+            source_rollout_path: None,
             thread_id: ThreadId::new(),
             cwd: None,
             history_mode: None,
@@ -614,6 +617,7 @@ async fn startup_session_cwd_without_metadata_is_rejected() -> color_eyre::Resul
         &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
             backend_id,
             path: None,
+            source_rollout_path: None,
             thread_id: ThreadId::new(),
             cwd: None,
             history_mode: None,
@@ -663,6 +667,7 @@ fn session_target_display_label_falls_back_to_thread_id() {
     let target = crate::resume_picker::SessionTarget {
         backend_id: crate::backend_id::BackendId::new(),
         path: None,
+        source_rollout_path: None,
         thread_id,
         cwd: None,
         history_mode: None,
