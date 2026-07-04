@@ -3507,6 +3507,7 @@ async fn remote_resume_rejects_explicit_permission_override() -> Result<()> {
         SessionTarget {
             thread_id: ThreadId::new(),
             path: None,
+            source_rollout_path: None,
             cwd: None,
             history_mode: None,
         },
@@ -8016,6 +8017,7 @@ async fn remote_resume_current_cwd_rejection_snapshot() -> Result<()> {
             &mut app_server,
             crate::resume_picker::SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 cwd: None,
                 history_mode: None,
@@ -8060,6 +8062,7 @@ async fn remote_exec_resume_current_cwd_is_rejected() -> Result<()> {
             &mut app_server,
             crate::resume_picker::SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 cwd: None,
                 history_mode: None,
@@ -8099,6 +8102,7 @@ async fn in_app_resume_session_cwd_without_metadata_is_non_fatal() -> Result<()>
             &mut app_server,
             crate::resume_picker::SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 cwd: None,
                 history_mode: None,
@@ -8178,6 +8182,7 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
         &mut app_server,
         crate::resume_picker::SessionTarget {
             path: Some(rollout_path),
+            source_rollout_path: None,
             thread_id: ThreadId::from_string(&thread_id)?,
             cwd: None,
             history_mode: None,
@@ -8336,6 +8341,7 @@ async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
                 app_server,
                 crate::resume_picker::SessionTarget {
                     path: Some(rollout_path),
+                    source_rollout_path: None,
                     thread_id,
                     cwd: None,
                     history_mode: None,
@@ -8448,6 +8454,7 @@ async fn remembered_current_cwd_stays_at_launch_across_in_app_resumes() -> Resul
         )?;
         targets.push(crate::resume_picker::SessionTarget {
             path: Some(rollout_path),
+            source_rollout_path: None,
             thread_id: ThreadId::from_string(&thread_id)?,
             cwd: None,
             history_mode: None,
