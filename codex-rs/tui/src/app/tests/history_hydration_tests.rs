@@ -100,6 +100,7 @@ async fn history_fixture(item_counts: &[usize]) -> Result<(App, tempfile::TempDi
     std::fs::write(&path, format!("{contents}\n"))?;
     let target = SessionTarget {
         path: Some(path),
+        source_rollout_path: None,
         thread_id,
         cwd: None,
         history_mode: Some(codex_app_server_protocol::ThreadHistoryMode::Paginated),

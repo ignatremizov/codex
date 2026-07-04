@@ -436,6 +436,7 @@ impl App {
             } else if unloaded {
                 let target_session = SessionTarget {
                     path: target_thread.path.clone(),
+                    source_rollout_path: None,
                     thread_id: root_thread_id,
                     cwd: Some(target_thread.cwd.to_path_buf()),
                     history_mode: Some(target_thread.history_mode),

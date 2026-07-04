@@ -38,6 +38,7 @@ async fn owned_startup_preserves_loading_until_resume_replay_is_applied() -> Res
             &mut tui,
             &SessionSelection::Resume(crate::resume_picker::SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id,
                 cwd: None,
                 history_mode: None,

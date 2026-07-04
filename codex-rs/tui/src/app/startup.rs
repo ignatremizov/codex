@@ -612,10 +612,11 @@ impl App {
                 let forked = match startup_draft
                     .run_until(
                         tui,
-                        app_server.fork_thread_with_permission_mode(
+                        app_server.fork_thread_at_with_permission_mode(
                             &local_settings,
                             config.clone(),
                             target_session.thread_id,
+                            target_session.source_rollout_path.clone(),
                             permission_mode,
                         ),
                     )

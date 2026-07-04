@@ -102,6 +102,12 @@ struct ThreadRevertRuntimeSnapshot {
     client_mcp_extensions: ClientMcpExtensions,
 }
 
+#[derive(Clone, Copy)]
+enum ArchivedThreadReadPolicy {
+    Reject,
+    Allow,
+}
+
 fn collect_resume_override_mismatches(
     request: &ThreadResumeParams,
     config_snapshot: &ThreadConfigSnapshot,
@@ -2239,6 +2245,7 @@ impl ThreadRequestProcessor {
                 thread_id_string.as_str(),
                 /*path*/ None,
                 /*include_history*/ false,
+                ArchivedThreadReadPolicy::Reject,
             )
             .await?;
         let (thread_history, resume_source_thread) = self
@@ -3647,6 +3654,7 @@ impl ThreadRequestProcessor {
                     &thread_id,
                     path.as_ref(),
                     /*include_history*/ false,
+                    ArchivedThreadReadPolicy::Reject,
                 )
                 .await
             {
@@ -4152,6 +4160,7 @@ impl ThreadRequestProcessor {
                     &params.thread_id,
                     /*path*/ None,
                     /*include_history*/ false,
+                    ArchivedThreadReadPolicy::Reject,
                 )
                 .await?;
             Some((existing_thread_id, existing_thread, source_thread))
@@ -4161,6 +4170,7 @@ impl ThreadRequestProcessor {
                     &params.thread_id,
                     params.path.as_ref(),
                     /*include_history*/ false,
+                    ArchivedThreadReadPolicy::Reject,
                 )
                 .await?;
             let existing_thread_id = source_thread.thread_id;
@@ -4254,6 +4264,7 @@ impl ThreadRequestProcessor {
                         &source_thread_id,
                         source_rollout_path.as_ref(),
                         /*include_history*/ true,
+                        ArchivedThreadReadPolicy::Reject,
                     )
                     .await?;
             }
@@ -4447,6 +4458,7 @@ impl ThreadRequestProcessor {
                 &thread_id,
                 rollout_path.as_ref(),
                 /*include_history*/ true,
+                ArchivedThreadReadPolicy::Reject,
             )
             .await?;
         let history = self
@@ -4460,6 +4472,7 @@ impl ThreadRequestProcessor {
         thread_id: &str,
         path: Option<&PathBuf>,
         include_history: bool,
+        archived_policy: ArchivedThreadReadPolicy,
     ) -> Result<StoredThread, JSONRPCErrorError> {
         let result = if let Some(path) = path {
             self.thread_store
@@ -4511,7 +4524,9 @@ impl ThreadRequestProcessor {
                 )));
             }
         }
-        if stored_thread.archived_at.is_some() {
+        if matches!(archived_policy, ArchivedThreadReadPolicy::Reject)
+            && stored_thread.archived_at.is_some()
+        {
             let thread_id = stored_thread.thread_id;
             return Err(invalid_request(format!(
                 "session {thread_id} is archived. Run `codex unarchive {thread_id}` to unarchive it first."
@@ -4738,6 +4753,11 @@ impl ThreadRequestProcessor {
                 &thread_id,
                 path.as_ref(),
                 /*include_history*/ false,
+                if path.is_some() {
+                    ArchivedThreadReadPolicy::Allow
+                } else {
+                    ArchivedThreadReadPolicy::Reject
+                },
             )
             .await?;
         let paginated_source = matches!(source_thread.history_mode, ThreadHistoryMode::Paginated);
@@ -4808,6 +4828,11 @@ impl ThreadRequestProcessor {
                     &thread_id,
                     path.as_ref(),
                     /*include_history*/ true,
+                    if path.is_some() {
+                        ArchivedThreadReadPolicy::Allow
+                    } else {
+                        ArchivedThreadReadPolicy::Reject
+                    },
                 )
                 .await?;
             Arc::new(

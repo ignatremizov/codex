@@ -108,6 +108,7 @@ async fn cli_fork_omits_implicit_model_and_effort() -> Result<()> {
         bootstrap,
         SessionSelection::Fork(crate::resume_picker::SessionTarget {
             path: None,
+            source_rollout_path: None,
             thread_id: source,
             cwd: None,
             history_mode: None,
@@ -133,7 +134,92 @@ async fn cli_fork_omits_implicit_model_and_effort() -> Result<()> {
     assert_eq!(fork[0]["model"], serde_json::Value::Null);
     assert!(fork[0]["config"].get("model_reasoning_effort").is_none());
     assert_eq!(fork[0]["serviceTier"], serde_json::Value::Null);
+    assert_eq!(fork[0]["path"], serde_json::Value::Null);
     assert!(recorded_params(&requests, "config/read").is_empty());
+    drop(run);
+    proxy.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn cli_fork_forwards_explicit_rollout_without_reading_active_home_parent() -> Result<()> {
+    let home = tempdir()?;
+    let source_home = tempdir()?;
+    let config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .build()
+        .await?;
+    let source_id = app_test_support::create_fake_rollout(
+        source_home.path(),
+        "2026-01-01T00-00-00",
+        "2026-01-01T00:00:00Z",
+        "explicit source prompt",
+        Some(config.model_provider_id.as_str()),
+        /*git_info*/ None,
+    )?;
+    let source_path = source_home
+        .path()
+        .join("sessions/2026/01/01")
+        .join(format!("rollout-2026-01-01T00-00-00-{source_id}.jsonl"));
+    let source_bytes = std::fs::read(&source_path)?;
+    let target = crate::fork_source_lookup::from_rollout_path(&source_path, Some(&source_id))
+        .await?
+        .expect("source metadata should resolve");
+    let (mut server, requests, proxy) = start_recording_remote_app_server(&config).await?;
+    let bootstrap = server.bootstrap(&config).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    tui.pause_events();
+    let mut run = Box::pin(run_startup_for_test(
+        &mut tui,
+        server,
+        config,
+        bootstrap,
+        SessionSelection::Fork(target),
+    ));
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
+        loop {
+            if !recorded_params(&requests, "thread/fork").is_empty() {
+                return Ok::<(), color_eyre::eyre::Report>(());
+            }
+            tokio::select! {
+                result = &mut run => {
+                    result?;
+                    return Err(color_eyre::eyre::eyre!("startup exited before thread/fork"));
+                }
+                () = tokio::time::sleep(Duration::from_millis(/*millis*/ 20)) => {}
+            }
+        }
+    })
+    .await??;
+    let forks = recorded_params(&requests, "thread/fork");
+    assert_eq!(forks.len(), 1);
+    let params: codex_app_server_protocol::ThreadForkParams =
+        serde_json::from_value(forks[0].clone())?;
+    assert_eq!(
+        (
+            params.thread_id,
+            params.path,
+            params.last_turn_id,
+            params.before_turn_id,
+            params.defer_goal_continuation,
+            params.ephemeral,
+            params.permissions,
+            params.approval_policy,
+        ),
+        (
+            source_id,
+            Some(source_path.clone()),
+            None,
+            None,
+            false,
+            false,
+            None,
+            None
+        )
+    );
+    assert!(recorded_params(&requests, "thread/read").is_empty());
+    assert_eq!(std::fs::read(&source_path)?, source_bytes);
     drop(run);
     proxy.abort();
     Ok(())

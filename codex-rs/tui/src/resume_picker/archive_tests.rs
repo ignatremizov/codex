@@ -257,6 +257,7 @@ async fn archived_session_restore_resumes_after_completion() {
         thread_id,
         Ok(SessionTarget {
             path: None,
+            source_rollout_path: None,
             thread_id,
             cwd: None,
             history_mode: None,
@@ -267,6 +268,7 @@ async fn archived_session_restore_resumes_after_completion() {
         selection,
         Some(SessionSelection::Resume(SessionTarget {
             path: None,
+            source_rollout_path: None,
             thread_id: resumed_thread_id,
             cwd: None,
             history_mode: None,

@@ -141,6 +141,7 @@ async fn startup_submission_thread_change_preserves_only_editable_text() {
     ] {
         let selection = SessionSelection::Resume(crate::resume_picker::SessionTarget {
             path: None,
+            source_rollout_path: None,
             thread_id: destination,
             cwd: None,
             history_mode: None,
