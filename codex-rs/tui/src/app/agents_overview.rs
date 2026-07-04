@@ -553,6 +553,7 @@ impl App {
                 let target_session = SessionTarget {
                     backend_id: app_server.backend_id(),
                     path: target_thread.path.clone(),
+                    source_rollout_path: None,
                     thread_id: root_thread_id,
                     cwd: Some(target_thread.cwd.to_path_buf()),
                     history_mode: Some(target_thread.history_mode),

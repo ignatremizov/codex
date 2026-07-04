@@ -983,6 +983,31 @@ impl AppServerSession {
             local_settings,
             config,
             thread_id,
+            /*source_rollout_path*/ None,
+            /*last_turn_id*/ None,
+            /*before_turn_id*/ None,
+            ForkGoalContinuation::StartIfIdle,
+            ForkPresentation::Regular,
+            /*selected_profile*/ None,
+            permission_mode,
+            ForkConfigSource::Local,
+        )
+        .await
+    }
+
+    pub(crate) async fn fork_thread_at_with_permission_mode(
+        &mut self,
+        local_settings: &LocalSettings,
+        config: Config,
+        thread_id: ThreadId,
+        source_rollout_path: Option<PathBuf>,
+        permission_mode: ForkPermissionMode,
+    ) -> Result<AppServerStartedThread> {
+        self.fork_thread_at_with_presentation(
+            local_settings,
+            config,
+            thread_id,
+            source_rollout_path,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
             ForkGoalContinuation::StartIfIdle,
@@ -1012,6 +1037,7 @@ impl AppServerSession {
             local_settings,
             config,
             thread_id,
+            /*source_rollout_path*/ None,
             last_turn_id,
             before_turn_id,
             goal_continuation,
@@ -1034,6 +1060,7 @@ impl AppServerSession {
             local_settings,
             config,
             thread_id,
+            /*source_rollout_path*/ None,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
             ForkGoalContinuation::StartIfIdle,
@@ -1054,6 +1081,7 @@ impl AppServerSession {
         local_settings: &LocalSettings,
         config: Config,
         thread_id: ThreadId,
+        source_rollout_path: Option<PathBuf>,
         last_turn_id: Option<String>,
         before_turn_id: Option<String>,
         goal_continuation: ForkGoalContinuation,
@@ -1064,10 +1092,11 @@ impl AppServerSession {
     ) -> Result<AppServerStartedThread> {
         self.thread_tool_transport().validate_config(&config)?;
         let fork_parent = match presentation {
-            ForkPresentation::Regular => self
+            ForkPresentation::Regular if source_rollout_path.is_none() => self
                 .thread_read(thread_id, /*include_turns*/ false)
                 .await
                 .ok(),
+            ForkPresentation::Regular => None,
             ForkPresentation::SideConversation => None,
         };
         let exclude_turns = self.history_support == ThreadHistorySupport::Paginated
@@ -1083,6 +1112,7 @@ impl AppServerSession {
             self.session_config_with_effective_service_tier(&config)
         };
         let mut params = ThreadForkParams {
+            path: source_rollout_path,
             last_turn_id,
             before_turn_id,
             defer_goal_continuation: goal_continuation == ForkGoalContinuation::DeferUntilNextTurn,
