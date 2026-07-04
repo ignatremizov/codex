@@ -146,6 +146,7 @@ impl App {
                 .fork_thread_at(
                     config.clone(),
                     thread_id,
+                    rollout,
                     /*last_turn_id*/ None,
                     /*before_turn_id*/ None,
                     DeferUntilNextTurn,

@@ -39,7 +39,11 @@ impl SessionStartAction {
             }
             Self::Fork => {
                 app_server
-                    .fork_thread(config.clone(), target.thread_id)
+                    .fork_thread(
+                        config.clone(),
+                        target.thread_id,
+                        target.source_rollout_path.clone(),
+                    )
                     .await
             }
         }

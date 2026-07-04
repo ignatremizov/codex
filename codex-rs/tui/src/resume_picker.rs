@@ -103,6 +103,7 @@ const PICKER_LIST_HORIZONTAL_INSET: u16 = 4;
 #[derive(Debug, Clone)]
 pub struct SessionTarget {
     pub path: Option<PathBuf>,
+    pub source_rollout_path: Option<PathBuf>,
     pub thread_id: ThreadId,
     /// History mode observed during selection, if the server provided one.
     pub history_mode: Option<ThreadHistoryMode>,
@@ -736,6 +737,7 @@ fn spawn_app_server_page_loader(
                         .await
                         .map(|response| SessionTarget {
                             path: response.thread.path,
+                            source_rollout_path: None,
                             thread_id,
                             history_mode: Some(response.thread.history_mode),
                         })
@@ -6237,6 +6239,7 @@ session_picker_view = "dense"
         match selection {
             Some(SessionSelection::Resume(SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: selected_thread_id,
                 history_mode: None,
             })) => assert_eq!(selected_thread_id, thread_id),
