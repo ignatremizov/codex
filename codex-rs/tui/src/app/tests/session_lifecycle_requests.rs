@@ -515,6 +515,7 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
             SessionSelection::Resume(SessionTarget {
                 backend_id,
                 path: None,
+                source_rollout_path: None,
                 thread_id,
                 cwd: None,
                 history_mode: None,
@@ -1228,6 +1229,7 @@ async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()>
         crate::resume_picker::SessionTarget {
             backend_id,
             path,
+            source_rollout_path: None,
             thread_id,
             cwd: None,
             history_mode: None,
@@ -1864,6 +1866,7 @@ async fn cloud_resume_with_current_directory_needs_no_cwd_override() -> Result<(
     let session = SessionTarget {
         backend_id: server.backend_id(),
         path: None,
+        source_rollout_path: None,
         thread_id: ThreadId::new(),
         cwd: Some(test_path_buf("/workspace")),
         history_mode: None,
@@ -6073,6 +6076,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         crate::resume_picker::SessionTarget {
                             backend_id,
                             path: Some(root_rollout_path),
+                            source_rollout_path: None,
                             thread_id: root_thread_id,
                             cwd: None,
                             history_mode: None,
@@ -6562,6 +6566,7 @@ async fn provider_error_preserves_partial_history_notice() -> Result<()> {
             let target = SessionTarget {
                 backend_id: server.backend_id(),
                 path: None,
+                source_rollout_path: None,
                 thread_id,
                 cwd: None,
                 history_mode: Some(ThreadHistoryMode::Paginated),

@@ -172,6 +172,7 @@ async fn resuming_a_running_thread_signs_in_to_its_saved_gateway() -> color_eyre
         backend_id: session.backend_id(),
         thread_id: id,
         path: None,
+        source_rollout_path: None,
         cwd: None,
         history_mode: None,
     });
