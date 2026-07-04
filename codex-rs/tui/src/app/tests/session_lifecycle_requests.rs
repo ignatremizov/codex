@@ -1867,7 +1867,11 @@ async fn remote_non_paginated_start_negotiates_on_resume_once_for_fork() -> Resu
         )
         .await?;
     let forked = app_server
-        .fork_thread(app.config.clone(), legacy_thread_id)
+        .fork_thread(
+            app.config.clone(),
+            legacy_thread_id,
+            /*source_rollout_path*/ None,
+        )
         .await?;
 
     assert_ne!(started.session.thread_id, legacy_thread_id);
@@ -1994,7 +1998,11 @@ async fn assert_remote_legacy_history_retry(request: LegacyHistoryRequest) -> Re
         }
         LegacyHistoryRequest::Fork => {
             let forked = app_server
-                .fork_thread(app.config.clone(), legacy_thread_id)
+                .fork_thread(
+                    app.config.clone(),
+                    legacy_thread_id,
+                    /*source_rollout_path*/ None,
+                )
                 .await?;
             assert_ne!(forked.session.thread_id, legacy_thread_id);
             "thread/fork"
@@ -2056,7 +2064,11 @@ async fn paginated_fork_survives_post_response_hydration_failure() -> Result<()>
     assert_eq!(started.session.thread_id, parent_thread_id);
 
     let forked = app_server
-        .fork_thread(app.config.clone(), parent_thread_id)
+        .fork_thread(
+            app.config.clone(),
+            parent_thread_id,
+            /*source_rollout_path*/ None,
+        )
         .await?;
 
     assert_ne!(forked.session.thread_id, parent_thread_id);
@@ -2294,7 +2306,11 @@ async fn paginated_workflows_never_request_full_thread_history() -> Result<()> {
     .await?;
     assert!(!cells.is_empty());
     app_server
-        .fork_thread(app.config.clone(), paginated_thread_id)
+        .fork_thread(
+            app.config.clone(),
+            paginated_thread_id,
+            /*source_rollout_path*/ None,
+        )
         .await?;
     let mut side_config = app.config.clone();
     side_config.ephemeral = true;
