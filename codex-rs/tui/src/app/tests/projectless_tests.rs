@@ -115,6 +115,7 @@ sandbox = "unelevated"
         &mut server,
         SessionTarget {
             path: None,
+            source_rollout_path: None,
             thread_id: saved.session.thread_id,
             cwd: Some(source.path().to_path_buf()),
             history_mode: None,

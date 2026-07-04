@@ -397,6 +397,7 @@ impl App {
                         .primary_session_configured
                         .as_ref()
                         .and_then(|session| session.rollout_path.clone()),
+                    source_rollout_path: None,
                     thread_id,
                     cwd: None,
                     history_mode: None,
