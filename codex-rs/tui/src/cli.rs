@@ -50,6 +50,14 @@ pub struct Cli {
     #[clap(skip)]
     pub fork_session_id: Option<String>,
 
+    /// Internal: read-only Codex home used to resolve `fork_session_id`.
+    #[clap(skip)]
+    pub fork_source_home: Option<std::path::PathBuf>,
+
+    /// Internal: explicit rollout path to fork from.
+    #[clap(skip)]
+    pub fork_source_rollout_path: Option<std::path::PathBuf>,
+
     /// Internal: show all sessions (disables cwd filtering and shows CWD column).
     #[clap(skip)]
     pub fork_show_all: bool,
