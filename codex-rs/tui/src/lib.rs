@@ -54,6 +54,8 @@ use codex_protocol::config_types::SandboxMode;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_rollout::StateDbHandle;
+use codex_rollout::find_archived_thread_path_by_id_str;
+use codex_rollout::find_thread_path_by_id_str;
 use codex_rollout::state_db;
 use codex_state::log_db;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -691,6 +693,7 @@ fn session_target_from_app_server_thread(
     match ThreadId::from_string(&thread.id) {
         Ok(thread_id) => Some(resume_picker::SessionTarget {
             path: thread.path,
+            source_rollout_path: None,
             thread_id,
         }),
         Err(err) => {
@@ -784,6 +787,84 @@ async fn lookup_session_target_with_app_server(
     }
 
     lookup_session_target_by_name_with_app_server(app_server, id_or_name).await
+}
+
+async fn lookup_fork_target_in_source_home(
+    source_home: &Path,
+    id_str: &str,
+) -> color_eyre::Result<Option<resume_picker::SessionTarget>> {
+    let source_home =
+        canonicalize_existing_preserving_symlinks(source_home).wrap_err_with(|| {
+            format!(
+                "failed to resolve fork source home {}",
+                source_home.display()
+            )
+        })?;
+    if !source_home.is_dir() {
+        return Err(color_eyre::eyre::eyre!(
+            "fork source home is not a directory: {}",
+            source_home.display()
+        ));
+    }
+
+    let path =
+        match find_thread_path_by_id_str(source_home.as_path(), id_str, /*state_db_ctx*/ None)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed to search fork source home {}",
+                    source_home.display()
+                )
+            })? {
+            Some(path) => Some(path),
+            None => find_archived_thread_path_by_id_str(
+                source_home.as_path(),
+                id_str,
+                /*state_db_ctx*/ None,
+            )
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed to search archived sessions in fork source home {}",
+                    source_home.display()
+                )
+            })?,
+        };
+
+    match path {
+        Some(path) => fork_target_from_rollout_path(path.as_path(), Some(id_str)).await,
+        None => Ok(None),
+    }
+}
+
+async fn fork_target_from_rollout_path(
+    path: &Path,
+    expected_id: Option<&str>,
+) -> color_eyre::Result<Option<resume_picker::SessionTarget>> {
+    let path = canonicalize_existing_preserving_symlinks(path)
+        .wrap_err_with(|| format!("failed to resolve fork source rollout {}", path.display()))?;
+    if !path.is_file() {
+        return Err(color_eyre::eyre::eyre!(
+            "fork source rollout is not a file: {}",
+            path.display()
+        ));
+    }
+    let Some(thread_id) =
+        session_resume::resolve_session_thread_id(path.as_path(), /*id_str_if_uuid*/ None).await
+    else {
+        return Ok(None);
+    };
+    if let Some(expected_id) = expected_id
+        && let Ok(expected_thread_id) = ThreadId::from_string(expected_id)
+        && expected_thread_id != thread_id
+    {
+        return Ok(None);
+    }
+    Ok(Some(resume_picker::SessionTarget {
+        path: Some(path.clone()),
+        source_rollout_path: Some(path),
+        thread_id,
+    }))
 }
 
 async fn lookup_latest_session_target_with_app_server(
@@ -1577,17 +1658,76 @@ async fn run_ratatui_app(
         })
     };
 
-    let use_fork = cli.fork_picker || cli.fork_last || cli.fork_session_id.is_some();
+    let explicit_fork_source =
+        cli.fork_source_home.is_some() || cli.fork_source_rollout_path.is_some();
+    let use_fork =
+        cli.fork_picker || cli.fork_last || cli.fork_session_id.is_some() || explicit_fork_source;
     let session_selection = if use_fork {
-        if let Some(id_str) = cli.fork_session_id.as_deref() {
-            let Some(startup_app_server) = app_server.as_mut() else {
-                unreachable!("app server should be initialized for --fork <id>");
-            };
-            match lookup_session_target_with_app_server(startup_app_server, id_str).await? {
+        if explicit_fork_source && uses_remote_workspace {
+            shutdown_app_server_if_present(app_server.take()).await;
+            terminal_restore_guard.restore_silently();
+            session_log::log_session_end();
+            return Ok(AppExitInfo {
+                token_usage: crate::token_usage::TokenUsage::default(),
+                thread_id: None,
+                resume_hint: None,
+                update_action: None,
+                exit_reason: ExitReason::Fatal(
+                    "`codex fork --source-home` and `--from-rollout` require a local app server"
+                        .to_string(),
+                ),
+            });
+        }
+
+        if let Some(path) = cli.fork_source_rollout_path.as_deref() {
+            match fork_target_from_rollout_path(path, /*expected_id*/ None).await? {
                 Some(target_session) => resume_picker::SessionSelection::Fork(target_session),
                 None => {
                     shutdown_app_server_if_present(app_server.take()).await;
-                    return missing_session_exit(id_str, "fork");
+                    terminal_restore_guard.restore_silently();
+                    session_log::log_session_end();
+                    return Ok(AppExitInfo {
+                        token_usage: crate::token_usage::TokenUsage::default(),
+                        thread_id: None,
+                        resume_hint: None,
+                        update_action: None,
+                        exit_reason: ExitReason::Fatal(format!(
+                            "No forkable session metadata found in rollout {}.",
+                            path.display()
+                        )),
+                    });
+                }
+            }
+        } else if let Some(id_str) = cli.fork_session_id.as_deref() {
+            if let Some(source_home) = cli.fork_source_home.as_deref() {
+                match lookup_fork_target_in_source_home(source_home, id_str).await? {
+                    Some(target_session) => resume_picker::SessionSelection::Fork(target_session),
+                    None => {
+                        shutdown_app_server_if_present(app_server.take()).await;
+                        terminal_restore_guard.restore_silently();
+                        session_log::log_session_end();
+                        return Ok(AppExitInfo {
+                            token_usage: crate::token_usage::TokenUsage::default(),
+                            thread_id: None,
+                            resume_hint: None,
+                            update_action: None,
+                            exit_reason: ExitReason::Fatal(format!(
+                                "No saved session found with ID {id_str} under source home {}.",
+                                source_home.display()
+                            )),
+                        });
+                    }
+                }
+            } else {
+                let Some(startup_app_server) = app_server.as_mut() else {
+                    unreachable!("app server should be initialized for --fork <id>");
+                };
+                match lookup_session_target_with_app_server(startup_app_server, id_str).await? {
+                    Some(target_session) => resume_picker::SessionSelection::Fork(target_session),
+                    None => {
+                        shutdown_app_server_if_present(app_server.take()).await;
+                        return missing_session_exit(id_str, "fork");
+                    }
                 }
             }
         } else if cli.fork_last {
@@ -1714,12 +1854,21 @@ async fn run_ratatui_app(
             if uses_remote_workspace {
                 Some(current_cwd.to_path_buf())
             } else {
+                let session_state_db = if target_session.source_rollout_path.is_some() {
+                    None
+                } else {
+                    state_db.as_deref()
+                };
+                let session_rollout_path = target_session
+                    .source_rollout_path
+                    .as_deref()
+                    .or(target_session.path.as_deref());
                 match resolve_cwd_for_resume_or_fork(
                     &mut tui,
-                    state_db.as_deref(),
+                    session_state_db,
                     &current_cwd,
                     target_session.thread_id,
-                    target_session.path.as_deref(),
+                    session_rollout_path,
                     action,
                     allow_prompt,
                 )
@@ -2262,6 +2411,7 @@ mod tests {
         let thread_id = ThreadId::new();
         let target = crate::resume_picker::SessionTarget {
             path: None,
+            source_rollout_path: None,
             thread_id,
         };
 

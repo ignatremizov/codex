@@ -4968,6 +4968,7 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
         path: Some(std::path::PathBuf::from(
             "/Users/me/.codex/archived_sessions/rollout.jsonl",
         )),
+        source_rollout_path: None,
         thread_id,
     };
     let expected = format!(
