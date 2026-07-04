@@ -385,6 +385,29 @@ struct ForkCommand {
     #[arg(long = "all", default_value_t = false)]
     all: bool,
 
+    /// Read-only Codex home to search when resolving SESSION_ID.
+    ///
+    /// The fork is still created in the active CODEX_HOME.
+    #[arg(
+        long = "source-home",
+        value_name = "CODEX_HOME",
+        value_hint = clap::ValueHint::DirPath,
+        requires = "session_id",
+        conflicts_with_all = ["last", "from_rollout"]
+    )]
+    source_home: Option<PathBuf>,
+
+    /// Explicit rollout JSONL path to fork from.
+    ///
+    /// The fork is still created in the active CODEX_HOME.
+    #[arg(
+        long = "from-rollout",
+        value_name = "ROLLOUT",
+        value_hint = clap::ValueHint::FilePath,
+        conflicts_with_all = ["last", "source_home"]
+    )]
+    from_rollout: Option<PathBuf>,
+
     #[clap(flatten)]
     remote: InteractiveRemoteOptions,
 
@@ -1313,6 +1336,8 @@ async fn cli_main(
             session_id,
             last,
             all,
+            source_home,
+            from_rollout,
             remote,
             config_overrides,
         })) => {
@@ -1320,11 +1345,15 @@ async fn cli_main(
             interactive = finalize_fork_interactive(
                 interactive,
                 root_config_overrides.clone(),
-                session_id,
-                last,
-                all,
-                config_overrides,
-            );
+                ForkFinalizeOptions {
+                    session_id,
+                    last,
+                    show_all: all,
+                    source_home,
+                    from_rollout,
+                    fork_cli: config_overrides,
+                },
+            )?;
             let exit_info = run_interactive_tui(
                 interactive,
                 remote.remote.or(root_remote.clone()),
@@ -2397,27 +2426,47 @@ fn finalize_resume_interactive(
 }
 
 /// Build the final `TuiCli` for a `codex fork` invocation.
-fn finalize_fork_interactive(
-    mut interactive: TuiCli,
-    root_config_overrides: CliConfigOverrides,
+struct ForkFinalizeOptions {
     session_id: Option<String>,
     last: bool,
     show_all: bool,
-    mut fork_cli: TuiCli,
-) -> TuiCli {
+    source_home: Option<PathBuf>,
+    from_rollout: Option<PathBuf>,
+    fork_cli: TuiCli,
+}
+
+fn finalize_fork_interactive(
+    mut interactive: TuiCli,
+    root_config_overrides: CliConfigOverrides,
+    options: ForkFinalizeOptions,
+) -> anyhow::Result<TuiCli> {
+    let ForkFinalizeOptions {
+        session_id,
+        last,
+        show_all,
+        source_home,
+        from_rollout,
+        mut fork_cli,
+    } = options;
+
     // Start with the parsed interactive CLI so fork shares the same
     // configuration surface area as `codex` without additional flags.
     // Clap assigns the first positional to `session_id`. With `--last`, reinterpret it as the
     // prompt when no second positional prompt was provided.
-    let fork_session_id = if last && fork_cli.prompt.is_none() {
+    let fork_session_id = if (last || from_rollout.is_some()) && fork_cli.prompt.is_none() {
         fork_cli.prompt = session_id;
         None
+    } else if from_rollout.is_some() && session_id.is_some() {
+        anyhow::bail!("`codex fork --from-rollout` accepts at most one prompt positional");
     } else {
         session_id
     };
-    interactive.fork_picker = fork_session_id.is_none() && !last;
+    interactive.fork_picker =
+        fork_session_id.is_none() && !last && source_home.is_none() && from_rollout.is_none();
     interactive.fork_last = last;
     interactive.fork_session_id = fork_session_id;
+    interactive.fork_source_home = source_home;
+    interactive.fork_source_rollout_path = from_rollout;
     interactive.fork_show_all = show_all;
 
     // Merge fork-scoped flags and overrides with highest precedence.
@@ -2426,7 +2475,7 @@ fn finalize_fork_interactive(
     // Propagate any root-level config overrides (e.g. `-c key=value`).
     prepend_config_flags(&mut interactive.config_overrides, root_config_overrides);
 
-    interactive
+    Ok(interactive)
 }
 
 fn finalize_session_archive_interactive(
@@ -2606,6 +2655,8 @@ mod tests {
             session_id,
             last,
             all,
+            source_home,
+            from_rollout,
             remote: _,
             config_overrides: fork_cli,
         }) = subcommand.expect("fork present")
@@ -2614,7 +2665,19 @@ mod tests {
         };
         let SessionTuiCli(fork_cli) = fork_cli;
 
-        finalize_fork_interactive(interactive, root_overrides, session_id, last, all, fork_cli)
+        finalize_fork_interactive(
+            interactive,
+            root_overrides,
+            ForkFinalizeOptions {
+                session_id,
+                last,
+                show_all: all,
+                source_home,
+                from_rollout,
+                fork_cli,
+            },
+        )
+        .expect("finalize fork")
     }
 
     fn finalize_archive_from_args(args: &[&str]) -> (String, TuiCli, InteractiveRemoteOptions) {
@@ -3457,6 +3520,132 @@ mod tests {
         let interactive = finalize_fork_from_args(["codex", "fork", "--all"].as_ref());
         assert!(interactive.fork_picker);
         assert!(interactive.fork_show_all);
+    }
+
+    #[test]
+    fn fork_source_home_sets_read_only_lookup_root() {
+        let interactive = finalize_fork_from_args(
+            [
+                "codex",
+                "fork",
+                "1234",
+                "--source-home",
+                "/tmp/source-codex-home",
+                "continue here",
+            ]
+            .as_ref(),
+        );
+
+        assert!(!interactive.fork_picker);
+        assert_eq!(interactive.fork_session_id.as_deref(), Some("1234"));
+        assert_eq!(
+            interactive.fork_source_home.as_deref(),
+            Some(std::path::Path::new("/tmp/source-codex-home"))
+        );
+        assert_eq!(interactive.prompt.as_deref(), Some("continue here"));
+    }
+
+    #[test]
+    fn fork_source_home_requires_explicit_session_id() {
+        let err = MultitoolCli::try_parse_from([
+            "codex",
+            "fork",
+            "--source-home",
+            "/tmp/source-codex-home",
+        ])
+        .expect_err("--source-home without a session id should be rejected");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn fork_from_rollout_sets_source_path_and_accepts_prompt() {
+        let interactive = finalize_fork_from_args(
+            [
+                "codex",
+                "fork",
+                "--from-rollout",
+                "/tmp/source.jsonl",
+                "continue here",
+            ]
+            .as_ref(),
+        );
+
+        assert!(!interactive.fork_picker);
+        assert_eq!(interactive.fork_session_id, None);
+        assert_eq!(
+            interactive.fork_source_rollout_path.as_deref(),
+            Some(std::path::Path::new("/tmp/source.jsonl"))
+        );
+        assert_eq!(interactive.prompt.as_deref(), Some("continue here"));
+    }
+
+    #[test]
+    fn fork_from_rollout_rejects_extra_positionals() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "fork",
+            "--from-rollout",
+            "/tmp/source.jsonl",
+            "first",
+            "second",
+        ])
+        .expect("parse");
+        let MultitoolCli {
+            interactive,
+            config_overrides: root_overrides,
+            subcommand,
+            feature_toggles: _,
+            remote: _,
+        } = cli;
+        let Subcommand::Fork(ForkCommand {
+            session_id,
+            last,
+            all,
+            source_home,
+            from_rollout,
+            remote: _,
+            config_overrides: fork_cli,
+        }) = subcommand.expect("fork present")
+        else {
+            unreachable!()
+        };
+        let SessionTuiCli(fork_cli) = fork_cli;
+
+        let err = finalize_fork_interactive(
+            interactive,
+            root_overrides,
+            ForkFinalizeOptions {
+                session_id,
+                last,
+                show_all: all,
+                source_home,
+                from_rollout,
+                fork_cli,
+            },
+        )
+        .expect_err("extra positional should be rejected");
+
+        assert_eq!(
+            err.to_string(),
+            "`codex fork --from-rollout` accepts at most one prompt positional"
+        );
+    }
+
+    #[test]
+    fn fork_source_options_are_mutually_exclusive() {
+        let err = MultitoolCli::try_parse_from([
+            "codex",
+            "fork",
+            "1234",
+            "--source-home",
+            "/tmp/source-codex-home",
+            "--from-rollout",
+            "/tmp/source.jsonl",
+        ])
+        .expect_err("source options should conflict");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

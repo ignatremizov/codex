@@ -18,6 +18,7 @@ fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
         App::should_wait_for_initial_session(&SessionSelection::Resume(
             crate::resume_picker::SessionTarget {
                 path: Some(PathBuf::from("/tmp/restore")),
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
             }
         )),
@@ -27,6 +28,7 @@ fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
         App::should_wait_for_initial_session(&SessionSelection::Fork(
             crate::resume_picker::SessionTarget {
                 path: Some(PathBuf::from("/tmp/fork")),
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
             }
         )),
@@ -38,10 +40,12 @@ fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
 fn startup_paused_goal_prompt_gate_is_only_for_quiet_resume() {
     let resume = SessionSelection::Resume(crate::resume_picker::SessionTarget {
         path: Some(PathBuf::from("/tmp/restore")),
+        source_rollout_path: None,
         thread_id: ThreadId::new(),
     });
     let fork = SessionSelection::Fork(crate::resume_picker::SessionTarget {
         path: Some(PathBuf::from("/tmp/fork")),
+        source_rollout_path: None,
         thread_id: ThreadId::new(),
     });
     let no_images: Vec<PathBuf> = Vec::new();
@@ -110,6 +114,7 @@ fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
     let wait_for_resume = App::should_wait_for_initial_session(&SessionSelection::Resume(
         crate::resume_picker::SessionTarget {
             path: Some(PathBuf::from("/tmp/restore")),
+            source_rollout_path: None,
             thread_id: ThreadId::new(),
         },
     ));
@@ -123,6 +128,7 @@ fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
     let wait_for_fork = App::should_wait_for_initial_session(&SessionSelection::Fork(
         crate::resume_picker::SessionTarget {
             path: Some(PathBuf::from("/tmp/fork")),
+            source_rollout_path: None,
             thread_id: ThreadId::new(),
         },
     ));
@@ -265,6 +271,7 @@ async fn ignore_same_thread_resume_reports_noop_for_current_thread() {
 
     let ignored = app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
         path: Some(test_path_buf("/tmp/project")),
+        source_rollout_path: None,
         thread_id,
     });
 
@@ -289,6 +296,7 @@ async fn ignore_same_thread_resume_allows_reattaching_displayed_inactive_thread(
 
     let ignored = app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
         path: Some(test_path_buf("/tmp/project")),
+        source_rollout_path: None,
         thread_id,
     });
 
