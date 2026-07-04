@@ -105,6 +105,7 @@ async fn history_fixture(
     let target = SessionTarget {
         backend_id: crate::backend_id::BackendId::new(),
         path: Some(path),
+        source_rollout_path: None,
         thread_id,
         cwd: None,
         history_mode: Some(codex_app_server_protocol::ThreadHistoryMode::Paginated),

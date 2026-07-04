@@ -69,6 +69,7 @@ async fn archived_session_requires_confirmation_before_resume_or_fork() -> Resul
         let target = SessionTarget {
             backend_id,
             path: Some(archived_path.clone()),
+            source_rollout_path: None,
             thread_id: ThreadId::from_string(&id)?,
             cwd: None,
             history_mode: None,
@@ -173,6 +174,7 @@ async fn archived_session_requires_confirmation_before_resume_or_fork() -> Resul
         let missing = SessionTarget {
             backend_id,
             path: None,
+            source_rollout_path: None,
             thread_id: ThreadId::new(),
             cwd: None,
             history_mode: None,
@@ -201,6 +203,7 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
         path: Some(std::path::PathBuf::from(
             "/Users/me/.codex/archived_sessions/rollout.jsonl",
         )),
+        source_rollout_path: None,
         thread_id,
         cwd: None,
         history_mode: None,

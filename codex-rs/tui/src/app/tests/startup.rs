@@ -270,6 +270,7 @@ fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
             crate::resume_picker::SessionTarget {
                 backend_id: crate::backend_id::BackendId::new(),
                 path: Some(PathBuf::from("/tmp/restore")),
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 cwd: None,
                 history_mode: None,
@@ -282,6 +283,7 @@ fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
             crate::resume_picker::SessionTarget {
                 backend_id: crate::backend_id::BackendId::new(),
                 path: Some(PathBuf::from("/tmp/fork")),
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 cwd: None,
                 history_mode: None,
@@ -296,6 +298,7 @@ fn startup_paused_goal_prompt_gate_is_only_for_quiet_resume() {
     let resume = SessionSelection::Resume(crate::resume_picker::SessionTarget {
         backend_id: crate::backend_id::BackendId::new(),
         path: Some(PathBuf::from("/tmp/restore")),
+        source_rollout_path: None,
         thread_id: ThreadId::new(),
         cwd: None,
         history_mode: None,
@@ -303,6 +306,7 @@ fn startup_paused_goal_prompt_gate_is_only_for_quiet_resume() {
     let fork = SessionSelection::Fork(crate::resume_picker::SessionTarget {
         backend_id: crate::backend_id::BackendId::new(),
         path: Some(PathBuf::from("/tmp/fork")),
+        source_rollout_path: None,
         thread_id: ThreadId::new(),
         cwd: None,
         history_mode: None,
@@ -374,6 +378,7 @@ fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
         crate::resume_picker::SessionTarget {
             backend_id: crate::backend_id::BackendId::new(),
             path: Some(PathBuf::from("/tmp/restore")),
+            source_rollout_path: None,
             thread_id: ThreadId::new(),
             cwd: None,
             history_mode: None,
@@ -390,6 +395,7 @@ fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
         crate::resume_picker::SessionTarget {
             backend_id: crate::backend_id::BackendId::new(),
             path: Some(PathBuf::from("/tmp/fork")),
+            source_rollout_path: None,
             thread_id: ThreadId::new(),
             cwd: None,
             history_mode: None,
@@ -1806,6 +1812,7 @@ async fn ignore_same_thread_resume_reports_noop_for_current_thread() {
     let ignored = app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
         backend_id: crate::backend_id::BackendId::new(),
         path: Some(test_path_buf("/tmp/project")),
+        source_rollout_path: None,
         thread_id,
         cwd: None,
         history_mode: None,
@@ -1833,6 +1840,7 @@ async fn ignore_same_thread_resume_allows_reattaching_displayed_inactive_thread(
     let ignored = app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
         backend_id: crate::backend_id::BackendId::new(),
         path: Some(test_path_buf("/tmp/project")),
+        source_rollout_path: None,
         thread_id,
         cwd: None,
         history_mode: None,
@@ -1861,6 +1869,7 @@ async fn ignore_same_thread_resume_allows_retrying_read_only_view() -> Result<()
         !app.ignore_same_thread_resume(&crate::resume_picker::SessionTarget {
             backend_id: crate::backend_id::BackendId::new(),
             path: Some(test_path_buf("/tmp/project")),
+            source_rollout_path: None,
             thread_id,
             cwd: None,
             history_mode: None,

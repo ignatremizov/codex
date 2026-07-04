@@ -156,6 +156,7 @@ mod exec_command;
 mod external_agent_config_migration;
 mod external_editor;
 mod file_search;
+mod fork_source_lookup;
 mod get_git_diff;
 mod git_action_directives;
 mod goal_display;
@@ -791,6 +792,7 @@ fn session_target_from_app_server_thread(
         Ok(thread_id) => Some(resume_picker::SessionTarget {
             backend_id,
             path: thread.path,
+            source_rollout_path: None,
             thread_id,
             cwd: Some(thread.cwd.to_path_buf()),
             history_mode: Some(thread.history_mode),
@@ -1507,37 +1509,127 @@ async fn run_ratatui_app(
         crate::render::highlight::set_syntax_theme(theme);
     }
 
-    let use_fork = cli.fork_picker || cli.fork_last || cli.fork_session_id.is_some();
+    let explicit_fork_source =
+        cli.fork_source_home.is_some() || cli.fork_source_rollout_path.is_some();
+    let use_fork =
+        cli.fork_picker || cli.fork_last || cli.fork_session_id.is_some() || explicit_fork_source;
     let mut session_selection = if cli.agents_overview {
         resume_picker::SessionSelection::AgentsOverview
     } else if use_fork {
-        if let Some(id_str) = cli.fork_session_id.as_deref() {
-            let Some(startup_app_server) = app_server.as_mut() else {
-                unreachable!("app server should be initialized for --fork <id>");
-            };
+        if explicit_fork_source && uses_remote_workspace {
+            shutdown_startup_session(app_server.take(), &mut terminal_restore_guard).await;
+            return Ok(AppExitInfo {
+                token_usage: crate::token_usage::TokenUsage::default(),
+                thread_id: None,
+                resume_hint: None,
+                disconnect_info: None,
+                update_action: None,
+                exit_reason: ExitReason::Fatal(
+                    "`codex fork --source-home` and `--from-rollout` require a local app server"
+                        .to_string(),
+                ),
+            });
+        }
+        if let Some(path) = cli.fork_source_rollout_path.as_deref() {
             let lookup = startup_draft
                 .run_until(
                     &mut tui,
-                    lookup_session_target_with_app_server(startup_app_server, &config, id_str),
+                    fork_source_lookup::from_rollout_path(
+                        path, /*expected_id*/ None, backend_id,
+                    ),
                 )
                 .await;
-            let target_session = match lookup {
-                Ok(result) => result?,
-                Err(err) => {
+            let target = match lookup {
+                Ok(Ok(target)) => target,
+                Ok(Err(error)) => {
                     shutdown_startup_session(app_server.take(), &mut terminal_restore_guard).await;
-                    return Err(err.into());
+                    return Err(error);
+                }
+                Err(error) => {
+                    shutdown_startup_session(app_server.take(), &mut terminal_restore_guard).await;
+                    return Err(error.into());
                 }
             };
-            match target_session {
-                Some(target_session) => resume_picker::SessionSelection::Fork(target_session),
+            match target {
+                Some(target) => resume_picker::SessionSelection::Fork(target),
                 None => {
-                    shutdown_app_server_if_present(app_server.take()).await;
-                    return missing_session_exit(
-                        id_str,
-                        "fork",
+                    shutdown_startup_session(app_server.take(), &mut terminal_restore_guard).await;
+                    return Ok(AppExitInfo {
+                        token_usage: crate::token_usage::TokenUsage::default(),
+                        thread_id: None,
+                        resume_hint: None,
+                        disconnect_info: None,
+                        update_action: None,
+                        exit_reason: ExitReason::Fatal(format!(
+                            "No forkable session metadata found in rollout {}.",
+                            path.display()
+                        )),
+                    });
+                }
+            }
+        } else if let Some(id_str) = cli.fork_session_id.as_deref() {
+            if let Some(source_home) = cli.fork_source_home.as_deref() {
+                let lookup = startup_draft
+                    .run_until(
                         &mut tui,
-                        &mut terminal_restore_guard,
-                    );
+                        fork_source_lookup::lookup_in_source_home(source_home, id_str, backend_id),
+                    )
+                    .await;
+                let target = match lookup {
+                    Ok(Ok(target)) => target,
+                    Ok(Err(error)) => {
+                        shutdown_startup_session(app_server.take(), &mut terminal_restore_guard)
+                            .await;
+                        return Err(error);
+                    }
+                    Err(error) => {
+                        shutdown_startup_session(app_server.take(), &mut terminal_restore_guard)
+                            .await;
+                        return Err(error.into());
+                    }
+                };
+                match target {
+                    Some(target) => resume_picker::SessionSelection::Fork(target),
+                    None => {
+                        shutdown_startup_session(app_server.take(), &mut terminal_restore_guard)
+                            .await;
+                        return missing_session_exit(
+                            id_str,
+                            "fork",
+                            &mut tui,
+                            &mut terminal_restore_guard,
+                        );
+                    }
+                }
+            } else {
+                let Some(startup_app_server) = app_server.as_mut() else {
+                    unreachable!("app server should be initialized for --fork <id>");
+                };
+                let lookup = startup_draft
+                    .run_until(
+                        &mut tui,
+                        lookup_session_target_with_app_server(startup_app_server, &config, id_str),
+                    )
+                    .await;
+                let target_session = match lookup {
+                    Ok(result) => result?,
+                    Err(err) => {
+                        shutdown_startup_session(app_server.take(), &mut terminal_restore_guard)
+                            .await;
+                        return Err(err.into());
+                    }
+                };
+                match target_session {
+                    Some(target_session) => resume_picker::SessionSelection::Fork(target_session),
+                    None => {
+                        shutdown_app_server_if_present(app_server.take()).await;
+                        return missing_session_exit(
+                            id_str,
+                            "fork",
+                            &mut tui,
+                            &mut terminal_restore_guard,
+                        );
+                    }
                 }
             }
         } else if cli.fork_last {
@@ -2927,6 +3019,7 @@ requires_openai_auth = {requires_openai_auth}
             let target_session = resume_picker::SessionTarget {
                 backend_id,
                 path: Some(rollout_path),
+                source_rollout_path: None,
                 thread_id,
                 cwd: Some(session_cwd.clone()),
                 history_mode: None,
@@ -3035,6 +3128,7 @@ requires_openai_auth = {requires_openai_auth}
             &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
                 backend_id,
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 cwd: None,
                 history_mode: None,
@@ -3058,6 +3152,7 @@ requires_openai_auth = {requires_openai_auth}
             &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
                 backend_id,
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 cwd: None,
                 history_mode: None,
@@ -3096,6 +3191,7 @@ requires_openai_auth = {requires_openai_auth}
             &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
                 backend_id,
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 cwd: None,
                 history_mode: None,
@@ -3145,6 +3241,7 @@ requires_openai_auth = {requires_openai_auth}
         let target = crate::resume_picker::SessionTarget {
             backend_id: crate::backend_id::BackendId::new(),
             path: None,
+            source_rollout_path: None,
             thread_id,
             cwd: None,
             history_mode: None,
