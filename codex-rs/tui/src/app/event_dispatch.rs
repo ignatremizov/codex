@@ -179,7 +179,10 @@ impl App {
                     fork_config.model = Some(self.chat_widget.current_model().to_string());
                     fork_config.model_reasoning_effort =
                         self.chat_widget.current_reasoning_effort();
-                    match app_server.fork_thread(fork_config, thread_id).await {
+                    match app_server
+                        .fork_thread(fork_config, thread_id, /*source_rollout_path*/ None)
+                        .await
+                    {
                         Ok(forked) => {
                             self.shutdown_current_thread(app_server).await;
                             match self
@@ -260,6 +263,7 @@ impl App {
                                 .fork_thread_at(
                                     config.clone(),
                                     thread_id,
+                                    /*source_rollout_path*/ None,
                                     /*last_turn_id*/ None,
                                     /*before_turn_id*/ Some(before_turn_id),
                                     ForkGoalContinuation::StartIfIdle,

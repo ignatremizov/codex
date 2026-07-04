@@ -547,10 +547,12 @@ impl AppServerSession {
         &mut self,
         config: Config,
         thread_id: ThreadId,
+        source_rollout_path: Option<PathBuf>,
     ) -> Result<AppServerStartedThread> {
         self.fork_thread_at(
             config,
             thread_id,
+            source_rollout_path,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
             ForkGoalContinuation::StartIfIdle,
@@ -562,6 +564,7 @@ impl AppServerSession {
         &mut self,
         config: Config,
         thread_id: ThreadId,
+        source_rollout_path: Option<PathBuf>,
         last_turn_id: Option<String>,
         before_turn_id: Option<String>,
         goal_continuation: ForkGoalContinuation,
@@ -580,6 +583,7 @@ impl AppServerSession {
                     ..thread_fork_params_from_config(
                         session_config,
                         thread_id,
+                        source_rollout_path,
                         self.thread_params_mode(),
                         self.remote_cwd_override.as_deref(),
                     )
@@ -1630,6 +1634,7 @@ fn thread_resume_params_from_config(
 fn thread_fork_params_from_config(
     config: Config,
     thread_id: ThreadId,
+    source_rollout_path: Option<PathBuf>,
     thread_params_mode: ThreadParamsMode,
     remote_cwd_override: Option<&std::path::Path>,
 ) -> ThreadForkParams {
@@ -1646,6 +1651,7 @@ fn thread_fork_params_from_config(
     ThreadForkParams {
         thread_id: thread_id.to_string(),
         model: config.model.clone(),
+        path: source_rollout_path,
         model_provider: thread_params_mode.model_provider_from_config(&config),
         service_tier: service_tier_override_from_config(&config),
         cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
@@ -2191,6 +2197,7 @@ mod tests {
         let fork = thread_fork_params_from_config(
             config,
             thread_id,
+            /*source_rollout_path*/ None,
             ThreadParamsMode::Remote,
             /*remote_cwd_override*/ None,
         );
@@ -2309,6 +2316,7 @@ mod tests {
         let fork = thread_fork_params_from_config(
             config,
             thread_id,
+            /*source_rollout_path*/ None,
             ThreadParamsMode::Remote,
             Some(remote_cwd.as_path()),
         );
@@ -2361,6 +2369,7 @@ mod tests {
         let fork = thread_fork_params_from_config(
             config,
             thread_id,
+            /*source_rollout_path*/ None,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
         );
@@ -2519,6 +2528,7 @@ mod tests {
         let params = thread_fork_params_from_config(
             config,
             thread_id,
+            /*source_rollout_path*/ None,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
         );
@@ -2528,6 +2538,25 @@ mod tests {
             params.developer_instructions.as_deref(),
             Some("Developer override.")
         );
+    }
+
+    #[tokio::test]
+    async fn thread_fork_params_forward_source_rollout_path() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+        let thread_id = ThreadId::new();
+        let source_rollout_path = temp_dir.path().join("source.jsonl");
+
+        let params = thread_fork_params_from_config(
+            config,
+            thread_id,
+            Some(source_rollout_path.clone()),
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+        );
+
+        assert_eq!(params.path.as_deref(), Some(source_rollout_path.as_path()));
+        assert_eq!(params.thread_id, thread_id.to_string());
     }
 
     #[tokio::test]
@@ -2553,6 +2582,7 @@ mod tests {
         let control_fork = thread_fork_params_from_config(
             config.clone(),
             thread_id,
+            /*source_rollout_path*/ None,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
         );
@@ -2583,6 +2613,7 @@ mod tests {
         let treatment_fork = thread_fork_params_from_config(
             config,
             thread_id,
+            /*source_rollout_path*/ None,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
         );
