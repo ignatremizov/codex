@@ -117,6 +117,7 @@ impl App {
             .fork_thread_at(
                 retry_config,
                 thread_id,
+                /*source_rollout_path*/ None,
                 /*last_turn_id*/ None,
                 /*before_turn_id*/ Some(turn_id),
                 ForkGoalContinuation::DeferUntilNextTurn,
