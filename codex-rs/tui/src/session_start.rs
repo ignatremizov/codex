@@ -43,10 +43,11 @@ impl SessionStartAction {
             }
             Self::Fork(permission_mode) => {
                 app_server
-                    .fork_thread_with_permission_mode(
+                    .fork_thread_at_with_permission_mode(
                         local_settings,
                         config.clone(),
                         target.thread_id,
+                        target.source_rollout_path.clone(),
                         permission_mode,
                     )
                     .await

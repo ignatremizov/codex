@@ -145,45 +145,47 @@ pub(super) async fn read_thread_by_rollout_path(
         });
     }
     if let Some(mut metadata) = read_sqlite_metadata(store, thread.thread_id).await {
-        if thread.history_mode == ThreadHistoryMode::Paginated {
-            // Paginated display metadata lives in SQLite because rollout history may be partial.
-            metadata.rollout_path = path;
-            metadata.archived_at = thread.archived_at;
-            thread = stored_thread_from_sqlite_metadata(store, metadata).await?;
-        } else {
-            thread.recency_at = metadata.recency_at;
-            thread.section = metadata.section;
-            thread.section_position = metadata.section_position;
-            thread.section_entered_at = metadata.section_entered_at;
-            thread.project_id = metadata.project_id;
-            thread.daybreak_enabled = metadata.daybreak_enabled;
-            thread.model = metadata.model;
-            thread.reasoning_effort = metadata.reasoning_effort;
-            if !metadata.cwd.as_os_str().is_empty()
-                && resolve_requested_rollout_path(store, metadata.rollout_path.clone())
-                    .await
-                    .is_ok_and(|metadata_rollout_path| metadata_rollout_path == path)
-            {
-                thread.cwd = metadata.cwd;
-                thread.permission_profile = permission_profile_from_metadata_value(
-                    &metadata.sandbox_policy,
-                    thread.cwd.as_path(),
+        let metadata_matches_path =
+            resolve_requested_rollout_path(store, metadata.rollout_path.clone())
+                .await
+                .is_ok_and(|metadata_path| metadata_path == path);
+        if metadata_matches_path {
+            if thread.history_mode == ThreadHistoryMode::Paginated {
+                // Paginated display metadata lives in SQLite because rollout history may be partial.
+                metadata.rollout_path = path;
+                metadata.archived_at = thread.archived_at;
+                thread = stored_thread_from_sqlite_metadata(store, metadata).await?;
+            } else {
+                thread.recency_at = metadata.recency_at;
+                thread.section = metadata.section;
+                thread.section_position = metadata.section_position;
+                thread.section_entered_at = metadata.section_entered_at;
+                thread.project_id = metadata.project_id;
+                thread.daybreak_enabled = metadata.daybreak_enabled;
+                thread.model = metadata.model;
+                thread.reasoning_effort = metadata.reasoning_effort;
+                if !metadata.cwd.as_os_str().is_empty() {
+                    thread.cwd = metadata.cwd;
+                    thread.permission_profile = permission_profile_from_metadata_value(
+                        &metadata.sandbox_policy,
+                        thread.cwd.as_path(),
+                    );
+                }
+                let (fallback_sha, fallback_branch, fallback_origin_url) =
+                    match thread.git_info.take() {
+                        Some(info) => (
+                            info.commit_hash.map(|sha| sha.0),
+                            info.branch,
+                            info.repository_url,
+                        ),
+                        None => (None, None, None),
+                    };
+                thread.git_info = git_info_from_parts(
+                    metadata.git_sha.or(fallback_sha),
+                    metadata.git_branch.or(fallback_branch),
+                    metadata.git_origin_url.or(fallback_origin_url),
                 );
             }
-            let (fallback_sha, fallback_branch, fallback_origin_url) = match thread.git_info.take()
-            {
-                Some(info) => (
-                    info.commit_hash.map(|sha| sha.0),
-                    info.branch,
-                    info.repository_url,
-                ),
-                None => (None, None, None),
-            };
-            thread.git_info = git_info_from_parts(
-                metadata.git_sha.or(fallback_sha),
-                metadata.git_branch.or(fallback_branch),
-                metadata.git_origin_url.or(fallback_origin_url),
-            );
         }
     }
     reject_paginated_history(&thread, include_history)?;
@@ -285,7 +287,19 @@ async fn read_thread_from_rollout_path(
     {
         thread.model_provider = model_provider;
     }
-    if thread.history_mode == ThreadHistoryMode::Legacy
+    // The active home's name index is not authoritative for an imported rollout
+    // merely because that source carries the same thread ID.
+    let path_is_managed = [
+        store.config.codex_home.join(codex_rollout::SESSIONS_SUBDIR),
+        store
+            .config
+            .codex_home
+            .join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR),
+    ]
+    .into_iter()
+    .any(|root| super::helpers::scoped_rollout_path(root, path.as_path(), "Codex home").is_ok());
+    if path_is_managed
+        && thread.history_mode == ThreadHistoryMode::Legacy
         && let Ok(Some(name)) =
             find_thread_name_by_id(store.config.codex_home.as_path(), &thread.thread_id).await
         && !name.trim().is_empty()
@@ -706,6 +720,64 @@ mod tests {
         assert_eq!(
             git_info.repository_url.as_deref(),
             Some("https://example.com/repo.git")
+        );
+    }
+
+    #[tokio::test]
+    async fn read_thread_by_rollout_path_ignores_unrelated_same_id_metadata() {
+        let home = TempDir::new().expect("temp dir");
+        let source_home = TempDir::new().expect("source home");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(224);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let requested_path = write_session_file(source_home.path(), "2025-01-03T12-00-00", uuid)
+            .expect("session file");
+        let unrelated_path = home.path().join("other-rollout.jsonl");
+        std::fs::copy(&requested_path, &unrelated_path).expect("copy rollout");
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config.clone(), Some(runtime.clone()));
+        let expected = store
+            .read_thread_by_rollout_path(
+                requested_path.clone(),
+                /*include_archived*/ false,
+                /*include_history*/ false,
+            )
+            .await
+            .expect("read source before unrelated metadata");
+        let mut builder =
+            ThreadMetadataBuilder::new(thread_id, unrelated_path, Utc::now(), SessionSource::Cli);
+        builder.cwd = home.path().join("unrelated");
+        builder.git_branch = Some("unrelated-branch".to_string());
+        let mut metadata = builder.build(config.default_model_provider_id.as_str());
+        metadata.model = Some("unrelated-model".to_string());
+        metadata.reasoning_effort = Some(ReasoningEffort::High);
+        metadata.daybreak_enabled = Some(true);
+        metadata.recency_at = Utc::now();
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db upsert should succeed");
+        codex_rollout::append_thread_name(home.path(), thread_id, "Unrelated active-home name")
+            .await
+            .expect("append unrelated thread name");
+
+        let thread = store
+            .read_thread_by_rollout_path(
+                requested_path,
+                /*include_archived*/ false,
+                /*include_history*/ false,
+            )
+            .await
+            .expect("read requested rollout");
+
+        assert_eq!(
+            serde_json::to_value(thread).expect("serialize requested source"),
+            serde_json::to_value(expected).expect("serialize original source"),
         );
     }
 

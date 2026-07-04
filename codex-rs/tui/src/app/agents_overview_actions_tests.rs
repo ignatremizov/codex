@@ -349,6 +349,7 @@ async fn hidden_task_stays_hidden_through_activity_and_seed_until_explicit_resum
         SessionTarget {
             thread_id: id,
             path: None,
+            source_rollout_path: None,
             cwd: None,
             history_mode: None,
         },
