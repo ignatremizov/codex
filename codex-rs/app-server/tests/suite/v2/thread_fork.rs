@@ -33,6 +33,7 @@ use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::RolloutItem;
+use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::append_thread_name;
 use codex_rollout::read_session_meta_line;
@@ -469,6 +470,143 @@ async fn thread_fork_can_load_source_by_path() -> Result<()> {
     assert_eq!(thread.preview, preview);
     assert_eq!(thread.model_provider, "mock_provider");
     assert_eq!(thread.turns.len(), 1, "expected copied fork history");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_fork_can_load_source_by_path_from_another_home() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let source_home = TempDir::new()?;
+    let active_home = TempDir::new()?;
+    create_config_toml(active_home.path(), &server.uri())?;
+
+    let preview = "Cross-home source message";
+    let conversation_id = create_fake_rollout(
+        source_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        preview,
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let source_path = source_home
+        .path()
+        .join("sessions")
+        .join("2025")
+        .join("01")
+        .join("05")
+        .join(format!(
+            "rollout-2025-01-05T12-00-00-{conversation_id}.jsonl"
+        ));
+    let source_contents = std::fs::read_to_string(source_path.as_path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(active_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: "not-a-valid-thread-id".to_string(),
+            path: Some(source_path.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let fork_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    let ThreadForkResponse { thread, .. } = to_response::<ThreadForkResponse>(fork_resp)?;
+
+    assert_ne!(thread.id, conversation_id);
+    assert_eq!(thread.forked_from_id, Some(conversation_id));
+    assert_eq!(thread.preview, preview);
+    assert_eq!(thread.model_provider, "mock_provider");
+    assert_eq!(thread.turns.len(), 1, "expected copied fork history");
+    assert!(
+        thread
+            .path
+            .as_ref()
+            .expect("forked thread path")
+            .starts_with(active_home.path()),
+        "forked rollout should be created under the active home"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source_path.as_path())?,
+        source_contents,
+        "cross-home fork should not mutate the source rollout"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_fork_can_load_archived_source_by_path() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let preview = "Archived source message";
+    let conversation_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        preview,
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let original_path = codex_home
+        .path()
+        .join("sessions")
+        .join("2025")
+        .join("01")
+        .join("05")
+        .join(format!(
+            "rollout-2025-01-05T12-00-00-{conversation_id}.jsonl"
+        ));
+    let archived_dir = codex_home.path().join(ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir_all(archived_dir.as_path())?;
+    let archived_path = archived_dir.join(
+        original_path
+            .file_name()
+            .expect("rollout file name should exist"),
+    );
+    std::fs::rename(original_path.as_path(), archived_path.as_path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: "not-a-valid-thread-id".to_string(),
+            path: Some(archived_path.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let fork_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    let ThreadForkResponse { thread, .. } = to_response::<ThreadForkResponse>(fork_resp)?;
+
+    assert_ne!(thread.id, conversation_id);
+    assert_eq!(thread.forked_from_id, Some(conversation_id));
+    assert_eq!(thread.preview, preview);
+    assert_eq!(thread.model_provider, "mock_provider");
+    assert_eq!(thread.turns.len(), 1, "expected copied fork history");
+    assert!(
+        archived_path.exists(),
+        "forking from archived source path should not move the source rollout"
+    );
 
     Ok(())
 }

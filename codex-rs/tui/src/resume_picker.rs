@@ -82,6 +82,7 @@ const PICKER_LIST_HORIZONTAL_INSET: u16 = 4;
 #[derive(Debug, Clone)]
 pub struct SessionTarget {
     pub path: Option<PathBuf>,
+    pub source_rollout_path: Option<PathBuf>,
     pub thread_id: ThreadId,
 }
 
@@ -130,7 +131,11 @@ impl SessionPickerAction {
     }
 
     fn selection(self, path: Option<PathBuf>, thread_id: ThreadId) -> SessionSelection {
-        let target_session = SessionTarget { path, thread_id };
+        let target_session = SessionTarget {
+            path,
+            source_rollout_path: None,
+            thread_id,
+        };
         match self {
             SessionPickerAction::Resume => SessionSelection::Resume(target_session),
             SessionPickerAction::Fork => SessionSelection::Fork(target_session),
@@ -5716,6 +5721,7 @@ session_picker_view = "dense"
         match selection {
             Some(SessionSelection::Resume(SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: selected_thread_id,
             })) => assert_eq!(selected_thread_id, thread_id),
             other => panic!("unexpected selection: {other:?}"),

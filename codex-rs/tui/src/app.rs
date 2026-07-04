@@ -971,7 +971,11 @@ impl App {
                     &[("source", "cli_subcommand")],
                 );
                 let forked = app_server
-                    .fork_thread(config.clone(), target_session.thread_id)
+                    .fork_thread(
+                        config.clone(),
+                        target_session.thread_id,
+                        target_session.source_rollout_path.clone(),
+                    )
                     .await
                     .map_err(|err| session_start_error("fork", &target_session, err))?;
                 let init = crate::chatwidget::ChatWidgetInit {
