@@ -1855,6 +1855,7 @@ async fn overview_selection_applies_user_permissions_only_to_unloaded_threads() 
         &mut app_server,
         SessionTarget {
             path: None,
+            source_rollout_path: None,
             thread_id: thread_ids[4],
             cwd: None,
             history_mode: None,
@@ -2209,6 +2210,7 @@ async fn resuming_active_session_closes_command_center() -> Result<()> {
             &mut server,
             SessionSelection::Resume(SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id,
                 cwd: None,
                 history_mode: None,
@@ -2269,6 +2271,7 @@ async fn resume_picker_round_trip_preserves_each_threads_input() -> Result<()> {
                 timestamp,
                 &id,
             )),
+            source_rollout_path: None,
             thread_id: ThreadId::from_string(&id)?,
             cwd: None,
             history_mode: None,
@@ -2370,6 +2373,7 @@ async fn command_center_handles_resume_failure_and_success() -> Result<()> {
             &mut server,
             SessionSelection::Resume(SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 cwd: None,
                 history_mode: None,
@@ -2394,6 +2398,7 @@ async fn command_center_handles_resume_failure_and_success() -> Result<()> {
             &mut server,
             SessionSelection::Resume(SessionTarget {
                 path: Some(path),
+                source_rollout_path: None,
                 thread_id,
                 cwd: None,
                 history_mode: None,

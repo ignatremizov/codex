@@ -106,6 +106,8 @@ const PICKER_LIST_HORIZONTAL_INSET: u16 = 4;
 #[derive(Debug, Clone)]
 pub struct SessionTarget {
     pub path: Option<PathBuf>,
+    /// Explicit fork source, not an ordinary picker/resume path hint.
+    pub source_rollout_path: Option<PathBuf>,
     pub thread_id: ThreadId,
     /// Working directory reported by `thread/list` or `thread/read` at selection time.
     pub cwd: Option<PathBuf>,
@@ -784,6 +786,7 @@ fn spawn_app_server_page_loader(
                         .await
                         .map(|response| SessionTarget {
                             path: response.thread.path,
+                            source_rollout_path: None,
                             thread_id,
                             cwd: Some(response.thread.cwd.to_path_buf()),
                             history_mode: Some(response.thread.history_mode),
@@ -1307,6 +1310,7 @@ impl PickerState {
                         }
                         return Ok(Some(self.action.selection(SessionTarget {
                             path,
+                            source_rollout_path: None,
                             thread_id,
                             cwd: row.cwd.clone(),
                             history_mode: self.thread_history_modes.get(&thread_id).copied(),
@@ -6662,6 +6666,7 @@ session_picker_view = "dense"
         match selection {
             Some(SessionSelection::Resume(SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: selected_thread_id,
                 cwd: None,
                 history_mode: None,
