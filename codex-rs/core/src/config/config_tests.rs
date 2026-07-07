@@ -835,6 +835,9 @@ fn config_toml_deserializes_model_availability_nux() {
                 codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
             user_shell_output_preview_lines:
                 codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
+            agent_prompt_preview_lines: codex_config::types::DEFAULT_TUI_AGENT_PROMPT_PREVIEW_LINES,
+            agent_response_preview_lines:
+                codex_config::types::DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES,
             show_compact_summary: true,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
@@ -1169,6 +1172,8 @@ async fn runtime_config_uses_tui_command_output_preview_lines() {
         [tui]
         command_output_preview_lines = 42
         user_shell_output_preview_lines = 77
+        agent_prompt_preview_lines = 50
+        agent_response_preview_lines = 12
     "#;
     let cfg_toml =
         toml::from_str::<ConfigToml>(toml).expect("deserialize output preview line caps");
@@ -1182,6 +1187,8 @@ async fn runtime_config_uses_tui_command_output_preview_lines() {
 
     assert_eq!(cfg.tui_command_output_preview_lines, 42);
     assert_eq!(cfg.tui_user_shell_output_preview_lines, 77);
+    assert_eq!(cfg.tui_agent_prompt_preview_lines, 50);
+    assert_eq!(cfg.tui_agent_response_preview_lines, 12);
 }
 
 #[test]
@@ -3870,6 +3877,9 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
                 codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
             user_shell_output_preview_lines:
                 codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
+            agent_prompt_preview_lines: codex_config::types::DEFAULT_TUI_AGENT_PROMPT_PREVIEW_LINES,
+            agent_response_preview_lines:
+                codex_config::types::DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES,
             show_compact_summary: true,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
