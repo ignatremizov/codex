@@ -19,6 +19,7 @@ pub(super) fn cells(
     item: ThreadItem,
     cwd: &AbsolutePathBuf,
     show_compact_summary: bool,
+    agent_preview_line_limits: multi_agents::AgentPreviewLineLimits,
 ) -> TranscriptCells {
     let mut cells: TranscriptCells = Vec::new();
     match item {
@@ -87,6 +88,8 @@ pub(super) fn cells(
             if let Some(cell) = multi_agents::tool_call_history_cell(
                 &item,
                 /*cached_spawn_request*/ None,
+                agent_preview_line_limits.prompt,
+                agent_preview_line_limits.response,
                 |_| multi_agents::AgentMetadata::default(),
             ) {
                 cells.push(Arc::new(cell));

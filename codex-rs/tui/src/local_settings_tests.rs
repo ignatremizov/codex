@@ -6,6 +6,46 @@ use codex_config::types::SessionPickerViewMode;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn agent_preview_preferences_load_and_reload_locally() -> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let mut previous: Option<LocalSettings> = None;
+    for (toml, expected) in [
+        ("", (50, 0)),
+        (
+            "[tui]\nagent_prompt_preview_lines = 0\nagent_response_preview_lines = 2\n",
+            (0, 2),
+        ),
+        (
+            "[tui]\nagent_prompt_preview_lines = 1\nagent_response_preview_lines = 0\n",
+            (1, 0),
+        ),
+    ] {
+        std::fs::write(home.path().join("config.toml"), toml)?;
+        let config = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .loader_overrides(LoaderOverrides {
+                ignore_project_config: true,
+                ..LoaderOverrides::without_managed_config_for_tests()
+            })
+            .build()
+            .await?;
+        let local = previous.as_ref().map_or_else(
+            || LocalSettings::from(&config),
+            |previous| previous.reloaded(&config),
+        );
+        assert_eq!(
+            (
+                local.tui.agent_prompt_preview_lines,
+                local.tui.agent_response_preview_lines
+            ),
+            expected
+        );
+        previous = Some(local);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn command_preview_preferences_load_and_reload_locally() -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
     let mut previous: Option<LocalSettings> = None;

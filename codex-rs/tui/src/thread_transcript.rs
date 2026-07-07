@@ -17,6 +17,7 @@ use crate::history_cell::UserHistoryCell;
 use crate::history_cell::split_reasoning_summary_parts;
 use crate::inline_visualization::InlineVisualizationContext;
 use crate::legacy_core::config::Config;
+use crate::multi_agents::AgentPreviewLineLimits;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserInput;
@@ -136,23 +137,30 @@ pub(crate) fn thread_items_to_transcript_cells(
                 user_shell: config.tui_user_shell_output_preview_lines,
             }
         });
-    thread_items_to_transcript_cells_with_output_preview_line_limits(
+    thread_items_to_transcript_cells_with_preview_line_limits(
         thread_id,
         cwd,
         items,
         raw_reasoning_visibility,
         config,
         output_preview_line_limits,
+        config.map_or_else(AgentPreviewLineLimits::default, |config| {
+            AgentPreviewLineLimits {
+                prompt: config.tui_agent_prompt_preview_lines,
+                response: config.tui_agent_response_preview_lines,
+            }
+        }),
     )
 }
 
-pub(crate) fn thread_items_to_transcript_cells_with_output_preview_line_limits(
+pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
     thread_id: Option<ThreadId>,
     cwd: &AbsolutePathBuf,
     items: impl IntoIterator<Item = ThreadItem>,
     raw_reasoning_visibility: RawReasoningVisibility,
     config: Option<&Config>,
     output_preview_line_limits: OutputPreviewLineLimits,
+    agent_preview_line_limits: AgentPreviewLineLimits,
 ) -> TranscriptCells {
     let inline_visualization_context = config.and_then(|config| {
         thread_id.and_then(|thread_id| InlineVisualizationContext::from_config(config, thread_id))
@@ -171,6 +179,7 @@ pub(crate) fn thread_items_to_transcript_cells_with_output_preview_line_limits(
                 inline_visualization_context.clone(),
                 show_compact_summary,
                 output_preview_line_limits,
+                agent_preview_line_limits,
             ) {
                 match group {
                     PendingActivity::Computer(group) => group.group.push_detail(cell),
@@ -237,6 +246,7 @@ pub(crate) fn thread_items_to_transcript_cells_with_output_preview_line_limits(
                     inline_visualization_context.clone(),
                     show_compact_summary,
                     output_preview_line_limits,
+                    agent_preview_line_limits,
                 );
                 if !projected.is_empty() {
                     PendingActivity::flush(&mut pending, &mut cells);
@@ -257,6 +267,7 @@ fn item_to_cells(
     inline_visualization_context: Option<InlineVisualizationContext>,
     show_compact_summary: bool,
     output_preview_line_limits: OutputPreviewLineLimits,
+    agent_preview_line_limits: AgentPreviewLineLimits,
 ) -> TranscriptCells {
     let mut cells: TranscriptCells = Vec::new();
     match item {
@@ -367,7 +378,12 @@ fn item_to_cells(
                 cells.push(Arc::new(command.into_cell(output_preview_line_limits)));
             }
         }
-        other => cells.extend(other_items::cells(other, cwd, show_compact_summary)),
+        other => cells.extend(other_items::cells(
+            other,
+            cwd,
+            show_compact_summary,
+            agent_preview_line_limits,
+        )),
     }
     cells
 }

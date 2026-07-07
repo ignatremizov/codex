@@ -261,6 +261,16 @@ Remote V2 rollout checkpoints retain the service's reported output-token count a
 
 Set either value to `0` to display all retained output. These are client-local presentation settings: they do not change command execution, captured output, or the existing bounded live-output storage. The detailed transcript retains all available output and reports any storage-level omissions separately from omitted display rows.
 
+Subagent prompt and response previews are configured independently:
+
+```toml
+[tui]
+agent_prompt_preview_lines = 50
+agent_response_preview_lines = 0
+```
+
+Prompt previews default to 50 wrapped display rows; response previews default to unlimited (`0`). The limits apply to wrapped detail rows, including an omission marker, but exclude the preview title and status line. They affect presentation only. Complete prompt and response content remains available in canonical history and full transcript exports; ordinary replay uses the same presentation caps.
+
 ## TUI notification previews
 
 The following `[tui]` settings limit notification previews by Unicode grapheme clusters. The agent-turn limit applies to both desktop and ambient-pet previews; the execution-approval and user-input limits apply to their respective desktop notification categories:
