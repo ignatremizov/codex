@@ -83,6 +83,8 @@ impl LocalSettings {
                 right_click_paste: config.tui_right_click_paste,
                 command_output_preview_lines: config.tui_command_output_preview_lines,
                 user_shell_output_preview_lines: config.tui_user_shell_output_preview_lines,
+                agent_prompt_preview_lines: config.tui_agent_prompt_preview_lines,
+                agent_response_preview_lines: config.tui_agent_response_preview_lines,
                 agent_notification_preview_graphemes: config
                     .tui_agent_notification_preview_graphemes,
                 exec_approval_notification_preview_graphemes: config
