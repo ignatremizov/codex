@@ -11,7 +11,7 @@ use crate::history_cell::UserHistoryCell;
 use crate::history_cell::is_session_history_prefix_cell;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::thread_transcript::RawReasoningVisibility;
-use crate::thread_transcript::thread_items_to_transcript_cells_with_output_preview_line_limits;
+use crate::thread_transcript::thread_items_to_transcript_cells_with_preview_line_limits;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ThreadItemsListResponse;
 
@@ -181,13 +181,14 @@ impl App {
             command: self.local_settings.tui.command_output_preview_lines,
             user_shell: self.local_settings.tui.user_shell_output_preview_lines,
         };
-        let projected_user_cells = thread_items_to_transcript_cells_with_output_preview_line_limits(
+        let projected_user_cells = thread_items_to_transcript_cells_with_preview_line_limits(
             Some(thread_id),
             cwd,
             user_items.iter().map(|(_, item)| item.clone()),
             visibility,
             Some(&self.config),
             output_preview_line_limits,
+            (&self.local_settings.tui).into(),
         );
         let persisted_user_cells = user_items
             .into_iter()
@@ -266,16 +267,15 @@ impl App {
         for (range, turn_end) in completion::group_turn_items(&items, turns) {
             // Internal prompts stay invisible, but still separate adjacent tool groups.
             for visible in items[range].split(|item| hidden_item_ids.contains(item.id())) {
-                cells.extend(
-                    thread_items_to_transcript_cells_with_output_preview_line_limits(
-                        Some(thread_id),
-                        cwd,
-                        visible.iter().cloned(),
-                        visibility,
-                        Some(&self.config),
-                        output_preview_line_limits,
-                    ),
-                );
+                cells.extend(thread_items_to_transcript_cells_with_preview_line_limits(
+                    Some(thread_id),
+                    cwd,
+                    visible.iter().cloned(),
+                    visibility,
+                    Some(&self.config),
+                    output_preview_line_limits,
+                    (&self.local_settings.tui).into(),
+                ));
             }
             let Some(turn) = turn_end else { continue };
             if turn.status == TurnStatus::Interrupted && !self.side_threads.contains_key(&thread_id)
