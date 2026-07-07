@@ -785,6 +785,13 @@ pub struct Config {
 
     /// Maximum number of user shell command-output rows shown in the main TUI transcript.
     pub tui_user_shell_output_preview_lines: usize,
+
+    /// Maximum number of rendered subagent prompt rows shown after a multi-agent spawn or input completes.
+    pub tui_agent_prompt_preview_lines: usize,
+
+    /// Maximum number of rendered subagent response rows shown after a multi-agent wait completes.
+    pub tui_agent_response_preview_lines: usize,
+
     /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
     pub show_compact_summary: bool,
 
@@ -4223,6 +4230,16 @@ impl Config {
                 .as_ref()
                 .map(|t| t.user_shell_output_preview_lines)
                 .unwrap_or(codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES),
+            tui_agent_prompt_preview_lines: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.agent_prompt_preview_lines)
+                .unwrap_or(codex_config::types::DEFAULT_TUI_AGENT_PROMPT_PREVIEW_LINES),
+            tui_agent_response_preview_lines: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.agent_response_preview_lines)
+                .unwrap_or(codex_config::types::DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES),
             show_compact_summary: cfg
                 .tui
                 .as_ref()
