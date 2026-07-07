@@ -4,6 +4,7 @@ use super::cells;
 use crate::diff_model::FileChange;
 use crate::history_cell;
 use crate::history_cell::HistoryCell;
+use crate::multi_agents::AgentPreviewLineLimits;
 use crate::test_support::PathBufExt;
 use crate::test_support::test_path_buf;
 use codex_app_server_protocol::FileUpdateChange;
@@ -82,6 +83,7 @@ fn cold_compaction_decode_error_is_visible_with_content_hidden() {
             },
             &cwd,
             show_compact_summary,
+            AgentPreviewLineLimits::default(),
         );
         assert_eq!(projected.len(), 1);
         rendered.push(
@@ -158,6 +160,7 @@ fn completed_patch_restores_rich_diff_and_styles() {
         },
         &cwd,
         /*show_compact_summary*/ true,
+        AgentPreviewLineLimits::default(),
     );
 
     assert_eq!(actual.len(), 1);
@@ -189,6 +192,7 @@ fn unfinished_and_rejected_patches_keep_their_outcome() {
             },
             &cwd,
             /*show_compact_summary*/ true,
+            AgentPreviewLineLimits::default(),
         )
     })
     .flat_map(|cell| cell.display_lines(/*width*/ 80))
@@ -260,7 +264,14 @@ fn tool_and_notice_projection_uses_normal_transcript_presentation() {
     ];
     let rendered = items
         .into_iter()
-        .flat_map(|item| cells(item, &cwd, /*show_compact_summary*/ true))
+        .flat_map(|item| {
+            cells(
+                item,
+                &cwd,
+                /*show_compact_summary*/ true,
+                AgentPreviewLineLimits::default(),
+            )
+        })
         .flat_map(|cell| cell.display_lines(/*width*/ 80))
         .map(|line| line.to_string())
         .collect::<Vec<_>>()

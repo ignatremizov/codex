@@ -4,7 +4,7 @@ use super::*;
 use crate::app::tests::make_test_app_with_channels;
 use crate::exec_cell::OutputPreviewLineLimits;
 use crate::thread_transcript::RawReasoningVisibility;
-use crate::thread_transcript::thread_items_to_transcript_cells_with_output_preview_line_limits;
+use crate::thread_transcript::thread_items_to_transcript_cells_with_preview_line_limits;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_utils_path_uri::LegacyAppPathString;
@@ -63,13 +63,14 @@ async fn owned_viewport_uses_local_tool_and_user_shell_preview_limits() -> Resul
                 app.config.tui_user_shell_output_preview_lines = 99;
                 if replay {
                     app.transcript_cells =
-                        thread_items_to_transcript_cells_with_output_preview_line_limits(
+                        thread_items_to_transcript_cells_with_preview_line_limits(
                             /*thread_id*/ None,
                             &app.config.cwd,
                             [item.clone()],
                             RawReasoningVisibility::Hidden,
                             Some(&app.config),
                             limits,
+                            (&app.local_settings.tui).into(),
                         );
                 } else {
                     let mut started = item.clone();

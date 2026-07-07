@@ -5,7 +5,7 @@ use crate::test_support::test_path_buf;
 use crate::thread_transcript::RawReasoningVisibility;
 use crate::thread_transcript::join_exploration_groups;
 use crate::thread_transcript::thread_items_to_transcript_cells;
-use crate::thread_transcript::thread_items_to_transcript_cells_with_output_preview_line_limits;
+use crate::thread_transcript::thread_items_to_transcript_cells_with_preview_line_limits;
 use codex_app_server_protocol::CommandAction;
 use codex_app_server_protocol::McpToolCallResult;
 use codex_app_server_protocol::TurnItemsView;
@@ -134,13 +134,14 @@ fn replayed_commands_keep_explicit_preview_limits_including_zero() {
                 .collect::<Vec<_>>(),
         ),
     ] {
-        let cells = thread_items_to_transcript_cells_with_output_preview_line_limits(
+        let cells = thread_items_to_transcript_cells_with_preview_line_limits(
             /*thread_id*/ None,
             &cwd,
             [command_item(CommandExecutionStatus::Completed)],
             RawReasoningVisibility::Hidden,
             /*config*/ None,
             limits,
+            crate::multi_agents::AgentPreviewLineLimits::default(),
         );
         let cell = cells[0].as_any().downcast_ref::<ExecCell>().unwrap();
         assert_eq!(cell.output_preview_line_limits(), limits);
@@ -208,13 +209,14 @@ fn split_exploration_replay_join_preserves_preview_rendering() {
         duration_ms: None,
     };
     let project = |items: Vec<ThreadItem>| {
-        thread_items_to_transcript_cells_with_output_preview_line_limits(
+        thread_items_to_transcript_cells_with_preview_line_limits(
             /*thread_id*/ None,
             &cwd,
             items,
             RawReasoningVisibility::Hidden,
             /*config*/ None,
             limits,
+            crate::multi_agents::AgentPreviewLineLimits::default(),
         )
     };
     let older = project(vec![items[0].clone()]).remove(/*index*/ 0);
