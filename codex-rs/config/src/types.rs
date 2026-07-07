@@ -823,6 +823,8 @@ pub struct ModelAvailabilityNuxConfig {
 pub const DEFAULT_TERMINAL_RESIZE_REFLOW_FALLBACK_MAX_ROWS: usize = 1_000;
 pub const DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES: usize = 30;
 pub const DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES: usize = 50;
+pub const DEFAULT_TUI_AGENT_PROMPT_PREVIEW_LINES: usize = 50;
+pub const DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES: usize = 0;
 
 /// One reusable prompt or slash command submitted through the TUI composer.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
@@ -971,6 +973,20 @@ pub struct Tui {
     #[serde(default = "default_tui_user_shell_output_preview_lines")]
     pub user_shell_output_preview_lines: usize,
 
+    /// Maximum number of rendered subagent prompt rows shown after a multi-agent spawn or input completes.
+    ///
+    /// Set to `0` to show the full subagent prompt in the main TUI.
+    /// Defaults to `50`.
+    #[serde(default = "default_tui_agent_prompt_preview_lines")]
+    pub agent_prompt_preview_lines: usize,
+
+    /// Maximum number of rendered subagent response rows shown after a multi-agent wait completes.
+    ///
+    /// Set to `0` to show the full subagent response in the main TUI.
+    /// Defaults to `0`.
+    #[serde(default = "default_tui_agent_response_preview_lines")]
+    pub agent_response_preview_lines: usize,
+
     /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
     /// Defaults to `true`.
     #[serde(default = "default_true")]
@@ -1106,6 +1122,8 @@ impl Default for Tui {
             right_click_paste: Default::default(),
             command_output_preview_lines: DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
             user_shell_output_preview_lines: DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
+            agent_prompt_preview_lines: DEFAULT_TUI_AGENT_PROMPT_PREVIEW_LINES,
+            agent_response_preview_lines: DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES,
             agent_notification_preview_graphemes: default_agent_notification_preview_graphemes(),
             exec_approval_notification_preview_graphemes:
                 default_exec_approval_notification_preview_graphemes(),
@@ -1165,6 +1183,14 @@ const fn default_tui_command_output_preview_lines() -> usize {
 
 const fn default_tui_user_shell_output_preview_lines() -> usize {
     DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES
+}
+
+const fn default_tui_agent_prompt_preview_lines() -> usize {
+    DEFAULT_TUI_AGENT_PROMPT_PREVIEW_LINES
+}
+
+const fn default_tui_agent_response_preview_lines() -> usize {
+    DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES
 }
 
 /// Settings for notices we display to users via the tui and app-server clients

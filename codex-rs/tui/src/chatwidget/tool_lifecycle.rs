@@ -105,7 +105,10 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn on_collab_event(&mut self, cell: PlainHistoryCell) {
+    pub(super) fn on_collab_event(
+        &mut self,
+        cell: impl crate::history_cell::HistoryCell + 'static,
+    ) {
         self.flush_answer_stream_with_separator();
         self.add_to_history(cell);
         self.request_redraw();
@@ -167,6 +170,8 @@ impl ChatWidget {
         if let Some(cell) = multi_agents::tool_call_history_cell(
             &item,
             cached_spawn_request.as_ref(),
+            self.local_settings.tui.agent_prompt_preview_lines,
+            self.local_settings.tui.agent_response_preview_lines,
             |thread_id| self.collab_agent_metadata(thread_id),
         ) {
             self.on_collab_event(cell);
