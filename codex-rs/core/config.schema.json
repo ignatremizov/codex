@@ -3133,6 +3133,20 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "agent_prompt_preview_lines": {
+          "default": 50,
+          "description": "Maximum number of rendered subagent prompt rows shown after a multi-agent spawn or input completes.\n\nSet to `0` to show the full subagent prompt in the main TUI. Defaults to `50`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "agent_response_preview_lines": {
+          "default": 0,
+          "description": "Maximum number of rendered subagent response rows shown after a multi-agent wait completes.\n\nSet to `0` to show the full subagent response in the main TUI. Defaults to `0`.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "alternate_screen": {
           "allOf": [
             {
