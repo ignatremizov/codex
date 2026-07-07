@@ -938,6 +938,9 @@ fn config_toml_deserializes_model_availability_nux() {
             show_tooltips: true,
             vim_mode_default: false,
             raw_output_mode: false,
+            agent_prompt_preview_lines: codex_config::types::DEFAULT_TUI_AGENT_PROMPT_PREVIEW_LINES,
+            agent_response_preview_lines:
+                codex_config::types::DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
             status_line_use_colors: true,
@@ -1096,6 +1099,27 @@ async fn runtime_config_uses_tui_raw_output_mode() {
     .expect("load config");
 
     assert!(cfg.tui_raw_output_mode);
+}
+
+#[tokio::test]
+async fn runtime_config_uses_tui_agent_preview_lines() {
+    let toml = r#"
+        [tui]
+        agent_prompt_preview_lines = 50
+        agent_response_preview_lines = 12
+    "#;
+    let cfg_toml =
+        toml::from_str::<ConfigToml>(toml).expect("deserialize agent preview line caps");
+    let cfg = Config::load_from_base_config_with_overrides(
+        cfg_toml,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(cfg.tui_agent_prompt_preview_lines, 50);
+    assert_eq!(cfg.tui_agent_response_preview_lines, 12);
 }
 
 #[test]
@@ -3777,6 +3801,9 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             show_tooltips: true,
             vim_mode_default: false,
             raw_output_mode: false,
+            agent_prompt_preview_lines: codex_config::types::DEFAULT_TUI_AGENT_PROMPT_PREVIEW_LINES,
+            agent_response_preview_lines:
+                codex_config::types::DEFAULT_TUI_AGENT_RESPONSE_PREVIEW_LINES,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
             status_line_use_colors: true,
