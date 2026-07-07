@@ -147,6 +147,20 @@ same bundle. If the file is empty, unreadable, or malformed, the affected Codex
 HTTP or secure websocket connection reports a user-facing error that points
 back to these environment variables.
 
+## TUI
+
+Configure main-transcript multi-agent previews:
+
+```toml
+[tui]
+agent_prompt_preview_lines = 50
+agent_response_preview_lines = 0
+```
+
+Set either value to `0` to show all retained output for that category in the main TUI. Agent prompt
+previews apply to rendered rows from subagent spawn/input prompts, and agent response previews apply
+to rendered rows from subagent output shown after a multi-agent wait completes.
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.
