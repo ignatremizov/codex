@@ -95,6 +95,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
+use codex_tools::ToolSpec;
 use codex_tools::create_tools_json_for_responses_api;
 use codex_tools::create_tools_json_for_responses_lite;
 use codex_tools::create_tools_raw_json_for_responses_api;
@@ -889,18 +890,23 @@ impl ModelClient {
                 &Uuid::NAMESPACE_OID,
                 self.state.thread_id.to_string().as_bytes(),
             );
-            let tools = if self.state.provider.capabilities().namespace_tools {
-                create_tools_json_for_responses_lite(&prompt.tools)?
+            let (top_level_tools, additional_tools): (Vec<_>, Vec<_>) = prompt
+                .tools
+                .iter()
+                .cloned()
+                .partition(|tool| matches!(tool, ToolSpec::ToolSearch { .. }));
+            let additional_tools = if self.state.provider.capabilities().namespace_tools {
+                create_tools_json_for_responses_lite(&additional_tools)?
             } else {
-                create_tools_json_for_responses_api(&prompt.tools)?
+                create_tools_json_for_responses_api(&additional_tools)?
             };
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: Some(ResponseItemId::with_suffix(
                     "at",
-                    Uuid::new_v5(&prefix_namespace, &serde_json::to_vec(&tools)?),
+                    Uuid::new_v5(&prefix_namespace, &serde_json::to_vec(&additional_tools)?),
                 )),
                 role: "developer".to_string(),
-                tools,
+                tools: additional_tools,
             }];
             if !prompt.base_instructions.text.is_empty() {
                 let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
@@ -913,7 +919,12 @@ impl ModelClient {
                 prefix.push(instructions);
             }
             input.splice(0..0, prefix);
-            (String::new(), None)
+            let top_level_tools = if top_level_tools.is_empty() {
+                None
+            } else {
+                Some(create_tools_raw_json_for_responses_api(&top_level_tools)?.into())
+            };
+            (String::new(), top_level_tools)
         } else {
             (
                 prompt.base_instructions.text.clone(),
