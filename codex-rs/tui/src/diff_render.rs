@@ -1017,8 +1017,9 @@ fn push_wrapped_diff_line_inner_with_theme_and_color_level(
 /// Returns one `Vec<RtSpan>` per output line.  Styles are preserved across
 /// split boundaries so that wrapping never loses syntax coloring.
 ///
-/// The algorithm walks characters using their Unicode display width (with tabs
-/// expanded to [`TAB_WIDTH`] columns).  When a character would overflow the
+/// The algorithm walks characters using their Unicode display width. Tabs are
+/// emitted as [`TAB_WIDTH`] spaces so terminal backends never receive a literal
+/// tab control character. When a character would overflow the
 /// current line, the accumulated text is flushed and a new line begins.  A
 /// single character wider than the remaining space forces a line break *before*
 /// the character so that progress is always made (avoiding infinite loops on
@@ -2446,8 +2447,9 @@ mod tests {
     }
 
     #[test]
-    fn wrap_styled_spans_tabs_have_visible_width() {
-        // A tab should count as TAB_WIDTH columns, not zero.
+    fn wrap_styled_spans_expands_tabs_before_rendering() {
+        // A tab should count as TAB_WIDTH columns and must not reach the
+        // terminal backend as a control character.
         // With max_cols=8, a tab (4 cols) + "abcde" (5 cols) = 9 cols → must wrap.
         let style = Style::default().fg(Color::Green);
         let spans = vec![RtSpan::styled("\tabcde", style)];
