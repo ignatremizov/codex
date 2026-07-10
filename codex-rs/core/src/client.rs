@@ -50,6 +50,7 @@ use codex_api::RequestTelemetry;
 use codex_api::ReqwestTransport;
 use codex_api::ResponseCreateWsRequest;
 use codex_api::ResponsesApiRequest;
+use codex_api::ResponsesApiTools;
 use codex_api::ResponsesClient as ApiResponsesClient;
 use codex_api::ResponsesEndpoint;
 use codex_api::ResponsesOptions as ApiResponsesOptions;
@@ -93,6 +94,7 @@ use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
+use codex_tools::ToolSpec;
 use codex_tools::create_tools_json_for_responses_api;
 use codex_tools::create_tools_json_for_responses_lite;
 use codex_tools::create_tools_raw_json_for_responses_api;
@@ -924,6 +926,29 @@ impl ModelClient {
         }
     }
 
+    fn build_responses_lite_tools(
+        tools: &[ToolSpec],
+        namespace_tools: bool,
+    ) -> Result<(Vec<serde_json::Value>, Option<ResponsesApiTools>)> {
+        let (top_level_tools, additional_tools): (Vec<_>, Vec<_>) = tools
+            .iter()
+            .cloned()
+            .partition(|tool| matches!(tool, ToolSpec::ToolSearch { .. }));
+        let additional_tools = if namespace_tools {
+            create_tools_json_for_responses_lite(&additional_tools)?
+        } else {
+            create_tools_json_for_responses_api(&additional_tools)?
+        };
+        let top_level_tools = if top_level_tools.is_empty() {
+            None
+        } else {
+            Some(create_tools_raw_json_for_responses_api(&top_level_tools)?.into())
+        };
+
+        Ok((additional_tools, top_level_tools))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn build_responses_request(
         &self,
         prompt: &Prompt,
@@ -942,18 +967,17 @@ impl ModelClient {
                 &Uuid::NAMESPACE_OID,
                 self.state.thread_id.to_string().as_bytes(),
             );
-            let tools = if self.state.provider.capabilities().namespace_tools {
-                create_tools_json_for_responses_lite(&prompt.tools)?
-            } else {
-                create_tools_json_for_responses_api(&prompt.tools)?
-            };
+            let (additional_tools, top_level_tools) = Self::build_responses_lite_tools(
+                &prompt.tools,
+                self.state.provider.capabilities().namespace_tools,
+            )?;
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: Some(ResponseItemId::with_suffix(
                     "at",
-                    Uuid::new_v5(&prefix_namespace, &serde_json::to_vec(&tools)?),
+                    Uuid::new_v5(&prefix_namespace, &serde_json::to_vec(&additional_tools)?),
                 )),
                 role: "developer".to_string(),
-                tools,
+                tools: additional_tools,
             }];
             if !prompt.base_instructions.text.is_empty() {
                 let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
@@ -966,7 +990,7 @@ impl ModelClient {
                 prefix.push(instructions);
             }
             input.splice(0..0, prefix);
-            (String::new(), None)
+            (String::new(), top_level_tools)
         } else {
             (
                 prompt.base_instructions.text.clone(),
