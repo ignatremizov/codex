@@ -87,6 +87,7 @@ use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
+use codex_tools::ToolSpec;
 use codex_tools::create_tools_json_for_responses_api;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
@@ -826,6 +827,23 @@ impl ModelClient {
         }
     }
 
+    fn build_responses_lite_tools(
+        tools: &[ToolSpec],
+    ) -> Result<(Vec<serde_json::Value>, Option<Vec<serde_json::Value>>)> {
+        let (top_level_tools, additional_tools): (Vec<_>, Vec<_>) = tools
+            .iter()
+            .cloned()
+            .partition(|tool| matches!(tool, ToolSpec::ToolSearch { .. }));
+        let additional_tools = create_tools_json_for_responses_api(&additional_tools)?;
+        let top_level_tools = if top_level_tools.is_empty() {
+            None
+        } else {
+            Some(create_tools_json_for_responses_api(&top_level_tools)?)
+        };
+
+        Ok((additional_tools, top_level_tools))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build_responses_request(
         &self,
@@ -844,12 +862,13 @@ impl ModelClient {
                 .iter_mut()
                 .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
         }
-        let tools = create_tools_json_for_responses_api(&prompt.tools)?;
         let (instructions, tools) = if model_info.use_responses_lite {
+            let (additional_tools, top_level_tools) =
+                Self::build_responses_lite_tools(&prompt.tools)?;
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: None,
                 role: "developer".to_string(),
-                tools,
+                tools: additional_tools,
             }];
             if !prompt.base_instructions.text.is_empty() {
                 prefix.push(ResponseItem::Message {
@@ -863,8 +882,9 @@ impl ModelClient {
                 });
             }
             input.splice(0..0, prefix);
-            (String::new(), None)
+            (String::new(), top_level_tools)
         } else {
+            let tools = create_tools_json_for_responses_api(&prompt.tools)?;
             (prompt.base_instructions.text.clone(), Some(tools))
         };
         let stream_options = (self.state.concurrent_reasoning_summaries_enabled && is_openai)
