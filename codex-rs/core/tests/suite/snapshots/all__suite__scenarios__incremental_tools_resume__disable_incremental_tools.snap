@@ -54,15 +54,16 @@ Settings:
 10:compaction_trigger
 
 ## Window 2 (after request 3: input diverged at item 00)
-Settings: same as window 1
+Settings: relative to window 1
+  tools (1; hash=436fd2c773918985):
+    - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=3b0da5c6c5e4fd8e):
+00:additional_tools/developer (1; hash=3b0da5c6c5e4fd8e):
         - namespace/functions; hash=36c9912d971c5be8
           - function/update_plan
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/user:
