@@ -20,9 +20,31 @@ use serde_json::Value;
 use std::time::Duration;
 
 const WS_V2_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
+const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
+
+fn assert_lite_top_level_tools_are_only_tool_search(body: &Value) {
+    let Some(tools) = body.get("tools") else {
+        return;
+    };
+    let tools = tools
+        .as_array()
+        .expect("Responses Lite top-level tools should be an array");
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.get("type").and_then(Value::as_str) == Some(TOOL_SEARCH_TOOL_NAME)),
+        "Responses Lite should not expose regular tools at the top level: {tools:?}"
+    );
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.get("execution").and_then(Value::as_str) == Some("client")),
+        "Responses Lite top-level tool_search should execute on the client: {tools:?}"
+    );
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn websocket_model_switch_to_responses_lite_omits_top_level_tools() -> Result<()> {
+async fn websocket_model_switch_to_responses_lite_omits_regular_top_level_tools() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_websocket_server(vec![vec![
@@ -81,7 +103,7 @@ async fn websocket_model_switch_to_responses_lite_omits_top_level_tools() -> Res
             .is_some_and(|tools| !tools.is_empty())
     );
     assert_eq!(lite_turn.get("previous_response_id"), None);
-    assert_eq!(lite_turn.get("tools"), None);
+    assert_lite_top_level_tools_are_only_tool_search(&lite_turn);
     assert_eq!(lite_turn.get("instructions"), None);
     let additional_tools = lite_turn
         .get("input")
