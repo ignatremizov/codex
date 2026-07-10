@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::anyhow;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -11,7 +13,9 @@ use codex_image_generation_extension::install as install_image_generation_extens
 use codex_login::CodexAuth;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::InputModality;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
@@ -24,6 +28,16 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 
 const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
+const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
+const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
+const SPAWN_AGENT_TOOL_NAME: &str = "spawn_agent";
+const V1_AGENT_TOOL_NAMES: &[&str] = &[
+    SPAWN_AGENT_TOOL_NAME,
+    "send_input",
+    "wait_agent",
+    "close_agent",
+    "resume_agent",
+];
 
 fn responses_extensions(auth: &CodexAuth) -> Arc<ExtensionRegistry<Config>> {
     let auth_manager = codex_core::test_support::auth_manager_from_auth(auth.clone());
@@ -55,6 +69,15 @@ fn has_hosted_tool(tools: &[Value], tool_type: &str) -> bool {
         .any(|tool| tool.get("type").and_then(Value::as_str) == Some(tool_type))
 }
 
+fn has_tool_name(tools: &[Value], tool_name: &str) -> bool {
+    tools.iter().any(|tool| {
+        tool.get("name")
+            .or_else(|| tool.get("type"))
+            .and_then(Value::as_str)
+            == Some(tool_name)
+    })
+}
+
 fn has_namespaced_tool(tools: &[Value], namespace: &str, tool_name: &str) -> bool {
     tools.iter().any(|tool| {
         tool.get("type").and_then(Value::as_str) == Some("namespace")
@@ -67,6 +90,75 @@ fn has_namespaced_tool(tools: &[Value], namespace: &str, tool_name: &str) -> boo
     })
 }
 
+fn assert_lite_top_level_tools_are_only_tool_search(body: &Value) -> Result<()> {
+    let Some(tools) = body.get("tools") else {
+        return Ok(());
+    };
+    let tools = tools
+        .as_array()
+        .context("Responses Lite top-level tools should be an array")?;
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.get("type").and_then(Value::as_str) == Some(TOOL_SEARCH_TOOL_NAME)),
+        "Responses Lite should not expose regular tools at the top level: {tools:?}"
+    );
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.get("execution").and_then(Value::as_str) == Some("client")),
+        "Responses Lite top-level tool_search should execute on the client: {tools:?}"
+    );
+
+    Ok(())
+}
+
+fn assert_lacks_v1_agent_tools(tools: &[Value], location: &str) {
+    for tool_name in V1_AGENT_TOOL_NAMES {
+        assert!(
+            !has_tool_name(tools, tool_name),
+            "V1 agent tool {tool_name} should not be exposed as a direct tool in {location}: {tools:?}"
+        );
+        assert!(
+            !has_namespaced_tool(tools, MULTI_AGENT_V1_NAMESPACE, tool_name),
+            "V1 agent tool {tool_name} should not be exposed as a namespace child in {location}: {tools:?}"
+        );
+    }
+}
+
+fn assert_lacks_v1_agent_tool_surfaces(body: &Value, location: &str) -> Result<()> {
+    if let Some(tools) = body.get("tools") {
+        let tools = tools
+            .as_array()
+            .with_context(|| format!("{location} top-level tools should be an array"))?;
+        assert_lacks_v1_agent_tools(tools, &format!("{location} top-level tools"));
+    }
+
+    if let Some(input) = body.get("input") {
+        let input = input
+            .as_array()
+            .with_context(|| format!("{location} input should be an array"))?;
+        for item in input
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("additional_tools"))
+        {
+            let tools = item["tools"]
+                .as_array()
+                .with_context(|| format!("{location} additional_tools should be an array"))?;
+            assert_lacks_v1_agent_tools(tools, &format!("{location} additional_tools"));
+        }
+    }
+
+    Ok(())
+}
+
+fn top_level_tools(body: &Value) -> Result<&[Value]> {
+    body["tools"]
+        .as_array()
+        .map(Vec::as_slice)
+        .context("Responses request top-level tools should be an array")
+}
+
 fn additional_tools(body: &Value) -> Result<&[Value]> {
     body["input"]
         .as_array()
@@ -77,6 +169,99 @@ fn additional_tools(body: &Value) -> Result<&[Value]> {
         .as_array()
         .map(Vec::as_slice)
         .context("additional_tools tools should be an array")
+}
+
+fn value_contains_string(value: &Value, expected: &str) -> bool {
+    match value {
+        Value::String(value) => value.contains(expected),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| value_contains_string(value, expected)),
+        Value::Object(values) => values
+            .values()
+            .any(|value| value_contains_string(value, expected)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
+}
+
+fn request_body(request: &wiremock::Request) -> Option<Value> {
+    serde_json::from_slice::<Value>(&request.body).ok()
+}
+
+fn request_message_contains(request: &wiremock::Request, role: &str, text: &str) -> bool {
+    request_body(request)
+        .and_then(|body| body.get("input").and_then(Value::as_array).cloned())
+        .is_some_and(|input| {
+            input.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some("message")
+                    && item.get("role").and_then(Value::as_str) == Some(role)
+                    && item
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|content| {
+                            content.iter().any(|span| {
+                                span.get("type").and_then(Value::as_str) == Some("input_text")
+                                    && span
+                                        .get("text")
+                                        .is_some_and(|value| value_contains_string(value, text))
+                            })
+                        })
+            })
+        })
+}
+
+fn request_has_call_output(request: &wiremock::Request, output_type: &str, call_id: &str) -> bool {
+    request_body(request)
+        .and_then(|body| body.get("input").and_then(Value::as_array).cloned())
+        .is_some_and(|input| {
+            input.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some(output_type)
+                    && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+            })
+        })
+}
+
+fn response_request_has_call_output(
+    request: &responses::ResponsesRequest,
+    output_type: &str,
+    call_id: &str,
+) -> bool {
+    request
+        .inputs_of_type(output_type)
+        .iter()
+        .any(|item| item.get("call_id").and_then(Value::as_str) == Some(call_id))
+}
+
+fn response_request_message_contains(
+    request: &responses::ResponsesRequest,
+    role: &str,
+    text: &str,
+) -> bool {
+    request
+        .message_input_texts(role)
+        .iter()
+        .any(|message| message.contains(text))
+}
+
+async fn wait_for_matching_request(
+    mock: &responses::ResponseMock,
+    mut predicate: impl FnMut(&responses::ResponsesRequest) -> bool,
+    context: &str,
+) -> Result<responses::ResponsesRequest> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(request) = mock
+                .requests()
+                .into_iter()
+                .find(|request| predicate(request))
+            {
+                return request;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow!("timed out waiting for {context}"))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -106,7 +291,7 @@ async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<
 
     let body = response_mock.single_request().body_json();
     assert!(body.get("instructions").is_none());
-    assert!(body.get("tools").is_none());
+    assert_lite_top_level_tools_are_only_tool_search(&body)?;
 
     let input = body["input"]
         .as_array()
@@ -127,6 +312,246 @@ async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<
 
     let tools = additional_tools(&body)?;
     assert!(!tools.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_tool_search_discovers_and_routes_v1_multi_agent_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let user_prompt = "Find the spawn agent tool";
+    let child_prompt = "Inspect Responses Lite V1 routing.";
+    let search_call_id = "tool-search-spawn-agent";
+    let spawn_call_id = "spawn-agent-call";
+
+    let search_mock = responses::mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            request_message_contains(request, "user", user_prompt)
+                && !request_has_call_output(request, "tool_search_output", search_call_id)
+                && !request_has_call_output(request, "function_call_output", spawn_call_id)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_tool_search_call(
+                search_call_id,
+                &serde_json::json!({
+                    "query": "spawn agent",
+                    "limit": 1,
+                }),
+            ),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let spawn_args = serde_json::to_string(&serde_json::json!({
+        "message": child_prompt,
+    }))?;
+    let spawn_call_output_id = spawn_call_id;
+    let spawn_mock = responses::mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            request_has_call_output(request, "tool_search_output", search_call_id)
+                && !request_has_call_output(request, "function_call_output", spawn_call_output_id)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("resp-2"),
+            responses::ev_function_call_with_namespace(
+                spawn_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                SPAWN_AGENT_TOOL_NAME,
+                &spawn_args,
+            ),
+            responses::ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    let child_mock = responses::mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            request_message_contains(request, "user", child_prompt)
+                && !request_has_call_output(request, "tool_search_output", search_call_id)
+                && !request_has_call_output(request, "function_call_output", spawn_call_id)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("child-resp"),
+            responses::ev_assistant_message("child-msg", "done"),
+            responses::ev_completed("child-resp"),
+        ]),
+    )
+    .await;
+
+    let follow_up_mock = responses::mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            request_has_call_output(request, "tool_search_output", search_call_id)
+                && request_has_call_output(request, "function_call_output", spawn_call_id)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("resp-3"),
+            responses::ev_assistant_message("msg-1", "done"),
+            responses::ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+            model_info.supports_search_tool = true;
+            model_info.multi_agent_version = None;
+        })
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .disable(Feature::EnableRequestCompression)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.submit_turn_with_approval_and_permission_profile(
+        user_prompt,
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+    )
+    .await?;
+
+    let first_request = wait_for_matching_request(
+        &search_mock,
+        |request| {
+            response_request_message_contains(request, "user", user_prompt)
+                && !response_request_has_call_output(request, "tool_search_output", search_call_id)
+                && !response_request_has_call_output(request, "function_call_output", spawn_call_id)
+        },
+        "initial tool_search request",
+    )
+    .await?;
+    assert_eq!(
+        first_request.header(RESPONSES_LITE_HEADER).as_deref(),
+        Some("true")
+    );
+    let first_body = first_request.body_json();
+    assert!(first_body.get("instructions").is_none());
+    assert_eq!(
+        first_body
+            .get("parallel_tool_calls")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+
+    let tools = top_level_tools(&first_body)?;
+    assert_eq!(
+        tools.len(),
+        1,
+        "Responses Lite should advertise only usable tool_search at the top level: {tools:?}"
+    );
+    let tool_search = tools
+        .first()
+        .context("Responses Lite should advertise tool_search at the top level")?;
+    assert_eq!(
+        tool_search.get("type").and_then(Value::as_str),
+        Some(TOOL_SEARCH_TOOL_NAME)
+    );
+    assert_eq!(
+        tool_search.get("execution").and_then(Value::as_str),
+        Some("client")
+    );
+    assert_lacks_v1_agent_tools(tools, "top-level tools");
+
+    let additional_tools = additional_tools(&first_body)?;
+    assert!(
+        !has_tool_name(additional_tools, TOOL_SEARCH_TOOL_NAME),
+        "tool_search should not be hidden inside additional_tools: {additional_tools:?}"
+    );
+    assert_lacks_v1_agent_tools(additional_tools, "additional_tools");
+
+    let search_output_request = wait_for_matching_request(
+        &spawn_mock,
+        |request| {
+            response_request_has_call_output(request, "tool_search_output", search_call_id)
+                && !response_request_has_call_output(request, "function_call_output", spawn_call_id)
+        },
+        "request after tool_search_output",
+    )
+    .await?;
+    let search_output_body = search_output_request.body_json();
+    assert_lacks_v1_agent_tool_surfaces(&search_output_body, "tool_search_output request")?;
+    let search_output = search_output_request.tool_search_output(search_call_id);
+    assert_eq!(
+        search_output.get("status").and_then(Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(
+        search_output.get("execution").and_then(Value::as_str),
+        Some("client")
+    );
+    let spawn_agent = responses::namespace_child_tool(
+        &search_output,
+        MULTI_AGENT_V1_NAMESPACE,
+        SPAWN_AGENT_TOOL_NAME,
+    )
+    .expect("tool_search should return multi_agent_v1.spawn_agent");
+    assert_eq!(
+        spawn_agent.get("defer_loading").and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let child_request = wait_for_matching_request(
+        &child_mock,
+        |request| {
+            response_request_message_contains(request, "user", child_prompt)
+                && !response_request_has_call_output(request, "tool_search_output", search_call_id)
+                && !response_request_has_call_output(request, "function_call_output", spawn_call_id)
+        },
+        "V1 child turn request",
+    )
+    .await?;
+    assert!(
+        child_request
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains(child_prompt)),
+        "spawn_agent should route the requested child prompt into the V1 child turn: {:?}",
+        child_request.input()
+    );
+
+    let follow_up_request = wait_for_matching_request(
+        &follow_up_mock,
+        |request| {
+            response_request_has_call_output(request, "tool_search_output", search_call_id)
+                && response_request_has_call_output(request, "function_call_output", spawn_call_id)
+        },
+        "request after spawn_agent output",
+    )
+    .await?;
+    let follow_up_body = follow_up_request.body_json();
+    assert_lacks_v1_agent_tool_surfaces(&follow_up_body, "spawn_agent output request")?;
+    let spawn_output = follow_up_request.function_call_output(spawn_call_id);
+    assert_eq!(
+        spawn_output.get("call_id").and_then(Value::as_str),
+        Some(spawn_call_id)
+    );
+    let output = spawn_output
+        .get("output")
+        .and_then(Value::as_str)
+        .context("spawn_agent output should be serialized")?;
+    let output: Value = serde_json::from_str(output)?;
+    assert!(
+        output.get("agent_id").and_then(Value::as_str).is_some(),
+        "spawn_agent output should prove that the V1 handler ran: {output}"
+    );
 
     Ok(())
 }
@@ -236,7 +661,7 @@ async fn responses_lite_uses_standalone_web_search_and_image_generation() -> Res
         Some("true")
     );
     let body = request.body_json();
-    assert!(body.get("tools").is_none());
+    assert_lite_top_level_tools_are_only_tool_search(&body)?;
     let tools = additional_tools(&body)?;
     assert!(has_namespaced_tool(tools, "web", "run"));
     assert!(has_namespaced_tool(tools, "image_gen", "imagegen"));
@@ -371,7 +796,7 @@ async fn responses_lite_omits_hosted_tools_without_standalone_extensions() -> Re
     test.submit_turn("Do not use hosted tools").await?;
 
     let body = response_mock.single_request().body_json();
-    assert!(body.get("tools").is_none());
+    assert_lite_top_level_tools_are_only_tool_search(&body)?;
     let tools = additional_tools(&body)?;
     assert!(!has_hosted_tool(tools, "web_search"));
     assert!(!has_hosted_tool(tools, "image_generation"));
