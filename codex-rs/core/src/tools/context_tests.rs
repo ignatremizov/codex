@@ -326,7 +326,7 @@ fn tool_search_payloads_roundtrip_as_tool_search_outputs() {
             limit: None,
         },
     };
-    let response = ToolSearchOutput {
+    let output = ToolSearchOutput {
         tools: vec![LoadableToolSpec::Function(codex_tools::ResponsesApiTool {
             name: "create_event".to_string(),
             description: String::new(),
@@ -339,8 +339,22 @@ fn tool_search_payloads_roundtrip_as_tool_search_outputs() {
             ),
             output_schema: None,
         })],
-    }
-    .to_response_item("search-1", &payload);
+    };
+    assert_eq!(
+        output.code_mode_result(&payload),
+        json!([{
+            "type": "function",
+            "name": "create_event",
+            "description": "",
+            "strict": false,
+            "defer_loading": true,
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }])
+    );
+    let response = output.to_response_item("search-1", &payload);
 
     match response {
         ResponseInputItem::ToolSearchOutput {
