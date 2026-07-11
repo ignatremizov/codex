@@ -301,7 +301,7 @@ impl Renderable for FileChange {
     fn desired_height(&self, width: u16) -> u16 {
         let mut lines = vec![];
         render_change(self, &mut lines, width as usize, /*lang*/ None);
-        lines.len() as u16
+        u16::try_from(lines.len()).unwrap_or(u16::MAX)
     }
 }
 
