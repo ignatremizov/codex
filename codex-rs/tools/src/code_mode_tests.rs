@@ -121,17 +121,21 @@ declare const tools: { apply_patch(input: string): Promise<unknown>; };
 }
 
 #[test]
-fn tool_spec_to_code_mode_tool_definition_skips_unsupported_variants() {
-    assert_eq!(
-        tool_spec_to_code_mode_tool_definition(&ToolSpec::ToolSearch {
-            execution: "sync".to_string(),
-            description: "Search".to_string(),
-            parameters: JsonSchema::object(
-                BTreeMap::new(),
-                /*required*/ None,
-                /*additional_properties*/ None
-            ),
-        }),
-        None
-    );
+fn tool_spec_to_code_mode_tool_definition_supports_tool_search() {
+    let definition = tool_spec_to_code_mode_tool_definition(&ToolSpec::ToolSearch {
+        execution: "sync".to_string(),
+        description: "Search".to_string(),
+        parameters: JsonSchema::object(
+            BTreeMap::new(),
+            /*required*/ None,
+            /*additional_properties*/ None,
+        ),
+    })
+    .expect("tool_search should be available in code mode");
+
+    assert_eq!(definition.name, "tool_search");
+    assert_eq!(definition.tool_name, ToolName::plain("tool_search"));
+    assert!(definition.description.contains("Search"));
+    assert!(definition.description.contains("tool_search(args:"));
+    assert!(definition.description.contains("Promise<unknown>"));
 }
