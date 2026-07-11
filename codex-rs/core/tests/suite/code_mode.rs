@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
+use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -2732,48 +2733,70 @@ async fn code_mode_complete_call_survives_unrelated_truncation() -> Result<()> {
     Ok(())
 }
 
+#[test_case(false, false; "code mode with deferred world state disabled")]
+#[test_case(false, true; "code mode with deferred world state enabled")]
+#[test_case(true, false; "code mode only with deferred world state disabled")]
+#[test_case(true, true; "code mode only with deferred world state enabled")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_only_guides_all_tools_search_and_calls_deferred_app_tools() -> Result<()> {
+async fn code_mode_guides_tool_search_and_calls_deferred_app_tools(
+    code_mode_only: bool,
+    deferred_world_state: bool,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
     let apps_server = AppsTestServer::mount_searchable(&server).await?;
     let originating_item_id = "ctc_code_mode_origin";
-    let mut exec_call = ev_custom_tool_call(
-        "call-1",
+    let mut deferred_tool_call = ev_custom_tool_call(
+        "call-tool",
         "exec",
         r#"
-const tool = ALL_TOOLS.find(
-  ({ name }) => name === "mcp__codex_apps__calendar_timezone_option_99"
-);
-if (!tool) {
-  text(JSON.stringify({ found: false }));
-} else {
-  const result = await tools[tool.name]({ timezone: "UTC" });
-  text(JSON.stringify({
-    found: true,
-    isError: Boolean(result.isError),
-    text: result.content?.[0]?.text ?? "",
-  }));
+const toolName = load("discoveredToolName");
+if (typeof toolName !== "string") {
+  throw new Error("tool_search did not provide a callable tool name");
 }
+const result = await tools[toolName]({ timezone: "UTC" });
+text(JSON.stringify({
+  isError: Boolean(result.isError),
+  text: result.content?.[0]?.text ?? "",
+}));
 "#,
     );
-    exec_call["item"]["id"] = serde_json::json!(originating_item_id);
-    let resp_mock = responses::mount_sse_once(
+    deferred_tool_call["item"]["id"] = serde_json::json!(originating_item_id);
+    let responses = responses::mount_sse_sequence(
         &server,
-        sse(vec![
-            ev_response_created("resp-1"),
-            exec_call,
-            ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-    let follow_up_mock = responses::mount_sse_once(
-        &server,
-        sse(vec![
-            ev_assistant_message("msg-1", "done"),
-            ev_completed("resp-2"),
-        ]),
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_custom_tool_call(
+                    "call-search",
+                    "exec",
+                    r#"
+const searchResult = await tools.tool_search({
+  query: "calendar timezone option 99",
+});
+const tool = searchResult.find(
+  ({ name }) => name === "mcp__codex_apps__calendar_timezone_option_99"
+);
+store("discoveredToolName", tool?.name);
+text(JSON.stringify({
+  found: Boolean(tool),
+  searchFound: Array.isArray(searchResult) && searchResult.length > 0,
+}));
+"#,
+                ),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                deferred_tool_call,
+                ev_completed("resp-2"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-3"),
+            ]),
+        ],
     )
     .await;
 
@@ -2791,7 +2814,11 @@ if (!tool) {
                 .expect("test config should allow feature update");
             config
                 .features
-                .enable(Feature::CodeModeOnly)
+                .set_enabled(Feature::CodeModeOnly, code_mode_only)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .set_enabled(Feature::DeferredToolWorldState, deferred_world_state)
                 .expect("test config should allow feature update");
             let mut model_catalog =
                 bundled_models_response().expect("bundled models.json should parse");
@@ -2805,19 +2832,19 @@ if (!tool) {
             model.supports_search_tool = true;
             config.model_catalog = Some(model_catalog);
         });
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_auto_env(&server).await?;
     test.submit_turn("inspect tools in code mode only").await?;
 
-    let first_body = resp_mock.single_request().body_json();
-    assert_eq!(
-        tool_names(&first_body),
-        vec![
-            "exec".to_string(),
-            "wait".to_string(),
-            "request_user_input".to_string(),
-            "web_search".to_string()
-        ]
-    );
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    let first_body = requests[0].body_json();
+    let first_tool_names = tool_names(&first_body);
+    for expected in ["exec", "wait", "request_user_input", "web_search"] {
+        assert!(
+            first_tool_names.iter().any(|name| name == expected),
+            "missing {expected} from Code Mode tools: {first_tool_names:?}"
+        );
+    }
 
     let exec_description = first_body
         .get("tools")
@@ -2838,21 +2865,71 @@ if (!tool) {
         })
         .expect("exec description should be present");
     assert!(exec_description.contains("filter `ALL_TOOLS` by `name` and `description`"));
-    assert!(exec_description.contains("Shared MCP Types:"));
-    assert!(!exec_description.contains("calendar_timezone_option_99"));
-
-    let request = follow_up_mock.single_request();
-    let (output, success) = custom_tool_output_body_and_success(&request, "call-1");
-    assert_ne!(
-        success,
-        Some(false),
-        "code_mode_only deferred app tool call failed unexpectedly: {output}"
-    );
-    let parsed: Value = serde_json::from_str(&output)?;
     assert_eq!(
-        parsed,
+        exec_description.contains("### `tool_search`"),
+        code_mode_only
+    );
+    assert_eq!(
+        exec_description.contains("Shared MCP Types:"),
+        code_mode_only
+    );
+    assert!(!exec_description.contains("calendar_timezone_option_99"));
+    assert!(!exec_description.contains("You have access to tools from the following sources:"));
+
+    let tool_search = first_body
+        .get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools.iter().find(|tool| {
+                tool.get("name")
+                    .or_else(|| tool.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("tool_search")
+            })
+        });
+    assert_eq!(tool_search.is_some(), !code_mode_only);
+    if let Some(tool_search) = tool_search {
+        let description = tool_search
+            .get("description")
+            .and_then(Value::as_str)
+            .expect("tool_search description should be present");
+        assert_eq!(
+            description.contains("You have access to tools from the following sources:"),
+            !deferred_world_state
+        );
+    }
+
+    let (search_output, search_success) =
+        custom_tool_output_body_and_success(&requests[1], "call-search");
+    assert_ne!(
+        search_success,
+        Some(false),
+        "code_mode_only deferred app tool search failed unexpectedly: {search_output}"
+    );
+    let search_result: Value = serde_json::from_str(&search_output).with_context(|| {
+        format!("deferred app tool search output should be JSON: {search_output:?}")
+    })?;
+    assert_eq!(
+        search_result,
         serde_json::json!({
             "found": true,
+            "searchFound": true,
+        })
+    );
+
+    let (tool_output, tool_success) =
+        custom_tool_output_body_and_success(&requests[2], "call-tool");
+    assert_ne!(
+        tool_success,
+        Some(false),
+        "code_mode_only deferred app tool call failed unexpectedly: {tool_output}"
+    );
+    let tool_result: Value = serde_json::from_str(&tool_output).with_context(|| {
+        format!("deferred app tool call output should be JSON: {tool_output:?}")
+    })?;
+    assert_eq!(
+        tool_result,
+        serde_json::json!({
             "isError": false,
             "text": "called calendar_timezone_option_99 for  at  with ",
         })
