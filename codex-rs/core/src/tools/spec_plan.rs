@@ -50,6 +50,7 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::tools::handlers::tool_search_spec::ToolSearchSourceListing;
+use crate::tools::handlers::tool_search_spec::create_tool_search_tool;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_web_search_tool;
@@ -81,6 +82,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ResponsesApiNamespaceTool;
+use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolEnvironmentMode;
@@ -823,7 +825,10 @@ fn register_code_mode_executors(
             ToolSpec::Namespace(namespace) if !namespace.tools.is_empty() => {
                 codex_tools::code_mode_name_for_tool_name(&tool_name)
             }
-            ToolSpec::Namespace(_) | ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } => {
+            // Tool search is client-executed, so Code Mode can expose it as a
+            // nested function even though it remains a hosted model tool.
+            ToolSpec::ToolSearch { .. } => TOOL_SEARCH_TOOL_NAME.to_string(),
+            ToolSpec::Namespace(_) | ToolSpec::WebSearch { .. } => {
                 continue;
             }
         };
@@ -856,7 +861,16 @@ fn register_code_mode_executors(
                 deferred_exec_prompt_tool_specs.push(Arc::clone(&spec));
             }
         } else {
-            exec_prompt_tool_specs.push(spec.as_ref().clone());
+            let exec_prompt_spec = if matches!(spec.as_ref(), ToolSpec::ToolSearch { .. }) {
+                create_tool_search_tool(
+                    &[],
+                    TOOL_SEARCH_DEFAULT_LIMIT,
+                    ToolSearchSourceListing::Omit,
+                )
+            } else {
+                spec.as_ref().clone()
+            };
+            exec_prompt_tool_specs.push(exec_prompt_spec);
         }
         code_mode_nested_tool_specs.push((spec, cached_runtime));
     }
