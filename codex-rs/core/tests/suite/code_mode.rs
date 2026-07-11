@@ -655,15 +655,22 @@ async fn code_mode_only_guides_all_tools_search_and_calls_deferred_app_tools() -
                 "call-1",
                 "exec",
                 r#"
-const tool = ALL_TOOLS.find(
+const searchResult = await tools.tool_search({
+  query: "calendar timezone option 99",
+});
+const tool = searchResult.find(
   ({ name }) => name === "mcp__codex_apps__calendar_timezone_option_99"
 );
 if (!tool) {
-  text(JSON.stringify({ found: false }));
+  text(JSON.stringify({
+    found: false,
+    searchFound: Array.isArray(searchResult) && searchResult.length > 0,
+  }));
 } else {
   const result = await tools[tool.name]({ timezone: "UTC" });
   text(JSON.stringify({
     found: true,
+    searchFound: Array.isArray(searchResult) && searchResult.length > 0,
     isError: Boolean(result.isError),
     text: result.content?.[0]?.text ?? "",
   }));
@@ -744,6 +751,7 @@ if (!tool) {
         })
         .expect("exec description should be present");
     assert!(exec_description.contains("filter `ALL_TOOLS` by `name` and `description`"));
+    assert!(exec_description.contains("### `tool_search`"));
     assert!(exec_description.contains("Shared MCP Types:"));
     assert!(!exec_description.contains("calendar_timezone_option_99"));
 
@@ -759,6 +767,7 @@ if (!tool) {
         parsed,
         serde_json::json!({
             "found": true,
+            "searchFound": true,
             "isError": false,
             "text": "called calendar_timezone_option_99 for  at  with ",
         })
