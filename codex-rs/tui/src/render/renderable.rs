@@ -13,6 +13,51 @@ use crate::render::RectExt as _;
 
 pub trait Renderable {
     fn render(&self, area: Rect, buf: &mut Buffer);
+
+    /// Returns the exact logical layout height when it may exceed the terminal coordinate range.
+    ///
+    /// Most renderables are intrinsically bounded by `u16`, so the default delegates to
+    /// `desired_height`. Virtualized renderables should override this when their logical rows can
+    /// exceed `u16::MAX`.
+    fn desired_height_usize(&self, width: u16) -> usize {
+        usize::from(self.desired_height(width))
+    }
+
+    /// Returns a revision when `desired_height` may change without a width change.
+    ///
+    /// `None` declares that the renderable's layout is stable for its lifetime, allowing cached
+    /// parents to omit it from per-frame revision polling. Dynamic renderables must consistently
+    /// return `Some` and change the contained revision whenever their desired height may change.
+    fn layout_revision(&self) -> Option<u64> {
+        None
+    }
+
+    /// Renders a viewport after skipping logical rows from the top of this renderable.
+    ///
+    /// The fallback preserves the previous offscreen-buffer behavior for renderables that do not
+    /// provide a viewport-aware implementation. Large or frequently scrolled renderables should
+    /// override this method so work and allocation are bounded by the visible area.
+    fn render_with_offset(&self, area: Rect, buf: &mut Buffer, scroll_offset: usize) {
+        if scroll_offset == 0 {
+            self.render(area, buf);
+            return;
+        }
+
+        let height = usize::from(self.desired_height(area.width));
+        let buffer_height = height.min(usize::from(area.height).saturating_add(scroll_offset));
+        let buffer_height = u16::try_from(buffer_height).unwrap_or(u16::MAX);
+        let mut scroll_buf = Buffer::empty(Rect::new(0, 0, area.width, buffer_height));
+        self.render(*scroll_buf.area(), &mut scroll_buf);
+        let scroll_offset = u16::try_from(scroll_offset).unwrap_or(u16::MAX);
+        let copy_height = area
+            .height
+            .min(scroll_buf.area().height.saturating_sub(scroll_offset));
+        for y in 0..copy_height {
+            for x in 0..area.width {
+                buf[(area.x + x, area.y + y)] = scroll_buf[(x, scroll_offset + y)].clone();
+            }
+        }
+    }
     fn desired_height(&self, width: u16) -> u16;
     fn cursor_pos(&self, _area: Rect) -> Option<(u16, u16)> {
         None
@@ -35,10 +80,31 @@ impl<'a> Renderable for RenderableItem<'a> {
         }
     }
 
+    fn render_with_offset(&self, area: Rect, buf: &mut Buffer, scroll_offset: usize) {
+        match self {
+            RenderableItem::Owned(child) => child.render_with_offset(area, buf, scroll_offset),
+            RenderableItem::Borrowed(child) => child.render_with_offset(area, buf, scroll_offset),
+        }
+    }
+
     fn desired_height(&self, width: u16) -> u16 {
         match self {
             RenderableItem::Owned(child) => child.desired_height(width),
             RenderableItem::Borrowed(child) => child.desired_height(width),
+        }
+    }
+
+    fn desired_height_usize(&self, width: u16) -> usize {
+        match self {
+            RenderableItem::Owned(child) => child.desired_height_usize(width),
+            RenderableItem::Borrowed(child) => child.desired_height_usize(width),
+        }
+    }
+
+    fn layout_revision(&self) -> Option<u64> {
+        match self {
+            RenderableItem::Owned(child) => child.layout_revision(),
+            RenderableItem::Borrowed(child) => child.layout_revision(),
         }
     }
 
@@ -120,7 +186,10 @@ impl<'a> Renderable for Paragraph<'a> {
         self.render_ref(area, buf);
     }
     fn desired_height(&self, width: u16) -> u16 {
-        self.line_count(width) as u16
+        // Ratatui exposes only a `u16` vertical offset for generic paragraphs, so keep their
+        // advertised height within the viewport range that the fallback renderer can reach.
+        // Transcript and standard static overlays use specialized usize-aware renderables.
+        u16::try_from(self.line_count(width)).unwrap_or(u16::MAX)
     }
 }
 
@@ -131,12 +200,27 @@ impl<R: Renderable> Renderable for Option<R> {
         }
     }
 
+    fn render_with_offset(&self, area: Rect, buf: &mut Buffer, scroll_offset: usize) {
+        if let Some(renderable) = self {
+            renderable.render_with_offset(area, buf, scroll_offset);
+        }
+    }
+
     fn desired_height(&self, width: u16) -> u16 {
         if let Some(renderable) = self {
             renderable.desired_height(width)
         } else {
             0
         }
+    }
+
+    fn desired_height_usize(&self, width: u16) -> usize {
+        self.as_ref()
+            .map_or(0, |renderable| renderable.desired_height_usize(width))
+    }
+
+    fn layout_revision(&self) -> Option<u64> {
+        self.as_ref().and_then(Renderable::layout_revision)
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
@@ -158,6 +242,15 @@ impl<R: Renderable> Renderable for Arc<R> {
     }
     fn desired_height(&self, width: u16) -> u16 {
         self.as_ref().desired_height(width)
+    }
+    fn desired_height_usize(&self, width: u16) -> usize {
+        self.as_ref().desired_height_usize(width)
+    }
+    fn layout_revision(&self) -> Option<u64> {
+        self.as_ref().layout_revision()
+    }
+    fn render_with_offset(&self, area: Rect, buf: &mut Buffer, scroll_offset: usize) {
+        self.as_ref().render_with_offset(area, buf, scroll_offset);
     }
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         self.as_ref().cursor_pos(area)
@@ -460,10 +553,44 @@ impl<'a> Renderable for InsetRenderable<'a> {
         self.child.render(area.inset(self.insets), buf);
     }
     fn desired_height(&self, width: u16) -> u16 {
+        let child_width = width.saturating_sub(self.insets.left.saturating_add(self.insets.right));
         self.child
-            .desired_height(width - self.insets.left - self.insets.right)
-            + self.insets.top
-            + self.insets.bottom
+            .desired_height(child_width)
+            .saturating_add(self.insets.top)
+            .saturating_add(self.insets.bottom)
+    }
+    fn desired_height_usize(&self, width: u16) -> usize {
+        let child_width = width.saturating_sub(self.insets.left.saturating_add(self.insets.right));
+        self.child
+            .desired_height_usize(child_width)
+            .saturating_add(usize::from(self.insets.top))
+            .saturating_add(usize::from(self.insets.bottom))
+    }
+    fn layout_revision(&self) -> Option<u64> {
+        self.child.layout_revision()
+    }
+    fn render_with_offset(&self, area: Rect, buf: &mut Buffer, scroll_offset: usize) {
+        let remaining_top = usize::from(self.insets.top).saturating_sub(scroll_offset);
+        let child_scroll = scroll_offset.saturating_sub(usize::from(self.insets.top));
+        let child_width = area
+            .width
+            .saturating_sub(self.insets.left.saturating_add(self.insets.right));
+        let remaining_child_height = self
+            .child
+            .desired_height_usize(child_width)
+            .saturating_sub(child_scroll);
+        let remaining_top = u16::try_from(remaining_top).unwrap_or(u16::MAX);
+        let child_area = Rect::new(
+            area.x.saturating_add(self.insets.left),
+            area.y.saturating_add(remaining_top),
+            child_width,
+            area.height
+                .saturating_sub(remaining_top)
+                .min(u16::try_from(remaining_child_height).unwrap_or(u16::MAX)),
+        );
+        if !child_area.is_empty() {
+            self.child.render_with_offset(child_area, buf, child_scroll);
+        }
     }
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         self.child.cursor_pos(area.inset(self.insets))
