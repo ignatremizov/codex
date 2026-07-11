@@ -9,32 +9,18 @@ pub(super) fn render_offset_content(
     area: Rect,
     buf: &mut Buffer,
     renderable: &dyn Renderable,
-    scroll_offset: u16,
+    scroll_offset: usize,
 ) -> u16 {
-    let height = renderable.desired_height(area.width);
-    let copy_height = area.height.min(height.saturating_sub(scroll_offset));
+    let height = renderable.desired_height_usize(area.width);
+    let copy_height = height
+        .saturating_sub(scroll_offset)
+        .min(usize::from(area.height)) as u16;
     if copy_height == 0 {
         return 0;
     }
 
     let visible_area = Rect::new(area.x, area.y, area.width, copy_height);
-    if renderable.render_scrolled(visible_area, buf, scroll_offset) {
-        return copy_height;
-    }
-
-    let mut tall_buf = Buffer::empty(Rect::new(
-        /*x*/ 0,
-        /*y*/ 0,
-        area.width,
-        scroll_offset + copy_height,
-    ));
-    renderable.render(*tall_buf.area(), &mut tall_buf);
-    for y in 0..copy_height {
-        let src_y = y + scroll_offset;
-        for x in 0..area.width {
-            buf[(area.x + x, area.y + y)] = tall_buf[(x, src_y)].clone();
-        }
-    }
+    renderable.render_with_offset(visible_area, buf, scroll_offset);
 
     copy_height
 }

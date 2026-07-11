@@ -117,6 +117,8 @@ In inline mode, switching threads or agents reconstructs only a recent tail of n
 
 ## For Developers
 
+Transcript overlays share the main conversation viewport and its bounded layout caches. Static text pagers separately cache wrapped rows for their current width and paint only the visible slice, using logical row offsets that can exceed terminal-coordinate limits. Other static widgets retain a bounded scratch-buffer fallback unless they implement direct viewport rendering; they are not automatically fully virtualized.
+
 When modifying TUI code, remember:
 
 - The `determine_alt_screen_mode()` function encapsulates all the logic

@@ -16,6 +16,49 @@ use crate::render::RectExt as _;
 pub trait Renderable {
     fn render(&self, area: Rect, buf: &mut Buffer);
     fn desired_height(&self, width: u16) -> u16;
+    /// Logical height reachable by `render_with_offset`. Override both for virtualized content.
+    fn desired_height_usize(&self, width: u16) -> usize {
+        usize::from(self.desired_height(width))
+    }
+    /// `None` declares lifetime-stable layout. Mutable implementations must consistently return
+    /// `Some` and advance the revision whenever their height can change at the same width.
+    fn layout_revision(&self) -> Option<u64> {
+        None
+    }
+    /// Paint a logical viewport. The default remains a bounded u16 scratch-buffer fallback;
+    /// large content must override this method as well as `desired_height_usize`.
+    fn render_with_offset(&self, area: Rect, buf: &mut Buffer, scroll_offset: usize) {
+        let height = usize::from(self.desired_height(area.width));
+        let visible = height
+            .saturating_sub(scroll_offset)
+            .min(usize::from(area.height));
+        let visible = u16::try_from(visible).unwrap_or(area.height);
+        if visible == 0 || area.width == 0 {
+            return;
+        }
+        let area = Rect::new(area.x, area.y, area.width, visible);
+        // The default logical height is u16, so every reachable offset fits this legacy API.
+        let offset = u16::try_from(scroll_offset).unwrap_or(u16::MAX);
+        if self.render_scrolled(area, buf, offset) {
+            return;
+        }
+        if scroll_offset == 0 {
+            self.render(area, buf);
+            return;
+        }
+        let mut scratch = Buffer::empty(Rect::new(
+            /*x*/ 0,
+            /*y*/ 0,
+            area.width,
+            offset.saturating_add(visible),
+        ));
+        self.render(*scratch.area(), &mut scratch);
+        for y in 0..visible {
+            for x in 0..area.width {
+                buf[(area.x + x, area.y + y)] = scratch[(x, offset + y)].clone();
+            }
+        }
+    }
     /// Renders visible rows after `scroll_offset` when direct scrolling is supported.
     ///
     /// Implementations returning `false` must leave `buf` unchanged so callers can use their
@@ -37,6 +80,27 @@ pub enum RenderableItem<'a> {
 }
 
 impl<'a> Renderable for RenderableItem<'a> {
+    fn desired_height_usize(&self, width: u16) -> usize {
+        match self {
+            Self::Owned(child) => child.desired_height_usize(width),
+            Self::Borrowed(child) => child.desired_height_usize(width),
+        }
+    }
+
+    fn layout_revision(&self) -> Option<u64> {
+        match self {
+            Self::Owned(child) => child.layout_revision(),
+            Self::Borrowed(child) => child.layout_revision(),
+        }
+    }
+
+    fn render_with_offset(&self, area: Rect, buf: &mut Buffer, scroll_offset: usize) {
+        match self {
+            Self::Owned(child) => child.render_with_offset(area, buf, scroll_offset),
+            Self::Borrowed(child) => child.render_with_offset(area, buf, scroll_offset),
+        }
+    }
+
     fn render(&self, area: Rect, buf: &mut Buffer) {
         match self {
             RenderableItem::Owned(child) => child.render(area, buf),
@@ -136,11 +200,31 @@ impl<'a> Renderable for Paragraph<'a> {
         self.render_ref(area, buf);
     }
     fn desired_height(&self, width: u16) -> u16 {
-        self.line_count(width) as u16
+        u16::try_from(self.line_count(width)).unwrap_or(u16::MAX)
     }
 }
 
 impl<R: Renderable> Renderable for Option<R> {
+    fn desired_height_usize(&self, width: u16) -> usize {
+        self.as_ref()
+            .map_or(0, |child| child.desired_height_usize(width))
+    }
+
+    fn layout_revision(&self) -> Option<u64> {
+        self.as_ref().and_then(Renderable::layout_revision)
+    }
+
+    fn render_with_offset(&self, area: Rect, buf: &mut Buffer, scroll_offset: usize) {
+        if let Some(child) = self {
+            child.render_with_offset(area, buf, scroll_offset);
+        }
+    }
+
+    fn render_scrolled(&self, area: Rect, buf: &mut Buffer, scroll_offset: u16) -> bool {
+        self.as_ref()
+            .is_none_or(|child| child.render_scrolled(area, buf, scroll_offset))
+    }
+
     fn render(&self, area: Rect, buf: &mut Buffer) {
         if let Some(renderable) = self {
             renderable.render(area, buf);
@@ -168,7 +252,23 @@ impl<R: Renderable> Renderable for Option<R> {
     }
 }
 
-impl<R: Renderable> Renderable for Arc<R> {
+impl<R: Renderable + ?Sized> Renderable for Arc<R> {
+    fn desired_height_usize(&self, width: u16) -> usize {
+        self.as_ref().desired_height_usize(width)
+    }
+
+    fn layout_revision(&self) -> Option<u64> {
+        self.as_ref().layout_revision()
+    }
+
+    fn render_with_offset(&self, area: Rect, buf: &mut Buffer, scroll_offset: usize) {
+        self.as_ref().render_with_offset(area, buf, scroll_offset);
+    }
+
+    fn render_scrolled(&self, area: Rect, buf: &mut Buffer, scroll_offset: u16) -> bool {
+        self.as_ref().render_scrolled(area, buf, scroll_offset)
+    }
+
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.as_ref().render(area, buf);
     }
@@ -188,6 +288,21 @@ pub struct ColumnRenderable<'a> {
 }
 
 impl Renderable for ColumnRenderable<'_> {
+    fn layout_revision(&self) -> Option<u64> {
+        use std::hash::Hash;
+        use std::hash::Hasher;
+
+        let mut revision = std::hash::DefaultHasher::new();
+        let mut dynamic = false;
+        for (index, child) in self.children.iter().enumerate() {
+            if let Some(value) = child.layout_revision() {
+                dynamic = true;
+                (index, value).hash(&mut revision);
+            }
+        }
+        dynamic.then(|| revision.finish())
+    }
+
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let mut y = area.y;
         for child in &self.children {
@@ -207,7 +322,7 @@ impl Renderable for ColumnRenderable<'_> {
         self.children
             .iter()
             .map(|child| child.desired_height(width))
-            .sum()
+            .fold(0, u16::saturating_add)
     }
 
     /// Returns the cursor position of the first child that has a cursor position, offset by the
@@ -414,12 +529,55 @@ impl<'a> Renderable for InsetRenderable<'a> {
         self.child.render(area.inset(self.insets), buf);
     }
     fn desired_height(&self, width: u16) -> u16 {
-        self.child.desired_height(
-            width
-                .saturating_sub(self.insets.left)
-                .saturating_sub(self.insets.right),
-        ) + self.insets.top
-            + self.insets.bottom
+        self.child
+            .desired_height(
+                width
+                    .saturating_sub(self.insets.left)
+                    .saturating_sub(self.insets.right),
+            )
+            .saturating_add(self.insets.top)
+            .saturating_add(self.insets.bottom)
+    }
+
+    fn desired_height_usize(&self, width: u16) -> usize {
+        let width = width
+            .saturating_sub(self.insets.left)
+            .saturating_sub(self.insets.right);
+        self.child
+            .desired_height_usize(width)
+            .saturating_add(usize::from(self.insets.top))
+            .saturating_add(usize::from(self.insets.bottom))
+    }
+
+    fn layout_revision(&self) -> Option<u64> {
+        self.child.layout_revision()
+    }
+
+    fn render_with_offset(&self, area: Rect, buf: &mut Buffer, scroll_offset: usize) {
+        let top = usize::from(self.insets.top).saturating_sub(scroll_offset);
+        let offset = scroll_offset.saturating_sub(usize::from(self.insets.top));
+        let width = area
+            .width
+            .saturating_sub(self.insets.left)
+            .saturating_sub(self.insets.right);
+        let remaining = self
+            .child
+            .desired_height_usize(width)
+            .saturating_sub(offset);
+        let top = u16::try_from(top).unwrap_or(u16::MAX);
+        let height = area
+            .height
+            .saturating_sub(top)
+            .min(u16::try_from(remaining).unwrap_or(u16::MAX));
+        let child_area = Rect::new(
+            area.x.saturating_add(self.insets.left),
+            area.y.saturating_add(top),
+            width,
+            height,
+        );
+        if !child_area.is_empty() {
+            self.child.render_with_offset(child_area, buf, offset);
+        }
     }
 
     /// Preserve clipped inset padding while forwarding only visible child rows.
@@ -497,3 +655,7 @@ where
 #[cfg(test)]
 #[path = "renderable_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "renderable_viewport_tests.rs"]
+mod viewport_tests;
