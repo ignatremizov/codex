@@ -1,4 +1,5 @@
 use crate::ResponsesApiNamespaceTool;
+use crate::TOOL_SEARCH_TOOL_NAME;
 use crate::ToolName;
 use crate::ToolSpec;
 use codex_code_mode::CodeModeToolKind;
@@ -148,7 +149,19 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
                 }
             })
             .collect(),
-        ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } => Vec::new(),
+        ToolSpec::ToolSearch {
+            description,
+            parameters,
+            ..
+        } => vec![CodeModeToolDefinition {
+            tool_name: ToolName::plain(TOOL_SEARCH_TOOL_NAME),
+            name: TOOL_SEARCH_TOOL_NAME.to_string(),
+            description: description.clone(),
+            kind: CodeModeToolKind::Function,
+            input_schema: serde_json::to_value(parameters).ok(),
+            output_schema: None,
+        }],
+        ToolSpec::WebSearch { .. } => Vec::new(),
     }
 }
 
