@@ -186,6 +186,16 @@ impl ToolOutput for ToolSearchOutput {
                 .collect(),
         }
     }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+        serde_json::to_value(&self.tools).unwrap_or_else(|err| {
+            serde_json::json!({
+                "error": {
+                    "message": format!("failed to serialize tool_search output: {err}"),
+                },
+            })
+        })
+    }
 }
 
 pub struct FunctionToolOutput {
