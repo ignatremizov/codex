@@ -251,6 +251,7 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
     /// Returns the number of viewport rows for the transcript overlay.
     ///
     /// Uses the same `Paragraph::line_count` measurement as `desired_height`.
+    #[cfg(test)]
     fn desired_transcript_height(&self, width: u16) -> u16 {
         let lines = visible_lines(self.transcript_hyperlink_lines(width));
         Paragraph::new(Text::from(lines))
