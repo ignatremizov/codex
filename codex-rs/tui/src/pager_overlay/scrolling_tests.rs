@@ -1,6 +1,6 @@
 //! Static pager fallback preserves styled buffer slices at arbitrary scroll offsets.
 
-use super::super::CachedRenderable;
+use super::super::cached_rows::CachedRows;
 use super::render_offset_content;
 use crate::render::Insets;
 use crate::render::renderable::InsetRenderable;
@@ -29,9 +29,9 @@ fn scrolled_static_renderables_match_clipped_buffer_slices() {
         let paragraph = || Paragraph::new(Text::from(lines.clone())).wrap(Wrap { trim: false });
         let renderables: Vec<Box<dyn Renderable>> = vec![
             Box::new(paragraph()),
-            Box::new(CachedRenderable::new(paragraph())),
+            Box::new(CachedRows::new(lines.clone())),
             Box::new(InsetRenderable::new(
-                Box::new(CachedRenderable::new(paragraph())) as Box<dyn Renderable>,
+                Box::new(CachedRows::new(lines.clone())) as Box<dyn Renderable>,
                 Insets::tlbr(
                     /*top*/ 2, /*left*/ 1, /*bottom*/ 1, /*right*/ 1,
                 ),
@@ -46,8 +46,7 @@ fn scrolled_static_renderables_match_clipped_buffer_slices() {
                     let mut expected = Buffer::empty(canvas);
                     let mut actual = Buffer::empty(canvas);
                     let expected_height = visible_height.min(height.saturating_sub(offset));
-                    let full_area =
-                        Rect::new(/*x*/ 0, /*y*/ 0, width, offset + expected_height);
+                    let full_area = Rect::new(/*x*/ 0, /*y*/ 0, width, height);
                     let mut full = Buffer::empty(full_area);
                     renderable.render(full_area, &mut full);
                     for row in 0..expected_height {
@@ -56,7 +55,7 @@ fn scrolled_static_renderables_match_clipped_buffer_slices() {
                         }
                     }
                     let actual_height =
-                        render_offset_content(area, &mut actual, &*renderable, offset);
+                        render_offset_content(area, &mut actual, &*renderable, usize::from(offset));
                     assert_eq!(
                         (actual_height, actual),
                         (expected_height, expected),
@@ -89,7 +88,12 @@ fn fallback_handles_offsets_near_maximum_height() {
     let mut actual = Buffer::empty(area);
     let mut expected = Buffer::empty(area);
     expected[(area.x, area.y)].set_symbol("x");
-    let height = render_offset_content(area, &mut actual, &MaximumHeightRenderable, u16::MAX - 1);
+    let height = render_offset_content(
+        area,
+        &mut actual,
+        &MaximumHeightRenderable,
+        usize::from(u16::MAX - 1),
+    );
 
     assert_eq!((height, actual), (1, expected));
 }
