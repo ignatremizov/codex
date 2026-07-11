@@ -4,9 +4,12 @@
 //! when text reaches a terminal buffer or scrollback writer so OSC 8 bytes never affect geometry.
 
 mod paragraph;
+mod remap;
+mod rows;
 mod source;
 
 pub(crate) use paragraph::HyperlinkParagraph;
+pub(crate) use rows::wrap_line_rows;
 pub(crate) use source::LineWrapPolicy;
 pub(crate) use source::LogicalLineSource;
 
@@ -425,51 +428,7 @@ pub(crate) fn remap_wrapped_line(
     source: &HyperlinkLine,
     wrapped: Vec<Line<'static>>,
 ) -> Vec<HyperlinkLine> {
-    let mut out = plain_hyperlink_lines(wrapped);
-    if source.hyperlinks.is_empty() {
-        return out;
-    }
-    let source_text = line_text(&source.line);
-    let mut source_byte = 0usize;
-    let mut source_column = 0usize;
-    let mut link_index = 0usize;
-    for (index, line) in out.iter_mut().enumerate() {
-        if index > 0 {
-            let trimmed = source_text[source_byte..].trim_start_matches(char::is_whitespace);
-            let skipped = source_text[source_byte..].len() - trimmed.len();
-            source_column += display_width(&source_text[source_byte..source_byte + skipped]);
-            source_byte += skipped;
-        }
-
-        let rendered = line_text(&line.line);
-        let remaining = &source_text[source_byte..];
-        let Some(rendered_start) = longest_suffix_matching_prefix(&rendered, remaining) else {
-            continue;
-        };
-        let mapped = &rendered[rendered_start..];
-        let mut output_column = display_width(&rendered[..rendered_start]);
-        for grapheme in mapped.graphemes(/*is_extended*/ true) {
-            let width = display_width(grapheme);
-            while source
-                .hyperlinks
-                .get(link_index)
-                .is_some_and(|link| link.columns.end <= source_column)
-            {
-                link_index += 1;
-            }
-            if let Some(link) = source
-                .hyperlinks
-                .get(link_index)
-                .filter(|link| link.columns.contains(&source_column))
-            {
-                push_link_range(line, output_column..output_column + width, link);
-            }
-            source_column += width;
-            output_column += width;
-        }
-        source_byte += mapped.len();
-    }
-    out
+    remap::remap_wrapped_line(source, wrapped)
 }
 
 fn line_text(line: &Line<'_>) -> String {
@@ -477,14 +436,6 @@ fn line_text(line: &Line<'_>) -> String {
         .iter()
         .map(|span| span.content.as_ref())
         .collect()
-}
-
-fn longest_suffix_matching_prefix(rendered: &str, source: &str) -> Option<usize> {
-    rendered
-        .grapheme_indices(/*is_extended*/ true)
-        .map(|(index, _)| index)
-        .chain(std::iter::once(rendered.len()))
-        .find(|index| source.starts_with(&rendered[*index..]) && *index < rendered.len())
 }
 
 fn push_link_range(line: &mut HyperlinkLine, range: Range<usize>, link: &TerminalHyperlink) {
