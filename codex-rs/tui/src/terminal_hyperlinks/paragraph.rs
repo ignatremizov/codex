@@ -30,7 +30,8 @@ impl Renderable for HyperlinkText {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        HyperlinkParagraph::new(&self.0, Style::default()).line_count(width) as u16
+        u16::try_from(HyperlinkParagraph::new(&self.0, Style::default()).line_count(width))
+            .unwrap_or(u16::MAX)
     }
 }
 
