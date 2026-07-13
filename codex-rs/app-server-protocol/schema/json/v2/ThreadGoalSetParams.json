@@ -1,6 +1,21 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "GoalSkillSelection": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
     "ThreadGoalStatus": {
       "enum": [
         "active",
@@ -17,6 +32,15 @@
     "objective": {
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "skills": {
+      "items": {
+        "$ref": "#/definitions/GoalSkillSelection"
+      },
+      "type": [
+        "array",
         "null"
       ]
     },

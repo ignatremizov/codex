@@ -359,13 +359,13 @@ async fn run_remote_compact_task_inner_impl(
     };
     let final_history = sess
         .replace_compacted_history(
-            compaction_turn_context.as_ref(),
+            Arc::clone(compaction_turn_context),
             new_history,
             reference_context_item,
             world_state_baseline,
             compacted_item,
         )
-        .await;
+        .await?;
     compaction_trace.record_installed(&CompactionCheckpointTracePayload {
         input_history: &trace_input_history,
         replacement_history: &final_history,

@@ -80,6 +80,7 @@ where
         Some(config.codex_home.clone())
     });
     let skill_providers = codex_skills_extension::SkillProviders::new()
+        .with_host_provider(Arc::new(codex_skills_extension::HostSkillProvider::new()))
         .with_executor_provider(executor_skill_provider)
         .with_orchestrator_provider(Arc::new(
             codex_skills_extension::OrchestratorSkillProvider::new(),

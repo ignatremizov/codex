@@ -6919,6 +6919,21 @@
       },
       "type": "object"
     },
+    "GoalSkillSelection": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
     "GuardianApprovalReview": {
       "description": "[UNSTABLE] Temporary approval auto-review payload used by `item/autoApprovalReview/*` notifications. This shape is expected to change soon.",
       "properties": {
@@ -15880,6 +15895,15 @@
         "objective": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "skills": {
+          "items": {
+            "$ref": "#/definitions/GoalSkillSelection"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },

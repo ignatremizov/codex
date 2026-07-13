@@ -7,9 +7,9 @@ pub(super) async fn inherit_thread_goal_snapshot(
     source_thread_id: ThreadId,
     target_thread_id: ThreadId,
 ) -> anyhow::Result<bool> {
-    let Some(mut goal) = state_db
+    let Some((mut goal, skill_selections)) = state_db
         .thread_goals()
-        .get_thread_goal(source_thread_id)
+        .get_thread_goal_with_skill_selections(source_thread_id)
         .await?
     else {
         return Ok(false);
@@ -22,7 +22,7 @@ pub(super) async fn inherit_thread_goal_snapshot(
     goal.thread_id = target_thread_id;
     state_db
         .thread_goals()
-        .replace_thread_goal_snapshot(&goal)
+        .replace_thread_goal_snapshot(&goal, &skill_selections)
         .await?;
     Ok(true)
 }
