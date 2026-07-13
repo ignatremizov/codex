@@ -72,6 +72,7 @@ mod budget;
 mod completion;
 mod delivery;
 mod execution;
+pub(in crate::agent) mod fork_goal_context;
 mod inspection;
 mod interrupt;
 mod legacy;

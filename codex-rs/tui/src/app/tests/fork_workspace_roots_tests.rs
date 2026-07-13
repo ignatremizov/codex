@@ -121,6 +121,18 @@ async fn check_fork_dispatch(mode: ThreadParamsMode) -> Result<()> {
         .map(|params| params["runtimeWorkspaceRoots"].clone())
         .collect();
     assert_eq!(fork_roots, vec![serde_json::json!(expected_roots)]);
+    let fork_params: Vec<codex_app_server_protocol::ThreadForkParams> =
+        recorded_params(&requests, "thread/fork")
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<serde_json::Result<_>>()?;
+    assert_eq!(
+        fork_params
+            .into_iter()
+            .map(|params| params.defer_goal_continuation)
+            .collect::<Vec<_>>(),
+        vec![false]
+    );
     assert!(recorded_params(&requests, "thread/unsubscribe").is_empty());
     assert!(!app.thread_event_listener_tasks[&source_thread_id].is_finished());
     assert_eq!(

@@ -7,6 +7,7 @@ use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigRequirementsToml;
+use codex_config::TomlValue;
 use codex_exec_server::CopyOptions;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::EnvironmentAccess;
@@ -480,6 +481,40 @@ async fn repo_ancestry_without_project_marker_does_not_walk_parents() {
         ConfigLayerSource::SessionFlags,
         toml::toml! { project_root_markers = [".missing-skill-test-project"] }.into(),
     )]);
+    let roots = repo_agents_skill_roots(
+        Some(&access),
+        &config_stack,
+        &cwd,
+        /*project_markers*/ None,
+        /*empty_remote_roots*/ None,
+    )
+    .await
+    .into_iter()
+    .map(|root| root.path)
+    .collect::<Vec<_>>();
+
+    assert_eq!(roots, vec![cwd.join(".agents/skills")]);
+}
+
+#[tokio::test]
+async fn disabled_project_root_detection_does_not_walk_parents() {
+    let access = FileSystemEnvironmentAccessor::unrestricted(&LOCAL_FS);
+    let temp_dir = TempDir::new().expect("temp dir");
+    let outer = absolute(temp_dir.path().join("outer"));
+    let cwd = outer.join("nested/inner");
+    fs::create_dir_all(outer.join(".agents/skills")).expect("create outer skills");
+    fs::create_dir_all(cwd.join(".agents/skills")).expect("create cwd skills");
+    let config = toml::toml! {
+        project_root_markers = []
+    };
+    let config_stack = stack(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::User {
+            file: outer.join("config.toml"),
+            profile: None,
+        },
+        TomlValue::Table(config),
+    )]);
+
     let roots = repo_agents_skill_roots(
         Some(&access),
         &config_stack,

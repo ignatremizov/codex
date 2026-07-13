@@ -144,6 +144,14 @@ fn prebudget_dedup_can_choose_full_locators_over_preserved_aliases() {
     );
 }
 
+fn expected_available_skills_body(prompt: SkillPrompt, skill_lines: &[String]) -> String {
+    let inventory = render_available_skills_body(prompt, &[], skill_lines);
+    format!(
+        "\nThis listing updates the skills from the sources shown below. Listings from other sources remain available.\n\
+         {inventory}\n"
+    )
+}
+
 fn entry(name: &str, description: &str, short_description: Option<&str>) -> SkillCatalogEntry {
     entry_with_path(
         name,
@@ -224,9 +232,8 @@ fn ordering_follows_render_policy() {
 
     assert_eq!(
         render(SkillCatalogRenderPolicy::CORE_COMPATIBLE),
-        render_available_skills_body(
+        expected_available_skills_body(
             SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE.prompt(SkillPromptKind::Unaliased),
-            &[],
             &[
                 "- system-zeta: Description. (file: /skills/system-zeta/SKILL.md)".to_string(),
                 "- admin-alpha: Description. (file: /skills/admin-alpha/SKILL.md)".to_string(),
@@ -239,9 +246,8 @@ fn ordering_follows_render_policy() {
     );
     assert_eq!(
         render(SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE),
-        render_available_skills_body(
+        expected_available_skills_body(
             SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE.prompt(SkillPromptKind::Unaliased),
-            &[],
             &[
                 "- repo-zeta: Description. (file: /skills/repo-zeta/SKILL.md)".to_string(),
                 "- user-alpha: Description. (file: /skills/user-alpha/SKILL.md)".to_string(),
@@ -286,9 +292,8 @@ fn description_selection_follows_render_policy() {
 
     assert_eq!(
         core.body().expect_text(),
-        render_available_skills_body(
+        expected_available_skills_body(
             SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE.prompt(SkillPromptKind::Unaliased),
-            &[],
             &[
                 "- fallback: fallback description (file: /skills/fallback/SKILL.md)".to_string(),
                 "- shortened: full description (file: /skills/shortened/SKILL.md)".to_string(),
@@ -297,9 +302,8 @@ fn description_selection_follows_render_policy() {
     );
     assert_eq!(
         extension.body().expect_text(),
-        render_available_skills_body(
+        expected_available_skills_body(
             SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE.prompt(SkillPromptKind::Unaliased),
-            &[],
             &[
                 "- shortened: short description (file: /skills/shortened/SKILL.md)".to_string(),
                 "- fallback: fallback description (file: /skills/fallback/SKILL.md)".to_string(),
@@ -376,9 +380,8 @@ fn explicit_large_budget_preserves_the_complete_rendered_catalog() {
         SkillCatalogRenderPolicy::CORE_COMPATIBLE,
         SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE,
     ] {
-        let expected_body = render_available_skills_body(
+        let expected_body = expected_available_skills_body(
             policy.prompt(SkillPromptKind::Unaliased),
-            &[],
             &expected_lines,
         );
         for context_window in [None, Some(100_000)] {
@@ -445,6 +448,7 @@ fn host_only_prompts_preserve_existing_behavior_with_and_without_aliases() {
     )
     .expect("unaliased host catalog should render");
     insta::assert_snapshot!(unaliased.body().expect_text(), @r###"
+    This listing updates the skills from the sources shown below. Listings from other sources remain available.
 
     ## Skills
     A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that can be used. Each entry includes a name, description, and source locator. `file` locators are on the host filesystem, `executor package` locators are owned by their execution environment, `cloud package` locators are opaque package identifiers, and `custom resource` locators use their provider's access mechanism.
@@ -480,6 +484,7 @@ fn host_only_prompts_preserve_existing_behavior_with_and_without_aliases() {
     )
     .expect("aliased host catalog should render");
     insta::assert_snapshot!(aliased.body().expect_text(), @r###"
+    This listing updates the skills from the sources shown below. Listings from other sources remain available.
 
     ## Skills
     A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.
@@ -833,6 +838,11 @@ fn mixed_catalog_reserves_executor_omission_marker_by_omitting_host_first() {
     let host = host.expect("host catalog should render");
     let executor = executor.expect("executor catalog should render");
 
+    assert!(host.included_identities.is_empty());
+    assert_eq!(
+        executor.included_identities,
+        vec![PromotedSkillIdentity::from_entry(&executor_catalog.entries[0]).unwrap()]
+    );
     assert_eq!(
         host.report,
         SkillRenderReport {
@@ -1119,6 +1129,54 @@ async fn singleton_plugin_versions_share_the_marketplace_alias_root()
 
     std::fs::remove_dir_all(parent)?;
     Ok(())
+}
+
+#[test]
+fn omission_notice_does_not_promote_removed_rows() {
+    for removed_identity_is_valid in [true, false] {
+        let policy = SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE;
+        let mut removed = entry_with_path("removed", "", None, &format!("/{}", "b".repeat(100)));
+        if !removed_identity_is_valid {
+            removed.id = SkillPackageId("x".repeat(257));
+        }
+        let catalog = SkillCatalog {
+            entries: vec![
+                entry_with_path("kept", "", None, "/kept"),
+                removed,
+                entry_with_path("omitted", "", None, &format!("/{}", "c".repeat(220))),
+            ],
+            ..SkillCatalog::default()
+        };
+        let kept_line = SkillLine::new(&catalog.entries[0], policy);
+        let removed_line = SkillLine::new(&catalog.entries[1], policy);
+        let budget = SkillMetadataBudget::Characters(
+            kept_line.minimum_cost(SkillMetadataBudget::Characters(usize::MAX))
+                + removed_line.minimum_cost(SkillMetadataBudget::Characters(usize::MAX)),
+        );
+        let rendered = render_catalog(
+            catalog
+                .entries
+                .iter()
+                .map(|entry| SkillLine::new(entry, policy))
+                .collect(),
+            budget,
+            Vec::new(),
+            policy.prompt(SkillPromptKind::Unaliased),
+            policy,
+        );
+
+        assert_eq!(
+            rendered.skill_lines,
+            vec![kept_line.render_minimum(), omission_marker(2)]
+        );
+        assert_eq!(rendered.included_ids, Some(vec![kept_line.catalog_id()]));
+        assert_eq!(
+            rendered.included_identities,
+            vec![PromotedSkillIdentity::from_entry(&catalog.entries[0]).unwrap()]
+        );
+        assert_eq!(rendered.report.included_count, 1);
+        assert_eq!(rendered.report.omitted_count, 2);
+    }
 }
 
 #[test]

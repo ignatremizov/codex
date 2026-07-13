@@ -35,7 +35,7 @@ pub(super) struct PendingAssistantMessageOrders(pub(super) Mutex<HashMap<String,
 
 pub(super) struct CodeModeMessageTasks {
     tasks: Mutex<TaskTracker>,
-    pending_persistence: Mutex<Vec<watch::Receiver<()>>>,
+    pending_persistence: Arc<Mutex<Vec<watch::Receiver<()>>>>,
     pub(super) communication_boundary: Arc<Semaphore>,
 }
 
@@ -43,7 +43,7 @@ impl Default for CodeModeMessageTasks {
     fn default() -> Self {
         Self {
             tasks: Mutex::default(),
-            pending_persistence: Mutex::default(),
+            pending_persistence: Arc::default(),
             communication_boundary: Arc::new(Semaphore::new(1)),
         }
     }
@@ -90,35 +90,45 @@ impl Session {
         let context = Box::pin(self.new_inject_items_context()).await;
         // Earlier Code Mode messages may need the persistence lock before this can return.
         let user_input_order = self.reserve_user_input_order().await;
-        let _guard = thread_settings::acquire_persistence_lock(self).await;
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        self.check_history_publication()
+            .map_err(std::io::Error::other)?;
         let mut item = ContextualUserFragment::into(update);
         Self::stamp_response_item_for_history(&mut item, &context.sub_id);
         Self::assign_missing_response_item_id(&mut item);
-        let mut item = ResponseItemEnvelope {
+        let item = ResponseItemEnvelope {
             item,
             metadata: Some(CodexHarnessMetadata {
                 user_input_order: Some(user_input_order),
                 ..Default::default()
             }),
         };
-        if let Some(live_thread) = self.live_thread() {
-            // Capture settings under the same permit as the instruction, including when a
-            // goal creates the rollout. No fallible settings catch-up runs after publication.
-            live_thread
-                .append_items(&[
-                    RolloutItem::EventMsg(thread_settings::applied_event(self).await),
-                    RolloutItem::ResponseItem(item.clone()),
-                ])
-                .await
-                .map_err(std::io::Error::other)?;
-        }
-        // A failed append or checkpoint must not change live authorization or its revision.
-        self.try_ensure_rollout_materialized(PersistContext::ThreadPreparation)
-            .await?;
-        self.state.lock().await.history.record_annotated_items(
-            std::slice::from_mut(&mut item),
+        let prepared = super::prepared_history_items::PreparedHistoryItems::new(
+            &self.state.lock().await.history,
+            vec![item.clone()],
             context.model_info().truncation_policy.into(),
         );
+        let mut rollout = vec![RolloutItem::EventMsg(
+            thread_settings::applied_event(self).await,
+        )];
+        rollout.extend(prepared.rollout_items());
+        let receiver = self
+            .dispatch_history_publication_with_events(
+                permit,
+                super::durable_context::PublicationBatch {
+                    rollout,
+                    events: Vec::new(),
+                    persist_context: Some(PersistContext::ThreadPreparation),
+                    reply: None,
+                },
+                Vec::new(),
+                /*acknowledgement*/ None,
+                move |state| prepared.install(&mut state.history),
+            )
+            .map_err(std::io::Error::other)?;
+        self.publication_result(receiver)
+            .await
+            .map_err(std::io::Error::other)?;
         self.send_raw_response_items(&context, std::slice::from_ref(&item.item))
             .await;
         Ok(())
@@ -159,16 +169,24 @@ impl Session {
         event.bound();
         // Share the checkpoint persistence lock so a fact cannot land on the wrong side
         // of the checkpoint/suffix boundary. Ephemeral threads use the same live state.
-        let _guard = thread_settings::acquire_persistence_lock(self).await;
-        if self
-            .state
-            .lock()
-            .await
-            .history
-            .record_retained_context(&event)
-        {
-            self.persist_rollout_items(&[RolloutItem::RetainedContext(event)])
-                .await;
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        let mut projected = self.state.lock().await.history.clone();
+        if projected.record_retained_context(&event) {
+            let result = match self.dispatch_history_publication(
+                permit,
+                vec![RolloutItem::RetainedContext(event.clone())],
+                Vec::new(),
+                /*acknowledgement*/ None,
+                move |state| {
+                    state.history.record_retained_context(&event);
+                },
+            ) {
+                Ok(receiver) => self.publication_result(receiver).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                tracing::error!("failed to publish retained context: {error}");
+            }
         }
     }
 
@@ -199,34 +217,34 @@ impl Session {
         self: &Arc<Self>,
         message: RetainedUserMessage,
     ) -> (JoinHandle<()>, watch::Receiver<()>) {
-        let session = Arc::clone(self);
-        let persistence_session = Arc::clone(self);
+        let state = Arc::clone(&self.state);
+        let publication = self.history_publication_handle();
+        let persistence = Arc::clone(&self.thread_settings_persistence);
+        let communication_boundary =
+            Arc::clone(&self.code_mode_message_tasks.communication_boundary);
+        let pending_persistence = Arc::clone(&self.code_mode_message_tasks.pending_persistence);
         let (recorded, recording) = watch::channel(());
         let pending_recording = recording.clone();
         let mut reserve = Box::pin(async move {
-            let boundary = Arc::clone(&session.code_mode_message_tasks.communication_boundary)
+            let boundary = communication_boundary
                 .acquire_owned()
                 .await
                 .unwrap_or_else(|_| unreachable!("communication boundary remains open"));
-            let mut state = session.state.lock().await;
+            let mut state = state.lock().await;
             let mut event = RetainedContextEvent::DeliveredAssistantMessage {
                 message,
                 acceptance_order: state.history.reserve_input_order(),
             };
             event.bound();
-            state.history.record_retained_context(&event);
-            let mut pending = session
-                .code_mode_message_tasks
-                .pending_persistence
+            let mut pending = pending_persistence
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             pending.retain(|recording| recording.has_changed().is_ok());
             pending.push(pending_recording);
             (event, boundary)
         });
-        // Poll while still at the confirmed MCP response boundary. A free state lock
-        // reserves the order now; a busy lock queues this reservation ahead of a
-        // later user reply before the detached task can be scheduled.
+        // Reserve at the confirmed MCP response boundary, ahead of later user input.
+        // A pending state lock queues the same reservation without retaining Session.
         let mut context = Context::from_waker(futures::task::noop_waker_ref());
         let reservation = reserve.as_mut().poll(&mut context);
         let task = self
@@ -235,16 +253,46 @@ impl Session {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .spawn(async move {
-                let (event, _boundary) = match reservation {
+                let (event, boundary) = match reservation {
                     Poll::Ready(reservation) => reservation,
                     Poll::Pending => reserve.await,
                 };
-                let _guard = thread_settings::acquire_persistence_lock(&persistence_session).await;
-                // A distinct delivery still belongs in the rollout when the live window is full.
-                persistence_session
-                    .persist_rollout_items(&[RolloutItem::RetainedContext(event)])
-                    .await;
-                drop(recorded);
+                let permit = persistence
+                    .acquire_owned()
+                    .await
+                    .unwrap_or_else(|_| unreachable!("history publication remains open"));
+                // Keep distinct delivery receipts canonical even when bounded live evidence
+                // is full. Closing the receipt follows installation, or sticky failure.
+                let result = publication.dispatch_history_publication_with_events(
+                    permit,
+                    super::durable_context::PublicationBatch {
+                        rollout: vec![RolloutItem::RetainedContext(event.clone())],
+                        events: Vec::new(),
+                        persist_context: None,
+                        reply: None,
+                    },
+                    Vec::new(),
+                    /*acknowledgement*/ None,
+                    move |state| {
+                        let _boundary = boundary;
+                        state.history.record_retained_context(&event);
+                        drop(recorded);
+                    },
+                );
+                match result {
+                    Ok(receiver) => match receiver.await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            tracing::error!("failed to publish assistant delivery: {error}")
+                        }
+                        Err(error) => {
+                            tracing::error!("assistant delivery publisher was lost: {error}")
+                        }
+                    },
+                    Err(error) => {
+                        tracing::error!("assistant delivery publication rejected: {error}")
+                    }
+                }
             });
         (task, recording)
     }

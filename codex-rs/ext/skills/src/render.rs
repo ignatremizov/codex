@@ -18,6 +18,7 @@ use crate::catalog_prompt::SkillPrompt;
 use crate::catalog_prompt::SkillPromptKind;
 use crate::catalog_prompt::render_available_skills_body;
 use crate::fragments::AvailableSkillsInstructions;
+use crate::fragments::PromotedSkillIdentity;
 use crate::host_aliases::shared_host_alias_roots;
 
 const DEFAULT_SKILL_METADATA_CHAR_BUDGET: usize = 8_000;
@@ -315,6 +316,8 @@ impl<'a> SkillLine<'a> {
 
 struct RenderedSkillLines {
     lines: Vec<String>,
+    /// Aligned with skill rows, including rows whose identity cannot be persisted.
+    row_identities: Vec<Option<PromotedSkillIdentity>>,
     /// Only needed when some rows were omitted.
     included_ids: Option<Vec<String>>,
     omitted_count: usize,
@@ -420,6 +423,7 @@ fn render_allocated_skill_lines(
     allocations: &[SkillLineAllocation],
 ) -> RenderedSkillLines {
     let mut lines = Vec::new();
+    let mut row_identities = Vec::new();
     let mut included_ids = allocations
         .iter()
         .any(|a| matches!(a, SkillLineAllocation::Omitted))
@@ -446,6 +450,7 @@ fn render_allocated_skill_lines(
                     truncated_description_count = truncated_description_count.saturating_add(1);
                 }
                 lines.push(line.render_with_description_chars(*description_chars));
+                row_identities.push(PromotedSkillIdentity::from_entry(line.entry));
                 if let Some(ids) = &mut included_ids {
                     ids.push(line.catalog_id());
                 }
@@ -454,6 +459,7 @@ fn render_allocated_skill_lines(
     }
     RenderedSkillLines {
         lines,
+        row_identities,
         included_ids,
         omitted_count,
         truncated_description_chars,
@@ -507,6 +513,7 @@ struct RenderedCatalog {
     skill_root_lines: Vec<String>,
     skill_lines: Vec<String>,
     included_ids: Option<Vec<String>>,
+    included_identities: Vec<PromotedSkillIdentity>,
     report: SkillRenderReport,
 }
 
@@ -519,6 +526,7 @@ pub(crate) struct AvailableSkillsRender {
     /// Includes all eligible entries, even skills omitted from `skill_lines`.
     pub(crate) entries: BTreeMap<String, CatalogSkill>,
     preserve_empty_fragment: bool,
+    pub(crate) included_identities: Vec<PromotedSkillIdentity>,
     pub(crate) report: SkillRenderReport,
 }
 
@@ -795,6 +803,7 @@ fn render_combined_group(
 ) -> AvailableSkillsRender {
     let RenderedSkillLines {
         mut lines,
+        row_identities,
         included_ids,
         omitted_count,
         truncated_description_chars,
@@ -803,6 +812,7 @@ fn render_combined_group(
     if let Some(marker) = omission_marker {
         lines.push(marker);
     }
+    let included_identities = row_identities.into_iter().flatten().collect();
     AvailableSkillsRender {
         prompt,
         skill_root_lines,
@@ -810,6 +820,7 @@ fn render_combined_group(
         skill_lines: lines,
         included_ids,
         preserve_empty_fragment: false,
+        included_identities,
         report: SkillRenderReport {
             total_count: skill_lines.len(),
             included_count: skill_lines.len().saturating_sub(omitted_count),
@@ -972,6 +983,7 @@ fn render_catalog(
     let total_count = skill_lines.len();
     let RenderedSkillLines {
         lines: mut rendered_lines,
+        mut row_identities,
         mut included_ids,
         omitted_count: mut omitted,
         truncated_description_chars,
@@ -991,6 +1003,7 @@ fn render_catalog(
             let Some(rendered) = rendered_lines.pop() else {
                 break;
             };
+            row_identities.pop();
             if let Some(ids) = &mut included_ids {
                 ids.pop();
             }
@@ -999,11 +1012,13 @@ fn render_catalog(
         }
     }
 
+    let included_identities = row_identities.into_iter().flatten().collect();
     RenderedCatalog {
         prompt,
         skill_root_lines,
         skill_lines: rendered_lines,
         included_ids,
+        included_identities,
         report: SkillRenderReport {
             total_count,
             included_count: total_count.saturating_sub(omitted),

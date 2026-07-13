@@ -175,8 +175,10 @@ const THREAD_SETTINGS_UPDATE_METHOD: &str = "thread/settings/update";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ForkGoalContinuation {
-    StartIfIdle,
-    DeferUntilNextTurn,
+    /// Ordinary forks do not inherit goal ownership or start goal continuation.
+    GoalFree,
+    /// Copy the exact source goal and defer continuation until the explicit retry turn.
+    InheritForSafetyRetry,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1110,7 +1112,7 @@ impl AppServerSession {
             /*source_rollout_path*/ None,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
-            ForkGoalContinuation::StartIfIdle,
+            ForkGoalContinuation::GoalFree,
             ForkPresentation::Regular,
             /*selected_profile*/ None,
             permission_mode,
@@ -1134,7 +1136,7 @@ impl AppServerSession {
             source_rollout_path,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
-            ForkGoalContinuation::StartIfIdle,
+            ForkGoalContinuation::GoalFree,
             ForkPresentation::Regular,
             /*selected_profile*/ None,
             permission_mode,
@@ -1187,7 +1189,7 @@ impl AppServerSession {
             /*source_rollout_path*/ None,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
-            ForkGoalContinuation::StartIfIdle,
+            ForkGoalContinuation::GoalFree,
             ForkPresentation::SideConversation,
             selected_profile,
             ForkPermissionMode::InheritSaved,
@@ -1242,7 +1244,8 @@ impl AppServerSession {
             path: source_rollout_path,
             last_turn_id,
             before_turn_id,
-            defer_goal_continuation: goal_continuation == ForkGoalContinuation::DeferUntilNextTurn,
+            defer_goal_continuation: goal_continuation
+                == ForkGoalContinuation::InheritForSafetyRetry,
             exclude_turns,
             ..thread_fork_params_from_config(
                 session_config,

@@ -65,6 +65,7 @@ Settings:
         - final-check: Review a final brief (file: r0/final-check/SKILL.md)
         - notes:summarize: Summarize team notes (file: r1/notes/local/skills/summarize/SKILL.md)
         - outline: Draft a project outline (file: r0/outline/SKILL.md)
+
         </skills_instructions>
     [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
@@ -293,6 +294,7 @@ Settings: same as window 1
         - final-check: Review a final brief (file: r0/final-check/SKILL.md)
         - notes:summarize: Summarize team notes (file: r1/notes/local/skills/summarize/SKILL.md)
         - outline: Draft a project outline (file: r0/outline/SKILL.md)
+
         </skills_instructions>
     [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]

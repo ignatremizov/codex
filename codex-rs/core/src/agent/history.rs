@@ -277,6 +277,9 @@ pub(super) async fn prepare_forked_history(
         forked_rollout_items = items;
     }
     let retain_forked_item = |envelope: &mut ResponseItemEnvelope, replaced: &mut bool| {
+        if !super::control::fork_goal_context::retain_without_goal_context(envelope) {
+            return false;
+        }
         if multi_agent_version == MultiAgentVersion::V2
             && (preserve_fork_prefix
                 || matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "user" || role == "assistant"))

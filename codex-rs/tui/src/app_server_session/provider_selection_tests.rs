@@ -100,7 +100,7 @@ async fn starts_and_forks_use_server_provider_unless_explicitly_selected() -> Re
             parent,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
-            ForkGoalContinuation::StartIfIdle,
+            ForkGoalContinuation::GoalFree,
             /*selected_profile*/ None,
         )
         .await?;

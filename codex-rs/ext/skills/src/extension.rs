@@ -4,6 +4,7 @@ use crate::HostSkillsSnapshot;
 use crate::InjectedHostSkillPrompts;
 use codex_analytics::InvocationType;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
+use codex_extension_api::ActiveGoalObjective;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ContextContributor;
 use codex_extension_api::ContextualUserFragment;
@@ -15,15 +16,18 @@ use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::PromptFragment;
 use codex_extension_api::PromptSlot;
+use codex_extension_api::RestoredSkillsInventory;
 use codex_extension_api::SkillInvocationContributor;
 use codex_extension_api::SkillInvocationInput;
 use codex_extension_api::SkillInvocationKind;
 use codex_extension_api::ThreadLifecycleContributor;
+use codex_extension_api::ThreadReadyInput;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolContributor;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::TurnInputContext;
+use codex_extension_api::TurnInputContribution;
 use codex_extension_api::TurnInputContributor;
 use codex_extension_api::WorldStateContributionInput;
 use codex_extension_api::WorldStateSectionContribution;
@@ -37,6 +41,7 @@ use crate::catalog::SkillCatalogEntry;
 use crate::catalog::SkillReadResult;
 use crate::catalog::SkillSourceKind;
 use crate::fragments::AvailableSkillsInstructions;
+use crate::fragments::PromotedSkillIdentity;
 use crate::fragments::SkillInstructions;
 use crate::fragments::SkillResourceAccess;
 use crate::preparation::prepare_catalogs;
@@ -72,6 +77,7 @@ use crate::world_state_catalogs::render_world_state_sections;
 
 #[path = "cloud_skill.rs"]
 mod cloud_skill;
+mod promotion;
 
 struct SkillsExtension<C> {
     providers: SkillProviders,
@@ -84,6 +90,7 @@ struct SkillsExtension<C> {
 struct RenderedCatalog {
     fragment: Option<AvailableSkillsInstructions>,
     warning_message: Option<String>,
+    included_identities: Vec<PromotedSkillIdentity>,
 }
 
 fn render_catalog(
@@ -129,10 +136,12 @@ fn render_prepared_catalog(
     let warning_message = rendered
         .report
         .warning_message(/*catalog_deltas_enabled*/ false);
+    let included_identities = rendered.included_identities.clone();
     let fragment = rendered.into_fragment(include_skills_usage_instructions);
     RenderedCatalog {
         fragment,
         warning_message,
+        included_identities,
     }
 }
 
@@ -155,11 +164,26 @@ where
                     .environments
                     .iter()
                     .any(|environment| environment.environment_id == LOCAL_ENVIRONMENT_ID);
-            input.thread_store.insert(SkillsThreadState::new(
+            let thread_state = SkillsThreadState::new(
                 (self.config_from_host)(input.config),
                 cloud_skills_available,
                 input.extension_metrics,
-            ));
+            );
+            input.thread_store.insert(thread_state);
+            input
+                .thread_store
+                .get_or_init::<ActiveGoalObjective>(ActiveGoalObjective::default);
+        })
+    }
+
+    fn on_thread_ready<'a>(&'a self, input: ThreadReadyInput<'a, C>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            if let (Some(thread_state), Some(inventory)) = (
+                input.thread_store.get::<SkillsThreadState>(),
+                input.thread_store.get::<RestoredSkillsInventory>(),
+            ) {
+                thread_state.restore_promoted_skills(&inventory);
+            }
         })
     }
 }
@@ -233,10 +257,19 @@ where
             let extension_metrics = session_store
                 .get::<SkillsSessionState>()
                 .and_then(|state| state.extension_metrics.clone());
+            let (promoted, unresolved) = thread_state.resolve_promoted_skills(&catalog);
+            let mut context_catalog = catalog;
+            for entry in &mut context_catalog.entries {
+                if promoted.iter().any(|promoted| {
+                    promoted.authority == entry.authority && promoted.id == entry.id
+                }) {
+                    entry.prompt_visible = true;
+                }
+            }
             let rendered = render_catalog(
                 extension_metrics.as_deref(),
                 CatalogSurface::ThreadContext,
-                &catalog,
+                &context_catalog,
                 include_usage,
                 SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE
                     .with_omitted_descriptions(config.omit_descriptions),
@@ -245,8 +278,16 @@ where
             if let Some(message) = rendered.warning_message {
                 self.emit_warning(thread_store.level_id(), /*turn_id*/ None, message);
             }
+            if unresolved > 0 {
+                self.emit_unresolved_promotions_warning(
+                    thread_store.level_id(),
+                    /*turn_id*/ None,
+                    unresolved,
+                );
+            }
             rendered
                 .fragment
+                .map(|fragment| fragment.with_promoted(thread_state.promoted_skill_identities()))
                 .map(|fragment| {
                     PromptFragment::from_fragment(PromptSlot::DeveloperCapabilities, &fragment)
                 })
@@ -366,11 +407,12 @@ where
                 executor_capability_discovery: None,
                 executor_capability_discovery_v2: None,
             };
-            let mut catalog = step_state.catalog.merged.clone();
+            let mut catalog = SkillCatalog::default();
             if !host_catalog_in_world_state && let Some(host_skills) = host_skills {
                 catalog.extend(host_skills.clone());
             }
             catalog.extend(self.providers.list_for_turn(query).await);
+            catalog.extend(step_state.catalog.merged.clone());
             for warning in bounded_warnings(&catalog.warnings) {
                 self.emit_warning(thread_store.level_id(), Some(&input.turn_id), warning);
             }
@@ -399,10 +441,22 @@ where
             let mut fragments: Vec<Box<dyn ContextualUserFragment + Send>> = Vec::new();
             if config.include_instructions && !host_catalog_in_world_state {
                 let mut turn_catalog = catalog.clone();
+                let promoted = thread_state.promoted_skill_identities();
                 turn_catalog.entries.retain(|entry| {
-                    entry.authority.kind != SkillSourceKind::Executor
-                        && entry.authority.kind != SkillSourceKind::Cloud
+                    (entry.authority.kind != SkillSourceKind::Executor
+                        && entry.authority.kind != SkillSourceKind::Cloud)
+                        || promoted
+                            .iter()
+                            .any(|identity| identity.matches_entry(entry))
                 });
+                for entry in &mut turn_catalog.entries {
+                    if promoted
+                        .iter()
+                        .any(|identity| identity.matches_entry(entry))
+                    {
+                        entry.prompt_visible = true;
+                    }
+                }
                 let model_info = thread_store.get::<ModelInfo>();
                 let include_usage = model_info
                     .as_deref()
@@ -425,13 +479,32 @@ where
                     self.emit_warning(thread_store.level_id(), Some(&input.turn_id), message);
                 }
                 if let Some(fragment) = rendered.fragment {
-                    fragments.push(Box::new(fragment));
+                    fragments.push(Box::new(
+                        fragment.with_promoted(thread_state.promoted_skill_identities()),
+                    ));
                 }
             }
 
             let mut injected_host_skill_prompts = InjectedHostSkillPrompts::default();
             let analytics = SkillAnalytics::from_stores(session_store, thread_store);
-            for entry in &selected_entries {
+            if let Some(analytics) = analytics.as_ref()
+                && let Some(model_info) = thread_store.get::<ModelInfo>()
+            {
+                for entry in selected_entries.iter().filter(|entry| {
+                    entry.authority.kind == SkillSourceKind::Cloud && !entry.prompt_visible
+                }) {
+                    analytics.track_skill_invocation(
+                        entry,
+                        &entry.primary_source(),
+                        model_info.slug.clone(),
+                        input.turn_id.clone(),
+                        InvocationType::Explicit,
+                    );
+                }
+            }
+            for entry in selected_entries.iter().filter(|entry| {
+                entry.authority.kind != SkillSourceKind::Cloud || entry.prompt_visible
+            }) {
                 match self
                     .read_main_prompt(
                         entry,
@@ -524,6 +597,24 @@ where
             fragments
         })
     }
+
+    fn contribute_durable<'a>(
+        &'a self,
+        input: TurnInputContext<'a>,
+        extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
+        session_store: &'a ExtensionData,
+        thread_store: &'a ExtensionData,
+        turn_store: &'a ExtensionData,
+    ) -> ExtensionFuture<'a, TurnInputContribution> {
+        Box::pin(promotion::contribute(
+            self,
+            input,
+            extension_metrics,
+            session_store,
+            thread_store,
+            turn_store,
+        ))
+    }
 }
 
 impl<C> SkillsExtension<C> {
@@ -584,6 +675,24 @@ impl<C> SkillsExtension<C> {
             turn_id: turn_id.map(str::to_string),
             message,
         });
+    }
+
+    fn emit_unresolved_promotions_warning(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        unresolved: usize,
+    ) {
+        let skill_word = if unresolved == 1 { "skill" } else { "skills" };
+        let remains = if unresolved == 1 { "remains" } else { "remain" };
+        self.emit_warning(
+            thread_id,
+            turn_id,
+            format!(
+                "{unresolved} promoted {skill_word} {remains} recorded but could not be resolved \
+                 in the current environment; omitted from this turn's skills inventory."
+            ),
+        );
     }
 }
 

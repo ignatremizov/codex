@@ -927,6 +927,7 @@ impl LocalAgentControl {
         Ok((agent, config))
     }
 
+
     /// Resume an existing agent thread from a recorded rollout file.
     pub(crate) async fn resume_agent_from_rollout(
         &self,
