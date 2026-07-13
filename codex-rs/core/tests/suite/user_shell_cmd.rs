@@ -1,4 +1,5 @@
 use anyhow::Context;
+use codex_config::CONFIG_TOML_FILE;
 use codex_core::TurnInputRequest;
 use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
@@ -10,6 +11,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::ExecOutputStream;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
@@ -192,10 +194,22 @@ async fn user_shell_cmd_can_be_interrupted() {
 
 #[tokio::test]
 async fn user_shell_command_honors_default_and_extended_deadlines() -> anyhow::Result<()> {
-    for (timeout_ms, expected_ms) in [(None, 3_600_000), (Some(28_800_000), 28_800_000)] {
+    for (timeout_ms, expected_ms, configured_timeout_ms) in [
+        (None, 3_600_000, None),
+        (Some(28_800_000), 28_800_000, None),
+        (Some(28_800_000), 28_800_000, Some(60_000)),
+    ] {
         let server = start_mock_server().await;
         // Honor the CI executor while retaining the local environment used by user shell commands.
-        let mut builder = test_codex();
+        let mut builder = test_codex().with_config(move |config| {
+            if let Some(timeout_ms) = configured_timeout_ms {
+                let user_config_path = config.codex_home.join(CONFIG_TOML_FILE);
+                config.config_layer_stack = config.config_layer_stack.with_user_config(
+                    &user_config_path,
+                    toml::toml! { user_shell_command_timeout_ms = timeout_ms }.into(),
+                );
+            }
+        });
         let fixture = builder.build_with_remote_and_local_env(&server).await?;
         // The remote cwd need not exist on the host, and may use a different path convention.
         let local_cwd = fixture.cwd_path().abs();
@@ -252,9 +266,9 @@ async fn user_shell_command_honors_default_and_extended_deadlines() -> anyhow::R
         tokio::time::advance(Duration::from_secs(61)).await;
         tokio::time::resume();
         let end = timeout(Duration::from_secs(10), &mut completed).await?;
-        assert_eq!(end.exit_code, -1);
-        assert!(end.aggregated_output.contains("Timeout"));
+        assert_eq!(end.exit_code, 124);
         assert!(end.aggregated_output.contains("shell-timeout-ready"));
+        assert!(end.formatted_output.contains("command timed out"));
         wait_for_event(&fixture.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })
@@ -269,6 +283,167 @@ fn slow_user_shell_command() -> &'static str {
         "cmd" => "echo shell-timeout-ready & ping -n 61 127.0.0.1 > nul",
         _ => "printf 'shell-timeout-ready\\n'; exec sleep 60",
     }
+}
+
+#[tokio::test]
+async fn user_shell_command_uses_configured_timeout() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        let user_config_path = config.codex_home.join(CONFIG_TOML_FILE);
+        config.config_layer_stack = config.config_layer_stack.with_user_config(
+            &user_config_path,
+            toml::toml! { user_shell_command_timeout_ms = 60_000 }.into(),
+        );
+    });
+    let fixture = builder.build_with_remote_and_local_env(&server).await?;
+    let local_cwd = fixture.cwd_path().abs();
+    let mut environments = vec![local(local_cwd.clone())];
+    if fixture.executor_environment().environment().is_remote() {
+        environments.insert(
+            /*index*/ 0,
+            fixture.executor_environment().selection().clone(),
+        );
+    }
+    submit_thread_settings(
+        &fixture.codex,
+        ThreadSettingsOverrides {
+            environments: Some(TurnEnvironmentSelections::new(local_cwd, environments)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    fixture
+        .codex
+        .submit(Op::RunUserShellCommand {
+            command: slow_user_shell_command().to_string(),
+            timeout_ms: None,
+        })
+        .await?;
+
+    wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::ExecCommandOutputDelta(delta)
+            if String::from_utf8_lossy(&delta.chunk).contains("shell-timeout-ready"))
+    })
+    .await;
+    let completed = async {
+        loop {
+            let event = fixture.codex.next_event().await.expect("read shell event");
+            if let EventMsg::ExecCommandEnd(end) = event.msg {
+                break end;
+            }
+        }
+    };
+    tokio::pin!(completed);
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(/*secs*/ 30)).await;
+    tokio::time::resume();
+    assert!(
+        timeout(Duration::from_millis(/*millis*/ 250), &mut completed)
+            .await
+            .is_err(),
+        "shell command expired before its configured deadline"
+    );
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(/*secs*/ 31)).await;
+    tokio::time::resume();
+    let end_event = timeout(Duration::from_secs(/*secs*/ 10), &mut completed).await?;
+
+    assert_eq!(end_event.exit_code, 124);
+    assert!(end_event.aggregated_output.contains("shell-timeout-ready"));
+    assert_eq!(end_event.stderr, "");
+    assert_eq!(end_event.status, ExecCommandStatus::Failed);
+    assert_regex_match(
+        r"^command timed out after [0-9]+ milliseconds\nshell-timeout-ready$",
+        end_event.formatted_output.replace("\r\n", "\n").trim_end(),
+    );
+
+    let _ = wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    fixture.submit_turn("inspect timeout history").await?;
+
+    let command_messages = mock
+        .single_request()
+        .message_input_texts("user")
+        .into_iter()
+        .filter(|text| text.contains("<user_shell_command>"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        command_messages.len(),
+        1,
+        "timeout output must be recorded exactly once"
+    );
+    let command_message = command_messages[0].replace("\r\n", "\n");
+    assert_regex_match(
+        r"(?s)<result>\nExit code: 124\nDuration: [0-9]+(?:\.[0-9]+)? seconds\nOutput:\ncommand timed out after [0-9]+ milliseconds\nshell-timeout-ready\n\n</result>",
+        &command_message,
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn zero_user_shell_command_timeout_remains_interruptible() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        let user_config_path = config.codex_home.join(CONFIG_TOML_FILE);
+        config.config_layer_stack = config.config_layer_stack.with_user_config(
+            &user_config_path,
+            toml::toml! { user_shell_command_timeout_ms = 0 }.into(),
+        );
+    });
+    let fixture = builder.build_with_remote_and_local_env(&server).await?;
+    let local_cwd = fixture.cwd_path().abs();
+    let mut environments = vec![local(local_cwd.clone())];
+    if fixture.executor_environment().environment().is_remote() {
+        environments.insert(
+            /*index*/ 0,
+            fixture.executor_environment().selection().clone(),
+        );
+    }
+    submit_thread_settings(
+        &fixture.codex,
+        ThreadSettingsOverrides {
+            environments: Some(TurnEnvironmentSelections::new(local_cwd, environments)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    fixture
+        .codex
+        .submit(Op::RunUserShellCommand {
+            command: slow_user_shell_command().to_string(),
+            timeout_ms: None,
+        })
+        .await?;
+
+    wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::ExecCommandOutputDelta(delta)
+            if String::from_utf8_lossy(&delta.chunk).contains("shell-timeout-ready"))
+    })
+    .await;
+    fixture.codex.submit(Op::Interrupt).await?;
+    let aborted = timeout(
+        Duration::from_secs(/*secs*/ 10),
+        wait_for_event_match(&fixture.codex, |event| match event {
+            EventMsg::TurnAborted(event) => Some(event.clone()),
+            _ => None,
+        }),
+    )
+    .await?;
+    assert_eq!(aborted.reason, TurnAbortReason::Interrupted);
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
