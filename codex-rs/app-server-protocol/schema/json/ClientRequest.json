@@ -1281,6 +1281,21 @@
       },
       "type": "object"
     },
+    "GoalSkillSelection": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
     "HookMigration": {
       "properties": {
         "name": {
@@ -3839,6 +3854,15 @@
         "objective": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "skills": {
+          "items": {
+            "$ref": "#/definitions/GoalSkillSelection"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },

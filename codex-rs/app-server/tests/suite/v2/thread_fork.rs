@@ -451,13 +451,18 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
 
     let state_db =
         StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let source_goal_skills = vec![codex_protocol::protocol::GoalSkillSelection {
+        name: "guidance".to_string(),
+        path: "/skills/guidance/SKILL.md".to_string(),
+    }];
     let source_goal = state_db
         .thread_goals()
-        .replace_thread_goal(
+        .replace_thread_goal_with_skill_selections(
             source_thread_id,
             "continue after the retry",
             codex_state::ThreadGoalStatus::Active,
             /*token_budget*/ Some(150),
+            &source_goal_skills,
         )
         .await?;
     state_db
@@ -530,9 +535,9 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
         assert_eq!(
             state_db
                 .thread_goals()
-                .get_thread_goal(forked_thread_id)
+                .get_thread_goal_with_skill_selections(forked_thread_id)
                 .await?,
-            Some(expected_goal)
+            Some((expected_goal, source_goal_skills.clone()))
         );
         assert!(
             state_db
@@ -546,9 +551,9 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
     assert_eq!(
         state_db
             .thread_goals()
-            .get_thread_goal(source_thread_id)
+            .get_thread_goal_with_skill_selections(source_thread_id)
             .await?,
-        Some(source_goal.clone())
+        Some((source_goal.clone(), source_goal_skills.clone()))
     );
     assert!(
         !mcp.pending_notification_methods()
@@ -642,9 +647,9 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
     assert_eq!(
         state_db
             .thread_goals()
-            .get_thread_goal(source_thread_id)
+            .get_thread_goal_with_skill_selections(source_thread_id)
             .await?,
-        Some(source_goal)
+        Some((source_goal, source_goal_skills))
     );
 
     Ok(())

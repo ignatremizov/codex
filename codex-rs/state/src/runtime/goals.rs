@@ -65,10 +65,51 @@ WHERE thread_id = ?
         row.map(|row| thread_goal_from_row(&row)).transpose()
     }
 
+    pub async fn get_thread_goal_with_skill_selections(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<
+        Option<(
+            crate::ThreadGoal,
+            Vec<codex_protocol::protocol::GoalSkillSelection>,
+        )>,
+    > {
+        let row = sqlx::query(
+            r#"
+SELECT
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms,
+    skill_selections_json
+FROM thread_goals
+WHERE thread_id = ?
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+
+        row.map(|row| {
+            let goal = thread_goal_from_row(&row)?;
+            let value: String = row.try_get("skill_selections_json")?;
+            let selections = serde_json::from_str(&value)?;
+            Ok((goal, selections))
+        })
+        .transpose()
+    }
+
     pub async fn replace_thread_goal_snapshot(
         &self,
         goal: &crate::ThreadGoal,
+        skill_selections: &[codex_protocol::protocol::GoalSkillSelection],
     ) -> anyhow::Result<()> {
+        let skill_selections_json = serde_json::to_string(skill_selections)?;
         let mut transaction = self.pool.begin().await?;
         sqlx::query(
             r#"
@@ -81,8 +122,9 @@ INSERT INTO thread_goals (
     tokens_used,
     time_used_seconds,
     created_at_ms,
-    updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    updated_at_ms,
+    skill_selections_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     goal_id = excluded.goal_id,
     objective = excluded.objective,
@@ -91,7 +133,8 @@ ON CONFLICT(thread_id) DO UPDATE SET
     tokens_used = excluded.tokens_used,
     time_used_seconds = excluded.time_used_seconds,
     created_at_ms = excluded.created_at_ms,
-    updated_at_ms = excluded.updated_at_ms
+    updated_at_ms = excluded.updated_at_ms,
+    skill_selections_json = excluded.skill_selections_json
             "#,
         )
         .bind(goal.thread_id.to_string())
@@ -103,6 +146,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .bind(goal.time_used_seconds)
         .bind(datetime_to_epoch_millis(goal.created_at))
         .bind(datetime_to_epoch_millis(goal.updated_at))
+        .bind(skill_selections_json)
         .execute(&mut *transaction)
         .await?;
 
@@ -160,7 +204,26 @@ SELECT EXISTS(
         status: crate::ThreadGoalStatus,
         token_budget: Option<i64>,
     ) -> anyhow::Result<crate::ThreadGoal> {
+        self.replace_thread_goal_with_skill_selections(
+            thread_id,
+            objective,
+            status,
+            token_budget,
+            &[],
+        )
+        .await
+    }
+
+    pub async fn replace_thread_goal_with_skill_selections(
+        &self,
+        thread_id: ThreadId,
+        objective: &str,
+        status: crate::ThreadGoalStatus,
+        token_budget: Option<i64>,
+        skill_selections: &[codex_protocol::protocol::GoalSkillSelection],
+    ) -> anyhow::Result<crate::ThreadGoal> {
         let goal_id = Uuid::new_v4().to_string();
+        let skill_selections_json = serde_json::to_string(skill_selections)?;
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
         let row = sqlx::query(
@@ -174,8 +237,9 @@ INSERT INTO thread_goals (
     tokens_used,
     time_used_seconds,
     created_at_ms,
-    updated_at_ms
-) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+    updated_at_ms,
+    skill_selections_json
+) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     goal_id = excluded.goal_id,
     objective = excluded.objective,
@@ -184,7 +248,8 @@ ON CONFLICT(thread_id) DO UPDATE SET
     tokens_used = 0,
     time_used_seconds = 0,
     created_at_ms = excluded.created_at_ms,
-    updated_at_ms = excluded.updated_at_ms
+    updated_at_ms = excluded.updated_at_ms,
+    skill_selections_json = excluded.skill_selections_json
 RETURNING
     thread_id,
     goal_id,
@@ -198,12 +263,13 @@ RETURNING
             "#,
         )
         .bind(thread_id.to_string())
-        .bind(goal_id)
+        .bind(&goal_id)
         .bind(objective)
         .bind(status.as_str())
         .bind(token_budget)
         .bind(now_ms)
         .bind(now_ms)
+        .bind(skill_selections_json)
         .fetch_one(self.pool.as_ref())
         .await?;
 
@@ -218,6 +284,7 @@ RETURNING
         token_budget: Option<i64>,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
         let goal_id = Uuid::new_v4().to_string();
+        let skill_selections_json = "[]";
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
         let row = sqlx::query(
@@ -231,8 +298,9 @@ INSERT INTO thread_goals (
     tokens_used,
     time_used_seconds,
     created_at_ms,
-    updated_at_ms
-) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+    updated_at_ms,
+    skill_selections_json
+) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     goal_id = excluded.goal_id,
     objective = excluded.objective,
@@ -241,7 +309,8 @@ ON CONFLICT(thread_id) DO UPDATE SET
     tokens_used = 0,
     time_used_seconds = 0,
     created_at_ms = excluded.created_at_ms,
-    updated_at_ms = excluded.updated_at_ms
+    updated_at_ms = excluded.updated_at_ms,
+    skill_selections_json = excluded.skill_selections_json
 WHERE thread_goals.status = 'complete'
 RETURNING
     thread_id,
@@ -256,12 +325,13 @@ RETURNING
             "#,
         )
         .bind(thread_id.to_string())
-        .bind(goal_id)
+        .bind(&goal_id)
         .bind(objective)
         .bind(status.as_str())
         .bind(token_budget)
         .bind(now_ms)
         .bind(now_ms)
+        .bind(skill_selections_json)
         .fetch_optional(self.pool.as_ref())
         .await?;
 
@@ -273,6 +343,16 @@ RETURNING
         thread_id: ThreadId,
         update: GoalUpdate,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        self.update_thread_goal_with_skill_selections(thread_id, update, None)
+            .await
+    }
+
+    pub async fn update_thread_goal_with_skill_selections(
+        &self,
+        thread_id: ThreadId,
+        update: GoalUpdate,
+        skill_selections: Option<&[codex_protocol::protocol::GoalSkillSelection]>,
+    ) -> anyhow::Result<Option<crate::ThreadGoal>> {
         let GoalUpdate {
             objective,
             status,
@@ -281,6 +361,8 @@ RETURNING
         } = update;
         let objective = objective.as_deref();
         let expected_goal_id = expected_goal_id.as_deref();
+        let skill_selections_json = skill_selections.map(serde_json::to_string).transpose()?;
+        let skill_selections_json = skill_selections_json.as_deref();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let result = match (status, token_budget) {
             (Some(status), Some(token_budget)) => {
@@ -295,9 +377,20 @@ SET
         ELSE ?
     END,
     token_budget = ?,
+    skill_selections_json = COALESCE(?, skill_selections_json),
     updated_at_ms = ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
             "#,
                 )
                 .bind(objective)
@@ -311,11 +404,12 @@ WHERE thread_id = ?
                 .bind(crate::ThreadGoalStatus::BudgetLimited.as_str())
                 .bind(status.as_str())
                 .bind(token_budget)
+                .bind(skill_selections_json)
                 .bind(now_ms)
                 .bind(thread_id.to_string())
                 .bind(expected_goal_id)
                 .bind(expected_goal_id)
-                .execute(self.pool.as_ref())
+                .fetch_optional(self.pool.as_ref())
                 .await?
             }
             (Some(status), None) => {
@@ -329,9 +423,20 @@ SET
         WHEN ? = 'active' AND token_budget IS NOT NULL AND tokens_used >= token_budget THEN ?
         ELSE ?
     END,
+    skill_selections_json = COALESCE(?, skill_selections_json),
     updated_at_ms = ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
             "#,
                 )
                 .bind(objective)
@@ -342,11 +447,12 @@ WHERE thread_id = ?
                 .bind(status.as_str())
                 .bind(crate::ThreadGoalStatus::BudgetLimited.as_str())
                 .bind(status.as_str())
+                .bind(skill_selections_json)
                 .bind(now_ms)
                 .bind(thread_id.to_string())
                 .bind(expected_goal_id)
                 .bind(expected_goal_id)
-                .execute(self.pool.as_ref())
+                .fetch_optional(self.pool.as_ref())
                 .await?
             }
             (None, Some(token_budget)) => {
@@ -360,9 +466,20 @@ SET
         WHEN status = 'active' AND ? IS NOT NULL AND tokens_used >= ? THEN ?
         ELSE status
     END,
+    skill_selections_json = COALESCE(?, skill_selections_json),
     updated_at_ms = ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
             "#,
                 )
                 .bind(objective)
@@ -370,11 +487,12 @@ WHERE thread_id = ?
                 .bind(token_budget)
                 .bind(token_budget)
                 .bind(crate::ThreadGoalStatus::BudgetLimited.as_str())
+                .bind(skill_selections_json)
                 .bind(now_ms)
                 .bind(thread_id.to_string())
                 .bind(expected_goal_id)
                 .bind(expected_goal_id)
-                .execute(self.pool.as_ref())
+                .fetch_optional(self.pool.as_ref())
                 .await?
             }
             (None, None) => {
@@ -384,37 +502,87 @@ WHERE thread_id = ?
 UPDATE thread_goals
 SET
     objective = ?,
+    skill_selections_json = COALESCE(?, skill_selections_json),
     updated_at_ms = ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
             "#,
                     )
                     .bind(objective)
+                    .bind(skill_selections_json)
                     .bind(now_ms)
                     .bind(thread_id.to_string())
                     .bind(expected_goal_id)
                     .bind(expected_goal_id)
-                    .execute(self.pool.as_ref())
+                    .fetch_optional(self.pool.as_ref())
+                    .await?
+                } else if skill_selections_json.is_some() {
+                    sqlx::query(
+                        r#"
+UPDATE thread_goals
+SET
+    skill_selections_json = ?,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND (? IS NULL OR goal_id = ?)
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
+            "#,
+                    )
+                    .bind(skill_selections_json)
+                    .bind(now_ms)
+                    .bind(thread_id.to_string())
+                    .bind(expected_goal_id)
+                    .bind(expected_goal_id)
+                    .fetch_optional(self.pool.as_ref())
                     .await?
                 } else {
-                    let goal = self.get_thread_goal(thread_id).await?;
-                    return Ok(match (goal, expected_goal_id) {
-                        (Some(goal), Some(expected_goal_id))
-                            if goal.goal_id != expected_goal_id =>
-                        {
-                            None
-                        }
-                        (goal, _) => goal,
-                    });
+                    let row = sqlx::query(
+                        r#"
+SELECT
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
+FROM thread_goals
+WHERE thread_id = ?
+  AND (? IS NULL OR goal_id = ?)
+                        "#,
+                    )
+                    .bind(thread_id.to_string())
+                    .bind(expected_goal_id)
+                    .bind(expected_goal_id)
+                    .fetch_optional(self.pool.as_ref())
+                    .await?;
+                    return row.map(|row| thread_goal_from_row(&row)).transpose();
                 }
             }
         };
 
-        if result.rows_affected() == 0 {
-            return Ok(None);
-        }
-
-        self.get_thread_goal(thread_id).await
+        result.map(|row| thread_goal_from_row(&row)).transpose()
     }
 
     pub async fn pause_active_thread_goal(
@@ -453,20 +621,26 @@ WHERE thread_id = ?
           AND status = 'budget_limited'
       )
   )
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
             "#,
         )
         .bind(status.as_str())
         .bind(now_ms)
         .bind(thread_id.to_string())
         .bind(status.as_str())
-        .execute(self.pool.as_ref())
+        .fetch_optional(self.pool.as_ref())
         .await?;
 
-        if result.rows_affected() == 0 {
-            return Ok(None);
-        }
-
-        self.get_thread_goal(thread_id).await
+        result.map(|row| thread_goal_from_row(&row)).transpose()
     }
 
     pub async fn delete_thread_goal(
@@ -710,6 +884,25 @@ mod tests {
             ..goal.clone()
         };
         assert_eq!(expected, updated);
+        let old_skills = vec![codex_protocol::protocol::GoalSkillSelection {
+            name: "planner".to_string(),
+            path: "/skills/planner/SKILL.md".to_string(),
+        }];
+        runtime
+            .thread_goals()
+            .update_thread_goal_with_skill_selections(
+                thread_id,
+                GoalUpdate {
+                    objective: None,
+                    status: None,
+                    token_budget: None,
+                    expected_goal_id: Some(goal.goal_id.clone()),
+                },
+                Some(&old_skills),
+            )
+            .await
+            .expect("skill selections should be set")
+            .expect("matching goal should be updated");
 
         let replaced = runtime
             .thread_goals()
@@ -726,6 +919,17 @@ mod tests {
         assert_eq!(None, replaced.token_budget);
         assert_eq!(0, replaced.tokens_used);
         assert_eq!(0, replaced.time_used_seconds);
+        let (stored_replacement, stored_skills) = runtime
+            .thread_goals()
+            .get_thread_goal_with_skill_selections(thread_id)
+            .await
+            .expect("goal skill selections should load")
+            .expect("replacement goal should exist");
+        assert_eq!(replaced, stored_replacement);
+        assert_eq!(
+            Vec::<codex_protocol::protocol::GoalSkillSelection>::new(),
+            stored_skills
+        );
 
         assert_eq!(
             Some(replaced),
@@ -750,6 +954,82 @@ mod tests {
                 .delete_thread_goal(thread_id)
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_and_skill_selection_updates_are_conditional_and_atomic() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let initial_skills = vec![codex_protocol::protocol::GoalSkillSelection {
+            name: "planner".to_string(),
+            path: "/skills/planner/SKILL.md".to_string(),
+        }];
+        let goal = runtime
+            .thread_goals()
+            .replace_thread_goal_with_skill_selections(
+                thread_id,
+                "plan the work",
+                crate::ThreadGoalStatus::Active,
+                None,
+                &initial_skills,
+            )
+            .await
+            .expect("goal replacement should succeed");
+        let replacement_skills = vec![codex_protocol::protocol::GoalSkillSelection {
+            name: "reviewer".to_string(),
+            path: "/skills/reviewer/SKILL.md".to_string(),
+        }];
+
+        let updated = runtime
+            .thread_goals()
+            .update_thread_goal_with_skill_selections(
+                thread_id,
+                GoalUpdate {
+                    objective: Some("review the work".to_string()),
+                    status: Some(crate::ThreadGoalStatus::Paused),
+                    token_budget: None,
+                    expected_goal_id: Some(goal.goal_id.clone()),
+                },
+                Some(&replacement_skills),
+            )
+            .await
+            .expect("atomic goal update should succeed")
+            .expect("matching goal should be updated");
+        assert_eq!("review the work", updated.objective);
+        assert_eq!(crate::ThreadGoalStatus::Paused, updated.status);
+        assert_eq!(
+            Some((updated.clone(), replacement_skills.clone())),
+            runtime
+                .thread_goals()
+                .get_thread_goal_with_skill_selections(thread_id)
+                .await
+                .expect("goal and selections should load")
+        );
+
+        let rejected = runtime
+            .thread_goals()
+            .update_thread_goal_with_skill_selections(
+                thread_id,
+                GoalUpdate {
+                    objective: Some("stale update".to_string()),
+                    status: None,
+                    token_budget: None,
+                    expected_goal_id: Some("replaced-goal".to_string()),
+                },
+                Some(&initial_skills),
+            )
+            .await
+            .expect("stale update should be handled");
+        assert_eq!(None, rejected);
+        assert_eq!(
+            Some((updated, replacement_skills)),
+            runtime
+                .thread_goals()
+                .get_thread_goal_with_skill_selections(thread_id)
+                .await
+                .expect("stale update must not change either value")
         );
     }
 

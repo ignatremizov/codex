@@ -2024,6 +2024,7 @@ mod tests {
                 thread_id: "goal-thread".to_string(),
                 objective: Some("ship it".to_string()),
                 status: None,
+                skills: None,
                 token_budget: None,
             },
         };
@@ -3679,6 +3680,7 @@ mod tests {
                 thread_id: "thr_123".to_string(),
                 objective: Some("ship goal mode".to_string()),
                 status: Some(v2::ThreadGoalStatus::Active),
+                skills: None,
                 token_budget: Some(Some(10_000)),
             },
         };
