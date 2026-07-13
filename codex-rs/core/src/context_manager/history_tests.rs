@@ -574,17 +574,23 @@ fn world_state_baseline_deduplicates_until_history_is_replaced() {
     };
     let mut history = ContextManager::new();
 
-    let (initial_fragments, initial_item) = history.update_world_state(&world_state());
+    let (snapshot, initial_fragments, initial_item) =
+        history.render_step_world_state(&world_state());
+    history.set_world_state_baseline(snapshot);
     assert_eq!(1, initial_fragments.len());
     assert!(initial_item.is_some_and(|item| item.full));
 
-    let (unchanged_fragments, unchanged_item) = history.update_world_state(&world_state());
+    let (snapshot, unchanged_fragments, unchanged_item) =
+        history.render_step_world_state(&world_state());
+    history.set_world_state_baseline(snapshot);
     assert!(unchanged_fragments.is_empty());
     assert_eq!(unchanged_item, None);
 
     history.replace(Vec::new());
 
-    let (replacement_fragments, replacement_item) = history.update_world_state(&world_state());
+    let (snapshot, replacement_fragments, replacement_item) =
+        history.render_step_world_state(&world_state());
+    history.set_world_state_baseline(snapshot);
     assert_eq!(1, replacement_fragments.len());
     assert!(replacement_item.is_some_and(|item| item.full));
 }
@@ -609,7 +615,8 @@ fn world_state_transitions_persist_changed_state_and_skip_unchanged_state() {
         state
     };
     let mut history = ContextManager::new();
-    let (_, full) = history.update_world_state(&world_state("before"));
+    let (snapshot, _, full) = history.render_step_world_state(&world_state("before"));
+    history.set_world_state_baseline(snapshot);
     let full = full.expect("full checkpoint");
     assert!(full.full);
 
@@ -656,7 +663,8 @@ fn world_state_reconciles_matching_legacy_history_once() {
     );
     assert!(rollout_item.is_some_and(|item| item.full));
 
-    let (fragments, rollout_item) = history.update_world_state(&world_state);
+    let (snapshot, fragments, rollout_item) = history.render_step_world_state(&world_state);
+    history.set_world_state_baseline(snapshot);
     assert!(fragments.is_empty());
     assert_eq!(rollout_item, None);
 }

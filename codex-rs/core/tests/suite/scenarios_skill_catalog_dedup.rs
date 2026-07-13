@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -124,7 +125,30 @@ async fn cloud_preference_preserves_executor_aliases_and_description_budget() ->
     let requests = mock.requests();
     assert_eq!(requests.len(), 2);
     for (request_index, request) in requests.iter().enumerate() {
-        let body = request.message_input_texts("developer").join("\n");
+        // Each source updates its own listing without replacing other sources.
+        let instructions = request
+            .message_input_texts("developer")
+            .into_iter()
+            .flat_map(|text| {
+                text.split("<skills_instructions>")
+                    .skip(1)
+                    .filter_map(|block| block.split_once("</skills_instructions>"))
+                    .map(|(body, _)| body.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let cloud = instructions
+            .iter()
+            .rfind(|body| body.contains("(cloud package:"))
+            .context("the request must retain its latest cloud skill listing")?;
+        let executor = instructions
+            .iter()
+            .rfind(|body| body.contains("(executor package:"))
+            .context("the request must retain its latest executor skill listing")?;
+        for listing in [cloud, executor] {
+            assert!(listing.contains("Listings from other sources remain available."));
+        }
+        let body = format!("{executor}\n{cloud}");
         for index in 0..3 {
             assert_eq!(
                 body.matches(&format!("- demo:s{index}:")).count(),

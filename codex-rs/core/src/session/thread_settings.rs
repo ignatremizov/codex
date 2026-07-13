@@ -1,56 +1,108 @@
 //! Handles persistent thread-settings updates and serializes their persistence
 //! with checkpoints written directly to storage.
 
+use super::durable_context::PublicationBatch;
 use super::session::Session;
 use super::session::SessionSettingsUpdate;
 use super::step_settings::StepSettingsUpdate;
 use crate::WithTurnExtensionData;
-use crate::config::ConstraintResult;
 use codex_history::RolloutItem;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_thread_store::ThreadStoreResult;
-use tokio::sync::SemaphorePermit;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::oneshot;
 
 impl Session {
     /// Captures and flushes current settings under the shared persistence permit.
     pub(crate) async fn checkpoint_thread_settings(&self) -> ThreadStoreResult<()> {
-        let _settings_guard = acquire_persistence_lock(self).await;
-        if let Some(live_thread) = self.live_thread() {
-            live_thread
-                .append_items(&[RolloutItem::EventMsg(applied_event(self).await)])
-                .await?;
-            live_thread.flush().await?;
-        }
-        Ok(())
+        let permit = acquire_persistence_lock(self).await;
+        let result = match self.dispatch_history_publication(
+            permit,
+            vec![RolloutItem::EventMsg(applied_event(self).await)],
+            Vec::new(),
+            /*acknowledgement*/ None,
+            |_| (),
+        ) {
+            Ok(receiver) => self.publication_result(receiver).await,
+            Err(error) => Err(error),
+        };
+        result.map_err(|error| codex_thread_store::ThreadStoreError::Internal {
+            message: error.to_string(),
+        })
     }
 }
 
-/// Applies standalone thread settings. The caller holds the persistence permit through notification.
+/// Publishes standalone settings before replying and delivering the live event.
 #[expect(
     clippy::await_holding_invalid_type,
     reason = "the active-turn guard makes continuation invalidation atomic with turn admission"
 )]
 pub(super) async fn update(
     session: &Session,
+    submission_id: String,
     overrides: impl Into<WithTurnExtensionData<ThreadSettingsOverrides>>,
-) -> ConstraintResult<ThreadSettingsSnapshot> {
-    let updates = prepare_update(overrides, &session.services.selected_capability_roots);
-    let commit = session.update_settings(updates).await?;
-    let active_turn = session.active_turn.lock().await;
-    // A registered running task retains its lineage so it can be recovered after a daemon
-    // restart. Reservations and finishing turns have no interrupted work to continue.
-    if active_turn
-        .as_ref()
-        .is_none_or(|active_turn| active_turn.task.is_none())
-    {
-        session.state.lock().await.last_started_turn_id = None;
+    mut reply: Option<oneshot::Sender<CodexResult<()>>>,
+) {
+    let has_direct_reply = reply.is_some();
+    let result = async {
+        let permit = acquire_persistence_lock(session).await;
+        session.check_history_publication()?;
+        let Some(commit) = session
+            .update_settings_if_with_permit(
+                prepare_update(overrides, &session.services.selected_capability_roots),
+                |_, _| true,
+                &permit,
+            )
+            .await
+            .map_err(|error| {
+                CodexErr::InvalidRequest(format!("invalid thread settings override: {error}"))
+            })?
+        else {
+            unreachable!("unconditional settings update");
+        };
+        // Standalone settings changes supersede a pending automatic continuation.
+        {
+            let active_turn = session.active_turn.lock().await;
+            if active_turn.as_ref().is_none_or(|turn| turn.task.is_none()) {
+                session.state.lock().await.last_started_turn_id = None;
+            }
+        }
+        emit_applied(
+            session,
+            permit,
+            submission_id.clone(),
+            commit.snapshot,
+            reply.take(),
+        )
+        .await
     }
-    Ok(commit.snapshot)
+    .await;
+    if let Err(error) = result {
+        if let Some(reply) = reply {
+            let _ = reply.send(Err(error));
+        } else if !has_direct_reply {
+            let mut event = error.to_error_event(/*message_prefix*/ None);
+            if matches!(error.details(), CodexErrorDetails::InvalidRequest(_)) {
+                event.codex_error_info = Some(CodexErrorInfo::BadRequest);
+            }
+            session
+                .send_event_raw(Event {
+                    id: submission_id,
+                    msg: EventMsg::Error(event),
+                })
+                .await;
+        }
+        // After dispatch the worker owns a direct reply, including failure delivery.
+    }
 }
 
 /// Converts protocol overrides into the internal settings update shape.
@@ -105,10 +157,11 @@ pub(super) fn prepare_update(
 }
 
 /// Acquires the shared permit before capturing or changing persistent settings.
-pub(super) async fn acquire_persistence_lock(session: &Session) -> SemaphorePermit<'_> {
+pub(super) async fn acquire_persistence_lock(session: &Session) -> OwnedSemaphorePermit {
     session
         .thread_settings_persistence
-        .acquire()
+        .clone()
+        .acquire_owned()
         .await
         .unwrap_or_else(|_| unreachable!("thread settings persistence semaphore is never closed"))
 }
@@ -118,29 +171,67 @@ pub(super) async fn apply_update(
     session: &Session,
     submission_id: String,
     updates: SessionSettingsUpdate,
-) -> ConstraintResult<()> {
-    let _settings_guard = acquire_persistence_lock(session).await;
-    let commit = session.update_settings(updates).await?;
-    emit_applied(session, submission_id, commit.snapshot).await;
-    Ok(())
+) -> CodexResult<()> {
+    let settings_guard = acquire_persistence_lock(session).await;
+    session.check_history_publication()?;
+    let Some(commit) = session
+        .update_settings_if_with_permit(updates, |_, _| true, &settings_guard)
+        .await
+        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?
+    else {
+        unreachable!("unconditional settings update");
+    };
+    emit_applied(
+        session,
+        settings_guard,
+        submission_id,
+        commit.snapshot,
+        /*reply*/ None,
+    )
+    .await
 }
 
 /// Emits the snapshot published by one successful settings update.
 pub(super) async fn emit_applied(
     session: &Session,
+    permit: OwnedSemaphorePermit,
     submission_id: String,
     snapshot: ThreadSettingsSnapshot,
-) {
+    reply: Option<oneshot::Sender<CodexResult<()>>>,
+) -> CodexResult<()> {
     let msg = EventMsg::ThreadSettingsApplied(ThreadSettingsAppliedEvent {
         thread_id: Some(session.thread_id()),
         thread_settings: snapshot,
     });
-    session
-        .send_event_raw_without_materializing_rollout(Event {
-            id: submission_id,
-            msg,
-        })
-        .await;
+    let persist = match session.current_rollout_path().await {
+        Ok(Some(path)) => codex_rollout::existing_rollout_path(&path).await.is_some(),
+        Ok(None) => true,
+        Err(error) => {
+            tracing::warn!("failed to check settings persistence path: {error}");
+            true
+        }
+    };
+    let items = if persist {
+        vec![RolloutItem::EventMsg(msg.clone())]
+    } else {
+        Vec::new()
+    };
+    let receiver = session.dispatch_history_publication_with_events(
+        permit,
+        PublicationBatch {
+            reply,
+            persist_context: None,
+            rollout: items,
+            events: vec![Event {
+                id: submission_id,
+                msg,
+            }],
+        },
+        Vec::new(),
+        /*acknowledgement*/ None,
+        |_| (),
+    )?;
+    session.publication_result(receiver).await
 }
 
 /// Builds a current thread-owned snapshot for storage checkpoints.

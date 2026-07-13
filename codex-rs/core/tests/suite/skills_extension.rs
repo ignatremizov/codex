@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
@@ -132,6 +133,9 @@ mod cloud_skill_tests;
 
 #[path = "skills_extension/cloud_lifecycle_tests.rs"]
 mod cloud_lifecycle_tests;
+
+#[path = "skills_extension/steer_tests.rs"]
+mod steer_tests;
 
 struct StaticSkillProvider {
     catalog: SkillCatalog,
@@ -2704,13 +2708,18 @@ async fn production_turn_uses_provider_host_catalog_and_core_snapshot_injection(
         .filter(|line| line.contains(skill_name))
         .collect::<Vec<_>>();
 
-    assert_eq!(
-        cutover_skill_lines,
-        vec![format!(
-            "- {skill_name}: {provider_description} (file: {})",
-            skill_resource.replace('\\', "/")
-        )]
+    let skill_line = format!(
+        "- {skill_name}: {provider_description} (file: {})",
+        skill_resource.replace('\\', "/")
     );
+    // The initial catalog is followed by the complete inventory acknowledging activation.
+    assert_eq!(cutover_skill_lines, vec![skill_line.clone(), skill_line]);
+    let activated_inventory = developer_texts
+        .iter()
+        .rev()
+        .find(|text| text.contains("<promoted_skills>"))
+        .expect("explicit activation must publish its durable inventory");
+    assert!(!activated_inventory.contains("<promoted_skills>[]</promoted_skills>"));
     let user_text = request.message_input_texts("user").join("\n");
     assert!(user_text.contains(&snapshot_contents));
     assert!(!user_text.contains(provider_contents));

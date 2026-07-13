@@ -72,6 +72,8 @@ pub(super) async fn run_remote_compact_v2_attempt(
     analytics_details: &mut CompactionAnalyticsDetails,
     input: RemoteCompactV2AttemptInput<'_>,
 ) -> CodexResult<RemoteCompactV2Attempt> {
+    sess.await_history_publication().await;
+    sess.check_history_publication()?;
     let turn_context = &step_context.turn;
     let mut owned_client_session = None;
     let (

@@ -6,6 +6,9 @@ use regex_lite::Regex;
 use serde_json::Value;
 use std::sync::OnceLock;
 
+#[path = "promoted_skills.rs"]
+mod promoted_skills;
+
 const GUARDIAN_INSTRUCTIONS_PREFIX: &str = "You are judging one planned coding-agent action.";
 const GUARDIAN_PROVENANCE_PREFIX: &str = "# Transcript provenance\n";
 
@@ -60,7 +63,7 @@ impl Normalizer {
             Some("ENVIRONMENT_CONTEXT") => self.environment(&text),
             _ => text,
         };
-        let text = self.normalize_values(&text);
+        let text = self.normalize_values(&promoted_skills::normalize(&text));
         if options.rewrite_known_segments
             && let Some(segment) = segment
         {

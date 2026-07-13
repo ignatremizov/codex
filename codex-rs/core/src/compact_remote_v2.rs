@@ -350,6 +350,8 @@ async fn run_remote_compaction_request_v2(
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retry_state = ResponsesStreamRetryState::default();
     loop {
+        sess.await_history_publication().await;
+        sess.check_history_publication()?;
         let result = match client_session
             .stream(
                 prompt,
