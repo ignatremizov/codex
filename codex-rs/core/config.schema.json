@@ -5648,6 +5648,12 @@
       "minimum": 0.0,
       "type": "integer"
     },
+    "user_shell_command_timeout_ms": {
+      "description": "Maximum runtime for user shell commands in milliseconds. Zero disables the timeout.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "web_search": {
       "allOf": [
         {
