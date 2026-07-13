@@ -1042,6 +1042,7 @@ impl Session {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn new_turn_with_sub_id(
         &self,
         sub_id: String,
@@ -1063,6 +1064,7 @@ impl Session {
     /// `should_start` runs under the state lock against the current and validated
     /// proposed configurations. It must be fast and side-effect-free, and must not
     /// block, acquire other locks, or call back into `Session`.
+    #[cfg(test)]
     pub(super) async fn new_turn_with_sub_id_if(
         &self,
         sub_id: String,
@@ -1070,8 +1072,24 @@ impl Session {
         options: NewTurnContextOptions,
         should_start: impl FnOnce(&SessionConfiguration, &SessionConfiguration) -> bool + Send,
     ) -> CodexResult<Option<(Arc<TurnContext>, ThreadSettingsSnapshot)>> {
+        let permit = super::thread_settings::acquire_persistence_lock(self).await;
+        self.new_turn_with_sub_id_if_with_permit(sub_id, updates, options, should_start, &permit)
+            .await
+    }
+
+    pub(super) async fn new_turn_with_sub_id_if_with_permit(
+        &self,
+        sub_id: String,
+        updates: SessionSettingsUpdate,
+        options: NewTurnContextOptions,
+        should_start: impl FnOnce(&SessionConfiguration, &SessionConfiguration) -> bool + Send,
+        permit: &tokio::sync::OwnedSemaphorePermit,
+    ) -> CodexResult<Option<(Arc<TurnContext>, ThreadSettingsSnapshot)>> {
         let service_tier_for_turn = updates.service_tier_for_turn.clone();
-        let commit = match self.update_settings_if(updates, should_start).await {
+        let commit = match self
+            .update_settings_if_with_permit(updates, should_start, permit)
+            .await
+        {
             Ok(Some(commit)) => commit,
             Ok(None) => return Ok(None),
             Err(error) => {

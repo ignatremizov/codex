@@ -50,33 +50,33 @@ async fn shutdown_retains_an_admitted_delivery_until_persistence_finishes() {
             .is_cancelled()
     );
     drop(dispatch);
-    let live_messages = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
-        loop {
-            let history = session.clone_history().await;
-            let messages = history
-                .retained_context()
-                .ordered_entries()
-                .filter_map(|(_, entry)| match entry {
-                    RetainedContextEntry::AssistantMessage(message) => Some(message.clone()),
-                    RetainedContextEntry::UserMessage(_)
-                    | RetainedContextEntry::VerifiedAnswer(_) => None,
-                })
-                .collect::<Vec<_>>();
-            if !messages.is_empty() {
-                break messages;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("live admission does not wait for the checkpoint");
-    assert_eq!(live_messages, vec![message]);
+    // Admission reserves order, but cannot publish authority before the
+    // outstanding checkpoint releases the canonical publication permit.
+    assert!(
+        session
+            .clone_history()
+            .await
+            .retained_context()
+            .ordered_entries()
+            .next()
+            .is_none()
+    );
     assert!(futures::poll!(shutdown.as_mut()).is_pending());
     assert!(!completion.has_changed().expect("recording remains open"));
 
     drop(checkpoint);
     shutdown.await;
     assert!(completion.changed().await.is_err());
+    let history = session.clone_history().await;
+    let live_messages = history
+        .retained_context()
+        .ordered_entries()
+        .filter_map(|(_, entry)| match entry {
+            RetainedContextEntry::AssistantMessage(message) => Some(message.clone()),
+            RetainedContextEntry::UserMessage(_) | RetainedContextEntry::VerifiedAnswer(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(live_messages, vec![message]);
 }
 
 #[test_case(false; "free state")]

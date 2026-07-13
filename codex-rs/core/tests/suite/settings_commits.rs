@@ -245,13 +245,16 @@ async fn settings_notifications_keep_their_commit_across_postcommit_work(
     let expected = test.codex.thread_settings_snapshot().await;
     assert_eq!(expected.model, COMMITTED_MODEL);
     assert_eq!(expected.disabled_plugin_ids, vec!["slack@openai"]);
-    // Submitted operations are serialized. Runtime restoration is an existing
-    // direct writer, so it can overlap the first operation's post-commit work.
-    timeout(TIMEOUT, test.codex.restore_thread_settings(initial)).await??;
+    // Direct runtime restoration now shares the settings-publication permit. It must
+    // wait until the first update's post-commit work and durable notification finish.
+    let restore = test.codex.restore_thread_settings(initial);
+    tokio::pin!(restore);
+    assert!(futures::poll!(restore.as_mut()).is_pending());
+    release_tx.send(())?;
+    timeout(TIMEOUT, restore).await??;
     let restored = test.codex.thread_settings_snapshot().await;
     assert_eq!(restored.model, INITIAL_MODEL);
     assert_eq!(restored.disabled_plugin_ids, vec!["slack@openai"]);
-    release_tx.send(())?;
     let submission_id = timeout(TIMEOUT, submission).await???;
 
     let applied = timeout(TIMEOUT, async {

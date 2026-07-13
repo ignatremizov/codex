@@ -14,6 +14,7 @@ use crate::catalog::SkillSourceKind;
 use crate::catalog_prompt::SkillPromptKind;
 use crate::catalog_prompt::render_available_skills_body;
 use crate::fragments::AvailableSkillsInstructions;
+use crate::fragments::PromotedSkillIdentity;
 use crate::host_aliases::shared_host_alias_roots;
 
 const DEFAULT_SKILL_METADATA_CHAR_BUDGET: usize = 8_000;
@@ -187,6 +188,7 @@ impl SkillMetadataBudget {
 }
 
 struct SkillLine<'a> {
+    identity: Option<PromotedSkillIdentity>,
     name: &'a str,
     description: Cow<'a, str>,
     locator: String,
@@ -209,6 +211,7 @@ impl<'a> SkillLine<'a> {
     ) -> Self {
         let description = policy.description(entry);
         Self {
+            identity: PromotedSkillIdentity::from_entry(entry),
             name: entry.name.as_str(),
             description: truncate_catalog_skill_description(description),
             locator,
@@ -264,6 +267,7 @@ impl<'a> SkillLine<'a> {
 
 struct RenderedSkillLine {
     line: String,
+    identity: Option<PromotedSkillIdentity>,
 }
 
 struct RenderedSkillLines {
@@ -394,6 +398,7 @@ fn render_allocated_skill_lines(
                 }
                 lines.push(RenderedSkillLine {
                     line: line.render_with_description_chars(*description_chars),
+                    identity: line.identity.clone(),
                 });
             }
         }
@@ -451,6 +456,7 @@ struct RenderedCatalog {
     prompt_kind: SkillPromptKind,
     skill_root_lines: Vec<String>,
     skill_lines: Vec<String>,
+    included_identities: Vec<PromotedSkillIdentity>,
     report: SkillRenderReport,
 }
 
@@ -459,6 +465,7 @@ pub(crate) struct AvailableSkillsRender {
     skill_root_lines: Vec<String>,
     skill_lines: Vec<String>,
     preserve_empty_fragment: bool,
+    pub(crate) included_identities: Vec<PromotedSkillIdentity>,
     pub(crate) report: SkillRenderReport,
 }
 
@@ -504,6 +511,7 @@ impl AvailableSkillsRender {
                 self.prompt_kind,
                 self.skill_root_lines,
                 self.skill_lines,
+                Vec::new(),
                 include_skills_usage_instructions,
             )
         })
@@ -722,13 +730,21 @@ fn render_combined_group(
         truncated_description_count,
     } = render_allocated_skill_lines(skill_lines, allocations);
     if let Some(marker) = omission_marker {
-        lines.push(RenderedSkillLine { line: marker });
+        lines.push(RenderedSkillLine {
+            line: marker,
+            identity: None,
+        });
     }
+    let included_identities = lines
+        .iter()
+        .filter_map(|line| line.identity.clone())
+        .collect();
     AvailableSkillsRender {
         prompt_kind,
         skill_root_lines,
         skill_lines: lines.into_iter().map(|rendered| rendered.line).collect(),
         preserve_empty_fragment: false,
+        included_identities,
         report: SkillRenderReport {
             total_count: skill_lines.len(),
             included_count: skill_lines.len().saturating_sub(omitted_count),
@@ -903,7 +919,10 @@ fn render_catalog(
         loop {
             let marker = omission_marker(omitted);
             if total_cost.saturating_add(metadata_line_cost(budget, &marker)) <= budget.limit() {
-                rendered_lines.push(RenderedSkillLine { line: marker });
+                rendered_lines.push(RenderedSkillLine {
+                    line: marker,
+                    identity: None,
+                });
                 break;
             }
             let Some(rendered) = rendered_lines.pop() else {
@@ -914,6 +933,10 @@ fn render_catalog(
         }
     }
 
+    let included_identities = rendered_lines
+        .iter()
+        .filter_map(|line| line.identity.clone())
+        .collect();
     RenderedCatalog {
         prompt_kind,
         skill_root_lines,
@@ -921,6 +944,7 @@ fn render_catalog(
             .into_iter()
             .map(|rendered| rendered.line)
             .collect(),
+        included_identities,
         report: SkillRenderReport {
             total_count,
             included_count: total_count.saturating_sub(omitted),

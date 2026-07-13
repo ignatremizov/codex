@@ -256,6 +256,8 @@ async fn run_compact_task_inner_impl(
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
 ) -> CodexResult<String> {
+    sess.await_history_publication().await;
+    sess.check_history_publication()?;
     let compaction_item = ContextCompactionItem::new();
     let started_compaction_item = TurnItem::ContextCompaction(compaction_item.clone());
     sess.emit_turn_item_started(&turn_context, &started_compaction_item)
@@ -275,6 +277,8 @@ async fn run_compact_task_inner_impl(
     // request tracking) survives retries within this compact turn.
     let mut client_session = sess.services.model_client.new_session();
     let compaction_response = loop {
+        sess.await_history_publication().await;
+        sess.check_history_publication()?;
         // Clone is required because of the loop
         let mut turn_input = history
             .clone()
@@ -440,7 +444,7 @@ async fn run_compact_task_inner_impl(
                 reviewer_compaction_hash: None,
             },
         )
-        .await;
+        .await?;
     sess.recompute_token_usage(&turn_context).await;
 
     let mut completed_compaction_item = compaction_item;

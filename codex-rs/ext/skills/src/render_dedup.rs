@@ -97,6 +97,7 @@ impl<'a> PreparedSkillCatalog<'a> {
             skill_root_lines: selected.skill_root_lines,
             skill_lines: selected.skill_lines,
             preserve_empty_fragment: self.policy == SkillCatalogRenderPolicy::CoreCompatible,
+            included_identities: selected.included_identities,
             report: selected.report,
         })
     }

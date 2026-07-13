@@ -2,6 +2,53 @@ use codex_protocol::user_input::UserInput;
 use codex_utils_path_uri::PathUri;
 use std::marker::PhantomData;
 
+/// Prepared fragments whose effects become authoritative only after host publication.
+#[derive(Default)]
+pub struct TurnInputContribution {
+    fragments: Vec<Box<dyn crate::ContextualUserFragment + Send>>,
+    acknowledgement: Option<TurnInputContributionAcknowledgement>,
+}
+
+impl TurnInputContribution {
+    pub fn new(fragments: Vec<Box<dyn crate::ContextualUserFragment + Send>>) -> Self {
+        Self {
+            fragments,
+            acknowledgement: None,
+        }
+    }
+
+    pub fn with_acknowledgement(
+        fragments: Vec<Box<dyn crate::ContextualUserFragment + Send>>,
+        acknowledgement: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            fragments,
+            acknowledgement: Some(TurnInputContributionAcknowledgement(Box::new(
+                acknowledgement,
+            ))),
+        }
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<Box<dyn crate::ContextualUserFragment + Send>>,
+        Option<TurnInputContributionAcknowledgement>,
+    ) {
+        (self.fragments, self.acknowledgement)
+    }
+}
+
+/// Consumed exactly once after the complete contribution is writer-flushed and installed.
+/// Dropping it, including after an ambiguous persistence failure, acknowledges nothing.
+pub struct TurnInputContributionAcknowledgement(Box<dyn FnOnce() + Send>);
+
+impl TurnInputContributionAcknowledgement {
+    pub fn acknowledge(self) {
+        (self.0)();
+    }
+}
+
 /// Host-owned turn environment summary visible to turn-input contributors.
 #[derive(Debug, Clone)]
 pub struct TurnInputEnvironment<'a> {

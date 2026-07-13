@@ -341,6 +341,9 @@ impl StepContext {
 
 mod guardian_tests;
 
+#[path = "checkpoint_publication_tests.rs"]
+mod checkpoint_publication_tests;
+
 fn user_message(text: &str) -> ResponseItem {
     ResponseItem::Message {
         id: None,
@@ -3882,7 +3885,8 @@ async fn start_new_context_window_persists_checkpoint_state() {
 
     session
         .start_new_context_window(&step_context, world_state)
-        .await;
+        .await
+        .expect("publish window");
 
     let live_history = session.clone_history().await;
     assert!(live_history.raw_items().next().is_some());
@@ -5730,6 +5734,14 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
     assert!(futures::poll!(update.as_mut()).is_pending());
     let committed = session.thread_settings_snapshot().await;
     let history_before = session.clone_history().await;
+    let mut restoration = Box::pin(session.update_settings(SessionSettingsUpdate {
+        step_settings: StepSettingsUpdate {
+            service_tier: Some(None),
+            ..Default::default()
+        },
+        ..Default::default()
+    }));
+    assert!(futures::poll!(restoration.as_mut()).is_pending());
     let (window_number, window_ids) = session.advance_auto_compact_window().await;
     let mut checkpoint = Box::pin(tokio::task::unconstrained(
         session.replace_compacted_history(
@@ -5759,21 +5771,14 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
 
     // Direct runtime restoration may overlap postcommit work. Both checkpoints must wait
     // for the accepted event, then capture current settings rather than its older commit.
-    let restored = session
-        .update_settings(SessionSettingsUpdate {
-            step_settings: StepSettingsUpdate {
-                service_tier: Some(None),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
+    drop(refresh_guard);
+    update.await.expect("accepted settings update");
+    let restored = restoration
         .await
         .expect("restore current settings")
         .snapshot;
     assert_ne!(committed, restored);
-    drop(refresh_guard);
-    update.await.expect("accepted settings update");
-    checkpoint.await;
+    checkpoint.await.expect("publish checkpoint");
     settings_checkpoint
         .await
         .expect("checkpoint current settings");
@@ -5880,7 +5885,8 @@ async fn mcp_attribution_checkpoints_cover_batch_prefixes_compaction_and_restore
                 reviewer_compaction_hash: None,
             },
         )
-        .await;
+        .await
+        .expect("publish compacted history");
     session
         .flush_rollout()
         .await
@@ -5949,10 +5955,18 @@ async fn standalone_settings_invalidate_continuation_before_delivering_acceptanc
     )));
     assert!(futures::poll!(submissions.as_mut()).is_pending());
     assert_eq!(session.state.lock().await.last_started_turn_id, None);
-    accepted
-        .try_recv()
-        .expect("receive acceptance before the event is delivered")
-        .expect("settings accepted");
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 1), async {
+        tokio::select! {
+            result = &mut accepted => {
+                result
+                    .expect("receive acceptance before the event is delivered")
+                    .expect("settings accepted");
+            }
+            _ = submissions.as_mut() => panic!("submission loop exited before acceptance"),
+        }
+    })
+    .await
+    .expect("acceptance must not wait for blocked event delivery");
     let mut checkpoint = Box::pin(session.checkpoint_thread_settings());
     assert!(futures::poll!(checkpoint.as_mut()).is_pending());
     rx.recv().await.expect("release event delivery");
@@ -6012,7 +6026,8 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
                     reviewer_compaction_hash: None,
                 },
             )
-            .await;
+            .await
+            .expect("publish compacted history");
     }
 
     session.flush_rollout().await.expect("flush checkpoints");
@@ -6080,19 +6095,18 @@ async fn session_settings_commit_keeps_snapshot_across_postcommit_wait() {
         assert!(std::future::Future::poll(first_update.as_mut(), &mut context).is_pending());
     }
     let expected = session.thread_settings_snapshot().await;
-    let later_commit = session
-        .update_settings(SessionSettingsUpdate {
-            step_settings: StepSettingsUpdate {
-                service_tier: Some(None),
-                ..Default::default()
-            },
+    let mut later_update = Box::pin(session.update_settings(SessionSettingsUpdate {
+        step_settings: StepSettingsUpdate {
+            service_tier: Some(None),
             ..Default::default()
-        })
-        .await
-        .expect("later settings update");
+        },
+        ..Default::default()
+    }));
+    assert!(futures::poll!(later_update.as_mut()).is_pending());
     drop(refresh_guard);
 
     let commit = first_update.await.expect("first settings update");
+    let later_commit = later_update.await.expect("later settings update");
     let configuration_snapshot = commit
         .configuration
         .thread_settings_snapshot(&session.services.turn_environments.selections());
@@ -6764,8 +6778,9 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
-        state: Mutex::new(state),
-        thread_settings_persistence: Semaphore::new(/*permits*/ 1),
+        state: Arc::new(Mutex::new(state)),
+        thread_settings_persistence: Arc::new(Semaphore::new(/*permits*/ 1)),
+        history_publication: Default::default(),
         code_mode_message_tasks: Default::default(),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
@@ -9041,8 +9056,9 @@ where
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
-        state: Mutex::new(state),
-        thread_settings_persistence: Semaphore::new(/*permits*/ 1),
+        state: Arc::new(Mutex::new(state)),
+        thread_settings_persistence: Arc::new(Semaphore::new(/*permits*/ 1)),
+        history_publication: Default::default(),
         code_mode_message_tasks: Default::default(),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),

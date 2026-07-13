@@ -6,6 +6,7 @@ use app_test_support::ChatGptAuthFixture;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
+use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigEdit;
@@ -15,11 +16,13 @@ use codex_app_server_protocol::ConfigRequirementsReadResponse;
 use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::ExperimentalFeatureEnablementSetParams;
 use codex_app_server_protocol::ExperimentalFeatureEnablementSetResponse;
+use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::MergeStrategy;
 use codex_app_server_protocol::PermissionProfileListParams;
 use codex_app_server_protocol::PermissionProfileListResponse;
 use codex_app_server_protocol::PluginListParams;
 use codex_app_server_protocol::PluginListResponse;
+use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SkillScope;
 use codex_app_server_protocol::SkillsChangedNotification;
 use codex_app_server_protocol::SkillsExtraRootsSetParams;
@@ -666,6 +669,75 @@ async fn skills_list_loads_remote_installed_plugin_skills_from_cache() -> Result
         (skill.enabled, skill.plugin_id.as_deref()),
         (true, Some("linear@openai-curated-remote")),
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn skills_list_uses_last_good_config_during_transient_reload_failure() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let instructions_path = codex_home.path().join("instructions.md");
+    std::fs::write(&instructions_path, "Temporary instructions.")?;
+    let instructions_path = serde_json::to_string(&instructions_path.to_string_lossy())?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!("model_instructions_file = {instructions_path}\n"),
+    )?;
+    write_skill(&codex_home, "demo")?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    std::fs::remove_file(codex_home.path().join("instructions.md"))?;
+    let request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![codex_home.path().to_path_buf()],
+            force_reload: true,
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let SkillsListResponse { data } = to_response(response)?;
+
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].errors, Vec::new());
+    assert!(
+        data[0].skills.iter().any(|skill| skill.name == "demo"),
+        "skills/list should continue from the last valid config"
+    );
+    let other_cwd = TempDir::new()?;
+    let request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![other_cwd.path().to_path_buf()],
+            force_reload: true,
+        })
+        .await?;
+    let SkillsListResponse { data } =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await??;
+    assert_eq!(1, data.len());
+    assert!(data[0].skills.is_empty());
+    assert_eq!(1, data[0].errors.len());
+
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!("model_instructions_file = {instructions_path}\nmodel = \"changed-model\"\n"),
+    )?;
+    let request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![codex_home.path().to_path_buf()],
+            force_reload: true,
+        })
+        .await?;
+    let SkillsListResponse { data } =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await??;
+    assert_eq!(1, data.len());
+    assert!(data[0].skills.is_empty());
+    assert_eq!(1, data[0].errors.len());
     Ok(())
 }
 

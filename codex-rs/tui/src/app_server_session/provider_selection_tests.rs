@@ -111,7 +111,7 @@ requires_openai_auth = false
             parent,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
-            ForkGoalContinuation::StartIfIdle,
+            ForkGoalContinuation::GoalFree,
             /*selected_profile*/ None,
         )
         .await?;

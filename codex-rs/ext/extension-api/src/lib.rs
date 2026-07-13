@@ -1,11 +1,16 @@
+mod active_goal_objective;
 mod capabilities;
 mod contributors;
 mod registry;
+mod restored_skills_inventory;
 mod session_isolation;
 mod state;
 mod tool_policy;
 mod turn_admission;
 mod user_instructions;
+
+pub use active_goal_objective::ActiveGoalObjective;
+pub use restored_skills_inventory::RestoredSkillsInventory;
 
 pub use session_isolation::IsolatedSessionExtensions;
 pub use session_isolation::SessionIsolation;
@@ -58,6 +63,7 @@ pub use contributors::McpServerContributor;
 pub use contributors::McpToolContext;
 pub use contributors::McpToolResultInput;
 pub use contributors::McpToolSource;
+pub use contributors::PostCompactionContextContribution;
 pub use contributors::PreviousWorldStateSection;
 pub use contributors::PromptFragment;
 pub use contributors::PromptSlot;
@@ -91,6 +97,8 @@ pub use contributors::TurnAbortInput;
 pub use contributors::TurnContextContributionInput;
 pub use contributors::TurnErrorInput;
 pub use contributors::TurnInputContext;
+pub use contributors::TurnInputContribution;
+pub use contributors::TurnInputContributionAcknowledgement;
 pub use contributors::TurnInputContributor;
 pub use contributors::TurnInputEnvironment;
 pub use contributors::TurnItemContributor;
