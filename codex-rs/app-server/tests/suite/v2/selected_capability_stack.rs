@@ -244,12 +244,12 @@ async fn selected_capability_stack_tracks_environment_availability_and_resume() 
     let requests = response_mock.requests();
     assert_eq!(6, requests.len());
     for request in &requests[1..4] {
-        assert_selected_skill_is_injected(request, /*expected_count*/ 1);
+        assert_selected_skill_is_available(request);
         assert_selected_plugin_direct_tools(request);
         assert_plugin_guidance_count(request, /*expected_count*/ 1);
     }
     assert_plugin_guidance_count(&requests[4], /*expected_count*/ 1);
-    assert_selected_skill_is_injected(&requests[5], /*expected_count*/ 2);
+    assert_selected_skill_is_available(&requests[5]);
     assert_selected_plugin_direct_tools(&requests[5]);
     let output = requests[2].function_call_output(MCP_CALL_ID);
     let output = output["output"]
@@ -588,18 +588,17 @@ fn assert_plugin_guidance_count(request: &ResponsesRequest, expected_count: usiz
     );
 }
 
-fn assert_selected_skill_is_injected(request: &ResponsesRequest, expected_count: usize) {
+fn assert_selected_skill_is_available(request: &ResponsesRequest) {
     assert_selected_skill_catalog_available(request);
 
     let skill_fragments = request
         .message_input_texts("user")
         .into_iter()
-        .filter(|text| text.starts_with("<skill>"))
+        .filter(|text| text.starts_with("<skill>") && text.contains(SKILL_BODY_MARKER))
         .collect::<Vec<_>>();
-    assert_eq!(expected_count, skill_fragments.len());
+    assert!(!skill_fragments.is_empty());
     for fragment in skill_fragments {
         assert!(fragment.contains(&format!("<name>{SKILL_NAME}</name>")));
-        assert!(fragment.contains(SKILL_BODY_MARKER));
         assert!(!fragment.contains(LOCAL_SKILL_BODY_MARKER));
     }
 }

@@ -13,6 +13,37 @@ const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
 
+fn without_goal_owned_context(mut items: Vec<RolloutItem>) -> Vec<RolloutItem> {
+    items.retain(|item| {
+        !matches!(
+            item,
+            RolloutItem::ResponseItem(response_item) if is_goal_owned_context(response_item)
+        )
+    });
+    for item in &mut items {
+        if let RolloutItem::Compacted(compacted) = item
+            && let Some(replacement_history) = compacted.replacement_history.as_mut()
+        {
+            replacement_history.retain(|item| !is_goal_owned_context(item));
+        }
+    }
+    items
+}
+
+fn is_goal_owned_context(item: &ResponseItem) -> bool {
+    let ResponseItem::Message { content, .. } = item else {
+        return false;
+    };
+    content.iter().any(|content| {
+        let codex_protocol::models::ContentItem::InputText { text } = content else {
+            return false;
+        };
+        let text = text.trim_start();
+        text.starts_with("<codex_internal_context source=\"goal\">")
+            || text.starts_with("<goal_context>")
+    })
+}
+
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
     source_kinds: Option<Vec<ThreadSourceKind>>,
@@ -3507,6 +3538,7 @@ impl ThreadRequestProcessor {
                     "thread {source_thread_id} did not include persisted history"
                 ))
             })?;
+        let history_items = without_goal_owned_context(history_items);
         let history_items = if let Some(last_turn_id) = last_turn_id.as_deref() {
             Arc::new(
                 truncate_rollout_after_turn_id(&history_items, last_turn_id)
@@ -3598,6 +3630,18 @@ impl ThreadRequestProcessor {
             app_server_client_version,
         )
         .await?;
+        if session_configured.rollout_path.is_some() {
+            let state_db = forked_thread.state_db().or_else(|| self.state_db.clone());
+            if let Some(state_db) = state_db {
+                state_db
+                    .thread_goals()
+                    .fork_thread_goal(source_thread_id, thread_id)
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!("failed to copy goal for fork: {err}"))
+                    })?;
+            }
+        }
         if session_configured.rollout_path.is_some()
             && let Some(name) = source_thread_name.clone()
         {

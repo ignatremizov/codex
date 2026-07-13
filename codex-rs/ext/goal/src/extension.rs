@@ -4,10 +4,13 @@ use std::sync::Weak;
 use codex_analytics::AnalyticsEventsClient;
 use codex_core::ThreadManager;
 use codex_extension_api::ConfigContributor;
+use codex_extension_api::ContextContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::GoalSkillActivations;
+use codex_extension_api::PostCompactionContextContribution;
 use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadResumeInput;
@@ -41,8 +44,10 @@ use crate::metrics::GoalMetrics;
 use crate::runtime::ActiveGoalStopReason;
 use crate::runtime::GoalRuntimeConfig;
 use crate::runtime::GoalRuntimeHandle;
+use crate::runtime::InactiveGoalHistory;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::steering::budget_limit_steering_item;
+use crate::steering::continuation_steering_item;
 use crate::tool::GoalToolExecutor;
 
 #[derive(Clone, Debug)]
@@ -113,6 +118,9 @@ where
             let accounting_state = input
                 .thread_store
                 .get_or_init::<GoalAccountingState>(GoalAccountingState::default);
+            let goal_skill_activations = input
+                .thread_store
+                .get_or_init::<GoalSkillActivations>(GoalSkillActivations::default);
             let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {
                 return;
             };
@@ -124,6 +132,7 @@ where
                     self.metrics.clone(),
                     self.thread_manager.clone(),
                     accounting_state,
+                    goal_skill_activations,
                     GoalRuntimeConfig {
                         analytics: self.analytics.clone(),
                         enabled,
@@ -133,6 +142,12 @@ where
             });
             runtime.set_enabled(enabled);
             self.goal_service.register_runtime(&runtime);
+            if let Err(err) = runtime.restore_after_start().await {
+                tracing::warn!(
+                    "failed to restore goal runtime after thread start for {}: {err}",
+                    runtime.thread_id()
+                );
+            }
         })
     }
 
@@ -194,6 +209,51 @@ where
     }
 }
 
+impl<C> ContextContributor for GoalExtension<C>
+where
+    C: Send + Sync + 'static,
+{
+    fn contribute_post_compaction_context<'a>(
+        &'a self,
+        _session_store: &'a ExtensionData,
+        thread_store: &'a ExtensionData,
+    ) -> ExtensionFuture<'a, PostCompactionContextContribution> {
+        Box::pin(async move {
+            let Some(runtime) = goal_runtime_handle(thread_store) else {
+                return PostCompactionContextContribution::default();
+            };
+            let Ok(goal_state_permit) = runtime.goal_state_permit().await else {
+                return PostCompactionContextContribution::default();
+            };
+            if !runtime.is_enabled() {
+                return PostCompactionContextContribution::default();
+            }
+            let goal = match self
+                .state_dbs
+                .thread_goals()
+                .get_thread_goal(runtime.thread_id())
+                .await
+            {
+                Ok(Some(goal)) if goal.status == codex_state::ThreadGoalStatus::Active => goal,
+                Ok(_) => return PostCompactionContextContribution::default(),
+                Err(err) => {
+                    tracing::warn!(
+                        thread_id = %runtime.thread_id(),
+                        "failed to reconstruct active goal after compaction: {err}"
+                    );
+                    return PostCompactionContextContribution::default();
+                }
+            };
+            PostCompactionContextContribution::with_lease(
+                vec![continuation_steering_item(
+                    &crate::tool::protocol_goal_from_state(goal),
+                )],
+                goal_state_permit,
+            )
+        })
+    }
+}
+
 impl<C> TurnLifecycleContributor for GoalExtension<C>
 where
     C: Send + Sync + 'static,
@@ -206,6 +266,16 @@ where
             if !runtime.is_enabled() {
                 return;
             }
+            let _goal_state_permit = match runtime.goal_state_permit().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to lock goal state at turn start for {}: {err}",
+                        runtime.thread_id()
+                    );
+                    return;
+                }
+            };
 
             let accounting = runtime.accounting_state();
             accounting.start_turn(
@@ -220,22 +290,45 @@ where
                 accounting.clear_current_turn_goal();
                 return;
             }
-            let Ok(goal) = self
+            let revision = runtime.goal_revision();
+            let goal = match self
                 .state_dbs
                 .thread_goals()
-                .get_thread_goal(runtime.thread_id())
+                .get_thread_goal_with_skill_selections(runtime.thread_id())
                 .await
-            else {
-                return;
-            };
-            if let Some(goal) = goal
-                && matches!(
-                    goal.status,
-                    codex_state::ThreadGoalStatus::Active
-                        | codex_state::ThreadGoalStatus::BudgetLimited
-                )
             {
-                accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
+                Ok(goal) => goal,
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to restore goal skill selections for {}: {err}",
+                        runtime.thread_id()
+                    );
+                    accounting.clear_current_turn_goal();
+                    runtime.clear_goal_skill_activations_at_revision(
+                        revision,
+                        InactiveGoalHistory::Invalidate,
+                    );
+                    return;
+                }
+            };
+            if let Some((goal, skill_selections)) = goal
+                && goal.status == codex_state::ThreadGoalStatus::Active
+            {
+                if runtime.activate_goal_skill_selections_at_revision(
+                    revision,
+                    goal.goal_id.clone(),
+                    skill_selections,
+                ) {
+                    accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
+                    if !runtime.goal_revision_is(revision) || !runtime.is_enabled() {
+                        accounting.clear_current_turn_goal();
+                    }
+                }
+            } else {
+                runtime.clear_goal_skill_activations_at_revision(
+                    revision,
+                    InactiveGoalHistory::Preserve,
+                );
             }
         })
     }
@@ -421,25 +514,22 @@ where
 
         vec![
             Arc::new(GoalToolExecutor::get(
-                runtime.thread_id(),
+                runtime.as_ref().clone(),
                 Arc::clone(&self.state_dbs),
-                runtime.accounting_state(),
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
             )),
             Arc::new(GoalToolExecutor::create(
-                runtime.thread_id(),
+                runtime.as_ref().clone(),
                 Arc::clone(&self.state_dbs),
-                runtime.accounting_state(),
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
             )),
             Arc::new(GoalToolExecutor::update(
-                runtime.thread_id(),
+                runtime.as_ref().clone(),
                 Arc::clone(&self.state_dbs),
-                runtime.accounting_state(),
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
@@ -470,6 +560,7 @@ pub fn install_with_backend<C>(
     ));
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
+    registry.prompt_contributor(extension.clone());
     registry.turn_lifecycle_contributor(extension.clone());
     registry.token_usage_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension.clone());

@@ -48,6 +48,108 @@ pub use world_state::WorldStateSectionContribution;
 /// Boxed, sendable future returned by asynchronous extension contributors.
 pub type ExtensionFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Turn-local model input plus an acknowledgement invoked after the host records it.
+///
+/// Extensions that stage durable state while resolving model-visible input should commit that
+/// state from the acknowledgement rather than from [`TurnInputContributor::contribute`]. The host
+/// drops the acknowledgement without invoking it when hooks, cancellation, or another lifecycle
+/// gate prevents the returned fragments from reaching conversation history.
+pub struct TurnInputContribution {
+    fragments: Vec<Box<dyn ContextualUserFragment + Send>>,
+    acknowledgement: Option<TurnInputContributionAcknowledgement>,
+}
+
+impl TurnInputContribution {
+    /// Creates a contribution that does not require a recording acknowledgement.
+    pub fn new(fragments: Vec<Box<dyn ContextualUserFragment + Send>>) -> Self {
+        Self {
+            fragments,
+            acknowledgement: None,
+        }
+    }
+
+    /// Creates a contribution whose callback runs only after all returned fragments are recorded.
+    pub fn with_acknowledgement(
+        fragments: Vec<Box<dyn ContextualUserFragment + Send>>,
+        acknowledgement: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            fragments,
+            acknowledgement: Some(TurnInputContributionAcknowledgement {
+                callback: Some(Box::new(acknowledgement)),
+            }),
+        }
+    }
+
+    /// Splits the contribution into model-visible fragments and its post-record acknowledgement.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<Box<dyn ContextualUserFragment + Send>>,
+        Option<TurnInputContributionAcknowledgement>,
+    ) {
+        (self.fragments, self.acknowledgement)
+    }
+}
+
+impl Default for TurnInputContribution {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+/// One-shot acknowledgement for a recorded [`TurnInputContribution`].
+pub struct TurnInputContributionAcknowledgement {
+    callback: Option<Box<dyn FnOnce() + Send>>,
+}
+
+/// Context resolved under an extension-owned lease for atomic compaction installation.
+pub struct PostCompactionContextContribution {
+    items: Vec<codex_protocol::models::ResponseItem>,
+    _lease: Option<Box<dyn Send>>,
+}
+
+impl PostCompactionContextContribution {
+    /// Creates an unleased contribution.
+    pub fn new(items: Vec<codex_protocol::models::ResponseItem>) -> Self {
+        Self {
+            items,
+            _lease: None,
+        }
+    }
+
+    /// Keeps `lease` alive until the host has installed or rejected the contribution.
+    pub fn with_lease(
+        items: Vec<codex_protocol::models::ResponseItem>,
+        lease: impl Send + 'static,
+    ) -> Self {
+        Self {
+            items,
+            _lease: Some(Box::new(lease)),
+        }
+    }
+
+    /// Removes the model-visible items while retaining the lease.
+    pub fn take_items(&mut self) -> Vec<codex_protocol::models::ResponseItem> {
+        std::mem::take(&mut self.items)
+    }
+}
+
+impl Default for PostCompactionContextContribution {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl TurnInputContributionAcknowledgement {
+    /// Commits the extension-owned state associated with a recorded contribution.
+    pub fn acknowledge(mut self) {
+        if let Some(callback) = self.callback.take() {
+            callback();
+        }
+    }
+}
+
 /// Extension contribution that resolves runtime MCP servers from host config.
 ///
 /// Contributors run in registration order. Later contributions for the same
@@ -106,6 +208,20 @@ pub trait ContextContributor: Send + Sync {
             let _self = self;
             let _input = input;
             Vec::new()
+        })
+    }
+
+    /// Reconstructs extension-owned context while compaction installation is serialized.
+    fn contribute_post_compaction_context<'a>(
+        &'a self,
+        session_store: &'a ExtensionData,
+        thread_store: &'a ExtensionData,
+    ) -> ExtensionFuture<'a, PostCompactionContextContribution> {
+        Box::pin(async move {
+            let _self = self;
+            let _session_store = session_store;
+            let _thread_store = thread_store;
+            PostCompactionContextContribution::default()
         })
     }
 }
@@ -200,14 +316,39 @@ pub trait TurnLifecycleContributor: Send + Sync {
 /// host-specific dependencies belong on the extension value installed by the
 /// host, not in this input.
 pub trait TurnInputContributor: Send + Sync {
-    /// Returns additional contextual fragments for one submitted turn.
+    /// Returns additional contextual fragments for one turn.
     fn contribute<'a>(
         &'a self,
         input: TurnInputContext,
         session_store: &'a ExtensionData,
         thread_store: &'a ExtensionData,
         turn_store: &'a ExtensionData,
-    ) -> ExtensionFuture<'a, Vec<Box<dyn ContextualUserFragment + Send>>>;
+    ) -> ExtensionFuture<'a, Vec<Box<dyn ContextualUserFragment + Send>>> {
+        Box::pin(async move {
+            let _self = self;
+            let _input = input;
+            let _session_store = session_store;
+            let _thread_store = thread_store;
+            let _turn_store = turn_store;
+            Vec::new()
+        })
+    }
+
+    /// Returns fragments plus optional state committed only after durable recording.
+    fn contribute_durable<'a>(
+        &'a self,
+        input: TurnInputContext,
+        session_store: &'a ExtensionData,
+        thread_store: &'a ExtensionData,
+        turn_store: &'a ExtensionData,
+    ) -> ExtensionFuture<'a, TurnInputContribution> {
+        Box::pin(async move {
+            TurnInputContribution::new(
+                self.contribute(input, session_store, thread_store, turn_store)
+                    .await,
+            )
+        })
+    }
 }
 
 /// Contributor for host-owned configuration changes.
