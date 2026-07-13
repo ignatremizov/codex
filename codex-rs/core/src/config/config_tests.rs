@@ -1092,6 +1092,28 @@ async fn runtime_config_ignores_zero_exec_command_timeout_ms() {
 }
 
 #[test]
+fn config_toml_deserializes_user_shell_command_timeout_ms() {
+    let cfg: ConfigToml = toml::from_str("user_shell_command_timeout_ms = 0")
+        .expect("TOML deserialization should succeed for user_shell_command_timeout_ms");
+
+    assert_eq!(cfg.user_shell_command_timeout_ms, Some(0));
+}
+
+#[tokio::test]
+async fn runtime_config_preserves_zero_user_shell_command_timeout_ms() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), "user_shell_command_timeout_ms = 0")?;
+    let cfg = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .build()
+        .await?;
+
+    assert_eq!(cfg.user_shell_command_timeout_ms(), 0);
+
+    Ok(())
+}
+
+#[test]
 fn config_toml_deserializes_unified_exec_yield_times() {
     let toml = r#"
 unified_exec_yield_time_ms = 1250
