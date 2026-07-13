@@ -2839,8 +2839,9 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
         Arc::new(build_world_state_from_turn_context(session.as_ref(), &turn_context).await);
 
     session
-        .start_new_context_window(turn_context.as_ref(), world_state)
-        .await;
+        .start_new_context_window(Arc::clone(&turn_context), world_state)
+        .await
+        .expect("start new context window");
 
     let live_history = session.clone_history().await;
     assert!(!live_history.raw_items().is_empty());
@@ -4124,7 +4125,7 @@ async fn wait_for_thread_rollback_failed(rx: &async_channel::Receiver<Event>) ->
     }
 }
 
-async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
+pub(crate) async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
     let config = session.get_config().await;
     let live_thread = LiveThread::create(
         Arc::clone(&session.services.thread_store),
@@ -5455,6 +5456,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         agent_status: agent_status_tx,
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
+        durable_context_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         session_start_mcp_servers: HashMap::new(),
@@ -7615,6 +7617,7 @@ where
         agent_status: agent_status_tx,
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
+        durable_context_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         session_start_mcp_servers: HashMap::new(),
