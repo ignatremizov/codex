@@ -9,13 +9,27 @@ pub struct SkillInstructions {
     contents: String,
 }
 
+impl SkillInstructions {
+    pub fn new(
+        name: impl Into<String>,
+        path: impl Into<String>,
+        contents: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            path: path.into(),
+            contents: contents.into(),
+        }
+    }
+}
+
 impl From<&SkillInjection> for SkillInstructions {
     fn from(skill: &SkillInjection) -> Self {
-        Self {
-            name: skill.name.clone(),
-            path: skill.path.clone(),
-            contents: skill.contents.clone(),
-        }
+        Self::new(
+            skill.name.clone(),
+            skill.path.clone(),
+            skill.contents.clone(),
+        )
     }
 }
 
@@ -33,9 +47,9 @@ impl ContextualUserFragment for SkillInstructions {
     }
 
     fn body(&self) -> String {
-        format!(
-            "\n<name>{}</name>\n<path>{}</path>\n{}\n",
-            self.name, self.path, self.contents
-        )
+        let name = &self.name;
+        let path = &self.path;
+        let contents = &self.contents;
+        format!("\n<name>{name}</name>\n<path>{path}</path>\n{contents}\n")
     }
 }

@@ -219,23 +219,6 @@ impl CodexThread {
         self.codex.session_loop_termination.clone().await;
     }
 
-    pub(crate) async fn emit_thread_resume_lifecycle(&self) {
-        for contributor in self
-            .codex
-            .session
-            .services
-            .extensions
-            .thread_lifecycle_contributors()
-        {
-            contributor
-                .on_thread_resume(codex_extension_api::ThreadResumeInput {
-                    session_store: &self.codex.session.services.session_extension_data,
-                    thread_store: &self.codex.session.services.thread_extension_data,
-                })
-                .await;
-        }
-    }
-
     pub async fn emit_thread_idle_lifecycle_if_idle(&self) {
         self.codex
             .session
@@ -332,6 +315,21 @@ impl CodexThread {
         items: Vec<ResponseItem>,
     ) -> Result<(), TryStartTurnIfIdleError> {
         self.codex.session.try_start_turn_if_idle(items).await
+    }
+
+    /// Starts automatic idle work while retaining `reservation_lease` until the
+    /// session has atomically reserved the idle turn.
+    ///
+    /// The lease is released before turn-start lifecycle contributors run.
+    pub async fn try_start_turn_if_idle_with_lease(
+        &self,
+        items: Vec<ResponseItem>,
+        reservation_lease: impl Send,
+    ) -> Result<(), TryStartTurnIfIdleError> {
+        self.codex
+            .session
+            .try_start_turn_if_idle_with_lease(items, reservation_lease)
+            .await
     }
 
     pub async fn set_app_server_client_info(

@@ -76,8 +76,8 @@ async fn run_compact_task_inner(
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(turn_context, &compaction_item)
         .await;
-    sess.start_new_context_window(turn_context.as_ref(), world_state)
-        .await;
+    sess.start_new_context_window(Arc::clone(turn_context), world_state)
+        .await?;
     sess.emit_turn_item_completed(turn_context, compaction_item)
         .await;
 

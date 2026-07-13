@@ -63,6 +63,7 @@ use codex_extension_api::LoadedUserInstructions;
 use codex_extension_api::PromptFragment;
 use codex_extension_api::PromptSlot;
 use codex_extension_api::TurnContextContributionInput;
+use codex_extension_api::TurnInputContributionAcknowledgement;
 use codex_features::FEATURES;
 use codex_features::Feature;
 use codex_features::unstable_features_warning_event;
@@ -156,6 +157,7 @@ use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
+use codex_thread_store::ThreadStoreError;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use futures::future::Shared;
@@ -3292,8 +3294,12 @@ impl Session {
         turn_context: &TurnContext,
         items: &[ResponseItem],
     ) {
+        let Ok(_permit) = self.durable_context_lock.acquire().await else {
+            return;
+        };
         let items = self.prepare_conversation_items_for_history(turn_context, items);
         let items = items.as_ref();
+        self.persist_rollout_response_items(items).await;
         {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
@@ -3302,8 +3308,55 @@ impl Session {
                 turn_context.model_info.truncation_policy.into(),
             );
         }
-        self.persist_rollout_response_items(items).await;
         self.send_raw_response_items(turn_context, items).await;
+    }
+
+    /// Records one extension contribution only after its complete rollout batch is durable.
+    ///
+    /// The detached commit keeps the persistence boundary cancellation-safe. Its acknowledgement
+    /// remains owned by the commit and runs only after persistence and in-memory history both
+    /// contain the complete contribution.
+    pub(crate) async fn record_durable_context_items(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        items: Vec<ResponseItem>,
+        acknowledgement: Option<TurnInputContributionAcknowledgement>,
+    ) -> Result<(), ThreadStoreError> {
+        let items = self
+            .prepare_conversation_items_for_history(turn_context.as_ref(), &items)
+            .into_owned();
+        let sess = Arc::clone(self);
+        tokio::spawn(async move {
+            let _permit = sess.durable_context_lock.acquire().await.map_err(|err| {
+                ThreadStoreError::Internal {
+                    message: format!("failed to lock durable context recording: {err}"),
+                }
+            })?;
+            let rollout_items = items
+                .iter()
+                .cloned()
+                .map(RolloutItem::ResponseItem)
+                .collect::<Vec<_>>();
+            sess.try_persist_rollout_items(&rollout_items).await?;
+            {
+                let mut state = sess.state.lock().await;
+                state.current_time_reminder.note_recorded_items(&items);
+                state.record_items(
+                    items.iter(),
+                    turn_context.model_info.truncation_policy.into(),
+                );
+            }
+            sess.send_raw_response_items(turn_context.as_ref(), &items)
+                .await;
+            if let Some(acknowledgement) = acknowledgement {
+                acknowledgement.acknowledge();
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("durable context recording task failed: {err}"),
+        })?
     }
 
     pub(crate) async fn record_step_world_state_if_changed(
@@ -3511,53 +3564,98 @@ impl Session {
     }
 
     pub(crate) async fn replace_compacted_history(
-        &self,
-        turn_context: &TurnContext,
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
         items: Vec<ResponseItem>,
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
-        mut compacted_item: CompactedItem,
-    ) -> Vec<ResponseItem> {
-        let items = if turn_context.item_ids_enabled() {
-            Self::assign_missing_response_item_ids(Cow::Owned(items)).into_owned()
-        } else {
-            items
-        };
-        // Compaction starts a new history window, so its WorldState baseline must be full.
-        let mut world_state_item = None;
-        let final_items = {
-            let mut state = self.state.lock().await;
-            let final_items = crate::compact::preserve_mcp_server_use_context_items(
-                items,
-                state.history.raw_items(),
-            );
-            state.replace_history(final_items.clone(), reference_context_item.clone());
-            if let Some(world_state) = world_state_baseline {
-                let snapshot = world_state.snapshot();
-                world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
-                state.history.set_world_state_baseline(snapshot);
+        compacted_item: CompactedItem,
+    ) -> CodexResult<Vec<ResponseItem>> {
+        let sess = Arc::clone(self);
+        tokio::spawn(async move {
+            let _permit = sess.durable_context_lock.acquire().await.map_err(|err| {
+                CodexErr::Fatal(format!(
+                    "failed to lock compacted history installation: {err}"
+                ))
+            })?;
+            let mut post_compaction_contributions = Vec::new();
+            let mut post_compaction_items = Vec::new();
+            for contributor in sess.services.extensions.context_contributors() {
+                let mut contribution = contributor
+                    .contribute_post_compaction_context(
+                        &sess.services.session_extension_data,
+                        &sess.services.thread_extension_data,
+                    )
+                    .await;
+                post_compaction_items.extend(contribution.take_items());
+                post_compaction_contributions.push(contribution);
             }
-            final_items
-        };
+            // Compaction starts a new history window, so its WorldState baseline must be full.
+            let mut world_state_item = None;
+            let previous_history = {
+                let state = sess.state.lock().await;
+                state.history.raw_items().to_vec()
+            };
+            let final_items = {
+                let final_items =
+                    crate::compact::preserve_mcp_server_use_context_items(items, &previous_history);
+                let final_items = crate::compact::preserve_promoted_skills_inventory_item(
+                    final_items,
+                    &previous_history,
+                );
+                let final_items = crate::compact::insert_post_compaction_context_items(
+                    final_items,
+                    post_compaction_items,
+                );
+                if turn_context.item_ids_enabled() {
+                    Self::assign_missing_response_item_ids(Cow::Owned(final_items)).into_owned()
+                } else {
+                    final_items
+                }
+            };
 
-        compacted_item.replacement_history = Some(final_items.clone());
+            let mut compacted_item = compacted_item;
+            compacted_item.replacement_history = Some(final_items.clone());
 
-        self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
-            .await;
-        // Persist the baseline after the replacement history that established it.
-        if let Some(world_state_item) = world_state_item {
-            self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
-                .await;
-        }
-        if let Some(turn_context_item) = reference_context_item {
-            self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item)])
-                .await;
-        }
-        {
-            let mut state = self.state.lock().await;
-            state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
-        }
-        final_items
+            sess.try_persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!("failed to persist compacted history: {err}"))
+                })?;
+            {
+                let mut state = sess.state.lock().await;
+                state.replace_history(final_items.clone(), reference_context_item.clone());
+                if let Some(world_state) = world_state_baseline {
+                    let snapshot = world_state.snapshot();
+                    world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
+                    state.history.set_world_state_baseline(snapshot);
+                }
+            }
+            drop(post_compaction_contributions);
+            // Persist the baseline after the replacement history that established it.
+            if let Some(world_state_item) = world_state_item {
+                sess.try_persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
+                    .await
+                    .map_err(|err| {
+                        CodexErr::Fatal(format!(
+                            "failed to persist compacted world-state baseline: {err}"
+                        ))
+                    })?;
+            }
+            if let Some(turn_context_item) = reference_context_item {
+                sess.try_persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item)])
+                    .await
+                    .map_err(|err| {
+                        CodexErr::Fatal(format!("failed to persist compacted turn context: {err}"))
+                    })?;
+            }
+            {
+                let mut state = sess.state.lock().await;
+                state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
+            }
+            Ok(final_items)
+        })
+        .await?
     }
 
     async fn persist_rollout_response_items(&self, items: &[ResponseItem]) {
@@ -3998,11 +4096,19 @@ impl Session {
 
     #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]
     pub(crate) async fn persist_rollout_items(&self, items: &[RolloutItem]) {
-        if let Some(live_thread) = self.live_thread()
-            && let Err(e) = live_thread.append_items(items).await
-        {
+        if let Err(e) = self.try_persist_rollout_items(items).await {
             error!("failed to record rollout items: {e:#}");
         }
+    }
+
+    async fn try_persist_rollout_items(
+        &self,
+        items: &[RolloutItem],
+    ) -> Result<(), ThreadStoreError> {
+        if let Some(live_thread) = self.live_thread() {
+            live_thread.append_items(items).await?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn clone_history(&self) -> ContextManager {
@@ -4033,21 +4139,21 @@ impl Session {
     }
 
     pub(crate) async fn start_new_context_window(
-        &self,
-        turn_context: &TurnContext,
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
         world_state: Arc<WorldState>,
-    ) -> u64 {
+    ) -> CodexResult<u64> {
         let window = {
             let mut state = self.state.lock().await;
             state.start_new_context_window()
         };
         let (window_number, window_ids) = window;
         let context_items = self
-            .build_initial_context_with_world_state(turn_context, world_state.as_ref())
+            .build_initial_context_with_world_state(turn_context.as_ref(), world_state.as_ref())
             .await;
         let turn_context_item = turn_context.to_turn_context_item();
         self.replace_compacted_history(
-            turn_context,
+            Arc::clone(&turn_context),
             context_items,
             Some(turn_context_item),
             Some(world_state),
@@ -4061,9 +4167,9 @@ impl Session {
                 window_id: Some(window_ids.window_id.to_string()),
             },
         )
-        .await;
-        self.recompute_token_usage(turn_context).await;
-        window_number
+        .await?;
+        self.recompute_token_usage(turn_context.as_ref()).await;
+        Ok(window_number)
     }
 
     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {
@@ -4630,6 +4736,10 @@ fn is_mcp_server_use_context_input_item(item: &TurnInput) -> bool {
 #[cfg(test)]
 #[path = "elicitation_holders_tests.rs"]
 mod elicitation_holders_tests;
+
+#[cfg(test)]
+#[path = "durable_context_tests.rs"]
+mod durable_context_tests;
 
 #[cfg(test)]
 pub(crate) mod tests;

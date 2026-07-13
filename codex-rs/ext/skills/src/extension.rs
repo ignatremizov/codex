@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use codex_core_skills::HostSkillsSnapshot;
-use codex_core_skills::injection::InjectedHostSkillPrompts;
+use codex_core_skills::SkillInstructions;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ContextContributor;
@@ -10,6 +10,7 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::GoalSkillActivations;
 use codex_extension_api::PromptFragment;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadStartInput;
@@ -17,6 +18,7 @@ use codex_extension_api::ToolCall;
 use codex_extension_api::ToolContributor;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::TurnInputContext;
+use codex_extension_api::TurnInputContribution;
 use codex_extension_api::TurnInputContributor;
 use codex_extension_api::WorldStateContributionInput;
 use codex_extension_api::WorldStateSectionContribution;
@@ -29,22 +31,16 @@ use codex_protocol::protocol::WarningEvent;
 use crate::SkillsExtensionConfig;
 use crate::catalog::SkillCatalog;
 use crate::catalog::SkillCatalogEntry;
-use crate::catalog::SkillReadResult;
 use crate::catalog::SkillSourceKind;
-use crate::fragments::SkillInstructions;
 use crate::provider::HostSkillProvider;
 use crate::provider::SkillListQuery;
 use crate::provider::SkillReadRequest;
-use crate::render::MAX_SKILL_NAME_BYTES;
-use crate::render::MAX_SKILL_PATH_BYTES;
 use crate::render::available_skills_fragment;
 use crate::render::truncate_main_prompt_contents;
-use crate::render::truncate_utf8_to_bytes;
 use crate::selection::collect_explicit_skill_mentions;
 use crate::sources::SkillProviders;
 use crate::state::ExecutorSkillsStepState;
 use crate::state::SkillsThreadState;
-use crate::state::SkillsTurnState;
 use crate::tools::skill_tools;
 use crate::world_state::executor_skills_world_state_section;
 
@@ -64,10 +60,20 @@ where
                 .environments
                 .iter()
                 .any(|environment| environment.environment_id == LOCAL_ENVIRONMENT_ID);
-            input.thread_store.insert(SkillsThreadState::new(
+            let thread_state = SkillsThreadState::new(
                 (self.config_from_host)(input.config),
                 orchestrator_skills_available,
-            ));
+            );
+            if let Some(history) = input
+                .thread_store
+                .get::<codex_extension_api::ConversationHistory>()
+            {
+                thread_state.restore_promoted_skills(&history);
+            }
+            input.thread_store.insert(thread_state);
+            input
+                .thread_store
+                .get_or_init::<GoalSkillActivations>(GoalSkillActivations::default);
         })
     }
 }
@@ -104,7 +110,7 @@ where
         &'a self,
         session_store: &'a ExtensionData,
         thread_store: &'a ExtensionData,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<PromptFragment>> + Send + 'a>> {
+    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
         Box::pin(async move {
             let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
                 return Vec::new();
@@ -113,13 +119,19 @@ where
             if !config.include_instructions {
                 return Vec::new();
             }
+
+            let host_snapshot = thread_state
+                .host_snapshot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let catalog = self
                 .list_skills(
                     SkillListQuery {
                         turn_id: thread_store.level_id().to_string(),
                         executor_roots: Vec::new(),
-                        host_snapshot: None,
-                        include_host_skills: false,
+                        host_snapshot: host_snapshot.clone(),
+                        include_host_skills: host_snapshot.is_some(),
                         include_bundled_skills: config.bundled_skills_enabled,
                         include_orchestrator_skills: thread_state.orchestrator_skills_enabled(),
                         mcp_resources: session_store.get::<McpResourceClient>(),
@@ -130,13 +142,20 @@ where
             for warning in &catalog.warnings {
                 self.emit_warning(thread_store.level_id(), warning.clone());
             }
+            let (promoted, unresolved) = thread_state.resolve_promoted_skills(&catalog);
+            let promoted_identities = thread_state.promoted_skill_identities();
+            if unresolved > 0 {
+                self.emit_unresolved_promotions_warning(thread_store.level_id(), unresolved);
+            }
             let include_usage = thread_store
                 .get::<ModelInfo>()
                 .is_some_and(|model_info| model_info.include_skills_usage_instructions);
-            available_skills_fragment(&catalog, include_usage)
-                .map(|fragment| PromptFragment::developer_capability(fragment.render()))
-                .into_iter()
-                .collect()
+            let fragments =
+                available_skills_fragment(&catalog, &promoted, &promoted_identities, include_usage)
+                    .map(|fragment| vec![PromptFragment::developer_capability(fragment.render())])
+                    .unwrap_or_default();
+            thread_state.acknowledge_promoted_projection(&promoted);
+            fragments
         })
     }
 
@@ -217,12 +236,38 @@ where
         turn_store: &'a ExtensionData,
     ) -> ExtensionFuture<'a, Vec<Box<dyn ContextualUserFragment + Send>>> {
         Box::pin(async move {
+            let contribution = self
+                .contribute_durable(input, session_store, thread_store, turn_store)
+                .await;
+            let (fragments, acknowledgement) = contribution.into_parts();
+            if let Some(acknowledgement) = acknowledgement {
+                acknowledgement.acknowledge();
+            }
+            fragments
+        })
+    }
+
+    fn contribute_durable<'a>(
+        &'a self,
+        input: TurnInputContext,
+        session_store: &'a ExtensionData,
+        thread_store: &'a ExtensionData,
+        turn_store: &'a ExtensionData,
+    ) -> ExtensionFuture<'a, TurnInputContribution> {
+        Box::pin(async move {
             let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
-                return Vec::new();
+                return TurnInputContribution::default();
             };
 
             let config = thread_state.config();
             let host_snapshot = turn_store.get::<HostSkillsSnapshot>();
+            if let Some(host_snapshot) = host_snapshot.as_ref() {
+                *thread_state
+                    .host_snapshot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(Arc::clone(host_snapshot));
+            }
             let query = SkillListQuery {
                 turn_id: input.turn_id.clone(),
                 executor_roots: Vec::new(),
@@ -240,92 +285,156 @@ where
                 self.emit_warning(&input.turn_id, warning.clone());
             }
 
-            let selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
+            let mut selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
+            let goal_selections = thread_store
+                .get::<GoalSkillActivations>()
+                .map(|activations| activations.snapshot())
+                .unwrap_or_default();
+            let goal_mentions = goal_selections
+                .iter()
+                .map(|selection| codex_protocol::user_input::UserInput::Mention {
+                    name: selection.name.clone(),
+                    path: selection.path.clone(),
+                })
+                .collect::<Vec<_>>();
+            let goal_entries = collect_explicit_skill_mentions(&goal_mentions, &catalog);
+            let unresolved_goal_selections =
+                goal_selections.len().saturating_sub(goal_entries.len());
+            for entry in goal_entries {
+                if !selected_entries.iter().any(|candidate| {
+                    candidate.authority == entry.authority && candidate.id == entry.id
+                }) {
+                    selected_entries.push(entry);
+                }
+            }
+            if unresolved_goal_selections > 0 {
+                self.emit_warning(
+                    &input.turn_id,
+                    format!(
+                        "{unresolved_goal_selections} goal-selected skill(s) could not be resolved \
+                         and were omitted from the skills inventory."
+                    ),
+                );
+            }
+            let (resolved_promoted, unresolved) = thread_state.resolve_promoted_skills(&catalog);
+            if unresolved > 0 {
+                self.emit_unresolved_promotions_warning(&input.turn_id, unresolved);
+            }
+            let promotable_entries = selected_entries
+                .iter()
+                .filter(|entry| {
+                    !entry.prompt_visible
+                        && matches!(
+                            entry.authority.kind,
+                            SkillSourceKind::Host | SkillSourceKind::Orchestrator
+                        )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let non_promotable_count = selected_entries
+                .iter()
+                .filter(|entry| {
+                    matches!(
+                        entry.authority.kind,
+                        SkillSourceKind::Executor | SkillSourceKind::Custom(_)
+                    )
+                })
+                .count();
+            if non_promotable_count > 0 {
+                self.emit_warning(
+                    &input.turn_id,
+                    format!(
+                        "{non_promotable_count} executor/custom skill(s) were kept turn-local \
+                         because their providers expose no durable model read route."
+                    ),
+                );
+            }
+            let (next_promoted, changed, omitted_promotions) =
+                thread_state.promoted_with(&promotable_entries);
+            let mut promoted_entries = merge_skill_entries(resolved_promoted, &promotable_entries);
+            promoted_entries.retain(|entry| {
+                next_promoted
+                    .iter()
+                    .any(|identity| identity.matches_entry(entry))
+            });
+            let projection_changed = thread_state.promoted_projection_changed(&promoted_entries);
+            if omitted_promotions > 0 {
+                self.emit_warning(
+                    &input.turn_id,
+                    format!(
+                        "{omitted_promotions} skill promotion(s) were omitted because the bounded \
+                         promoted inventory is full."
+                    ),
+                );
+            }
+
             let mut fragments: Vec<Box<dyn ContextualUserFragment + Send>> = Vec::new();
-            if config.include_instructions {
-                let mut turn_catalog = catalog.clone();
-                turn_catalog.entries.retain(|entry| {
-                    entry.authority.kind != SkillSourceKind::Executor
-                        && entry.authority.kind != SkillSourceKind::Orchestrator
-                });
+            if (changed || projection_changed) && config.include_instructions {
                 let include_usage = thread_store
                     .get::<ModelInfo>()
                     .is_some_and(|model_info| model_info.include_skills_usage_instructions);
-                if let Some(fragment) = available_skills_fragment(&turn_catalog, include_usage) {
+                if let Some(fragment) = available_skills_fragment(
+                    &catalog,
+                    &promoted_entries,
+                    &next_promoted,
+                    include_usage,
+                ) {
                     fragments.push(Box::new(fragment));
                 }
             }
 
-            let mut warnings = catalog.warnings.clone();
-            let mut main_prompts_injected = false;
-            let mut injected_host_skill_prompts = InjectedHostSkillPrompts::default();
-            for entry in &selected_entries {
-                match self
-                    .read_main_prompt(entry, host_snapshot.clone(), session_store, &thread_state)
+            for entry in selected_entries.iter().filter(|entry| {
+                matches!(
+                    entry.authority.kind,
+                    SkillSourceKind::Executor | SkillSourceKind::Custom(_)
+                )
+            }) {
+                match thread_state
+                    .read_skill(
+                        &self.providers,
+                        SkillReadRequest {
+                            authority: entry.authority.clone(),
+                            package: entry.id.clone(),
+                            resource: entry.main_prompt.clone(),
+                            host_snapshot: host_snapshot.clone(),
+                            mcp_resources: session_store.get::<McpResourceClient>(),
+                        },
+                    )
                     .await
                 {
                     Ok(read_result) => {
                         let (contents, truncated) =
-                            truncate_main_prompt_contents(read_result.contents.as_str());
+                            truncate_main_prompt_contents(&read_result.contents);
                         if truncated {
+                            let name = &entry.name;
                             let warning = format!(
-                                "Skill `{}` exceeded the main prompt context limit and was truncated.",
-                                entry.name
+                                "Skill `{name}` exceeded the turn-local prompt limit and was \
+                                 truncated."
                             );
-                            self.emit_warning(&input.turn_id, warning.clone());
-                            warnings.push(warning);
+                            self.emit_warning(&input.turn_id, warning);
                         }
-                        let fragment = SkillInstructions {
-                            name: truncate_utf8_to_bytes(&entry.name, MAX_SKILL_NAME_BYTES).0,
-                            path: truncate_utf8_to_bytes(
-                                entry.rendered_path(),
-                                MAX_SKILL_PATH_BYTES,
-                            )
-                            .0,
+                        fragments.push(Box::new(SkillInstructions::new(
+                            entry.name.clone(),
+                            entry.rendered_path(),
                             contents,
-                        };
-                        fragments.push(Box::new(fragment));
-                        main_prompts_injected = true;
-                        if entry.authority.kind == SkillSourceKind::Host {
-                            injected_host_skill_prompts.insert_path(entry.main_prompt.as_str());
-                        }
+                        )));
                     }
-                    Err(message) => {
-                        let warning = format!("Failed to load skill `{}`: {message}", entry.name);
-                        self.emit_warning(&input.turn_id, warning.clone());
-                        warnings.push(warning);
+                    Err(err) => {
+                        let name = &entry.name;
+                        let message = err.message;
+                        let warning = format!("Failed to read skill `{name}`: {message}");
+                        self.emit_warning(&input.turn_id, warning);
                     }
                 }
             }
 
-            if let Some(host_snapshot) = &host_snapshot {
-                for entry in selected_entries
-                    .iter()
-                    .filter(|entry| entry.authority.kind != SkillSourceKind::Host)
-                {
-                    for host_skill in host_snapshot
-                        .outcome()
-                        .skills
-                        .iter()
-                        .filter(|host_skill| host_skill.name == entry.name)
-                    {
-                        injected_host_skill_prompts
-                            .insert_path(host_skill.path_to_skills_md.to_string_lossy());
-                    }
-                }
+            if (changed || projection_changed) && !fragments.is_empty() {
+                TurnInputContribution::with_acknowledgement(fragments, move || {
+                    thread_state.acknowledge_promoted_skills(next_promoted, &promoted_entries);
+                })
+            } else {
+                TurnInputContribution::new(fragments)
             }
-
-            turn_store.insert(SkillsTurnState {
-                catalog,
-                selected_entries,
-                warnings,
-                main_prompts_injected,
-            });
-            if !injected_host_skill_prompts.is_empty() {
-                turn_store.insert(injected_host_skill_prompts);
-            }
-
-            fragments
         })
     }
 }
@@ -356,35 +465,38 @@ impl<C> SkillsExtension<C> {
         catalog
     }
 
-    #[tracing::instrument(level = "trace", skip_all, fields(skill = %entry.name))]
-    async fn read_main_prompt(
-        &self,
-        entry: &SkillCatalogEntry,
-        host_snapshot: Option<Arc<HostSkillsSnapshot>>,
-        session_store: &ExtensionData,
-        thread_state: &SkillsThreadState,
-    ) -> Result<SkillReadResult, String> {
-        thread_state
-            .read_skill(
-                &self.providers,
-                SkillReadRequest {
-                    authority: entry.authority.clone(),
-                    package: entry.id.clone(),
-                    resource: entry.main_prompt.clone(),
-                    host_snapshot,
-                    mcp_resources: session_store.get::<McpResourceClient>(),
-                },
-            )
-            .await
-            .map_err(|err| err.message)
-    }
-
     fn emit_warning(&self, turn_id: &str, message: String) {
         self.event_sink.emit(Event {
             id: turn_id.to_string(),
             msg: EventMsg::Warning(WarningEvent { message }),
         });
     }
+
+    fn emit_unresolved_promotions_warning(&self, turn_id: &str, unresolved: usize) {
+        let skill_word = if unresolved == 1 { "skill" } else { "skills" };
+        self.emit_warning(
+            turn_id,
+            format!(
+                "{unresolved} promoted {skill_word} could not be resolved; omitted from the \
+                 current skills inventory."
+            ),
+        );
+    }
+}
+
+fn merge_skill_entries(
+    mut existing: Vec<SkillCatalogEntry>,
+    selected: &[SkillCatalogEntry],
+) -> Vec<SkillCatalogEntry> {
+    for entry in selected {
+        if !existing
+            .iter()
+            .any(|candidate| candidate.authority == entry.authority && candidate.id == entry.id)
+        {
+            existing.push(entry.clone());
+        }
+    }
+    existing
 }
 
 pub fn install<C>(
