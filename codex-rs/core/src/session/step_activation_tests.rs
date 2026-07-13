@@ -418,7 +418,10 @@ async fn activation_fixture(models: Vec<ModelInfo>) -> ActivationFixture {
             .enable(feature)
             .expect("enable test feature");
     }
-    let configuration = &mut mutable.state.get_mut().session_configuration;
+    let configuration = &mut Arc::get_mut(&mut mutable.state)
+        .expect("unshared test state")
+        .get_mut()
+        .session_configuration;
     let config = Arc::make_mut(&mut configuration.original_config_do_not_use);
     config.model = Some(MODEL_A.to_string());
     config.features = mutable.features.clone();

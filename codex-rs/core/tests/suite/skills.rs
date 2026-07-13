@@ -251,7 +251,7 @@ async fn history_injection_skips_skill_discovery_after_initial_context() -> Resu
         .await?;
     let logs = take_logs()?;
     assert!(
-        logs.contains("record_conversation_items"),
+        logs.contains("record_prepared_conversation_items"),
         "initialized-history injection must still record the item: {logs}"
     );
     assert!(

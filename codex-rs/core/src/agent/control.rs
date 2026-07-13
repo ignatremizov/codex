@@ -68,6 +68,7 @@ mod budget;
 mod completion;
 mod delivery;
 mod execution;
+mod fork_goal_context;
 mod inspection;
 mod interrupt;
 mod legacy;

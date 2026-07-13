@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use super::thread_settings;
 use crate::ConfigRefreshOutcome;
 use crate::config::Config;
 use crate::config::Constrained;
@@ -14,6 +15,11 @@ use tracing::warn;
 
 impl Session {
     pub(crate) async fn disable_mcp_enterprise_auth(&self) {
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        if let Err(error) = self.check_history_publication() {
+            warn!("skipping MCP auth refresh after publication failure: {error}");
+            return;
+        }
         let mut state = self.state.lock().await;
         let mut config = state
             .session_configuration
@@ -25,6 +31,7 @@ impl Session {
         self.services.mcp_runtime.invalidate_resource_caches();
         self.mark_mcp_runtime_dirty();
         drop(state);
+        drop(permit);
         self.schedule_mcp_prewarm();
     }
 
@@ -52,6 +59,11 @@ impl Session {
         next_config: Config,
         scope: RuntimeConfigRefresh,
     ) -> ConfigRefreshOutcome {
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        if let Err(error) = self.check_history_publication() {
+            warn!("skipping config refresh after publication failure: {error}");
+            return ConfigRefreshOutcome::Rejected;
+        }
         let (mut config, mut outcome, rejection_kind) =
             match expected_config.resolve_runtime_refresh(&next_config, scope) {
                 Ok(config) => (config, ConfigRefreshOutcome::Published, None),
@@ -171,6 +183,7 @@ impl Session {
             (previous_config, new_config)
         };
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
+        drop(permit);
         self.schedule_mcp_prewarm();
         self.refresh_hooks(config).await;
         outcome
