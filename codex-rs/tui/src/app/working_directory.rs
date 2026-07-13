@@ -4,7 +4,7 @@
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
 use crate::app_event::ManagedWorktreeTransition;
-use crate::app_server_session::ForkGoalContinuation::DeferUntilNextTurn;
+use crate::app_server_session::ForkGoalContinuation::GoalFree;
 use crate::history_cell::McpInventoryLoadingCell as LoadingCell;
 use crate::terminal_visualization_instructions::with_terminal_visualization_instructions;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
@@ -341,7 +341,7 @@ impl App {
                     thread_id,
                     /*last_turn_id*/ None,
                     /*before_turn_id*/ None,
-                    DeferUntilNextTurn,
+                    GoalFree,
                     /*selected_profile*/ None,
                 )
                 .await

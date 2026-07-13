@@ -2030,8 +2030,21 @@ async fn unloaded_thread_goal_mutations_accept_all_agent_versions() -> Result<()
         let request_id = app
             .send_raw_request("thread/goal/set", Some(params))
             .await?;
-        let _: ThreadGoalSetResponse =
+        let original: ThreadGoalSetResponse =
             timeout(DEFAULT_READ_TIMEOUT, app.read_response(request_id)).await??;
+        let request_id = app
+            .send_raw_request(
+                "thread/goal/set",
+                Some(json!({
+                    "threadId": thread_id,
+                    "objective": "Original goal",
+                    "status": "paused",
+                })),
+            )
+            .await?;
+        let unchanged: ThreadGoalSetResponse =
+            timeout(DEFAULT_READ_TIMEOUT, app.read_response(request_id)).await??;
+        assert_eq!(original, unchanged);
 
         // The initial header has no version, as in older rollouts. Later metadata
         // must take precedence, just as it does when the thread resumes.
@@ -2074,6 +2087,12 @@ async fn unloaded_thread_goal_mutations_accept_all_agent_versions() -> Result<()
                 }
             );
         }
+        let request_id = app
+            .send_raw_request("thread/goal/clear", Some(json!({"threadId": thread_id})))
+            .await?;
+        let unchanged: ThreadGoalClearResponse =
+            timeout(DEFAULT_READ_TIMEOUT, app.read_response(request_id)).await??;
+        assert_eq!(unchanged, ThreadGoalClearResponse { cleared: false });
     }
 
     let loaded: ThreadLoadedListResponse = app

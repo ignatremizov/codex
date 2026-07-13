@@ -26,6 +26,7 @@ pub use approval_review::ApprovalDecision;
 pub use approval_review::ApprovalDecisionInput;
 pub use approval_review::GuardianV2Enabled;
 pub use approval_review::SynchronousApprovalReviewer;
+pub use context::PostCompactionContextContribution;
 pub use context::TurnContextContributionInput;
 pub use mcp::McpServerContribution;
 pub use mcp::McpServerContributionContext;
@@ -51,6 +52,8 @@ pub use tool_lifecycle::ToolFinishInput;
 pub use tool_lifecycle::ToolLifecycleFuture;
 pub use tool_lifecycle::ToolStartInput;
 pub use turn_input::TurnInputContext;
+pub use turn_input::TurnInputContribution;
+pub use turn_input::TurnInputContributionAcknowledgement;
 pub use turn_input::TurnInputEnvironment;
 pub use turn_lifecycle::TurnAbortInput;
 pub use turn_lifecycle::TurnErrorInput;
@@ -91,6 +94,17 @@ pub trait McpServerContributor<C: Sync>: Send + Sync {
 /// fragment: thread/session context for stable inputs, and turn context for
 /// fragments that depend on turn-local host state.
 pub trait ContextContributor: Send + Sync {
+    /// Snapshots extension-owned checkpoint context; retain authority through publication.
+    fn contribute_post_compaction_context<'a>(
+        &'a self,
+        _session_store: &'a ExtensionData,
+        _thread_store: &'a ExtensionData,
+    ) -> ExtensionFuture<'a, PostCompactionContextContribution> {
+        Box::pin(std::future::ready(
+            PostCompactionContextContribution::default(),
+        ))
+    }
+
     /// Returns thread-scoped context using the supplied extension state.
     fn contribute_thread_context<'a>(
         &'a self,
@@ -259,7 +273,39 @@ pub trait TurnInputContributor: Send + Sync {
         session_store: &'a ExtensionData,
         thread_store: &'a ExtensionData,
         turn_store: &'a ExtensionData,
-    ) -> ExtensionFuture<'a, Vec<Box<dyn ContextualUserFragment + Send>>>;
+    ) -> ExtensionFuture<'a, Vec<Box<dyn ContextualUserFragment + Send>>> {
+        let _ = (
+            input,
+            extension_metrics,
+            session_store,
+            thread_store,
+            turn_store,
+        );
+        Box::pin(std::future::ready(Vec::new()))
+    }
+
+    /// Returns fragments and a commit acknowledgment, without committing extension state.
+    fn contribute_durable<'a>(
+        &'a self,
+        input: TurnInputContext<'a>,
+        extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
+        session_store: &'a ExtensionData,
+        thread_store: &'a ExtensionData,
+        turn_store: &'a ExtensionData,
+    ) -> ExtensionFuture<'a, TurnInputContribution> {
+        Box::pin(async move {
+            TurnInputContribution::new(
+                self.contribute(
+                    input,
+                    extension_metrics,
+                    session_store,
+                    thread_store,
+                    turn_store,
+                )
+                .await,
+            )
+        })
+    }
 }
 
 /// Contributor for host-owned configuration changes.

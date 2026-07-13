@@ -4,6 +4,7 @@ use std::sync::Weak;
 use codex_analytics::AnalyticsEventsClient;
 use codex_core::ThreadManager;
 use codex_core::TurnStartOptions;
+use codex_extension_api::ActiveGoalObjective;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
@@ -45,10 +46,13 @@ use crate::metrics::GoalMetrics;
 use crate::runtime::ActiveGoalStopReason;
 use crate::runtime::GoalRuntimeConfig;
 use crate::runtime::GoalRuntimeHandle;
+use crate::runtime::InactiveGoalHistory;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::steering::budget_limit_steering_item;
 use crate::tool::GoalToolExecutor;
+
+mod context;
 
 #[derive(Clone, Debug)]
 pub struct GoalExtensionConfig {
@@ -113,6 +117,9 @@ where
             let accounting_state = input
                 .thread_store
                 .get_or_init::<GoalAccountingState>(GoalAccountingState::default);
+            let active_goal_objective = input
+                .thread_store
+                .get_or_init::<ActiveGoalObjective>(ActiveGoalObjective::default);
             let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {
                 return;
             };
@@ -148,6 +155,7 @@ where
                     self.metrics.clone(),
                     self.thread_manager.clone(),
                     accounting_state,
+                    active_goal_objective,
                     GoalRuntimeConfig {
                         analytics: self.analytics.clone(),
                         enabled,
@@ -159,6 +167,12 @@ where
             });
             runtime.set_enabled(enabled);
             self.goal_service.register_runtime(&runtime);
+            if let Err(err) = runtime.restore_after_start().await {
+                tracing::warn!(
+                    "failed to restore goal runtime after thread start for {}: {err}",
+                    runtime.thread_id()
+                );
+            }
         })
     }
 
@@ -238,6 +252,13 @@ where
                 tracing::warn!("skipping goal turn accounting: token baseline unavailable");
                 return;
             };
+            let _goal_state_permit = match runtime.goal_state_permit().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    tracing::warn!("failed to lock goal state at turn start: {err}");
+                    return;
+                }
+            };
 
             if let Err(err) = self
                 .state_dbs
@@ -261,22 +282,63 @@ where
                 accounting.clear_current_turn_goal();
                 return;
             }
-            let Ok(goal) = self
+            let revision = runtime.goal_revision();
+            let goal = match self
                 .state_dbs
                 .thread_goals()
                 .get_thread_goal(runtime.thread_id())
                 .await
-            else {
-                return;
-            };
-            if let Some(goal) = goal
-                && matches!(
-                    goal.status,
-                    codex_state::ThreadGoalStatus::Active
-                        | codex_state::ThreadGoalStatus::BudgetLimited
-                )
             {
-                accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
+                Ok(goal) => goal,
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to restore active goal objective for {}: {err}",
+                        runtime.thread_id()
+                    );
+                    accounting.clear_current_turn_goal();
+                    runtime.clear_active_goal_objective_at_revision(
+                        revision,
+                        InactiveGoalHistory::Invalidate,
+                    );
+                    return;
+                }
+            };
+            if let Some(goal) = goal {
+                let should_account = match goal.status {
+                    codex_state::ThreadGoalStatus::Active => runtime
+                        .project_active_goal_objective_at_revision(
+                            revision,
+                            goal.objective.clone(),
+                        ),
+                    codex_state::ThreadGoalStatus::BudgetLimited => {
+                        runtime.clear_active_goal_objective_at_revision(
+                            revision,
+                            InactiveGoalHistory::Preserve,
+                        );
+                        true
+                    }
+                    codex_state::ThreadGoalStatus::Complete
+                    | codex_state::ThreadGoalStatus::Blocked
+                    | codex_state::ThreadGoalStatus::Paused
+                    | codex_state::ThreadGoalStatus::UsageLimited => {
+                        runtime.clear_active_goal_objective_at_revision(
+                            revision,
+                            InactiveGoalHistory::Preserve,
+                        );
+                        false
+                    }
+                };
+                if should_account {
+                    accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
+                    if !runtime.goal_revision_is(revision) || !runtime.is_enabled() {
+                        accounting.clear_current_turn_goal();
+                    }
+                }
+            } else {
+                runtime.clear_active_goal_objective_at_revision(
+                    revision,
+                    InactiveGoalHistory::Preserve,
+                );
             }
         })
     }
@@ -549,26 +611,23 @@ where
 
         let tools = [
             GoalToolExecutor::get(
-                runtime.thread_id(),
+                runtime.as_ref().clone(),
                 Arc::clone(&self.state_dbs),
-                runtime.accounting_state(),
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
             ),
             GoalToolExecutor::create(
-                runtime.thread_id(),
+                runtime.as_ref().clone(),
                 Arc::clone(&self.state_dbs),
-                runtime.accounting_state(),
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
                 max_goal_token_budget,
             ),
             GoalToolExecutor::update(
-                runtime.thread_id(),
+                runtime.as_ref().clone(),
                 Arc::clone(&self.state_dbs),
-                runtime.accounting_state(),
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
@@ -606,6 +665,7 @@ pub fn install_with_backend<C>(
     ));
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
+    registry.prompt_contributor(extension.clone());
     registry.turn_lifecycle_contributor(extension.clone());
     registry.token_usage_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension.clone());

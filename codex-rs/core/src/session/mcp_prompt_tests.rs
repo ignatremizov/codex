@@ -21,6 +21,22 @@ fn inventory(server: &str, body: &str) -> ResponseItemEnvelope {
     )))
 }
 
+#[tokio::test]
+async fn inventory_retry_deduplication_preserves_a_later_reversion() {
+    let (session, turn) = make_session_and_context().await;
+    let first = inventory("docs", "first inventory");
+    let second = inventory("docs", "second inventory");
+    for item in [first.clone(), second.clone(), first.clone(), first.clone()] {
+        session
+            .record_mcp_use_items(turn.model_info(), vec![item])
+            .await;
+    }
+    assert_eq!(
+        session.clone_history().await.annotated_items(),
+        &[first.clone(), second, first]
+    );
+}
+
 fn tool(server: &str, name: &str) -> ToolInfo {
     serde_json::from_value(json!({
         "server_name": server,
@@ -325,7 +341,10 @@ async fn new_context_window_retains_each_explicit_envelope_once_with_either_gene
                 .await
                 .expect("world state"),
         );
-        session.start_new_context_window(&step, world).await;
+        session
+            .start_new_context_window(&step, world)
+            .await
+            .expect("publish window");
         let actual = session
             .clone_history()
             .await

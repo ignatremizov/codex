@@ -44,6 +44,9 @@ use tokio_util::sync::CancellationToken;
 enum AppendGate {
     BeforeCommit,
     AfterCommit,
+    AmbiguousFailure,
+    BeforeFlush,
+    FlushFailure,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -125,7 +128,6 @@ impl ThreadStore for GatedAppendStore {
         fn archive_thread(params: ArchiveThreadParams) -> ();
         fn unarchive_thread(params: ArchiveThreadParams) -> StoredThread;
         fn delete_thread(params: DeleteThreadParams) -> ();
-        fn flush_thread(thread_id: ThreadId) -> ();
         fn shutdown_thread(thread_id: ThreadId) -> ();
     }
 
@@ -135,6 +137,29 @@ impl ThreadStore for GatedAppendStore {
         context: PersistContext,
     ) -> ThreadStoreFuture<'_, ()> {
         self.inner.persist_thread(thread_id, context)
+    }
+
+    fn flush_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async move {
+            if matches!(
+                self.phase,
+                AppendGate::BeforeFlush | AppendGate::FlushFailure
+            ) && let Some(mut release) = self.release.lock().await.take()
+            {
+                std::future::poll_fn(|context| {
+                    self.gate_polls.fetch_add(1, Ordering::SeqCst);
+                    Pin::new(&mut release).poll(context)
+                })
+                .await
+                .expect("release flush");
+                if self.phase == AppendGate::FlushFailure {
+                    return Err(codex_thread_store::ThreadStoreError::Internal {
+                        message: "writer flush failed after commit".to_string(),
+                    });
+                }
+            }
+            self.inner.flush_thread(thread_id).await
+        })
     }
 
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
@@ -148,6 +173,12 @@ impl ThreadStore for GatedAppendStore {
                 return self.inner.append_items(params).await;
             }
             self.appends.fetch_add(1, Ordering::SeqCst);
+            if matches!(
+                self.phase,
+                AppendGate::BeforeFlush | AppendGate::FlushFailure
+            ) {
+                return self.inner.append_items(params).await;
+            }
             let mut release = self.release.lock().await.take().expect("one append");
             let released = std::future::poll_fn(|context| {
                 self.gate_polls.fetch_add(1, Ordering::SeqCst);
@@ -158,15 +189,27 @@ impl ThreadStore for GatedAppendStore {
                     released.await.expect("release append");
                     self.inner.append_items(params).await
                 }
-                AppendGate::AfterCommit => {
+                AppendGate::AfterCommit | AppendGate::AmbiguousFailure => {
                     self.inner.append_items(params).await?;
                     released.await.expect("release append");
-                    Ok(())
+                    if self.phase == AppendGate::AmbiguousFailure {
+                        Err(codex_thread_store::ThreadStoreError::Internal {
+                            message: "metadata projection failed after commit".to_string(),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }
+                AppendGate::BeforeFlush | AppendGate::FlushFailure => {
+                    unreachable!("flush gates do not wait during append")
                 }
             }
         })
     }
 }
+
+#[path = "durable_context_tests.rs"]
+mod durable_publication_tests;
 
 #[tokio::test]
 async fn cancellation_resumes_the_same_append_before_or_after_store_commit() {
@@ -236,9 +279,17 @@ async fn cancellation_resumes_the_same_append_before_or_after_store_commit() {
         }
         let mut recording = Box::pin(session.record_queued_mcp_use(&step));
         assert!(futures::poll!(recording.as_mut()).is_pending());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while store.gate_polls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("independent publication reaches append gate");
         assert_eq!(store.appends.load(Ordering::SeqCst), 1);
         drop(recording);
-        let expected = session
+        let expected = vec![render_inventory("unavailable", &[])];
+        let unpublished = session
             .clone_history()
             .await
             .annotated_items()
@@ -246,7 +297,7 @@ async fn cancellation_resumes_the_same_append_before_or_after_store_commit() {
             .filter(|item| McpServerUseInstructions::matches_response_item(&item.item))
             .cloned()
             .collect::<Vec<_>>();
-        assert_eq!(expected.len(), 1);
+        assert_eq!(unpublished, Vec::<ResponseItemEnvelope>::new());
         assert_eq!(
             *session.mcp_prompt.first_turn_servers.lock().await,
             vec!["unavailable"]
@@ -280,14 +331,11 @@ async fn cancellation_resumes_the_same_append_before_or_after_store_commit() {
             }
         );
 
-        // Both retry and real abort cleanup must resume the retained append.
-        // The store keeps its writer lock across the gate, so writing an abort
-        // marker first would deadlock without polling the suspended append.
+        // Both retry and real abort cleanup wait for the independently driven worker.
         if matches!(
             recovery,
             Recovery::AbortAllPreCancelled | Recovery::AbortOnePreCancelled
         ) {
-            let previous_polls = store.gate_polls.load(Ordering::SeqCst);
             session
                 .active_turn
                 .lock()
@@ -299,15 +347,8 @@ async fn cancellation_resumes_the_same_append_before_or_after_store_commit() {
                 .expect("running task")
                 .cancellation_token
                 .cancel();
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while store.gate_polls.load(Ordering::SeqCst) == previous_polls {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("pre-cancelled task must own pending append");
+            tokio::task::yield_now().await;
         }
-        let previous_polls = store.gate_polls.load(Ordering::SeqCst);
         let mut recovering = Box::pin(async {
             match recovery {
                 Recovery::Retry => session.record_queued_mcp_use(&step).await,
@@ -323,17 +364,7 @@ async fn cancellation_resumes_the_same_append_before_or_after_store_commit() {
                 }
             }
         });
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                assert!(futures::poll!(recovering.as_mut()).is_pending());
-                if store.gate_polls.load(Ordering::SeqCst) > previous_polls {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("recovery must poll retained append before another store write");
+        assert!(futures::poll!(recovering.as_mut()).is_pending());
         assert_eq!(store.appends.load(Ordering::SeqCst), 1);
         release
             .send(())
@@ -352,14 +383,9 @@ async fn cancellation_resumes_the_same_append_before_or_after_store_commit() {
                 .await
                 .is_empty()
         );
-        assert!(
-            session
-                .mcp_prompt
-                .pending_persistence
-                .lock()
-                .await
-                .is_none()
-        );
+        session
+            .check_history_publication()
+            .expect("publication succeeded");
         let live = session
             .clone_history()
             .await

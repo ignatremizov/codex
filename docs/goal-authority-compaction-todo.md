@@ -39,7 +39,10 @@ Verify their current ownership and coverage before evaluating changes:
 - Goal mutations use revision checks and serialized runtime effects so stale
   updates cannot reactivate replaced or cleared state.
 - Ordinary and subagent forks do not inherit goal ownership. Only the explicit
-  deferred-continuation fork path copies a paused goal and its selected skills.
+  safety-retry fork path copies the goal and its selected skills. The integrated
+  path preserves the source status and accounting and persists a separate
+  continuation deferral until the next explicit turn; it does not convert an
+  active or budget-limited goal into a paused goal.
 - Goal objectives are escaped as user-provided data before model injection.
 
 ## Deferred design questions
@@ -148,7 +151,8 @@ Verify the historical behavior and ensure any cadence or authority redesign can:
 - Restore selected skills after resume.
 - Keep the promoted inventory available after compaction.
 - Remove goal-owned skill authority from ordinary and subagent forks.
-- Carry the paused selection only through explicit deferred continuation.
+- Carry the selection only through the explicit safety-retry fork, preserving
+  its source status and separate continuation deferral.
 
 ## Required investigation
 

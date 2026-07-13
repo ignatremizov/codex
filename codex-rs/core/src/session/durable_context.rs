@@ -1,0 +1,205 @@
+//! Independently driven publication at the existing session history/settings boundary.
+//!
+//! Accepted workers own their permit until completion. They never retain Session.
+//! An append error can follow canonical commit: failure requires canonical reload,
+//! never another append of the same batch.
+
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::PoisonError;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+
+use codex_extension_api::PostCompactionContextContribution;
+use codex_extension_api::TurnInputContributionAcknowledgement;
+use codex_history::RolloutItem;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::oneshot;
+use tokio_util::task::TaskTracker;
+
+use super::Session;
+use super::thread_settings;
+use crate::state::SessionState;
+
+pub(super) struct PublicationBatch {
+    pub(super) rollout: Vec<RolloutItem>,
+    pub(super) events: Vec<codex_protocol::protocol::Event>,
+}
+
+#[derive(Default)]
+pub(super) struct HistoryPublication {
+    tasks: TaskTracker,
+    failure: Arc<Mutex<Option<String>>>,
+    closing: AtomicBool,
+}
+
+impl HistoryPublication {
+    pub(super) fn check(&self) -> CodexResult<()> {
+        if let Some(failure) = self
+            .failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            return Err(CodexErr::Fatal(failure.clone()));
+        }
+        if self.closing.load(Ordering::Acquire) {
+            return Err(CodexErr::Fatal(
+                "history publication is closing".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Records abandonment/panic as failure even if the result receiver disappeared.
+struct PublicationOutcome {
+    failure: Arc<Mutex<Option<String>>>,
+    stage: &'static str,
+    finished: bool,
+}
+
+impl PublicationOutcome {
+    fn fail(&mut self, error: impl std::fmt::Display) -> CodexErr {
+        let message = format!(
+            "history publication failed during {}: {error}; canonical reload required",
+            self.stage
+        );
+        *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(message.clone());
+        self.finished = true;
+        CodexErr::Fatal(message)
+    }
+}
+
+impl Drop for PublicationOutcome {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.fail("publication worker abandoned");
+        }
+    }
+}
+
+impl Session {
+    pub(crate) fn check_history_publication(&self) -> CodexResult<()> {
+        self.history_publication.check()
+    }
+
+    /// Waits for accepted workers without closing admission. Abort the active task first.
+    pub(crate) async fn await_history_publication(&self) {
+        let _permit = thread_settings::acquire_persistence_lock(self).await;
+    }
+
+    pub(super) async fn close_history_publication(&self) {
+        {
+            let _permit = thread_settings::acquire_persistence_lock(self).await;
+            self.history_publication
+                .closing
+                .store(true, Ordering::Release);
+            self.history_publication.tasks.close();
+        }
+        self.history_publication.tasks.wait().await;
+    }
+
+    /// Dispatch is synchronous while retaining the validated publication permit.
+    /// Only the receiver is cancellable; accepted work is driven by the task tracker.
+    pub(super) fn dispatch_history_publication<T: Send + 'static>(
+        &self,
+        permit: OwnedSemaphorePermit,
+        items: Vec<RolloutItem>,
+        leases: Vec<PostCompactionContextContribution>,
+        acknowledgement: Option<TurnInputContributionAcknowledgement>,
+        install: impl FnOnce(&mut SessionState) -> T + Send + 'static,
+    ) -> CodexResult<oneshot::Receiver<CodexResult<T>>> {
+        self.dispatch_history_publication_with_events(
+            permit,
+            PublicationBatch {
+                rollout: items,
+                events: Vec::new(),
+            },
+            leases,
+            acknowledgement,
+            install,
+        )
+    }
+
+    pub(super) fn dispatch_history_publication_with_events<T: Send + 'static>(
+        &self,
+        permit: OwnedSemaphorePermit,
+        batch: PublicationBatch,
+        leases: Vec<PostCompactionContextContribution>,
+        acknowledgement: Option<TurnInputContributionAcknowledgement>,
+        install: impl FnOnce(&mut SessionState) -> T + Send + 'static,
+    ) -> CodexResult<oneshot::Receiver<CodexResult<T>>> {
+        self.history_publication.check()?;
+        if leases.iter().any(|contribution| !contribution.is_current()) {
+            return Err(CodexErr::Fatal(
+                "checkpoint contribution was invalidated before publication".to_string(),
+            ));
+        }
+        let live_thread = self.live_thread().cloned();
+        let state = Arc::clone(&self.state);
+        let failure = Arc::clone(&self.history_publication.failure);
+        let event_sender = self.tx_event.clone();
+        let trace = self.services.rollout_thread_trace.clone();
+        let (sender, receiver) = oneshot::channel();
+        self.history_publication.tasks.spawn(async move {
+            let PublicationBatch {
+                rollout: items,
+                events,
+            } = batch;
+            let _permit = permit;
+            let _leases = leases;
+            let mut outcome = PublicationOutcome {
+                failure,
+                stage: "append",
+                finished: false,
+            };
+            if !items.is_empty()
+                && let Some(live_thread) = live_thread
+            {
+                if let Err(error) = live_thread.append_items(&items).await {
+                    let _ = sender.send(Err(outcome.fail(error)));
+                    return;
+                }
+                outcome.stage = "flush";
+                if let Err(error) = live_thread.flush().await {
+                    let _ = sender.send(Err(outcome.fail(error)));
+                    return;
+                }
+            }
+            outcome.stage = "live installation";
+            let result = {
+                let mut state = state.lock().await;
+                install(&mut state)
+            };
+            outcome.stage = "acknowledgment";
+            if let Some(acknowledgement) = acknowledgement {
+                acknowledgement.acknowledge();
+            }
+            for event in events {
+                trace.record_protocol_event(&event.msg);
+                let _ = event_sender.send(event).await;
+            }
+            outcome.finished = true;
+            let _ = sender.send(Ok(result));
+        });
+        Ok(receiver)
+    }
+
+    pub(super) async fn publication_result<T>(
+        &self,
+        receiver: oneshot::Receiver<CodexResult<T>>,
+    ) -> CodexResult<T> {
+        match receiver.await {
+            Ok(result) => result,
+            Err(_) => {
+                self.check_history_publication()?;
+                Err(CodexErr::Fatal(
+                    "history publication lost its completion result".to_string(),
+                ))
+            }
+        }
+    }
+}

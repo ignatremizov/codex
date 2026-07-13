@@ -74,6 +74,7 @@ use codex_connectors::AppToolPolicyEvaluator;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnInputContext;
+use codex_extension_api::TurnInputContributionAcknowledgement;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
 use codex_file_system::FindUpErrorPolicy;
@@ -315,18 +316,6 @@ pub(crate) async fn run_turn(
     );
     let mut world_state = world_state?;
 
-    let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
-        &sess,
-        first_step_context.as_ref(),
-        &user_input,
-        &mentioned_plugins,
-        &cancellation_token,
-    )
-    .await
-    else {
-        return Ok(None);
-    };
-
     if run_pending_session_start_hooks(&sess, &turn_context).await {
         return Ok(None);
     }
@@ -376,17 +365,29 @@ pub(crate) async fn run_turn(
         .await?;
     }
     let mut can_drain_pending_input = input.is_empty();
-    if run_hooks_and_record_inputs(
+    let (stopped, accepted_input) = run_hooks_and_record_accepted_inputs(
         &sess,
         &turn_context,
         &first_step_context.settings.model_info,
         &input,
         PersistContext::TurnStart,
     )
-    .await
-    {
+    .await;
+    if stopped {
         return Ok(None);
     }
+    let Some((injection_items, explicitly_enabled_connectors, contributions)) =
+        build_skills_and_plugins(
+            &sess,
+            first_step_context.as_ref(),
+            &turn_user_input(&accepted_input),
+            &mentioned_plugins,
+            &cancellation_token,
+        )
+        .await
+    else {
+        return Ok(None);
+    };
 
     // Only speculate after hooks accept the turn, using its finalized tools and permissions.
     {
@@ -412,6 +413,15 @@ pub(crate) async fn run_turn(
             std::slice::from_ref(&response_item),
         )
         .await;
+    }
+    for contribution in contributions {
+        sess.record_durable_context_items(
+            &turn_context,
+            &first_step_context.settings.model_info,
+            contribution.items,
+            contribution.acknowledgement,
+        )
+        .await?;
     }
 
     track_turn_resolved_config_analytics(&sess, &turn_context, &input).await;
@@ -446,15 +456,15 @@ pub(crate) async fn run_turn(
             Vec::new()
         };
 
-        if run_hooks_and_record_inputs(
+        let (stopped, pending_input) = run_hooks_and_record_accepted_inputs(
             &sess,
             &turn_context,
             &turn_context.capture_current_model_info(),
             &pending_input,
             PersistContext::SteeredUserInput,
         )
-        .await
-        {
+        .await;
+        if stopped {
             break;
         }
 
@@ -510,6 +520,32 @@ pub(crate) async fn run_turn(
             }
         };
         let sampling_request_result: CodexResult<_> = async {
+            let accepted_user_input = turn_user_input(&pending_input);
+            if !accepted_user_input.is_empty()
+                && !is_compaction_decoder
+                && !crate::guardian::is_basic_session_source(&turn_context.session_source)
+            {
+                let Some(contributions) = build_extension_turn_input_items(
+                    &sess,
+                    step_context.as_ref(),
+                    &accepted_user_input,
+                    &cancellation_token,
+                )
+                .await
+                else {
+                    return Err(CodexErr::TurnAborted);
+                };
+                for contribution in contributions {
+                    sess.record_durable_context_items(
+                        &turn_context,
+                        &step_context.settings.model_info,
+                        contribution.items,
+                        contribution.acknowledgement,
+                    )
+                    .await?;
+                }
+            }
+            sess.check_history_publication()?;
             if !is_compaction_decoder {
                 super::time_reminder::maybe_record_current_time_reminder(
                     sess.as_ref(),
@@ -531,6 +567,8 @@ pub(crate) async fn run_turn(
 
             // Construct the input that we will send to the model.
             sess.record_queued_mcp_use(step_context.as_ref()).await;
+            sess.await_history_publication().await;
+            sess.check_history_publication()?;
             let sampling_request_input: Vec<ResponseItem> = async {
                 sess.clone_history()
                     .await
@@ -877,6 +915,18 @@ pub(crate) async fn run_hooks_and_record_inputs(
     input: &[TurnInput],
     persist_context: PersistContext,
 ) -> bool {
+    run_hooks_and_record_accepted_inputs(sess, turn_context, model_info, input, persist_context)
+        .await
+        .0
+}
+
+async fn run_hooks_and_record_accepted_inputs(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    model_info: &ModelInfo,
+    input: &[TurnInput],
+    persist_context: PersistContext,
+) -> (bool, Vec<TurnInput>) {
     // Cancellation can reach this path before Guardian's tools and context are
     // resolved. Only finalized evidence may enter reusable reviewer history.
     if sess
@@ -885,10 +935,11 @@ pub(crate) async fn run_hooks_and_record_inputs(
         .get::<crate::guardian::PendingReviewContext>()
         .is_some()
     {
-        return false;
+        return (false, Vec::new());
     }
     let mut blocked_input = false;
     let mut accepted_user_input = false;
+    let mut accepted = Vec::new();
     for input_item in input {
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
@@ -915,9 +966,10 @@ pub(crate) async fn run_hooks_and_record_inputs(
                 input_persist_context,
             )
             .await;
+            accepted.push(input_item.clone());
         }
     }
-    blocked_input && !accepted_user_input
+    (blocked_input && !accepted_user_input, accepted)
 }
 
 fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
@@ -1042,12 +1094,22 @@ async fn build_skills_and_plugins(
     user_input: &[UserInput],
     mentioned_plugins: &[crate::plugins::PluginCapabilitySummary],
     cancellation_token: &CancellationToken,
-) -> Option<(Vec<ResponseItem>, HashSet<String>)> {
+) -> Option<(
+    Vec<ResponseItem>,
+    HashSet<String>,
+    Vec<PendingTurnInputContribution>,
+)> {
     let turn_context = step_context.turn.as_ref();
     // Guardian input embeds the parent transcript as untrusted evidence. Do not interpret skill or
     // plugin mentions from that generated prompt as requests to inject additional instructions.
-    if crate::guardian::is_basic_session_source(&turn_context.session_source) {
-        return Some((Vec::new(), HashSet::new()));
+    if crate::guardian::is_basic_session_source(&turn_context.session_source)
+        || sess
+            .services
+            .thread_extension_data
+            .get::<crate::codex_delegate::compaction::CompactionDecoder>()
+            .is_some()
+    {
+        return Some((Vec::new(), HashSet::new(), Vec::new()));
     }
 
     let tracking = build_track_events_context(
@@ -1171,8 +1233,16 @@ async fn build_skills_and_plugins(
         None => skill_items,
     };
     injection_items.extend(plugin_items);
-    injection_items.extend(extension_injection_items);
-    Some((injection_items, explicitly_enabled_connectors))
+    Some((
+        injection_items,
+        explicitly_enabled_connectors,
+        extension_injection_items,
+    ))
+}
+
+struct PendingTurnInputContribution {
+    items: Vec<ResponseItem>,
+    acknowledgement: Option<TurnInputContributionAcknowledgement>,
 }
 
 #[tracing::instrument(
@@ -1185,7 +1255,7 @@ async fn build_extension_turn_input_items(
     step_context: &StepContext,
     user_input: &[UserInput],
     cancellation_token: &CancellationToken,
-) -> Option<Vec<ResponseItem>> {
+) -> Option<Vec<PendingTurnInputContribution>> {
     let turn_context = step_context.turn.as_ref();
     let contributors = sess.services.extensions.turn_input_contributors().to_vec();
     if contributors.is_empty() {
@@ -1214,8 +1284,8 @@ async fn build_extension_turn_input_items(
 
     let mut items = Vec::new();
     for contributor in contributors {
-        let contributed_fragments = contributor
-            .contribute(
+        let contribution = contributor
+            .contribute_durable(
                 input.clone(),
                 Some(Arc::clone(&extension_metrics)),
                 &sess.services.session_extension_data,
@@ -1225,11 +1295,14 @@ async fn build_extension_turn_input_items(
             .or_cancel(cancellation_token)
             .await
             .ok()?;
-        items.extend(
-            contributed_fragments
+        let (fragments, acknowledgement) = contribution.into_parts();
+        items.push(PendingTurnInputContribution {
+            items: fragments
                 .into_iter()
-                .map(ContextualUserFragment::into_boxed_response_item),
-        );
+                .map(ContextualUserFragment::into_boxed_response_item)
+                .collect(),
+            acknowledgement,
+        });
     }
 
     Some(items)
@@ -1678,6 +1751,8 @@ async fn run_sampling_request(
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
     loop {
+        sess.await_history_publication().await;
+        sess.check_history_publication()?;
         // Running code-mode cells can request review while this response is in flight.
         // Keep the latest received ID until response.created replaces it.
         let prompt_input = if let Some(input) = initial_input.take() {
@@ -1719,6 +1794,8 @@ async fn run_sampling_request(
         .await
         {
             Ok(output) => {
+                sess.await_history_publication().await;
+                sess.check_history_publication()?;
                 return Ok((output, original_input.unwrap_or(prompt.input)));
             }
             Err(err) => match err.details() {
@@ -2531,6 +2608,8 @@ async fn try_run_sampling_request(
     prompt: &Prompt,
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
+    sess.await_history_publication().await;
+    sess.check_history_publication()?;
     let turn_context = Arc::clone(&step_context.turn);
     feedback_tags!(
         model = step_context.settings.model_info.slug.clone(),

@@ -46,7 +46,7 @@ impl App {
                 thread_id,
                 /*last_turn_id*/ None,
                 /*before_turn_id*/ Some(before_turn_id),
-                ForkGoalContinuation::DeferUntilNextTurn,
+                ForkGoalContinuation::GoalFree,
                 selected_profile.as_ref(),
             )
             .await

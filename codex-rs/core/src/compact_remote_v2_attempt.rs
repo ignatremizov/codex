@@ -35,6 +35,8 @@ pub(super) async fn run_remote_compact_v2_attempt(
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
 ) -> CodexResult<RemoteCompactV2Attempt> {
+    sess.await_history_publication().await;
+    sess.check_history_publication()?;
     let turn_context = &step_context.turn;
     let mut history = sess.clone_history().await;
     let base_instructions = sess.get_prompt_base_instructions().await;

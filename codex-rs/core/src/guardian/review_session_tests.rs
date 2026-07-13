@@ -99,7 +99,8 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
                 reviewer_compaction_hash: Some("matching".to_owned()),
             },
         )
-        .await;
+        .await
+        .expect("publish checkpoint");
     let ((outcome, _), submitted_text) = tokio::join!(manager.review(prepared), async {
         let submission = rx_sub.recv().await.unwrap();
         let id = submission.id;

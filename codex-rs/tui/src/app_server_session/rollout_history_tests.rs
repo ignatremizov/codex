@@ -141,7 +141,7 @@ async fn remote_resume_restores_saved_server_profile_without_permission_override
             thread_id,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
-            ForkGoalContinuation::StartIfIdle,
+            ForkGoalContinuation::GoalFree,
             Some(&stale_selection),
         )
         .await?;

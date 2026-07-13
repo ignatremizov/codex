@@ -2776,12 +2776,22 @@ text(JSON.stringify({
 const searchResult = await tools.tool_search({
   query: "calendar timezone option 99",
 });
-const tool = searchResult.find(
-  ({ name }) => name === "mcp__codex_apps__calendar_timezone_option_99"
-);
-store("discoveredToolName", tool?.name);
+const toolName = searchResult.flatMap((entry) => {
+  if (!Array.isArray(entry.tools)) {
+    return [entry.name];
+  }
+  return entry.tools.map(({ name }) => {
+    if (entry.name === "functions") {
+      return name;
+    }
+    return entry.name.endsWith("_") || name.startsWith("_")
+      ? `${entry.name}${name}`
+      : `${entry.name}__${name}`;
+  });
+}).find((name) => name === "mcp__codex_apps__calendar_timezone_option_99");
+store("discoveredToolName", toolName);
 text(JSON.stringify({
-  found: Boolean(tool),
+  found: Boolean(toolName),
   searchFound: Array.isArray(searchResult) && searchResult.length > 0,
 }));
 "#,

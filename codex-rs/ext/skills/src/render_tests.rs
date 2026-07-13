@@ -30,6 +30,15 @@ fn skill_prompt_contents_are_bounded_at_utf8_boundaries() {
     assert_eq!(truncated, true);
 }
 
+fn expected_available_skills_body(prompt_kind: SkillPromptKind, skill_lines: &[String]) -> String {
+    let inventory = render_available_skills_body(prompt_kind, &[], skill_lines);
+    format!(
+        "\n<promoted_skills>[]</promoted_skills>\n\
+         When multiple complete skills inventories are present, this latest inventory supersedes earlier inventories.\n\
+         {inventory}\n"
+    )
+}
+
 fn entry(name: &str, description: &str, short_description: Option<&str>) -> SkillCatalogEntry {
     entry_with_path(
         name,
@@ -108,9 +117,8 @@ fn ordering_follows_render_policy() {
 
     assert_eq!(
         render(SkillCatalogRenderPolicy::CoreCompatible),
-        render_available_skills_body(
+        expected_available_skills_body(
             SkillPromptKind::Unaliased,
-            &[],
             &[
                 "- system-zeta: Description. (file: /skills/system-zeta/SKILL.md)".to_string(),
                 "- admin-alpha: Description. (file: /skills/admin-alpha/SKILL.md)".to_string(),
@@ -123,9 +131,8 @@ fn ordering_follows_render_policy() {
     );
     assert_eq!(
         render(SkillCatalogRenderPolicy::ExtensionCompatible),
-        render_available_skills_body(
+        expected_available_skills_body(
             SkillPromptKind::Unaliased,
-            &[],
             &[
                 "- repo-zeta: Description. (file: /skills/repo-zeta/SKILL.md)".to_string(),
                 "- user-alpha: Description. (file: /skills/user-alpha/SKILL.md)".to_string(),
@@ -169,9 +176,8 @@ fn description_selection_follows_render_policy() {
 
     assert_eq!(
         core.body(),
-        render_available_skills_body(
+        expected_available_skills_body(
             SkillPromptKind::Unaliased,
-            &[],
             &[
                 "- fallback: fallback description (file: /skills/fallback/SKILL.md)".to_string(),
                 "- shortened: full description (file: /skills/shortened/SKILL.md)".to_string(),
@@ -180,9 +186,8 @@ fn description_selection_follows_render_policy() {
     );
     assert_eq!(
         extension.body(),
-        render_available_skills_body(
+        expected_available_skills_body(
             SkillPromptKind::Unaliased,
-            &[],
             &[
                 "- shortened: short description (file: /skills/shortened/SKILL.md)".to_string(),
                 "- fallback: fallback description (file: /skills/fallback/SKILL.md)".to_string(),
@@ -320,6 +325,8 @@ fn host_only_prompts_preserve_existing_behavior_with_and_without_aliases() {
     )
     .expect("unaliased host catalog should render");
     insta::assert_snapshot!(unaliased.body(), @r###"
+    <promoted_skills>[]</promoted_skills>
+    When multiple complete skills inventories are present, this latest inventory supersedes earlier inventories.
 
     ## Skills
     A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that can be used. Each entry includes a name, description, and source locator. `file` locators are on the host filesystem, `executor package` locators are owned by their execution environment, `orchestrator package` locators are opaque package identifiers, and `custom resource` locators use their provider's access mechanism.
@@ -355,6 +362,8 @@ fn host_only_prompts_preserve_existing_behavior_with_and_without_aliases() {
     )
     .expect("aliased host catalog should render");
     insta::assert_snapshot!(aliased.body(), @r###"
+    <promoted_skills>[]</promoted_skills>
+    When multiple complete skills inventories are present, this latest inventory supersedes earlier inventories.
 
     ## Skills
     A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.

@@ -201,6 +201,122 @@ async fn prompt_source(
 }
 
 #[tokio::test]
+async fn goal_free_and_safety_retry_fork_requests_preserve_both_history_modes() -> Result<()> {
+    use crate::app_server_session::ForkGoalContinuation;
+    use crate::app_server_session::ForkPermissionMode;
+
+    for mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        let (app, _events, (mut server, requests, proxy), source_id, _path) =
+            prompt_source(mode, HistoryCapabilities::Current, PromptImages::Remote).await?;
+        server
+            .fork_thread_with_permission_mode(
+                &app.local_settings,
+                app.config.clone(),
+                source_id,
+                ForkPermissionMode::InheritSaved,
+            )
+            .await?;
+        server
+            .fork_side_thread(&app.local_settings, app.config.clone(), source_id)
+            .await?;
+        server
+            .fork_thread_at(
+                &app.local_settings,
+                app.config.clone(),
+                source_id,
+                /*last_turn_id*/ None,
+                /*before_turn_id*/ Some("turn-2".into()),
+                ForkGoalContinuation::InheritForSafetyRetry,
+                /*selected_profile*/ None,
+            )
+            .await?;
+        let forks = recorded_params(&requests, "thread/fork");
+        let params: Vec<codex_app_server_protocol::ThreadForkParams> = forks
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<serde_json::Result<_>>()?;
+        let flags: Vec<_> = params
+            .into_iter()
+            .map(|params| (params.thread_id, params.defer_goal_continuation))
+            .collect();
+        assert_eq!(
+            flags,
+            vec![
+                (source_id.to_string(), false),
+                (source_id.to_string(), false),
+                (source_id.to_string(), true),
+            ]
+        );
+        assert!(recorded_params(&requests, "turn/start").is_empty());
+        assert_eq!(
+            server
+                .thread_read(source_id, /*include_turns*/ false)
+                .await?
+                .history_mode,
+            mode
+        );
+        server.shutdown().await?;
+        proxy.await??;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn working_directory_forks_are_goal_free_in_both_history_modes() -> Result<()> {
+    for mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        let (mut app, _events, (mut server, requests, proxy), source_id, _path) =
+            prompt_source(mode, HistoryCapabilities::Current, PromptImages::Remote).await?;
+        let destination = tempdir()?;
+        let cwd = destination.path().canonicalize()?;
+        crate::legacy_core::config::set_project_trust_level(
+            app.config.codex_home.as_path(),
+            &cwd,
+            codex_protocol::config_types::TrustLevel::Trusted,
+        )
+        .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        Box::pin(app.handle_event(
+            &mut tui,
+            &mut server,
+            AppEvent::ChangeWorkingDirectory {
+                thread_id: source_id,
+                requested_cwd: cwd,
+            },
+        ))
+        .await?;
+        let pending = app
+            .pending_working_directory_change
+            .take()
+            .expect("queued directory change");
+        Box::pin(app.finish_working_directory_change(&mut tui, &mut server, pending)).await;
+        let forks = recorded_params(&requests, "thread/fork");
+        assert_eq!(forks.len(), 1);
+        let params: codex_app_server_protocol::ThreadForkParams =
+            serde_json::from_value(forks[0].clone())?;
+        assert_eq!(
+            (params.thread_id, params.defer_goal_continuation),
+            (source_id.to_string(), false)
+        );
+        assert!(recorded_params(&requests, "turn/start").is_empty());
+        let fork_id = app
+            .chat_widget
+            .thread_id()
+            .expect("attached directory fork");
+        assert_ne!(fork_id, source_id);
+        assert_eq!(
+            server
+                .thread_read(fork_id, /*include_turns*/ false)
+                .await?
+                .history_mode,
+            mode
+        );
+        server.shutdown().await?;
+        proxy.await??;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn prompt_forks_preserve_sources_and_drafts_after_owned_and_inline_attachment() -> Result<()>
 {
     for mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
@@ -255,7 +371,9 @@ async fn prompt_forks_preserve_sources_and_drafts_after_owned_and_inline_attachm
                 assert_eq!(forks.len(), 1);
                 assert_eq!(forks[0]["threadId"], source_id.to_string());
                 assert_eq!(forks[0]["beforeTurnId"], format!("turn-{selected}"));
-                assert_eq!(forks[0]["deferGoalContinuation"], true);
+                let params: codex_app_server_protocol::ThreadForkParams =
+                    serde_json::from_value(forks[0].clone())?;
+                assert!(!params.defer_goal_continuation);
                 assert!(recorded_params(&requests, "thread/start").is_empty());
                 assert!(recorded_params(&requests, "thread/revert").is_empty());
                 assert!(recorded_params(&requests, "turn/start").is_empty());

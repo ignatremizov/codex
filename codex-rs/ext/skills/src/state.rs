@@ -7,10 +7,13 @@ use std::sync::Weak;
 use codex_exec_server::Environment;
 use codex_exec_server::FileSystemSandboxContext;
 use codex_extension_api::ExtensionMetrics;
+use codex_extension_api::RestoredSkillsInventory;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpResourceClient;
 use codex_mcp::McpResourceServerCacheKey;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 use tokio::sync::OnceCell;
 
 use crate::SkillsExtensionConfig;
@@ -22,6 +25,9 @@ use crate::catalog::SkillProviderResult;
 use crate::catalog::SkillReadResult;
 use crate::catalog::SkillResourceId;
 use crate::catalog::SkillSourceKind;
+use crate::fragments::AvailableSkillsInstructions;
+use crate::fragments::PromotedSkillIdentity;
+use crate::fragments::promoted_metadata_is_bounded;
 use crate::provider::SkillListQuery;
 use crate::provider::SkillReadRequest;
 use crate::shadow_selection_experiment::RecentSkillInvocations;
@@ -31,6 +37,7 @@ use crate::sources::SkillProviders;
 
 const MAX_CACHED_ORCHESTRATOR_RESOURCES: usize = 100;
 const MAX_CACHED_ORCHESTRATOR_CONTENT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PROMOTED_SKILLS: usize = 16;
 
 pub(crate) struct SkillsSessionState {
     pub(crate) mcp_resources: Option<Arc<McpResourceClient>>,
@@ -40,6 +47,8 @@ pub(crate) struct SkillsSessionState {
 pub(crate) struct SkillsThreadState {
     config: Mutex<SkillsExtensionConfig>,
     orchestrator_skills_available: bool,
+    promoted_skills: Mutex<Vec<PromotedSkillIdentity>>,
+    projected_promoted_skills: Mutex<Vec<PromotedSkillIdentity>>,
     executor_cache: Mutex<Vec<CachedExecutorCatalog>>,
     executor_discovery_cache: Mutex<Option<CachedExecutorDiscoveryCatalog>>,
     orchestrator_cache: Mutex<Option<Arc<OrchestratorGenerationCache>>>,
@@ -54,6 +63,8 @@ impl SkillsThreadState {
         Self {
             config: Mutex::new(config),
             orchestrator_skills_available,
+            promoted_skills: Mutex::new(Vec::new()),
+            projected_promoted_skills: Mutex::new(Vec::new()),
             executor_cache: Mutex::new(Vec::new()),
             executor_discovery_cache: Mutex::new(None),
             orchestrator_cache: Mutex::new(None),
@@ -109,6 +120,113 @@ impl SkillsThreadState {
             .map(|turn| Arc::clone(&turn.state))
     }
 
+    pub(crate) fn restore_promoted_skills(&self, inventory: &RestoredSkillsInventory) {
+        let promoted = match inventory.item() {
+            ResponseItem::Message { content, .. } => content
+                .iter()
+                .find_map(|content| {
+                    let ContentItem::InputText { text } = content else {
+                        return None;
+                    };
+                    AvailableSkillsInstructions::promoted_from_rendered(text)
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        *self
+            .promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = promoted;
+        self.projected_promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    pub(crate) fn resolve_promoted_skills(
+        &self,
+        catalog: &SkillCatalog,
+    ) -> (Vec<SkillCatalogEntry>, usize) {
+        let promoted = self
+            .promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let resolved = promoted
+            .iter()
+            .filter_map(|identity| {
+                catalog
+                    .entries
+                    .iter()
+                    .find(|entry| entry.enabled && identity.matches_entry(entry))
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
+        let omitted = promoted.len().saturating_sub(resolved.len());
+        (resolved, omitted)
+    }
+
+    pub(crate) fn promoted_skill_identities(&self) -> Vec<PromotedSkillIdentity> {
+        self.promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn promoted_with(
+        &self,
+        entries: &[SkillCatalogEntry],
+    ) -> (Vec<PromotedSkillIdentity>, bool, usize) {
+        let promoted = self
+            .promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut next = promoted.clone();
+        let mut omitted = 0usize;
+        for entry in entries {
+            let Some(identity) = PromotedSkillIdentity::from_entry(entry) else {
+                omitted = omitted.saturating_add(1);
+                continue;
+            };
+            if !next.contains(&identity) {
+                if next.len() == MAX_PROMOTED_SKILLS {
+                    omitted = omitted.saturating_add(1);
+                    continue;
+                }
+                next.push(identity);
+                if !promoted_metadata_is_bounded(&next) {
+                    next.pop();
+                    omitted = omitted.saturating_add(1);
+                }
+            }
+        }
+        let changed = next != *promoted;
+        (next, changed, omitted)
+    }
+
+    pub(crate) fn promoted_projection_changed(&self, projected: &[PromotedSkillIdentity]) -> bool {
+        projected
+            != self
+                .projected_promoted_skills
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice()
+    }
+
+    pub(crate) fn acknowledge_promoted_skills(
+        &self,
+        promoted: Vec<PromotedSkillIdentity>,
+        projected: Vec<PromotedSkillIdentity>,
+    ) {
+        *self
+            .promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = promoted;
+        *self
+            .projected_promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = projected;
+    }
+
     /// Returns catalogs for stable selected roots.
     ///
     /// Successful catalogs, including empty or warning-bearing catalogs, remain cached until
@@ -147,29 +265,38 @@ impl SkillsThreadState {
         providers: &SkillProviders,
         query: SkillListQuery,
     ) -> SkillCatalog {
-        let discovery_failed = query
-            .executor_capability_discovery
-            .as_ref()
-            .is_some_and(|discovery| discovery.roots().iter().any(|root| root.result.is_err()));
+        let discovery_succeeded =
+            query
+                .executor_capability_discovery
+                .as_ref()
+                .is_some_and(|snapshot| {
+                    snapshot.roots().iter().all(|root| {
+                        root.result
+                            .as_ref()
+                            .is_ok_and(|discovery| discovery.error.is_none())
+                    })
+                });
         let sandbox_contexts = query
             .executor_capability_discovery
             .as_ref()
             .map(|discovery| discovery.sandbox_contexts().clone())
             .unwrap_or_default();
-        if let Some(cached) = self
-            .executor_discovery_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .filter(|cached| {
-                cached.roots == query.executor_roots && cached.sandbox_contexts == sandbox_contexts
-            })
+        if discovery_succeeded
+            && let Some(cached) = self
+                .executor_discovery_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .filter(|cached| {
+                    cached.roots == query.executor_roots
+                        && cached.sandbox_contexts == sandbox_contexts
+                })
         {
             return cached.catalog.clone();
         }
         let roots = query.executor_roots.clone();
         let discovered = providers.list_executor_for_turn(query).await;
-        if discovery_failed {
+        if !discovery_succeeded {
             return discovered;
         }
         let mut cache = self

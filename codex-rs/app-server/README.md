@@ -1,3 +1,22 @@
+# Goal mutation and fork semantics
+
+`thread/goal/set` preserves an existing goal's identity and accumulated usage when
+editing its objective, status, or budget. An unchanged request is a no-op: it
+does not restart continuation, rotate goal authority, or emit an update.
+`thread/goal/clear` is also a no-op when no goal exists. Runtime effects are
+applied before mutation responses are sent; obsolete effects cannot reactivate
+a subsequently stopped or replaced goal.
+
+Ordinary forks do not inherit goals. Explicit safety-retry forks preserve the
+source goal's exact status, budget, and accounting, with automatic continuation
+deferred until the first admitted turn. An active goal is not converted to paused.
+Compaction reconstructs active goal guidance from the persisted objective.
+
+`skills/list` may use the last valid configuration after a transient reload
+failure only for the same working directory and unchanged, readable configuration
+layers and managed requirements. The server logs the reload warning; requests for
+other working directories still report their configuration errors.
+
 # Model catalog provider requirements
 
 `model/list` and periodic model catalog refreshes check the startup provider against

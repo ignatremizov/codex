@@ -128,13 +128,18 @@ impl Session {
         let (annotated_items, image_preparations) = self
             .prepare_annotated_conversation_items_for_history(turn_context, model_info, items)
             .await;
-        self.record_prepared_conversation_items(
-            turn_context,
-            model_info,
-            annotated_items,
-            image_preparations,
-        )
-        .await;
+        if let Err(error) = self
+            .record_prepared_conversation_items(
+                turn_context,
+                model_info,
+                annotated_items,
+                image_preparations,
+                /*acknowledgement*/ None,
+            )
+            .await
+        {
+            tracing::error!("failed to publish annotated conversation items: {error}");
+        }
     }
 
     pub(super) async fn prepare_annotated_conversation_items_for_history(
