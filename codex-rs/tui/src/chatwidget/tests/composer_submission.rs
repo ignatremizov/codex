@@ -1473,7 +1473,7 @@ async fn startup_draft_handoff_preserves_literal_and_shell_bang() {
     chat.thread_id = Some(ThreadId::new());
     chat.restore_startup_draft(draft);
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-    assert_matches!(ops.try_recv(), Ok(Op::RunUserShellCommand { command }) if command == "pwd");
+    assert_matches!(ops.try_recv(), Ok(Op::RunUserShellCommand { command, .. }) if command == "pwd");
 }
 
 #[tokio::test]
