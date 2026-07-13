@@ -387,7 +387,7 @@ async fn run_remote_compact_task_inner_impl(
                 reviewer_compaction_hash,
             },
         )
-        .await;
+        .await?;
     if let Some(trace_input_history) = trace_input_history.as_deref() {
         let replacement_history = installed_history
             .iter()
@@ -457,6 +457,8 @@ async fn run_remote_compaction_request_v2(
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retry_state = ResponsesStreamRetryState::default();
     loop {
+        sess.await_history_publication().await;
+        sess.check_history_publication()?;
         let result = match client_session
             .stream(
                 prompt,

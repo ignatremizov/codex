@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
@@ -122,6 +123,9 @@ mod cloud_skill_tests;
 
 #[path = "skills_extension/cloud_lifecycle_tests.rs"]
 mod cloud_lifecycle_tests;
+
+#[path = "skills_extension/steer_tests.rs"]
+mod steer_tests;
 
 struct StaticSkillProvider {
     catalog: SkillCatalog,

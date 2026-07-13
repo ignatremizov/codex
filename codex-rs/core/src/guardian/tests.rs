@@ -2684,7 +2684,8 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
                 reviewer_compaction_hash: Some("test-checkpoint".to_owned()),
             },
         )
-        .await;
+        .await
+        .expect("publish compacted history");
     let third_request = GuardianApprovalRequest::ExecCommand {
         id: "shell-3".to_string(),
         environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),

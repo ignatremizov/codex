@@ -15,11 +15,12 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::accounting::BudgetLimitedGoalDisposition;
-use crate::accounting::GoalAccountingState;
 use crate::analytics::GoalAnalytics;
 use crate::analytics::GoalEventAttribution;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
+use crate::runtime::GoalRuntimeHandle;
+use crate::runtime::InactiveGoalHistory;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::GET_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
@@ -33,7 +34,7 @@ pub(crate) struct GoalToolExecutor {
     kind: GoalToolKind,
     thread_id: ThreadId,
     state_db: Arc<codex_state::StateRuntime>,
-    accounting_state: Arc<GoalAccountingState>,
+    runtime: GoalRuntimeHandle,
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
@@ -76,9 +77,8 @@ enum CompletionBudgetReport {
 
 impl GoalToolExecutor {
     pub(crate) fn get(
-        thread_id: ThreadId,
+        runtime: GoalRuntimeHandle,
         state_db: Arc<codex_state::StateRuntime>,
-        accounting_state: Arc<GoalAccountingState>,
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
@@ -86,9 +86,9 @@ impl GoalToolExecutor {
         Self {
             kind: GoalToolKind::Get,
             execution_allowed: true,
-            thread_id,
+            thread_id: runtime.thread_id(),
             state_db,
-            accounting_state,
+            runtime,
             analytics,
             event_emitter,
             metrics,
@@ -97,9 +97,8 @@ impl GoalToolExecutor {
     }
 
     pub(crate) fn create(
-        thread_id: ThreadId,
+        runtime: GoalRuntimeHandle,
         state_db: Arc<codex_state::StateRuntime>,
-        accounting_state: Arc<GoalAccountingState>,
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
@@ -108,9 +107,9 @@ impl GoalToolExecutor {
         Self {
             kind: GoalToolKind::Create,
             execution_allowed: true,
-            thread_id,
+            thread_id: runtime.thread_id(),
             state_db,
-            accounting_state,
+            runtime,
             analytics,
             event_emitter,
             metrics,
@@ -119,9 +118,8 @@ impl GoalToolExecutor {
     }
 
     pub(crate) fn update(
-        thread_id: ThreadId,
+        runtime: GoalRuntimeHandle,
         state_db: Arc<codex_state::StateRuntime>,
-        accounting_state: Arc<GoalAccountingState>,
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
@@ -129,9 +127,9 @@ impl GoalToolExecutor {
         Self {
             kind: GoalToolKind::Update,
             execution_allowed: true,
-            thread_id,
+            thread_id: runtime.thread_id(),
             state_db,
-            accounting_state,
+            runtime,
             analytics,
             event_emitter,
             metrics,
@@ -208,6 +206,9 @@ impl GoalToolExecutor {
         request.token_budget = request.token_budget.or(self.max_goal_token_budget);
         validate_goal_budget(request.token_budget, self.max_goal_token_budget)
             .map_err(FunctionCallError::RespondToModel)?;
+        let _goal_state_permit = self.runtime.goal_state_permit().await.map_err(|err| {
+            FunctionCallError::Fatal(format!("goal state semaphore closed: {err}"))
+        })?;
 
         let goal = self
             .state_db
@@ -224,12 +225,22 @@ impl GoalToolExecutor {
                 FunctionCallError::RespondToModel(
                     "cannot create a new goal because this thread has an unfinished goal; complete the existing goal first"
                         .to_string(),
-                )
+                    )
             })?;
+        let revision = self.runtime.advance_goal_revision().map_err(|err| {
+            FunctionCallError::Fatal(format!("failed to advance goal revision: {err}"))
+        })?;
         fill_empty_thread_preview_if_possible(self.state_db.as_ref(), self.thread_id, &goal).await;
+        self.runtime
+            .project_active_goal_objective_at_revision(revision, goal.objective.clone());
         let turn_id = self
-            .accounting_state
+            .runtime
+            .accounting_state()
             .mark_current_turn_goal_active(goal.goal_id.clone());
+        if !self.runtime.is_enabled() {
+            self.runtime.accounting_state().clear_active_goal();
+            self.runtime.clear_active_goal_objective();
+        }
         self.metrics.record_created();
         self.analytics.created(
             &goal,
@@ -254,6 +265,9 @@ impl GoalToolExecutor {
                     .to_string(),
             ));
         }
+        let _goal_state_permit = self.runtime.goal_state_permit().await.map_err(|err| {
+            FunctionCallError::Fatal(format!("goal state semaphore closed: {err}"))
+        })?;
 
         self.account_active_goal_progress(
             match args.status {
@@ -269,9 +283,20 @@ impl GoalToolExecutor {
             BudgetLimitedGoalDisposition::ClearActive,
         )
         .await?;
-        let previous_status = self
-            .current_goal_status_for_metrics(/*expected_goal_id*/ None)
-            .await?;
+        let existing_goal = self
+            .state_db
+            .thread_goals()
+            .get_thread_goal(self.thread_id)
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("failed to read goal: {err}"))
+            })?
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "cannot update goal because this thread has no goal".to_string(),
+                )
+            })?;
+        let previous_status = Some(existing_goal.status);
         let goal = self
             .state_db
             .thread_goals()
@@ -281,7 +306,7 @@ impl GoalToolExecutor {
                     objective: None,
                     status: Some(state_status_from_protocol(args.status)),
                     token_budget: None,
-                    expected_goal_id: None,
+                    expected_goal_id: Some(existing_goal.goal_id),
                 },
             )
             .await
@@ -293,6 +318,9 @@ impl GoalToolExecutor {
                     "cannot update goal because this thread has no goal".to_string(),
                 )
             })?;
+        let revision = self.runtime.advance_goal_revision().map_err(|err| {
+            FunctionCallError::Fatal(format!("failed to advance goal revision: {err}"))
+        })?;
         self.metrics
             .record_terminal_if_status_changed(previous_status, &goal);
         self.analytics.status_changed(
@@ -301,7 +329,9 @@ impl GoalToolExecutor {
             GoalEventAttribution::Turn(invocation.turn_id.as_str()),
         );
         let goal = protocol_goal_from_state(goal);
-        let turn_id = self.accounting_state.clear_current_turn_goal();
+        self.runtime
+            .clear_active_goal_objective_at_revision(revision, InactiveGoalHistory::Invalidate);
+        let turn_id = self.runtime.accounting_state().clear_current_turn_goal();
         self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
         goal_response(
             Some(goal),
@@ -329,11 +359,11 @@ impl GoalToolExecutor {
         event_id: &str,
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) -> Result<Option<ThreadGoal>, FunctionCallError> {
-        let Some(turn_id) = self.accounting_state.current_turn_id() else {
+        let accounting_state = self.runtime.accounting_state();
+        let Some(turn_id) = accounting_state.current_turn_id() else {
             return Ok(None);
         };
-        let _accounting_permit = self
-            .accounting_state
+        let _accounting_permit = accounting_state
             .progress_accounting_permit()
             .await
             .map_err(|err| {
@@ -341,7 +371,7 @@ impl GoalToolExecutor {
                     "goal progress accounting semaphore closed: {err}"
                 ))
             })?;
-        let Some(snapshot) = self.accounting_state.progress_snapshot(turn_id.as_str()) else {
+        let Some(snapshot) = accounting_state.progress_snapshot(turn_id.as_str()) else {
             return Ok(None);
         };
         let previous_status = self
@@ -363,6 +393,17 @@ impl GoalToolExecutor {
             })?;
         Ok(match outcome {
             codex_state::GoalAccountingOutcome::Updated(goal) => {
+                if previous_status != Some(goal.status) {
+                    let revision = self.runtime.advance_goal_revision().map_err(|err| {
+                        FunctionCallError::Fatal(format!("failed to advance goal revision: {err}"))
+                    })?;
+                    if goal.status != codex_state::ThreadGoalStatus::Active {
+                        self.runtime.clear_active_goal_objective_at_revision(
+                            revision,
+                            InactiveGoalHistory::Invalidate,
+                        );
+                    }
+                }
                 self.metrics
                     .record_terminal_if_status_changed(previous_status, &goal);
                 self.analytics
@@ -372,7 +413,7 @@ impl GoalToolExecutor {
                     previous_status,
                     GoalEventAttribution::Turn(turn_id.as_str()),
                 );
-                self.accounting_state.mark_progress_accounted_for_status(
+                accounting_state.mark_progress_accounted_for_status(
                     turn_id.as_str(),
                     &snapshot,
                     goal.status,

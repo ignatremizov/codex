@@ -6,19 +6,20 @@ use std::sync::PoisonError;
 use std::sync::Weak;
 
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadGoal;
 use codex_protocol::protocol::ThreadGoalStatus;
-use codex_protocol::protocol::ThreadGoalUpdatedEvent;
-use codex_protocol::protocol::validate_thread_goal_objective;
-use codex_rollout::RolloutItem;
+use tokio::sync::Semaphore;
 
 use crate::runtime::GoalRuntimeHandle;
-use crate::runtime::PreviousGoalSnapshot;
-use crate::tool::fill_empty_thread_preview_if_possible;
 use crate::tool::protocol_goal_from_state;
-use crate::tool::state_status_from_protocol;
-use crate::tool::validate_goal_budget;
+
+mod effects;
+mod mutations;
+
+pub use effects::GoalClearEffects;
+pub use effects::GoalClearOutcome;
+pub use effects::GoalSetEffects;
+pub use effects::GoalSetOutcome;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalServiceError {
@@ -57,36 +58,10 @@ pub struct GoalSetRequest<'a> {
     pub max_goal_token_budget: Option<i64>,
 }
 
-#[derive(Clone, Debug)]
-pub struct GoalSetOutcome {
-    pub goal: ThreadGoal,
-    state_goal: codex_state::ThreadGoal,
-    previous_goal: Option<PreviousGoalSnapshot>,
-}
-
-impl GoalSetOutcome {
-    pub fn thread_goal_updated_item(&self) -> RolloutItem {
-        RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
-            thread_id: self.goal.thread_id,
-            turn_id: None,
-            goal: self.goal.clone(),
-        }))
-    }
-
-    pub async fn apply_runtime_effects(&self, goal_service: &GoalService) {
-        if let Some(runtime) = goal_service.runtime_for_thread(self.goal.thread_id)
-            && let Err(err) = runtime
-                .apply_external_goal_set(self.state_goal.clone(), self.previous_goal.clone())
-                .await
-        {
-            tracing::warn!("failed to apply external goal status runtime effects: {err}");
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct GoalService {
     runtimes: Mutex<HashMap<String, Weak<GoalRuntimeHandle>>>,
+    external_effect_locks: Mutex<HashMap<String, Weak<Semaphore>>>,
 }
 
 impl GoalService {
@@ -123,7 +98,7 @@ impl GoalService {
             .await
             .map_err(GoalServiceError::Internal)?;
         runtime
-            .prepare_external_goal_mutation()
+            .prepare_external_goal_mutation_locked()
             .await
             .map_err(GoalServiceError::Internal)
     }
@@ -139,200 +114,6 @@ impl GoalService {
             .await
             .map(|goal| goal.map(protocol_goal_from_state))
             .map_err(|err| GoalServiceError::Internal(format!("failed to read thread goal: {err}")))
-    }
-
-    pub async fn set_thread_goal(
-        &self,
-        state_db: &codex_state::StateRuntime,
-        request: GoalSetRequest<'_>,
-    ) -> Result<GoalSetOutcome, GoalServiceError> {
-        let GoalSetRequest {
-            thread_id,
-            objective,
-            status,
-            token_budget,
-            max_goal_token_budget,
-        } = request;
-        let status = status.map(state_status_from_protocol);
-        let objective = match objective {
-            GoalObjectiveUpdate::Keep => None,
-            GoalObjectiveUpdate::Set(objective) => Some(objective.trim()),
-        };
-        let token_budget = match token_budget {
-            GoalTokenBudgetUpdate::Keep => None,
-            GoalTokenBudgetUpdate::Set(token_budget) => {
-                Some(token_budget.or(max_goal_token_budget))
-            }
-        };
-
-        if let Some(objective) = objective {
-            validate_thread_goal_objective(objective).map_err(GoalServiceError::InvalidRequest)?;
-        }
-        if objective.is_some() || token_budget.is_some() {
-            validate_goal_budget(token_budget.flatten(), max_goal_token_budget)
-                .map_err(GoalServiceError::InvalidRequest)?;
-        }
-
-        let runtime = self.runtime_for_thread(thread_id);
-        // Hold this through the prepare/write window so idle continuation cannot
-        // launch from goal state that this external mutation is about to change.
-        let _goal_state_permit = match runtime.as_ref() {
-            Some(runtime) => Some(
-                runtime
-                    .goal_state_permit()
-                    .await
-                    .map_err(GoalServiceError::Internal)?,
-            ),
-            None => None,
-        };
-        if let Some(runtime) = runtime.as_ref()
-            && let Err(err) = runtime.prepare_external_goal_mutation().await
-        {
-            tracing::warn!("failed to prepare external goal mutation: {err}");
-        }
-
-        let (goal, previous_goal) = if let Some(objective) = objective {
-            let existing_goal = state_db
-                .thread_goals()
-                .get_thread_goal(thread_id)
-                .await
-                .map_err(|err| {
-                    GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
-                })?;
-            if let Some(existing_goal) = existing_goal.as_ref() {
-                let previous_goal = PreviousGoalSnapshot::from(existing_goal);
-                state_db
-                    .thread_goals()
-                    .update_thread_goal(
-                        thread_id,
-                        codex_state::GoalUpdate {
-                            objective: Some(objective.to_string()),
-                            status,
-                            token_budget,
-                            expected_goal_id: Some(existing_goal.goal_id.clone()),
-                        },
-                    )
-                    .await
-                    .map_err(|err| {
-                        GoalServiceError::Internal(format!("failed to update thread goal: {err}"))
-                    })?
-                    .ok_or_else(|| {
-                        GoalServiceError::InvalidRequest(format!(
-                            "cannot update goal for thread {thread_id}: no goal exists"
-                        ))
-                    })
-                    .map(|goal| (goal, Some(previous_goal)))?
-            } else {
-                state_db
-                    .thread_goals()
-                    .replace_thread_goal(
-                        thread_id,
-                        objective,
-                        status.unwrap_or(codex_state::ThreadGoalStatus::Active),
-                        token_budget.flatten().or(max_goal_token_budget),
-                    )
-                    .await
-                    .map_err(|err| {
-                        GoalServiceError::Internal(format!("failed to replace thread goal: {err}"))
-                    })
-                    .map(|goal| (goal, None))?
-            }
-        } else {
-            let existing_goal = state_db
-                .thread_goals()
-                .get_thread_goal(thread_id)
-                .await
-                .map_err(|err| {
-                    GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
-                })?
-                .ok_or_else(|| {
-                    GoalServiceError::InvalidRequest(format!(
-                        "cannot update goal for thread {thread_id}: no goal exists"
-                    ))
-                })?;
-            let previous_goal = PreviousGoalSnapshot::from(&existing_goal);
-            let expected_goal_id = existing_goal.goal_id.clone();
-            state_db
-                .thread_goals()
-                .update_thread_goal(
-                    thread_id,
-                    codex_state::GoalUpdate {
-                        objective: None,
-                        status,
-                        token_budget,
-                        expected_goal_id: Some(expected_goal_id),
-                    },
-                )
-                .await
-                .map_err(|err| {
-                    GoalServiceError::Internal(format!("failed to update thread goal: {err}"))
-                })?
-                .ok_or_else(|| {
-                    GoalServiceError::InvalidRequest(format!(
-                        "cannot update goal for thread {thread_id}: no goal exists"
-                    ))
-                })
-                .map(|goal| (goal, Some(previous_goal)))?
-        };
-
-        if let Some(runtime) = runtime.as_ref() {
-            runtime.clear_pending_turn_start_options().await;
-        }
-
-        if objective.is_some() {
-            fill_empty_thread_preview_if_possible(state_db, thread_id, &goal).await;
-        }
-        Ok(GoalSetOutcome {
-            goal: protocol_goal_from_state(goal.clone()),
-            state_goal: goal,
-            previous_goal,
-        })
-    }
-
-    pub async fn clear_thread_goal(
-        &self,
-        state_db: &codex_state::StateRuntime,
-        thread_id: ThreadId,
-    ) -> Result<bool, GoalServiceError> {
-        let runtime = self.runtime_for_thread(thread_id);
-        // Hold this through the prepare/write window so idle continuation cannot
-        // launch from goal state that this external mutation is about to change.
-        let goal_state_permit = match runtime.as_ref() {
-            Some(runtime) => Some(
-                runtime
-                    .goal_state_permit()
-                    .await
-                    .map_err(GoalServiceError::Internal)?,
-            ),
-            None => None,
-        };
-        if let Some(runtime) = runtime.as_ref()
-            && let Err(err) = runtime.prepare_external_goal_mutation().await
-        {
-            tracing::warn!("failed to prepare external goal mutation: {err}");
-        }
-
-        let cleared_goal = state_db
-            .thread_goals()
-            .delete_thread_goal(thread_id)
-            .await
-            .map_err(|err| {
-                GoalServiceError::Internal(format!("failed to clear thread goal: {err}"))
-            })?;
-        let cleared = cleared_goal.is_some();
-        if cleared && let Some(runtime) = runtime.as_ref() {
-            runtime.clear_pending_turn_start_options().await;
-        }
-        drop(goal_state_permit);
-        drop(runtime);
-
-        if let (Some(runtime), Some(goal)) = (self.runtime_for_thread(thread_id), cleared_goal)
-            && let Err(err) = runtime.apply_external_goal_clear(goal).await
-        {
-            tracing::warn!("failed to apply external goal clear runtime effects: {err}");
-        }
-
-        Ok(cleared)
     }
 
     pub(crate) fn register_runtime(&self, runtime: &Arc<GoalRuntimeHandle>) {
@@ -360,6 +141,21 @@ impl GoalService {
             runtimes.remove(&key);
         }
         runtime
+    }
+
+    fn external_effect_lock(&self, thread_id: ThreadId) -> Arc<Semaphore> {
+        let key = thread_id.to_string();
+        let mut locks = self
+            .external_effect_locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Semaphore::new(/*permits*/ 1));
+        locks.insert(key, Arc::downgrade(&lock));
+        lock
     }
 
     fn runtimes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Weak<GoalRuntimeHandle>>> {

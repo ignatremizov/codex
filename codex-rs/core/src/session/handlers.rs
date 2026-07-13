@@ -319,6 +319,9 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     }
 
     sess.drain_code_mode_messages().await;
+    // Accepted Code Mode receipts use the canonical publisher too. Stop their
+    // producers and drain them before closing publication admission.
+    sess.close_history_publication().await;
 
     crate::hook_runtime::run_session_end_hooks(sess).await;
     emit_thread_stop_lifecycle(sess).await;
@@ -523,32 +526,7 @@ pub(super) async fn submission_loop(
                     thread_settings,
                     reply,
                 } => {
-                    let _settings_guard = thread_settings::acquire_persistence_lock(&sess).await;
-                    match thread_settings::update(&sess, thread_settings).await {
-                        Ok(snapshot) => {
-                            // Reply first: the caller may hold a lock its event consumer needs.
-                            if let Some(reply) = reply {
-                                let _ = reply.send(Ok(()));
-                            }
-                            thread_settings::emit_applied(&sess, sub.id.clone(), snapshot).await;
-                        }
-                        Err(error) => {
-                            let message = format!("invalid thread settings override: {error}");
-                            if let Some(reply) = reply {
-                                let _ = reply.send(Err(CodexErr::InvalidRequest(message)));
-                            } else {
-                                sess.send_event_raw(Event {
-                                    id: sub.id.clone(),
-                                    msg: EventMsg::Error(ErrorEvent {
-                                        misalignment: None,
-                                        message,
-                                        codex_error_info: Some(CodexErrorInfo::BadRequest),
-                                    }),
-                                })
-                                .await;
-                            }
-                        }
-                    }
+                    thread_settings::update(&sess, sub.id.clone(), thread_settings, reply).await;
                     false
                 }
                 Op::TurnSettings {
