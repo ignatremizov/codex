@@ -649,6 +649,76 @@ async fn plugin_skill_product_policy_and_migrated_command_precedence_reach_agent
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capability_sections_render_in_developer_message_in_order() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let apps_server = AppsTestServer::mount_with_connector_name(&server, "Google Calendar").await?;
+
+    let resp_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
+
+    let codex_home = Arc::new(TempDir::new()?);
+    write_plugin_skill_plugin(codex_home.as_ref());
+    write_plugin_app_plugin(codex_home.as_ref());
+    let test_codex = build_apps_enabled_plugin_test_codex(
+        &server,
+        Arc::clone(&codex_home),
+        apps_server.chatgpt_base_url,
+    )
+    .await?;
+    let codex = Arc::clone(&test_codex.codex);
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![codex_protocol::user_input::UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let request = resp_mock.single_request();
+    let developer_messages = request.message_input_texts("developer");
+    let developer_text = developer_messages.join("\n\n");
+    let apps_pos = developer_text
+        .find("## Apps")
+        .expect("expected apps section in developer message");
+    let skills_pos = developer_text
+        .find("## Skills")
+        .expect("expected skills section in developer message");
+    let plugins_pos = developer_text
+        .find("## Plugins")
+        .expect("expected plugins section in developer message");
+    assert!(
+        skills_pos < plugins_pos && skills_pos < apps_pos,
+        "expected Skills before capability guidance sections: {developer_messages:?}"
+    );
+    assert!(
+        !developer_text.contains("`sample`: inspect sample data"),
+        "did not expect plugin description in developer message: {developer_messages:?}"
+    );
+    assert!(
+        developer_text.contains("skill entries are prefixed with `plugin_name:`"),
+        "expected plugin skill naming guidance in developer message: {developer_messages:?}"
+    );
+    assert!(
+        developer_text.contains("sample:sample-search: inspect sample data"),
+        "expected namespaced plugin skill summary in developer message: {developer_messages:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_plugin_skill_prompt_remains_complete() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;

@@ -54,6 +54,8 @@ pub(crate) struct Session {
     /// Serializes rebuild/apply cycles for the running proxy; each cycle
     /// rebuilds from the current SessionState while holding this lock.
     pub(super) managed_network_proxy_refresh_lock: Semaphore,
+    /// Serializes durable extension-context appends with compaction installation.
+    pub(super) durable_context_lock: Semaphore,
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
     pub(super) features: ManagedFeatures,
@@ -1428,6 +1430,7 @@ impl Session {
                     thread_store: &thread_extension_data,
                 }).await;
             }
+            thread_extension_data.remove::<codex_extension_api::ConversationHistory>();
 
             let executed_tool_calls = config
                 .features
@@ -1531,6 +1534,7 @@ impl Session {
                 state: Mutex::new(state),
                 thread_settings_persistence: Semaphore::new(/*permits*/ 1),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
+                durable_context_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
                 windows_sandbox_proxy_settings_mode,
                 multi_agent_version,

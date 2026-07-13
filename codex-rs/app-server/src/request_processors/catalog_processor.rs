@@ -497,22 +497,34 @@ impl CatalogRequestProcessor {
                 let fs = fs.clone();
                 let skills_request = &skills_request;
                 let plugins_manager = Arc::clone(&plugins_manager);
+                let fallback_config = Arc::clone(&self.config);
                 async move {
                     let config = match self.load_latest_config(Some(cwd.clone())).await {
                         Ok(resolved) => resolved,
                         Err(error) => {
-                            let error_path = cwd.clone();
-                            return (
-                                index,
-                                codex_app_server_protocol::SkillsListEntry {
-                                    cwd,
-                                    skills: Vec::new(),
-                                    errors: vec![codex_app_server_protocol::SkillErrorInfo {
-                                        path: error_path,
-                                        message: error.message,
-                                    }],
-                                },
-                            );
+                            let fallback_matches_cwd =
+                                AbsolutePathBuf::relative_to_current_dir(&cwd)
+                                    .is_ok_and(|cwd| cwd == fallback_config.cwd);
+                            if fallback_matches_cwd {
+                                warn!(
+                                    error = %error.message,
+                                    "failed to reload config for skills/list; using last known good config"
+                                );
+                                fallback_config.as_ref().clone()
+                            } else {
+                                let error_path = cwd.clone();
+                                return (
+                                    index,
+                                    codex_app_server_protocol::SkillsListEntry {
+                                        cwd,
+                                        skills: Vec::new(),
+                                        errors: vec![codex_app_server_protocol::SkillErrorInfo {
+                                            path: error_path,
+                                            message: error.message,
+                                        }],
+                                    },
+                                );
+                            }
                         }
                     };
                     let plugins_input = config.plugins_config_input();

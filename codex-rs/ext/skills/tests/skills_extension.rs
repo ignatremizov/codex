@@ -209,7 +209,10 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
         .await;
 
     let expected_catalog = format!(
-        "{SKILLS_INSTRUCTIONS_OPEN_TAG}\n## Skills\n{SKILLS_INTRO_WITH_ABSOLUTE_PATHS}\n### Available skills\n- demo: Demo skill. (file: {skill_prompt_path})\n{SKILLS_INSTRUCTIONS_CLOSE_TAG}"
+        "{SKILLS_INSTRUCTIONS_OPEN_TAG}\n<promoted_skills>[]</promoted_skills>\n\
+         When multiple complete skills inventories are present, this latest inventory supersedes earlier inventories.\n\n\
+         ## Skills\n{SKILLS_INTRO_WITH_ABSOLUTE_PATHS}\n### Available skills\n\
+         - demo: Demo skill. (file: {skill_prompt_path})\n\n{SKILLS_INSTRUCTIONS_CLOSE_TAG}"
     );
     let expected_skill = format!(
         "<skill>\n<name>demo</name>\n<path>{skill_prompt_path}</path>\n{DEMO_SKILL_CONTENTS}\n</skill>"

@@ -4646,16 +4646,17 @@ impl ThreadRequestProcessor {
                 "`permissions` cannot be combined with `sandbox`",
             ));
         }
+        let archived_policy = if path.is_some() {
+            ArchivedThreadReadPolicy::Allow
+        } else {
+            ArchivedThreadReadPolicy::Reject
+        };
         let source_thread = self
             .read_stored_thread_for_resume(
                 &thread_id,
                 path.as_ref(),
                 /*include_history*/ false,
-                if path.is_some() {
-                    ArchivedThreadReadPolicy::Allow
-                } else {
-                    ArchivedThreadReadPolicy::Reject
-                },
+                archived_policy,
             )
             .await?;
         let paginated_source = matches!(source_thread.history_mode, ThreadHistoryMode::Paginated);

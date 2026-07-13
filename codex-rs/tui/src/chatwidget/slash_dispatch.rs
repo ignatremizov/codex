@@ -612,6 +612,7 @@ impl ChatWidget {
         }
 
         if cmd == SlashCommand::Goal {
+            let mention_bindings = self.bottom_pane.take_mention_bindings();
             self.dispatch_prepared_command_with_args(
                 cmd,
                 PreparedSlashCommandArgs {
@@ -620,7 +621,7 @@ impl ChatWidget {
                     pending_pastes: self.bottom_pane.composer_pending_pastes(),
                     local_images: self.bottom_pane.composer_local_images(),
                     remote_image_urls: self.bottom_pane.remote_image_urls(),
-                    mention_bindings: Vec::new(),
+                    mention_bindings,
                     source: SlashCommandDispatchSource::Live,
                 },
             );
@@ -943,7 +944,7 @@ impl ChatWidget {
                                 local_images: draft.local_images,
                                 remote_image_urls: draft.remote_image_urls,
                                 text_elements,
-                                mention_bindings: Vec::new(),
+                                mention_bindings,
                             },
                             QueuedInputAction::ParseSlash,
                             draft.pending_pastes,

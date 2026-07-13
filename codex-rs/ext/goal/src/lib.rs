@@ -11,9 +11,12 @@ mod spec;
 mod steering;
 mod tool;
 
+pub use api::GoalClearEffects;
+pub use api::GoalClearOutcome;
 pub use api::GoalObjectiveUpdate;
 pub use api::GoalService;
 pub use api::GoalServiceError;
+pub use api::GoalSetEffects;
 pub use api::GoalSetOutcome;
 pub use api::GoalSetRequest;
 pub use api::GoalTokenBudgetUpdate;

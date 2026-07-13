@@ -332,12 +332,13 @@ async fn selected_capability_stack_tracks_environment_availability_and_resume() 
     let requests = response_mock.requests();
     assert_eq!(6, requests.len());
     for request in &requests[1..4] {
-        assert_selected_skill_is_injected(request, /*expected_count*/ 1);
+        assert_selected_skill_is_available(request);
         assert_selected_plugin_direct_tools(request);
         assert_plugin_guidance_count(request, /*expected_count*/ 1);
     }
     assert_plugin_guidance_count(&requests[4], /*expected_count*/ 0);
-    assert_selected_skill_is_injected(&requests[5], /*expected_count*/ 2);
+    assert_promoted_skill_inventory_is_retained(&requests[4]);
+    assert_selected_skill_is_available(&requests[5]);
     assert_selected_plugin_direct_tools(&requests[5]);
     let output = requests[2].function_call_output(MCP_CALL_ID);
     let output = output["output"]
@@ -587,9 +588,12 @@ fn selected_capability_fixture(
     let plugin = TempDir::new()?;
     let manifest_dir = plugin.path().join(".codex-plugin");
     let skill_dir = plugin.path().join("skills/deploy");
+    let skill_metadata_dir = skill_dir.join("agents");
+    let visible_skill_dir = plugin.path().join("skills/status");
     let pid_file = plugin.path().join("executor-mcp.pid");
     std::fs::create_dir_all(&manifest_dir)?;
-    std::fs::create_dir_all(&skill_dir)?;
+    std::fs::create_dir_all(&skill_metadata_dir)?;
+    std::fs::create_dir_all(&visible_skill_dir)?;
     std::fs::write(
         manifest_dir.join("plugin.json"),
         r#"{"name":"executor-demo","apps":"./.app.json","interface":{"displayName":"Executor Demo"}}"#,
@@ -599,6 +603,16 @@ fn selected_capability_fixture(
         format!(
             "---\nname: deploy\ndescription: {SKILL_DESCRIPTION}\n---\n\n{SKILL_BODY_MARKER}\n"
         ),
+    )?;
+    std::fs::write(
+        skill_metadata_dir.join("openai.yaml"),
+        "policy:\n  allow_implicit_invocation: false\n",
+    )?;
+    // Keep an implicit selected-environment skill in world state so executor loss still produces
+    // an explicit availability update while `deploy` exercises durable explicit-only promotion.
+    std::fs::write(
+        visible_skill_dir.join("SKILL.md"),
+        "---\nname: status\ndescription: Inspect selected executor status.\n---\n",
     )?;
     std::fs::write(
         plugin.path().join(".app.json"),
@@ -677,20 +691,28 @@ fn assert_plugin_guidance_count(request: &ResponsesRequest, expected_count: usiz
     );
 }
 
-fn assert_selected_skill_is_injected(request: &ResponsesRequest, expected_count: usize) {
+fn assert_selected_skill_is_available(request: &ResponsesRequest) {
     assert_selected_skill_catalog_available(request);
 
     let skill_fragments = request
         .message_input_texts("user")
         .into_iter()
-        .filter(|text| text.starts_with("<skill>"))
+        .filter(|text| text.starts_with("<skill>") && text.contains(SKILL_BODY_MARKER))
         .collect::<Vec<_>>();
-    assert_eq!(expected_count, skill_fragments.len());
+    assert!(!skill_fragments.is_empty());
     for fragment in skill_fragments {
         assert!(fragment.contains(&format!("<name>{SKILL_NAME}</name>")));
-        assert!(fragment.contains(SKILL_BODY_MARKER));
         assert!(!fragment.contains(LOCAL_SKILL_BODY_MARKER));
     }
+}
+
+fn assert_promoted_skill_inventory_is_retained(request: &ResponsesRequest) {
+    assert!(
+        request
+            .message_input_texts("developer")
+            .into_iter()
+            .any(|text| text.contains("<promoted_skills>[{"))
+    );
 }
 
 fn assert_selected_skill_catalog_available(request: &ResponsesRequest) {

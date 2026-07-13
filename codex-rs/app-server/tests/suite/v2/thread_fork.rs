@@ -822,7 +822,7 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
         .thread_goals()
         .replace_thread_goal(
             source_thread_id,
-            "continue after the retry",
+            "continue after the retry with $guidance",
             codex_state::ThreadGoalStatus::Active,
             /*token_budget*/ Some(150),
         )
@@ -842,6 +842,25 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
         .get_thread_goal(source_thread_id)
         .await?
         .expect("source goal");
+
+    let ordinary_fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: source_thread.id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let ThreadForkResponse {
+        thread: ordinary_fork,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(ordinary_fork_id)).await??;
+    assert_eq!(
+        state_db
+            .thread_goals()
+            .get_thread_goal(ThreadId::from_string(&ordinary_fork.id)?)
+            .await?,
+        None,
+        "ordinary forks must not inherit the source goal"
+    );
 
     let mut forked_threads = Vec::new();
     for (last_turn_id, before_turn_id, expected_turn_count) in [

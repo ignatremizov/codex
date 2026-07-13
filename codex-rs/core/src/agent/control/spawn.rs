@@ -103,9 +103,10 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_reference_context_item:
 }
 
 fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[String]) -> bool {
-    if !matches!(item, ResponseItem::Message { role, .. } if role == "developer") {
+    let ResponseItem::Message { role, .. } = item else {
         return true;
-    }
+    };
+    let role = role.clone();
 
     let Some(mut content) = to_annotated_content(item) else {
         return false;
@@ -114,6 +115,15 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
         let ContentItem::InputText { text } = content_item.content() else {
             return true;
         };
+        let text_trimmed = text.trim_start();
+        if text_trimmed.starts_with("<codex_internal_context source=\"goal\">")
+            || text_trimmed.starts_with("<goal_context>")
+        {
+            return false;
+        }
+        if role != "developer" {
+            return true;
+        }
 
         !(MultiAgentRoleInstructions::matches_text(text)
             || MultiAgentModeInstructions::matches_text(text)

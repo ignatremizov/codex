@@ -482,10 +482,9 @@ where
             if let Some(analytics) = analytics.as_ref()
                 && let Some(model_info) = thread_store.get::<ModelInfo>()
             {
-                for entry in selected_entries
-                    .iter()
-                    .filter(|entry| entry.authority.kind == SkillSourceKind::Orchestrator)
-                {
+                for entry in selected_entries.iter().filter(|entry| {
+                    entry.authority.kind == SkillSourceKind::Orchestrator && !entry.prompt_visible
+                }) {
                     analytics.track_skill_invocation(
                         entry,
                         model_info.slug.clone(),
@@ -494,10 +493,9 @@ where
                     );
                 }
             }
-            for entry in selected_entries
-                .iter()
-                .filter(|entry| entry.authority.kind != SkillSourceKind::Orchestrator)
-            {
+            for entry in selected_entries.iter().filter(|entry| {
+                entry.authority.kind != SkillSourceKind::Orchestrator || entry.prompt_visible
+            }) {
                 match self
                     .read_main_prompt(
                         entry,
@@ -599,7 +597,7 @@ where
 
     fn contribute_durable<'a>(
         &'a self,
-        input: TurnInputContext,
+        input: TurnInputContext<'a>,
         extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
         session_store: &'a ExtensionData,
         thread_store: &'a ExtensionData,
