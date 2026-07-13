@@ -7,6 +7,30 @@ use std::sync::PoisonError;
 
 type ErasedData = Arc<dyn Any + Send + Sync>;
 
+/// Thread-scoped bridge carrying the objective of the active goal.
+#[derive(Debug, Default)]
+pub struct ActiveGoalObjective {
+    objective: Mutex<Option<String>>,
+}
+
+impl ActiveGoalObjective {
+    /// Replaces the objective projected from the current goal state.
+    pub fn replace(&self, objective: Option<String>) {
+        *self
+            .objective
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = objective;
+    }
+
+    /// Returns the active goal objective, if one is projected.
+    pub fn snapshot(&self) -> Option<String> {
+        self.objective
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
 /// Typed values supplied before an [`ExtensionData`] scope is created.
 ///
 /// Hosts may retain a clone when later operations must use the same initial

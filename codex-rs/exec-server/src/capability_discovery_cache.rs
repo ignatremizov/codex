@@ -91,8 +91,8 @@ impl ExecutorCapabilityDiscoveryCache {
                 .iter_mut()
                 .find(|cached| cached.selected_root == discovered_root.selected_root)
             {
-                if cached.sandbox != discovered_root.sandbox || cached.result.is_err() {
-                    if cached.result.is_err() && discovered_root.result.is_ok() {
+                if cached.sandbox != discovered_root.sandbox || cached.retryable {
+                    if cached.retryable && !discovered_root.retryable {
                         self.recovered_discovery.store(true, Ordering::Release);
                     }
                     *cached = discovered_root;
@@ -231,11 +231,14 @@ impl ExecutorCapabilityDiscoveryCache {
                                 discovery.id, discovery.path
                             ))
                         };
+                        let retryable = result
+                            .as_ref()
+                            .is_ok_and(|discovery| discovery.error.is_some());
                         CachedRoot {
                             selected_root,
                             sandbox: sandbox.clone(),
                             result,
-                            retryable: false,
+                            retryable,
                         }
                     })
                     .collect()

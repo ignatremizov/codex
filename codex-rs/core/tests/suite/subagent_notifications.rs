@@ -104,6 +104,16 @@ fn body_contains(req: &wiremock::Request, text: &str) -> bool {
         .is_some_and(|body| body.contains(text))
 }
 
+fn request_agent_name_is(req: &wiremock::Request, expected_agent_name: &str) -> bool {
+    let Ok(body) = req.body_json::<Value>() else {
+        return false;
+    };
+    body.pointer("/client_metadata/x-codex-turn-metadata")
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .is_some_and(|metadata| metadata["agent_name"] == expected_agent_name)
+}
+
 fn request_has_input_type(req: &wiremock::Request, ty: &str) -> bool {
     decoded_body(req)
         .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
@@ -1167,6 +1177,7 @@ async fn grandchild_full_fork_preserves_context_baseline(
     let root_spawn_args = serde_json::to_string(&json!({
         "task_name": "child",
         "message": CHILD_TASK,
+        "task_message": CHILD_TASK,
         "fork_turns": parent_fork_turns,
     }))?;
     let root_log = mount_sse_once_match(
@@ -1192,6 +1203,7 @@ async fn grandchild_full_fork_preserves_context_baseline(
     let child_spawn_args = serde_json::to_string(&json!({
         "task_name": "grandchild",
         "message": GRANDCHILD_TASK,
+        "task_message": GRANDCHILD_TASK,
         "fork_turns": "all",
     }))?;
     if compact_parent {
@@ -1228,17 +1240,8 @@ async fn grandchild_full_fork_preserves_context_baseline(
     let child_log = mount_sse_once_match(
         &server,
         move |req: &wiremock::Request| {
-            body_contains(
-                req,
-                if compact_parent {
-                    COMPACT_SUMMARY
-                } else {
-                    CHILD_TASK
-                },
-            ) && !body_contains(req, GRANDCHILD_TASK)
-                && !body_contains(req, ROOT_CALL)
-                && !body_contains(req, CHILD_CALL)
-                && !body_contains(req, COMPACT_PROMPT)
+            request_agent_name_is(req, "/root/child")
+                && (!compact_parent || body_contains(req, COMPACT_SUMMARY))
         },
         sse(vec![
             ev_response_created("baseline-child"),
@@ -1254,9 +1257,7 @@ async fn grandchild_full_fork_preserves_context_baseline(
     .await;
     let grandchild_log = mount_sse_once_match(
         &server,
-        |req: &wiremock::Request| {
-            body_contains(req, GRANDCHILD_TASK) && !body_contains(req, CHILD_CALL)
-        },
+        |req: &wiremock::Request| request_agent_name_is(req, "/root/child/grandchild"),
         sse(vec![
             ev_response_created("baseline-grandchild"),
             ev_assistant_message("baseline-grandchild-answer", "done"),
@@ -1285,6 +1286,7 @@ async fn grandchild_full_fork_preserves_context_baseline(
                 .expect("test config should allow feature update");
             config.model = Some(V2_DEFAULT_MODEL.to_string());
             config.agent_default_subagent_model = Some(V2_DEFAULT_MODEL.to_string());
+            config.agent_allow_history_forks = true;
             config.developer_instructions = Some(INSTRUCTIONS.to_string());
             if compact_parent {
                 config.update_plan_enabled = true;
@@ -1363,6 +1365,19 @@ async fn grandchild_full_fork_preserves_context_baseline(
         [(1, 1); 3],
         "Initial context should appear once per agent: {parent_context:?}, {history_mode:?}"
     );
+    assert!(
+        descendant_requests[0].body_contains_text(if compact_parent {
+            COMPACT_SUMMARY
+        } else {
+            CHILD_TASK
+        })
+    );
+    assert!(!descendant_requests[0].body_contains_text(ROOT_CALL));
+    assert!(!descendant_requests[0].body_contains_text(CHILD_CALL));
+    assert!(!descendant_requests[0].body_contains_text(COMPACT_PROMPT));
+    assert!(descendant_requests[1].body_contains_text(GRANDCHILD_TASK));
+    assert!(!descendant_requests[1].body_contains_text(ROOT_CALL));
+    assert!(!descendant_requests[1].body_contains_text(CHILD_CALL));
     assert!(!descendant_requests[1].body_contains_text(CHILD_TASK));
     Ok(())
 }

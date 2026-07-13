@@ -352,6 +352,35 @@ impl CodexThread {
         }
     }
 
+    /// Starts a regular turn only when idle while retaining `reservation_lease`
+    /// until Core has atomically reserved the turn.
+    pub async fn start_turn_if_idle_with_lease(
+        &self,
+        request: TurnInputRequest,
+        reservation_lease: impl Send,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        self.session
+            .services
+            .agent_control
+            .ensure_execution_capacity_for_turn_start(self)
+            .await?;
+        match self
+            .session
+            .start_turn_if_idle_with_lease(request, reservation_lease)
+            .await?
+        {
+            TurnInputSubmission::Started { turn_id } => {
+                Ok(StartIfIdleSubmission::Started { turn_id })
+            }
+            TurnInputSubmission::NotSubmitted { reason } => {
+                Ok(StartIfIdleSubmission::NotSubmitted { reason })
+            }
+            TurnInputSubmission::Steered { .. } => {
+                unreachable!("start-if-idle submission cannot steer")
+            }
+        }
+    }
+
     /// Resumes an interrupted regular turn only when the thread is idle.
     ///
     /// Recovery starts no new user input and preserves the turn ID that was

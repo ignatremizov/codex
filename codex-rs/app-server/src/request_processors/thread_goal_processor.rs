@@ -4,6 +4,7 @@ use codex_goal_extension::GoalService;
 use codex_goal_extension::GoalServiceError;
 use codex_goal_extension::GoalSetRequest;
 use codex_goal_extension::GoalTokenBudgetUpdate;
+use codex_protocol::protocol::ThreadGoalUpdatedEvent;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 
@@ -161,57 +162,88 @@ impl ThreadGoalRequestProcessor {
             )
             .await
             .map_err(goal_service_error)?;
-        let goal = ThreadGoal::from(outcome.goal.clone());
+        let current_effects = outcome.acquire_current_effects().await;
+        let goal = if current_effects.is_some() {
+            self.goal_service
+                .get_thread_goal(&state_db, thread_id)
+                .await
+                .map_err(goal_service_error)?
+                .ok_or_else(|| {
+                    internal_error(format!(
+                        "thread goal disappeared while applying update for {thread_id}"
+                    ))
+                })?
+        } else {
+            outcome.goal.clone()
+        };
 
-        let persist_result = match self.thread_manager.get_thread(thread_id).await {
-            Ok(thread) => match thread.rollout_path() {
-                Some(path) if codex_rollout::existing_rollout_path(&path).await.is_none() => {
-                    // Goal-first threads need their settings captured when the goal creates the
-                    // rollout. Once materialized, normal settings updates own this event.
-                    let persisted_settings = thread.thread_settings_snapshot().await;
-                    let items = [
-                        thread_settings_applied_item(thread_id, persisted_settings.clone()),
-                        outcome.thread_goal_updated_item(),
-                    ];
-                    match thread.append_rollout_items(&items).await {
-                        Err(err) => Err(err),
-                        Ok(()) => {
-                            // Catch up a settings update queued while the rollout materialized.
-                            let current_settings = thread.thread_settings_snapshot().await;
-                            if current_settings == persisted_settings {
-                                Ok(())
-                            } else {
-                                thread
-                                    .append_rollout_items(&[thread_settings_applied_item(
-                                        thread_id,
-                                        current_settings,
-                                    )])
-                                    .await
+        let has_current_effects = current_effects.is_some();
+        if has_current_effects {
+            let thread_goal_updated_item =
+                RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
+                    thread_id: goal.thread_id,
+                    turn_id: None,
+                    goal: goal.clone(),
+                }));
+            let persist_result = match self.thread_manager.get_thread(thread_id).await {
+                Ok(thread) => match thread.rollout_path() {
+                    Some(path) if codex_rollout::existing_rollout_path(&path).await.is_none() => {
+                        // Goal-first threads need their settings captured when the goal creates the
+                        // rollout. Once materialized, normal settings updates own this event.
+                        let persisted_settings = thread.thread_settings_snapshot().await;
+                        let items = [
+                            thread_settings_applied_item(thread_id, persisted_settings.clone()),
+                            thread_goal_updated_item,
+                        ];
+                        match thread.append_rollout_items(&items).await {
+                            Err(err) => Err(err),
+                            Ok(()) => {
+                                // Catch up a settings update queued while the rollout materialized.
+                                let current_settings = thread.thread_settings_snapshot().await;
+                                if current_settings == persisted_settings {
+                                    Ok(())
+                                } else {
+                                    thread
+                                        .append_rollout_items(&[thread_settings_applied_item(
+                                            thread_id,
+                                            current_settings,
+                                        )])
+                                        .await
+                                }
                             }
                         }
                     }
-                }
-                Some(_) | None => {
-                    thread
-                        .append_rollout_items(&[outcome.thread_goal_updated_item()])
-                        .await
-                }
-            },
-            Err(_) => Ok(()),
-        };
-        if let Err(err) = persist_result {
-            warn!("failed to persist goal update for live thread {thread_id}: {err}");
+                    Some(_) | None => {
+                        thread
+                            .append_rollout_items(&[thread_goal_updated_item])
+                            .await
+                    }
+                },
+                Err(_) => Ok(()),
+            };
+            if let Err(err) = persist_result {
+                warn!("failed to persist goal update for live thread {thread_id}: {err}");
+            }
         }
 
+        // Install goal runtime effects before acknowledging the request. The TUI can begin the
+        // goal continuation as soon as it receives the response; publishing the response first
+        // would let that turn observe an empty active-goal objective and skip skill promotion.
+        if let Some(current_effects) = current_effects {
+            current_effects.apply_runtime_effects().await;
+        }
+
+        let goal = ThreadGoal::from(goal);
         self.outgoing
             .send_response(
                 request_id.clone(),
                 ThreadGoalSetResponse { goal: goal.clone() },
             )
             .await;
-        self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx)
-            .await;
-        outcome.apply_runtime_effects(&self.goal_service).await;
+        if has_current_effects {
+            self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx)
+                .await;
+        }
         Ok(())
     }
 
@@ -257,18 +289,23 @@ impl ThreadGoalRequestProcessor {
             let thread_state = thread_state.lock().await;
             thread_state.listener_command_tx()
         };
-        let cleared = self
+        let outcome = self
             .goal_service
-            .clear_thread_goal(&state_db, thread_id)
+            .prepare_thread_goal_clear(&state_db, thread_id)
             .await
             .map_err(goal_service_error)?;
+        let cleared = outcome.cleared();
+        let current_effects = outcome.acquire_current_effects().await;
 
         self.outgoing
             .send_response(request_id, ThreadGoalClearResponse { cleared })
             .await;
-        if cleared {
+        if cleared && current_effects.is_some() {
             self.emit_thread_goal_cleared_ordered(thread_id, listener_command_tx)
                 .await;
+        }
+        if let Some(current_effects) = current_effects {
+            current_effects.apply_runtime_effects().await;
         }
         Ok(())
     }

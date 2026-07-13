@@ -28,6 +28,7 @@ use codex_code_mode::DisabledCodeModeSessionProvider;
 use codex_code_mode::ProcessOwnedCodeModeSessionProvider;
 use codex_core_plugins::PluginsManager;
 use codex_exec_server::EnvironmentManager;
+use codex_extension_api::ConversationHistory;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::LoadedUserInstructions;
@@ -1910,7 +1911,7 @@ impl ThreadManagerState {
             metrics_service_name,
             parent_trace,
             environments,
-            thread_extension_init,
+            mut thread_extension_init,
             client_mcp_extensions,
             reserved_thread_id,
         } = options;
@@ -1948,6 +1949,33 @@ impl ThreadManagerState {
                 }
                 threads.remove(&resumed.conversation_id);
             }
+        }
+        if matches!(
+            &initial_history,
+            InitialHistory::Resumed(_) | InitialHistory::Forked(_)
+        ) {
+            let mut response_items = Vec::new();
+            for item in initial_history.get_rollout_items() {
+                match item {
+                    RolloutItem::ResponseItem(envelope) => {
+                        response_items.push(envelope.item.clone());
+                    }
+                    RolloutItem::Compacted(compacted) => {
+                        if let Some(replacement_history) = &compacted.replacement_history {
+                            response_items.clone_from(replacement_history);
+                        }
+                    }
+                    RolloutItem::SessionMeta(_)
+                    | RolloutItem::InterAgentCommunication(_)
+                    | RolloutItem::InterAgentCommunicationMetadata { .. }
+                    | RolloutItem::TurnContext(_)
+                    | RolloutItem::WorldState(_)
+                    | RolloutItem::SecurityRiskScore(_)
+                    | RolloutItem::EventMsg(_)
+                    | RolloutItem::RealtimeItem(_) => {}
+                }
+            }
+            thread_extension_init.insert(ConversationHistory::new(response_items));
         }
         let (
             user_instructions,

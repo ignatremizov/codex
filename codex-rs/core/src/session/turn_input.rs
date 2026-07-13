@@ -330,6 +330,16 @@ async fn start_if_idle(
     submission_id: String,
     kind: TurnStartKind,
 ) -> CodexResult<TurnInputSubmission> {
+    start_if_idle_with_lease(session, request, submission_id, is_recovery, ()).await
+}
+
+pub(super) async fn start_if_idle_with_lease(
+    session: &Arc<Session>,
+    request: TurnInputRequest,
+    submission_id: String,
+    is_recovery: bool,
+    reservation_lease: impl Send,
+) -> CodexResult<TurnInputSubmission> {
     let TurnInputRequest {
         input,
         thread_settings,
@@ -364,6 +374,9 @@ async fn start_if_idle(
         let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
         Arc::clone(&active_turn.turn_state)
     };
+    // The active-turn placeholder now prevents another turn from starting. Release any
+    // extension-owned state lease before lifecycle contributors can reacquire that state.
+    drop(reservation_lease);
 
     if session.input_queue.has_trigger_turn_mailbox_items().await {
         session.clear_reserved_idle_turn(&turn_state).await;

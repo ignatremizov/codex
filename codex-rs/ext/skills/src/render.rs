@@ -473,6 +473,7 @@ impl AvailableSkillsRender {
                 self.prompt_kind,
                 self.skill_root_lines,
                 self.skill_lines,
+                Vec::new(),
                 include_skills_usage_instructions,
             )
         })

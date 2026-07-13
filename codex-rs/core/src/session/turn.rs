@@ -77,6 +77,7 @@ use codex_connectors::AppToolPolicyEvaluator;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnInputContext;
+use codex_extension_api::TurnInputContributionAcknowledgement;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
 use codex_file_system::FindUpErrorPolicy;
@@ -276,22 +277,28 @@ pub(crate) async fn run_turn(
         }
     }
 
-    let (injection_items, explicitly_enabled_connectors) = if turn_context.is_compact_subagent() {
-        (Vec::new(), HashSet::new())
-    } else {
-        let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
-            &sess,
-            first_step_context.as_ref(),
-            &user_input,
-            &mentioned_plugins,
-            &cancellation_token,
-        )
-        .await
-        else {
-            return Ok(None);
+    let (injection_items, explicitly_enabled_connectors, extension_contributions) =
+        if turn_context.is_compact_subagent() {
+            (Vec::new(), HashSet::new(), Vec::new())
+        } else {
+            let Some((injection_items, explicitly_enabled_connectors, extension_contributions)) =
+                build_skills_and_plugins(
+                    &sess,
+                    first_step_context.as_ref(),
+                    &user_input,
+                    &mentioned_plugins,
+                    &cancellation_token,
+                )
+                .await
+            else {
+                return Ok(None);
+            };
+            (
+                injection_items,
+                explicitly_enabled_connectors,
+                extension_contributions,
+            )
         };
-        (injection_items, explicitly_enabled_connectors)
-    };
 
     if run_pending_session_start_hooks(&sess, &turn_context).await {
         return Ok(None);
@@ -321,6 +328,19 @@ pub(crate) async fn run_turn(
     for response_item in injection_items {
         sess.record_conversation_items(&turn_context, std::slice::from_ref(&response_item))
             .await;
+    }
+    for contribution in extension_contributions {
+        sess.record_durable_context_items(
+            Arc::clone(&turn_context),
+            contribution.items,
+            contribution.acknowledgement,
+        )
+        .await
+        .map_err(|err| {
+            CodexErr::Fatal(format!(
+                "failed to persist extension turn input contribution: {err}"
+            ))
+        })?;
     }
 
     track_turn_resolved_config_analytics(&sess, &turn_context, &input).await;
@@ -354,14 +374,14 @@ pub(crate) async fn run_turn(
             Vec::new()
         };
 
-        if run_hooks_and_record_inputs(
+        let (stop, accepted_input) = run_hooks_and_record_inputs_with_accepted(
             &sess,
             &turn_context,
             &pending_input,
             PersistContext::Standard,
         )
-        .await
-        {
+        .await;
+        if stop {
             break;
         }
 
@@ -376,12 +396,12 @@ pub(crate) async fn run_turn(
         // Capture once so context, advertised tools, and tool calls share one request view.
         let step_context = match next_step_context.take() {
             Some(step_context) => step_context,
-            None if pending_input.is_empty() => {
+            None if accepted_input.is_empty() => {
                 sess.capture_step_context(Arc::clone(&turn_context), &cancellation_token)
                     .await?
             }
             None => {
-                let pending_user_input = turn_user_input(&pending_input);
+                let pending_user_input = turn_user_input(&accepted_input);
                 let (required_servers, _) = required_mcp_servers_for_input(
                     &sess,
                     turn_context.as_ref(),
@@ -397,6 +417,37 @@ pub(crate) async fn run_turn(
                 .await?
             }
         };
+        let accepted_user_input = turn_user_input(&accepted_input);
+        if !accepted_user_input.is_empty()
+            && !turn_context.is_compact_subagent()
+            && !crate::guardian::is_basic_session_source(&turn_context.session_source)
+        {
+            let Some(contributions) = build_extension_turn_input_items(
+                &sess,
+                step_context.as_ref(),
+                &accepted_user_input,
+                &cancellation_token,
+            )
+            .await
+            else {
+                break;
+            };
+            // Steers become model-visible at the same boundary as their durable context.
+            // Acknowledge promotion only after persistence, just as at turn start.
+            for contribution in contributions {
+                sess.record_durable_context_items(
+                    Arc::clone(&turn_context),
+                    contribution.items,
+                    contribution.acknowledgement,
+                )
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!(
+                        "failed to persist extension turn input contribution: {err}"
+                    ))
+                })?;
+            }
+        }
         let sampling_request_result: CodexResult<_> = async {
             super::time_reminder::maybe_record_current_time_reminder(
                 sess.as_ref(),
@@ -680,8 +731,21 @@ pub(crate) async fn run_hooks_and_record_inputs(
     input: &[TurnInput],
     persist_context: PersistContext,
 ) -> bool {
+    run_hooks_and_record_inputs_with_accepted(sess, turn_context, input, persist_context)
+        .await
+        .0
+}
+
+#[instrument(level = "trace", skip_all)]
+async fn run_hooks_and_record_inputs_with_accepted(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    input: &[TurnInput],
+    persist_context: PersistContext,
+) -> (bool, Vec<TurnInput>) {
     let mut blocked_input = false;
     let mut accepted_user_input = false;
+    let mut accepted_input = Vec::new();
     for input_item in input {
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
@@ -699,9 +763,13 @@ pub(crate) async fn run_hooks_and_record_inputs(
                 persist_context,
             )
             .await;
+            accepted_input.push(input_item.clone());
         }
     }
-    blocked_input && !accepted_user_input
+    (
+        blocked_input && !accepted_user_input,
+        accepted_input,
+    )
 }
 
 fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
@@ -841,12 +909,16 @@ async fn build_skills_and_plugins(
     user_input: &[UserInput],
     mentioned_plugins: &[crate::plugins::PluginCapabilitySummary],
     cancellation_token: &CancellationToken,
-) -> Option<(Vec<ResponseItem>, HashSet<String>)> {
+) -> Option<(
+    Vec<ResponseItem>,
+    HashSet<String>,
+    Vec<PendingTurnInputContribution>,
+)> {
     let turn_context = step_context.turn.as_ref();
     // Guardian input embeds the parent transcript as untrusted evidence. Do not interpret skill or
     // plugin mentions from that generated prompt as requests to inject additional instructions.
     if crate::guardian::is_basic_session_source(&turn_context.session_source) {
-        return Some((Vec::new(), HashSet::new()));
+        return Some((Vec::new(), HashSet::new(), Vec::new()));
     }
 
     let tracking = build_track_events_context(
@@ -880,7 +952,7 @@ async fn build_skills_and_plugins(
     let skills_snapshot = turn_context.skills_snapshot();
     let skills_outcome = skills_snapshot.outcome();
     let connector_slug_counts = build_connector_slug_counts(&available_connectors);
-    let extension_injection_items =
+    let extension_contributions =
         build_extension_turn_input_items(sess, step_context, user_input, cancellation_token)
             .await?;
     let skill_name_counts_lower =
@@ -970,8 +1042,16 @@ async fn build_skills_and_plugins(
         None => skill_items,
     };
     injection_items.extend(plugin_items);
-    injection_items.extend(extension_injection_items);
-    Some((injection_items, explicitly_enabled_connectors))
+    Some((
+        injection_items,
+        explicitly_enabled_connectors,
+        extension_contributions,
+    ))
+}
+
+struct PendingTurnInputContribution {
+    items: Vec<ResponseItem>,
+    acknowledgement: Option<TurnInputContributionAcknowledgement>,
 }
 
 #[tracing::instrument(
@@ -984,7 +1064,7 @@ async fn build_extension_turn_input_items(
     step_context: &StepContext,
     user_input: &[UserInput],
     cancellation_token: &CancellationToken,
-) -> Option<Vec<ResponseItem>> {
+) -> Option<Vec<PendingTurnInputContribution>> {
     let turn_context = step_context.turn.as_ref();
     let contributors = sess.services.extensions.turn_input_contributors().to_vec();
     if contributors.is_empty() {
@@ -1011,10 +1091,10 @@ async fn build_extension_turn_input_items(
     let extension_metrics =
         super::extension_metrics::from_session_telemetry(turn_context.session_telemetry.clone());
 
-    let mut items = Vec::new();
+    let mut contributions = Vec::new();
     for contributor in contributors {
-        let contributed_fragments = contributor
-            .contribute(
+        let contribution = contributor
+            .contribute_durable(
                 input.clone(),
                 Some(Arc::clone(&extension_metrics)),
                 &sess.services.session_extension_data,
@@ -1024,14 +1104,17 @@ async fn build_extension_turn_input_items(
             .or_cancel(cancellation_token)
             .await
             .ok()?;
-        items.extend(
-            contributed_fragments
+        let (contributed_fragments, acknowledgement) = contribution.into_parts();
+        contributions.push(PendingTurnInputContribution {
+            items: contributed_fragments
                 .into_iter()
-                .map(ContextualUserFragment::into_boxed_response_item),
-        );
+                .map(ContextualUserFragment::into_boxed_response_item)
+                .collect(),
+            acknowledgement,
+        });
     }
 
-    Some(items)
+    Some(contributions)
 }
 
 #[tracing::instrument(
@@ -1781,7 +1864,6 @@ pub(crate) async fn built_tools(
             mcp_tool_exposure.deferred_tools = None;
         }
     }
-
     Ok(Arc::new(build_tool_router(
         sess,
         turn_context,
