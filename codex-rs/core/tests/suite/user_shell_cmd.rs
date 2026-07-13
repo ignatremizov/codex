@@ -1,4 +1,5 @@
 use anyhow::Context;
+use codex_config::CONFIG_TOML_FILE;
 use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::NetworkSandboxPolicy;
@@ -6,6 +7,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::ExecOutputStream;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::TurnAbortReason;
@@ -173,6 +175,114 @@ async fn user_shell_cmd_can_be_interrupted() {
         unreachable!()
     };
     assert_eq!(ev.reason, TurnAbortReason::Interrupted);
+}
+
+#[tokio::test]
+async fn user_shell_command_uses_configured_timeout() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        let user_config_path = config.codex_home.join(CONFIG_TOML_FILE);
+        config.config_layer_stack = config.config_layer_stack.with_user_config(
+            &user_config_path,
+            toml::toml! { user_shell_command_timeout_ms = 500 }.into(),
+        );
+    });
+    let test = builder.build(&server).await?;
+
+    #[cfg(windows)]
+    let command = "Write-Output before-timeout; Start-Sleep -Seconds 5".to_string();
+    #[cfg(not(windows))]
+    let command = "printf before-timeout; sleep 5".to_string();
+
+    test.codex
+        .submit(Op::RunUserShellCommand { command })
+        .await?;
+
+    let end_event = timeout(
+        Duration::from_secs(3),
+        wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::ExecCommandEnd(event) if event.source == ExecCommandSource::UserShell => {
+                Some(event.clone())
+            }
+            _ => None,
+        }),
+    )
+    .await
+    .context("user shell command did not honor configured timeout")?;
+
+    assert_eq!(end_event.exit_code, 124);
+    assert_eq!(end_event.stdout.trim(), "before-timeout");
+    assert_eq!(end_event.stderr, "");
+    assert_eq!(end_event.aggregated_output.trim(), "before-timeout");
+    assert_eq!(end_event.status, ExecCommandStatus::Failed);
+    assert_regex_match(
+        r"^command timed out after [0-9]+ milliseconds\nbefore-timeout$",
+        &end_event.formatted_output.replace("\r\n", "\n"),
+    );
+
+    let _ = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    test.submit_turn("inspect timeout history").await?;
+
+    let command_message = mock
+        .single_request()
+        .message_input_texts("user")
+        .into_iter()
+        .find(|text| text.contains("<user_shell_command>"))
+        .expect("timeout result should be recorded in model-visible history")
+        .replace("\r\n", "\n");
+    assert_regex_match(
+        r"(?s)<result>\nExit code: 124\nDuration: [0-9]+(?:\.[0-9]+)? seconds\nOutput:\ncommand timed out after [0-9]+ milliseconds\nbefore-timeout\n</result>",
+        &command_message,
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn zero_user_shell_command_timeout_is_unbounded() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        let user_config_path = config.codex_home.join(CONFIG_TOML_FILE);
+        config.config_layer_stack = config.config_layer_stack.with_user_config(
+            &user_config_path,
+            toml::toml! { user_shell_command_timeout_ms = 0 }.into(),
+        );
+    });
+    let test = builder.build(&server).await?;
+
+    #[cfg(windows)]
+    let command = "Start-Sleep -Milliseconds 100; Write-Output completed".to_string();
+    #[cfg(not(windows))]
+    let command = "sleep 0.1; printf completed".to_string();
+
+    test.codex
+        .submit(Op::RunUserShellCommand { command })
+        .await?;
+
+    let end_event = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecCommandEnd(event) if event.source == ExecCommandSource::UserShell => {
+            Some(event.clone())
+        }
+        _ => None,
+    })
+    .await;
+
+    assert_eq!(end_event.exit_code, 0);
+    assert_eq!(end_event.stdout.trim(), "completed");
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
