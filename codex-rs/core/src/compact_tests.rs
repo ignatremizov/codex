@@ -400,6 +400,35 @@ fn preserve_mcp_server_use_context_items_does_not_rewrite_existing_replacement_h
 }
 
 #[test]
+fn preserve_promoted_skills_inventory_keeps_only_the_canonical_inventory() {
+    let inventory = "<skills_instructions>\n<promoted_skills>[]</promoted_skills>\n\
+                     ## Skills\n- reviewer\n</skills_instructions>"
+        .to_string();
+    let replacement = vec![user_message(&format!("{SUMMARY_PREFIX}\nsummary"))];
+    let additional = vec![
+        developer_message(inventory.clone()),
+        user_message("<skill>EXECUTABLE_SKILL_BODY_MARKER</skill>"),
+    ];
+
+    let merged = preserve_promoted_skills_inventory_item(replacement, &additional);
+    let developer_text = merged
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "developer" => Some(content),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|content| match content {
+            ContentItem::InputText { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(developer_text.contains(&inventory));
+    assert!(!developer_text.contains("EXECUTABLE_SKILL_BODY_MARKER"));
+}
+
+#[test]
 fn build_compacted_history_preserving_mcp_context_keeps_invocation_order_in_retained_tail() {
     let linear =
         McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();

@@ -1020,6 +1020,7 @@ impl AppServerSession {
         thread_id: ThreadId,
         objective: Option<String>,
         status: Option<ThreadGoalStatus>,
+        skills: Option<Vec<codex_app_server_protocol::GoalSkillSelection>>,
         token_budget: Option<Option<i64>>,
     ) -> Result<ThreadGoalSetResponse> {
         let request_id = self.next_request_id();
@@ -1030,6 +1031,7 @@ impl AppServerSession {
                     thread_id: thread_id.to_string(),
                     objective,
                     status,
+                    skills,
                     token_budget,
                 },
             })

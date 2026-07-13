@@ -5,7 +5,35 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 
+use codex_protocol::protocol::GoalSkillSelection;
+use codex_protocol::protocol::MAX_GOAL_SKILL_SELECTIONS;
+
 type ErasedData = Arc<dyn Any + Send + Sync>;
+
+/// Thread-scoped bridge carrying the skill selections owned by an active goal.
+#[derive(Debug, Default)]
+pub struct GoalSkillActivations {
+    selections: Mutex<Vec<GoalSkillSelection>>,
+}
+
+impl GoalSkillActivations {
+    /// Replaces the complete goal-owned selection set.
+    pub fn replace(&self, mut selections: Vec<GoalSkillSelection>) {
+        selections.truncate(MAX_GOAL_SKILL_SELECTIONS);
+        *self
+            .selections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = selections;
+    }
+
+    /// Returns the current goal-owned selections.
+    pub fn snapshot(&self) -> Vec<GoalSkillSelection> {
+        self.selections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
 
 /// Typed values supplied before an [`ExtensionData`] scope is created.
 ///

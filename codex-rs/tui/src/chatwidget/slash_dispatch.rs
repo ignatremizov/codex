@@ -592,6 +592,7 @@ impl ChatWidget {
         }
 
         if cmd == SlashCommand::Goal {
+            let mention_bindings = self.bottom_pane.take_mention_bindings();
             self.dispatch_prepared_command_with_args(
                 cmd,
                 PreparedSlashCommandArgs {
@@ -600,7 +601,7 @@ impl ChatWidget {
                     pending_pastes: self.bottom_pane.composer_pending_pastes(),
                     local_images: self.bottom_pane.composer_local_images(),
                     remote_image_urls: self.bottom_pane.remote_image_urls(),
-                    mention_bindings: Vec::new(),
+                    mention_bindings,
                     source: SlashCommandDispatchSource::Live,
                 },
             );
@@ -848,8 +849,24 @@ impl ChatWidget {
                     }
                     return;
                 }
+                let skill_selections = mention_bindings
+                    .iter()
+                    .filter(|binding| {
+                        binding.path.starts_with("skill://")
+                            || binding
+                                .path
+                                .rsplit(['/', '\\'])
+                                .next()
+                                .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
+                    })
+                    .map(|binding| codex_app_server_protocol::GoalSkillSelection {
+                        name: binding.mention.clone(),
+                        path: binding.path.clone(),
+                    })
+                    .collect();
                 let draft = GoalDraft {
                     objective: args,
+                    skill_selections: Some(skill_selections),
                     text_elements,
                     pending_pastes,
                     local_images,
@@ -874,7 +891,7 @@ impl ChatWidget {
                                 local_images: draft.local_images,
                                 remote_image_urls: draft.remote_image_urls,
                                 text_elements,
-                                mention_bindings: Vec::new(),
+                                mention_bindings,
                             },
                             QueuedInputAction::ParseSlash,
                             draft.pending_pastes,
