@@ -270,6 +270,7 @@ pub(crate) const HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS: i64 =
     DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 1;
 pub(crate) const DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS: Option<u64> = None;
+pub(crate) const DEFAULT_USER_SHELL_COMMAND_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 const LOCAL_DEV_BUILD_VERSION: &str = "0.0.0";
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
@@ -1560,6 +1561,15 @@ impl Config {
         } else {
             Ok(())
         }
+    }
+
+    pub(crate) fn user_shell_command_timeout_ms(&self) -> u64 {
+        self.config_layer_stack
+            .effective_config()
+            .get("user_shell_command_timeout_ms")
+            .and_then(TomlValue::as_integer)
+            .and_then(|timeout_ms| u64::try_from(timeout_ms).ok())
+            .unwrap_or(DEFAULT_USER_SHELL_COMMAND_TIMEOUT_MS)
     }
 
     pub(crate) fn effective_agent_max_threads(
