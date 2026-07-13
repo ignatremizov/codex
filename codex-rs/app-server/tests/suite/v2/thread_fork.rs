@@ -455,7 +455,7 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
         .thread_goals()
         .replace_thread_goal(
             source_thread_id,
-            "continue after the retry",
+            "continue after the retry with $guidance",
             codex_state::ThreadGoalStatus::Active,
             /*token_budget*/ Some(150),
         )

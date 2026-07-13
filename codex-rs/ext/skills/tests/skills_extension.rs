@@ -5,16 +5,16 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use codex_core_skills::HostSkillsSnapshot;
-use codex_core_skills::SKILLS_INTRO_WITH_ABSOLUTE_PATHS;
 use codex_core_skills::SkillLoadOutcome;
 use codex_core_skills::SkillMetadata;
-use codex_core_skills::injection::InjectedHostSkillPrompts;
+use codex_extension_api::ActiveGoalObjective;
 use codex_extension_api::ConversationHistory;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::NoopTurnItemEmitter;
 use codex_extension_api::PreviousWorldStateSection;
+use codex_extension_api::PromptSlot;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolPayload;
@@ -22,10 +22,10 @@ use codex_extension_api::TurnInputContext;
 use codex_extension_api::WorldStateContributionInput;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::SKILLS_INSTRUCTIONS_CLOSE_TAG;
-use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SkillScope;
 use codex_protocol::protocol::TruncationPolicy;
@@ -108,7 +108,7 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
     let turn_store = ExtensionData::new("turn-1");
     turn_store.insert(HostSkillsSnapshot::new(Arc::clone(&loaded_skills)));
 
-    let fragments = registry.turn_input_contributors()[0]
+    let contribution = registry.turn_input_contributors()[0]
         .contribute(
             TurnInputContext {
                 turn_id: "turn-1".to_string(),
@@ -123,25 +123,24 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
             &turn_store,
         )
         .await;
+    let fragments = record_contribution(contribution);
 
-    let expected_catalog = format!(
-        "{SKILLS_INSTRUCTIONS_OPEN_TAG}\n## Skills\n{SKILLS_INTRO_WITH_ABSOLUTE_PATHS}\n### Available skills\n- demo: Demo skill. (file: {skill_prompt_path})\n{SKILLS_INSTRUCTIONS_CLOSE_TAG}"
+    assert!(
+        fragments.is_empty(),
+        "an already-visible host skill needs no promotion update"
     );
-    let expected_skill = format!(
-        "<skill>\n<name>demo</name>\n<path>{skill_prompt_path}</path>\n{DEMO_SKILL_CONTENTS}\n</skill>"
+    let context = registry.context_contributors()[0]
+        .contribute_thread_context(&session_store, &thread_store)
+        .await;
+    assert_eq!(1, context.len());
+    assert!(context[0].text().contains("demo"));
+    assert!(context[0].text().contains(&skill_prompt_path));
+    assert!(
+        context[0]
+            .text()
+            .contains("<promoted_skills>[]</promoted_skills>")
     );
-    assert_eq!(
-        vec![("developer", expected_catalog), ("user", expected_skill),],
-        fragments
-            .iter()
-            .map(|fragment| (fragment.role(), fragment.render()))
-            .collect::<Vec<_>>()
-    );
-    let injected_host_skill_prompts = turn_store
-        .get::<InjectedHostSkillPrompts>()
-        .ok_or("host skill prompt marker should be set")?;
-    assert!(injected_host_skill_prompts.contains_path(&skill_path_string));
-
+    assert!(!context[0].text().contains(DEMO_SKILL_CONTENTS));
     std::fs::remove_dir_all(codex_home)?;
     Ok(())
 }
@@ -226,7 +225,7 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
             .contains("(environment resource: skill://executor/lint-fix/SKILL.md)")
     );
 
-    let fragments = registry.turn_input_contributors()[0]
+    let contribution = registry.turn_input_contributors()[0]
         .contribute(
             TurnInputContext {
                 turn_id: "turn-1".to_string(),
@@ -241,6 +240,7 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
             &turn_store,
         )
         .await;
+    let fragments = record_contribution(contribution);
 
     assert_eq!(1, fragments.len());
     assert_eq!("user", fragments[0].role());
@@ -384,8 +384,8 @@ async fn default_context_truncates_catalog_descriptions() -> TestResult {
         .await;
     assert_eq!(1, fragments.len());
     let rendered = fragments[0].text();
-    assert!(rendered.contains(&("x".repeat(1_021) + "...")));
-    assert!(!rendered.contains(&"x".repeat(1_024)));
+    assert!(rendered.contains(&"x".repeat(512)));
+    assert!(!rendered.contains(&"x".repeat(513)));
     assert!(!rendered.contains(&description));
 
     Ok(())
@@ -465,7 +465,7 @@ async fn skills_list_truncates_catalog_descriptions_in_tool_output() -> TestResu
 }
 
 #[tokio::test]
-async fn orchestrator_catalog_snapshot_caches_failure() -> TestResult {
+async fn orchestrator_catalog_snapshot_retries_failure_then_caches_success() -> TestResult {
     let list_calls = Arc::new(AtomicUsize::new(0));
     let providers =
         SkillProviders::new().with_orchestrator_provider(Arc::new(StaticSkillProvider {
@@ -501,6 +501,10 @@ async fn orchestrator_catalog_snapshot_caches_failure() -> TestResult {
             thread_store: &thread_store,
         })
         .await;
+    thread_store
+        .get::<ActiveGoalObjective>()
+        .ok_or("active goal objective state should be installed")?
+        .replace(Some("use $first".to_string()));
 
     let initial_fragments = registry.context_contributors()[0]
         .contribute_thread_context(&session_store, &thread_store)
@@ -514,25 +518,29 @@ async fn orchestrator_catalog_snapshot_caches_failure() -> TestResult {
         "orchestrator skills unavailable: temporary orchestrator failure"
     );
 
-    for turn_id in ["turn-1", "turn-2"] {
-        let fragments = registry.turn_input_contributors()[0]
-            .contribute(
-                TurnInputContext {
-                    turn_id: turn_id.to_string(),
-                    user_input: vec![UserInput::Text {
-                        text: "$first".to_string(),
-                        text_elements: Vec::new(),
-                    }],
-                    environments: Vec::new(),
-                },
-                &session_store,
-                &thread_store,
-                &ExtensionData::new(turn_id),
-            )
-            .await;
-        assert!(fragments.is_empty());
-    }
-    assert_eq!(1, list_calls.load(Ordering::Relaxed));
+    let first_turn = contribute_turn(&registry, &session_store, &thread_store, "turn-1").await;
+    assert!(
+        first_turn.is_empty(),
+        "an already-visible orchestrator skill needs no promotion update"
+    );
+    let restored_context = registry.context_contributors()[0]
+        .contribute_thread_context(&session_store, &thread_store)
+        .await;
+    assert_eq!(1, restored_context.len());
+    assert!(
+        restored_context
+            .iter()
+            .map(codex_extension_api::PromptFragment::text)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .contains("first")
+    );
+    let second_turn = contribute_turn(&registry, &session_store, &thread_store, "turn-2").await;
+    assert!(
+        second_turn.is_empty(),
+        "the successful retry should be cached for the active goal generation"
+    );
+    assert_eq!(2, list_calls.load(Ordering::Relaxed));
 
     Ok(())
 }
@@ -609,7 +617,7 @@ async fn root_qualified_locator_selects_only_the_matching_executor_skill() -> Te
             turn_store: &turn_store,
         })
         .await;
-    let fragments = registry.turn_input_contributors()[0]
+    let contribution = registry.turn_input_contributors()[0]
         .contribute(
             TurnInputContext {
                 turn_id: "turn-1".to_string(),
@@ -624,8 +632,10 @@ async fn root_qualified_locator_selects_only_the_matching_executor_skill() -> Te
             &turn_store,
         )
         .await;
+    let fragments = record_contribution(contribution);
 
     assert_eq!(1, fragments.len());
+    assert_eq!("user", fragments[0].role());
     assert!(fragments[0].render().contains(root_b_locator));
     assert_eq!(
         vec![(
@@ -640,7 +650,7 @@ async fn root_qualified_locator_selects_only_the_matching_executor_skill() -> Te
 }
 
 #[tokio::test]
-async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
+async fn prompt_hidden_skill_is_promoted_and_restored_from_compacted_history() -> TestResult {
     let read_requests = Arc::new(Mutex::new(Vec::new()));
     let provider = Arc::new(StaticSkillProvider {
         catalog: SkillCatalog {
@@ -684,7 +694,11 @@ async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
         })
         .await;
 
-    let fragments = registry.turn_input_contributors()[0]
+    let turn_store = ExtensionData::new("turn-1");
+    turn_store.insert(HostSkillsSnapshot::new(Arc::new(
+        SkillLoadOutcome::default(),
+    )));
+    let contribution = registry.turn_input_contributors()[0]
         .contribute(
             TurnInputContext {
                 turn_id: "turn-1".to_string(),
@@ -696,24 +710,206 @@ async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
             },
             &session_store,
             &thread_store,
-            &ExtensionData::new("turn-1"),
+            &turn_store,
+        )
+        .await;
+    let fragments = record_contribution(contribution);
+
+    assert_eq!(1, fragments.len());
+    assert_eq!("developer", fragments[0].role());
+    assert!(fragments[0].render().contains("visible-skill"));
+    assert!(fragments[0].render().contains("hidden-skill"));
+    assert!(fragments[0].render().contains("<promoted_skills>"));
+    assert!(!fragments[0].render().contains("# Lint Fix"));
+    assert!(read_request_keys(&read_requests).is_empty());
+
+    let duplicate = registry.turn_input_contributors()[0]
+        .contribute(
+            TurnInputContext {
+                turn_id: "turn-2".to_string(),
+                user_input: vec![UserInput::Text {
+                    text: "$hidden-skill".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                environments: Vec::new(),
+            },
+            &session_store,
+            &thread_store,
+            &ExtensionData::new("turn-2"),
+        )
+        .await;
+    assert!(
+        duplicate.is_empty(),
+        "reusing a promoted skill must not append another inventory"
+    );
+
+    for _context_epoch in 0..2 {
+        let context_fragments = registry.context_contributors()[0]
+            .contribute_thread_context(&session_store, &thread_store)
+            .await;
+        assert_eq!(1, context_fragments.len());
+        assert_eq!(
+            PromptSlot::DeveloperCapabilities,
+            context_fragments[0].slot()
+        );
+        assert!(context_fragments[0].text().contains("hidden-skill"));
+        assert!(context_fragments[0].text().contains("visible-skill"));
+    }
+
+    let persisted_inventory = fragments[0].render();
+    let resumed_thread_store = ExtensionData::new("resumed-thread");
+    let history = ConversationHistory::new(vec![
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "Compacted summary without a skill body.".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: persisted_inventory,
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ]);
+    resumed_thread_store.insert(history);
+    registry.thread_lifecycle_contributors()[0]
+        .on_thread_start(ThreadStartInput {
+            config: &config,
+            session_source: &session_source,
+            persistent_thread_state_available: true,
+            environments: &[],
+            session_store: &session_store,
+            thread_store: &resumed_thread_store,
+        })
+        .await;
+    resumed_thread_store.remove::<ConversationHistory>();
+    let resumed_context = registry.context_contributors()[0]
+        .contribute_thread_context(&session_store, &resumed_thread_store)
+        .await;
+    assert_eq!(1, resumed_context.len());
+    assert!(resumed_context[0].text().contains("<promoted_skills>"));
+    assert!(!resumed_context[0].text().contains("hidden-skill"));
+    assert!(!resumed_context[0].text().contains("# Lint Fix"));
+    let resumed_turn_store = ExtensionData::new("resumed-turn");
+    resumed_turn_store.insert(HostSkillsSnapshot::new(Arc::new(
+        SkillLoadOutcome::default(),
+    )));
+    let resumed_turn = registry.turn_input_contributors()[0]
+        .contribute(
+            TurnInputContext {
+                turn_id: "resumed-turn".to_string(),
+                user_input: Vec::new(),
+                environments: Vec::new(),
+            },
+            &session_store,
+            &resumed_thread_store,
+            &resumed_turn_store,
+        )
+        .await;
+    assert_eq!(1, resumed_turn.len());
+    assert!(resumed_turn[0].render().contains("hidden-skill"));
+    assert!(!resumed_turn[0].render().contains("# Lint Fix"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_selection_promotes_hidden_skill_into_the_canonical_inventory() -> TestResult {
+    let provider = Arc::new(StaticSkillProvider {
+        catalog: SkillCatalog {
+            entries: vec![
+                test_entry(
+                    SkillSourceKind::Host,
+                    "host",
+                    "host/goal-reviewer",
+                    "goal-reviewer/SKILL.md",
+                )
+                .hidden_from_prompt(),
+            ],
+            warnings: Vec::new(),
+        },
+        read_requests: Arc::new(Mutex::new(Vec::new())),
+        list_calls: None,
+        fail_first_list: false,
+    });
+    let mut builder = ExtensionRegistryBuilder::new();
+    install_with_providers(
+        &mut builder,
+        SkillProviders::new().with_host_provider(provider),
+        skills_extension_config,
+    );
+    let registry = builder.build();
+    let session_store = ExtensionData::new("session");
+    let thread_store = ExtensionData::new("thread");
+    let config = default_config();
+    registry.thread_lifecycle_contributors()[0]
+        .on_thread_start(ThreadStartInput {
+            config: &config,
+            session_source: &SessionSource::Cli,
+            persistent_thread_state_available: true,
+            environments: &[],
+            session_store: &session_store,
+            thread_store: &thread_store,
+        })
+        .await;
+    thread_store
+        .get::<ActiveGoalObjective>()
+        .ok_or("active goal objective state should be installed")?
+        .replace(Some("use $goal-reviewer".to_string()));
+
+    let fragments = registry.turn_input_contributors()[0]
+        .contribute(
+            TurnInputContext {
+                turn_id: "goal-turn".to_string(),
+                user_input: Vec::new(),
+                environments: Vec::new(),
+            },
+            &session_store,
+            &thread_store,
+            &ExtensionData::new("goal-turn"),
         )
         .await;
 
-    assert_eq!(2, fragments.len());
-    assert!(fragments[0].render().contains("visible-skill"));
-    assert!(!fragments[0].render().contains("hidden-skill"));
-    assert!(fragments[1].render().contains("<name>hidden-skill</name>"));
-    assert_eq!(
-        vec![(
-            SkillAuthority::new(SkillSourceKind::Host, "host"),
-            SkillPackageId("host/hidden-skill".to_string()),
-            SkillResourceId::new("hidden-skill/SKILL.md"),
-        )],
-        read_request_keys(&read_requests)
-    );
-
+    assert_eq!(1, fragments.len());
+    assert_eq!("developer", fragments[0].role());
+    assert!(fragments[0].render().contains("goal-reviewer"));
+    assert!(fragments[0].render().contains("<promoted_skills>"));
+    assert!(!fragments[0].render().contains("<skill>"));
     Ok(())
+}
+
+async fn contribute_turn(
+    registry: &codex_extension_api::ExtensionRegistry<TestConfig>,
+    session_store: &ExtensionData,
+    thread_store: &ExtensionData,
+    turn_id: &str,
+) -> Vec<Box<dyn codex_extension_api::ContextualUserFragment + Send>> {
+    let contribution = registry.turn_input_contributors()[0]
+        .contribute(
+            TurnInputContext {
+                turn_id: turn_id.to_string(),
+                user_input: Vec::new(),
+                environments: Vec::new(),
+            },
+            session_store,
+            thread_store,
+            &ExtensionData::new(turn_id),
+        )
+        .await;
+    record_contribution(contribution)
+}
+
+fn record_contribution(
+    contribution: Vec<Box<dyn codex_extension_api::ContextualUserFragment + Send>>,
+) -> Vec<Box<dyn codex_extension_api::ContextualUserFragment + Send>> {
+    contribution
 }
 
 #[derive(Clone)]

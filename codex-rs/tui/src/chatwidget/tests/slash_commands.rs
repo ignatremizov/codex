@@ -723,6 +723,30 @@ async fn goal_slash_command_uses_plain_text_for_mentions() {
 }
 
 #[tokio::test]
+async fn goal_slash_command_preserves_skill_mentions() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.bottom_pane.set_composer_text_with_mention_bindings(
+        "/goal use $supervisor for the plan".to_string(),
+        Vec::new(),
+        Vec::new(),
+        vec![MentionBinding {
+            sigil: '$',
+            mention: "supervisor".to_string(),
+            path: "/tmp/supervisor/SKILL.md".to_string(),
+        }],
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let draft = next_goal_draft(&mut rx, thread_id);
+    assert_eq!(draft.objective, "use $supervisor for the plan");
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
 async fn goal_slash_command_emits_attached_images() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);

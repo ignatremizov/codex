@@ -37,6 +37,8 @@ pub(crate) struct Session {
     /// Serializes rebuild/apply cycles for the running proxy; each cycle
     /// rebuilds from the current SessionState while holding this lock.
     pub(super) managed_network_proxy_refresh_lock: Semaphore,
+    /// Serializes durable extension-context appends with compaction installation.
+    pub(super) durable_context_lock: Semaphore,
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
     pub(super) features: ManagedFeatures,
@@ -1093,6 +1095,7 @@ impl Session {
                     thread_store: &thread_extension_data,
                 }).await;
             }
+            thread_extension_data.remove::<codex_extension_api::ConversationHistory>();
 
             let services = SessionServices {
                 // Initialize the MCP connection manager with an uninitialized
@@ -1193,6 +1196,7 @@ impl Session {
                 agent_status,
                 state: Mutex::new(state),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
+                durable_context_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
                 multi_agent_version,
                 session_start_mcp_servers: mcp_servers.clone(),
