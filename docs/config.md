@@ -152,6 +152,17 @@ exec_command_timeout_ms = 30000
 
 If unset, Codex uses the built-in default (10,000 ms).
 
+## User shell command timeout
+
+Set the maximum runtime (in milliseconds) for commands entered with `!` or `/shell`:
+
+```toml
+user_shell_command_timeout_ms = 3600000
+```
+
+If unset, Codex uses the existing one-hour default. Set the value to `0` to allow user shell
+commands to run until they finish or are interrupted.
+
 ## Unified exec yield windows
 
 Set defaults (in milliseconds) for unified exec output capture when `yield_time_ms` is not provided:
