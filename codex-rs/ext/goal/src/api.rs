@@ -6,14 +6,17 @@ use std::sync::PoisonError;
 use std::sync::Weak;
 
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadGoal;
 use codex_protocol::protocol::ThreadGoalStatus;
-use codex_protocol::protocol::ThreadGoalUpdatedEvent;
 use codex_protocol::protocol::validate_thread_goal_objective;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 
+use crate::runtime::ExternalGoalSetRuntimeEffects;
+use crate::runtime::GoalContinuationEffect;
+use crate::runtime::GoalObjectiveProjectionEffect;
 use crate::runtime::GoalRuntimeHandle;
+use crate::runtime::InactiveGoalHistory;
 use crate::runtime::PreviousGoalSnapshot;
 use crate::tool::fill_empty_thread_preview_if_possible;
 use crate::tool::protocol_goal_from_state;
@@ -61,24 +64,173 @@ pub struct GoalSetOutcome {
     pub goal: ThreadGoal,
     state_goal: codex_state::ThreadGoal,
     previous_goal: Option<PreviousGoalSnapshot>,
+    runtime: Option<Arc<GoalRuntimeHandle>>,
+    runtime_revision: Option<u64>,
+    runtime_effects: ExternalGoalSetRuntimeEffects,
+    changed: bool,
+    external_effect_permit: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
 }
 
 impl GoalSetOutcome {
-    pub fn thread_goal_updated_item(&self) -> RolloutItem {
-        RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
-            thread_id: self.goal.thread_id,
-            turn_id: None,
-            goal: self.goal.clone(),
-        }))
+    pub async fn acquire_current_effects(&self) -> Option<GoalSetEffects<'_>> {
+        let external_effect_permit = self
+            .external_effect_permit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()?;
+        if !self.changed {
+            return None;
+        }
+        let goal_state_permit = match self.runtime.as_ref() {
+            Some(runtime) => {
+                let permit = match runtime.goal_state_permit().await {
+                    Ok(permit) => permit,
+                    Err(err) => {
+                        tracing::warn!("failed to lock external goal runtime effects: {err}");
+                        runtime
+                            .fail_closed_external_projection(
+                                self.runtime_effects,
+                                self.runtime_revision.unwrap_or_default(),
+                            )
+                            .await;
+                        return None;
+                    }
+                };
+                if !self
+                    .runtime_revision
+                    .is_some_and(|revision| runtime.goal_revision_is(revision))
+                {
+                    runtime
+                        .fail_closed_external_projection(
+                            self.runtime_effects,
+                            self.runtime_revision.unwrap_or_default(),
+                        )
+                        .await;
+                    return None;
+                }
+                Some(permit)
+            }
+            None => None,
+        };
+        Some(GoalSetEffects {
+            outcome: self,
+            _external_effect_permit: external_effect_permit,
+            _goal_state_permit: goal_state_permit,
+        })
     }
 
-    pub async fn apply_runtime_effects(&self, goal_service: &GoalService) {
-        if let Some(runtime) = goal_service.runtime_for_thread(self.goal.thread_id)
-            && let Err(err) = runtime
-                .apply_external_goal_set(self.state_goal.clone(), self.previous_goal.clone())
-                .await
+    pub async fn apply_runtime_effects(&self, _goal_service: &GoalService) {
+        if let Some(effects) = self.acquire_current_effects().await {
+            effects.apply_runtime_effects().await;
+        }
+    }
+}
+
+pub struct GoalSetEffects<'a> {
+    outcome: &'a GoalSetOutcome,
+    _external_effect_permit: OwnedSemaphorePermit,
+    _goal_state_permit: Option<OwnedSemaphorePermit>,
+}
+
+impl GoalSetEffects<'_> {
+    pub async fn apply_runtime_effects(self) {
+        let Some(runtime) = self.outcome.runtime.clone() else {
+            return;
+        };
+        let should_continue = match runtime
+            .apply_external_goal_set_locked(
+                self.outcome.state_goal.clone(),
+                self.outcome.previous_goal.clone(),
+                self.outcome.runtime_effects,
+                self.outcome.runtime_revision.unwrap_or_default(),
+            )
+            .await
         {
-            tracing::warn!("failed to apply external goal status runtime effects: {err}");
+            Ok(should_continue) => should_continue,
+            Err(err) => {
+                tracing::warn!("failed to apply external goal status runtime effects: {err}");
+                false
+            }
+        };
+        drop(self);
+        if should_continue && let Err(err) = runtime.continue_if_idle().await {
+            tracing::warn!("failed to continue externally activated goal: {err}");
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct GoalClearOutcome {
+    cleared_goal: Option<codex_state::ThreadGoal>,
+    runtime: Option<Arc<GoalRuntimeHandle>>,
+    runtime_revision: Option<u64>,
+    external_effect_permit: Mutex<Option<OwnedSemaphorePermit>>,
+}
+
+impl GoalClearOutcome {
+    pub fn cleared(&self) -> bool {
+        self.cleared_goal.is_some()
+    }
+
+    pub async fn acquire_current_effects(&self) -> Option<GoalClearEffects<'_>> {
+        let external_effect_permit = self
+            .external_effect_permit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()?;
+        self.cleared_goal.as_ref()?;
+        let goal_state_permit = match self.runtime.as_ref() {
+            Some(runtime) => {
+                let permit = match runtime.goal_state_permit().await {
+                    Ok(permit) => permit,
+                    Err(err) => {
+                        tracing::warn!("failed to lock external goal-clear runtime effects: {err}");
+                        return None;
+                    }
+                };
+                if !self
+                    .runtime_revision
+                    .is_some_and(|revision| runtime.goal_revision_is(revision))
+                {
+                    return None;
+                }
+                Some(permit)
+            }
+            None => None,
+        };
+        Some(GoalClearEffects {
+            outcome: self,
+            _external_effect_permit: external_effect_permit,
+            _goal_state_permit: goal_state_permit,
+        })
+    }
+
+    pub async fn apply_runtime_effects(&self) {
+        if let Some(effects) = self.acquire_current_effects().await {
+            effects.apply_runtime_effects().await;
+        }
+    }
+}
+
+pub struct GoalClearEffects<'a> {
+    outcome: &'a GoalClearOutcome,
+    _external_effect_permit: OwnedSemaphorePermit,
+    _goal_state_permit: Option<OwnedSemaphorePermit>,
+}
+
+impl GoalClearEffects<'_> {
+    pub async fn apply_runtime_effects(self) {
+        let Some(runtime) = self.outcome.runtime.clone() else {
+            return;
+        };
+        if let Err(err) = runtime
+            .apply_external_goal_clear_locked(
+                self.outcome.cleared_goal.clone(),
+                self.outcome.runtime_revision.unwrap_or_default(),
+            )
+            .await
+        {
+            tracing::warn!("failed to apply external goal clear runtime effects: {err}");
         }
     }
 }
@@ -86,6 +238,7 @@ impl GoalSetOutcome {
 #[derive(Debug, Default)]
 pub struct GoalService {
     runtimes: Mutex<HashMap<String, Weak<GoalRuntimeHandle>>>,
+    external_effect_locks: Mutex<HashMap<String, Weak<Semaphore>>>,
 }
 
 impl GoalService {
@@ -122,7 +275,7 @@ impl GoalService {
             .await
             .map_err(GoalServiceError::Internal)?;
         runtime
-            .prepare_external_goal_mutation()
+            .prepare_external_goal_mutation_locked()
             .await
             .map_err(GoalServiceError::Internal)
     }
@@ -160,7 +313,6 @@ impl GoalService {
             GoalTokenBudgetUpdate::Keep => None,
             GoalTokenBudgetUpdate::Set(token_budget) => Some(token_budget),
         };
-
         if let Some(objective) = objective {
             validate_thread_goal_objective(objective).map_err(GoalServiceError::InvalidRequest)?;
         }
@@ -169,6 +321,11 @@ impl GoalService {
                 .map_err(GoalServiceError::InvalidRequest)?;
         }
 
+        let external_effect_permit = self
+            .external_effect_lock(thread_id)
+            .acquire_owned()
+            .await
+            .map_err(|err| GoalServiceError::Internal(err.to_string()))?;
         let runtime = self.runtime_for_thread(thread_id);
         // Hold this through the prepare/write window so idle continuation cannot
         // launch from goal state that this external mutation is about to change.
@@ -181,22 +338,63 @@ impl GoalService {
             ),
             None => None,
         };
+        let mut existing = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+            })?;
+        if let Some(goal) = existing.as_ref()
+            && goal_set_request_is_noop(goal, objective, status, token_budget)
+        {
+            drop(_goal_state_permit);
+            return Ok(unchanged_goal_set_outcome(
+                goal.clone(),
+                runtime,
+                external_effect_permit,
+            ));
+        }
+
         if let Some(runtime) = runtime.as_ref()
-            && let Err(err) = runtime.prepare_external_goal_mutation().await
+            && let Err(err) = runtime.prepare_external_goal_mutation_locked().await
         {
             tracing::warn!("failed to prepare external goal mutation: {err}");
         }
-
-        let (goal, previous_goal) = if let Some(objective) = objective {
-            let existing_goal = state_db
+        if runtime.is_some() {
+            existing = state_db
                 .thread_goals()
                 .get_thread_goal(thread_id)
                 .await
                 .map_err(|err| {
                     GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
                 })?;
-            if let Some(existing_goal) = existing_goal.as_ref() {
-                let previous_goal = PreviousGoalSnapshot::from(existing_goal);
+        }
+        if let Some(goal) = existing.as_ref()
+            && goal_set_request_is_noop(goal, objective, status, token_budget)
+        {
+            drop(_goal_state_permit);
+            return Ok(unchanged_goal_set_outcome(
+                goal.clone(),
+                runtime,
+                external_effect_permit,
+            ));
+        }
+        if objective.is_none() && existing.is_none() {
+            return Err(GoalServiceError::InvalidRequest(format!(
+                "cannot update goal for thread {thread_id}: no goal exists"
+            )));
+        }
+        let previous_goal_state = existing.clone();
+        let previous_goal = previous_goal_state.as_ref().map(PreviousGoalSnapshot::from);
+        let runtime_revision = runtime
+            .as_ref()
+            .map(|runtime| runtime.advance_goal_revision())
+            .transpose()
+            .map_err(GoalServiceError::Internal)?;
+
+        let goal = if let Some(objective) = objective {
+            if let Some(existing_goal) = existing.as_ref() {
                 state_db
                     .thread_goals()
                     .update_thread_goal(
@@ -216,8 +414,7 @@ impl GoalService {
                         GoalServiceError::InvalidRequest(format!(
                             "cannot update goal for thread {thread_id}: no goal exists"
                         ))
-                    })
-                    .map(|goal| (goal, Some(previous_goal)))?
+                    })?
             } else {
                 state_db
                     .thread_goals()
@@ -230,23 +427,14 @@ impl GoalService {
                     .await
                     .map_err(|err| {
                         GoalServiceError::Internal(format!("failed to replace thread goal: {err}"))
-                    })
-                    .map(|goal| (goal, None))?
+                    })?
             }
         } else {
-            let existing_goal = state_db
-                .thread_goals()
-                .get_thread_goal(thread_id)
-                .await
-                .map_err(|err| {
-                    GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
-                })?
-                .ok_or_else(|| {
-                    GoalServiceError::InvalidRequest(format!(
-                        "cannot update goal for thread {thread_id}: no goal exists"
-                    ))
-                })?;
-            let previous_goal = PreviousGoalSnapshot::from(&existing_goal);
+            let existing_goal = existing.as_ref().ok_or_else(|| {
+                GoalServiceError::InvalidRequest(format!(
+                    "cannot update goal for thread {thread_id}: no goal exists"
+                ))
+            })?;
             let expected_goal_id = existing_goal.goal_id.clone();
             state_db
                 .thread_goals()
@@ -267,17 +455,47 @@ impl GoalService {
                     GoalServiceError::InvalidRequest(format!(
                         "cannot update goal for thread {thread_id}: no goal exists"
                     ))
-                })
-                .map(|goal| (goal, Some(previous_goal)))?
+                })?
         };
 
+        let runtime_effects = external_goal_set_runtime_effects(
+            previous_goal_state.as_ref(),
+            &goal,
+            runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.accounting_state().current_turn_id().is_some()),
+        );
+        if let (Some(runtime), Some(runtime_revision)) = (runtime.as_ref(), runtime_revision) {
+            match runtime_effects.objective_projection {
+                GoalObjectiveProjectionEffect::Activated => {
+                    runtime.project_active_goal_objective_at_revision(
+                        runtime_revision,
+                        goal.objective.clone(),
+                    );
+                }
+                GoalObjectiveProjectionEffect::Invalidated => {
+                    runtime.clear_active_goal_objective_at_revision(
+                        runtime_revision,
+                        InactiveGoalHistory::Invalidate,
+                    );
+                }
+                GoalObjectiveProjectionEffect::Preserve
+                | GoalObjectiveProjectionEffect::DeferredUntilNextTurn => {}
+            }
+        }
         if objective.is_some() {
             fill_empty_thread_preview_if_possible(state_db, thread_id, &goal).await;
         }
+        drop(_goal_state_permit);
         Ok(GoalSetOutcome {
             goal: protocol_goal_from_state(goal.clone()),
             state_goal: goal,
             previous_goal,
+            runtime,
+            runtime_revision,
+            runtime_effects,
+            changed: true,
+            external_effect_permit: Arc::new(Mutex::new(Some(external_effect_permit))),
         })
     }
 
@@ -286,6 +504,22 @@ impl GoalService {
         state_db: &codex_state::StateRuntime,
         thread_id: ThreadId,
     ) -> Result<bool, GoalServiceError> {
+        let outcome = self.prepare_thread_goal_clear(state_db, thread_id).await?;
+        let cleared = outcome.cleared();
+        outcome.apply_runtime_effects().await;
+        Ok(cleared)
+    }
+
+    pub async fn prepare_thread_goal_clear(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        thread_id: ThreadId,
+    ) -> Result<GoalClearOutcome, GoalServiceError> {
+        let external_effect_permit = self
+            .external_effect_lock(thread_id)
+            .acquire_owned()
+            .await
+            .map_err(|err| GoalServiceError::Internal(err.to_string()))?;
         let runtime = self.runtime_for_thread(thread_id);
         // Hold this through the prepare/write window so idle continuation cannot
         // launch from goal state that this external mutation is about to change.
@@ -298,12 +532,45 @@ impl GoalService {
             ),
             None => None,
         };
+        let mut existing_goal = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+            })?;
+        if existing_goal.is_none() {
+            drop(goal_state_permit);
+            return Ok(GoalClearOutcome {
+                cleared_goal: None,
+                runtime,
+                runtime_revision: None,
+                external_effect_permit: Mutex::new(Some(external_effect_permit)),
+            });
+        }
         if let Some(runtime) = runtime.as_ref()
-            && let Err(err) = runtime.prepare_external_goal_mutation().await
+            && let Err(err) = runtime.prepare_external_goal_mutation_locked().await
         {
             tracing::warn!("failed to prepare external goal mutation: {err}");
         }
-
+        if runtime.is_some() {
+            existing_goal = state_db
+                .thread_goals()
+                .get_thread_goal(thread_id)
+                .await
+                .map_err(|err| {
+                    GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+                })?;
+        }
+        if existing_goal.is_none() {
+            drop(goal_state_permit);
+            return Ok(GoalClearOutcome {
+                cleared_goal: None,
+                runtime,
+                runtime_revision: None,
+                external_effect_permit: Mutex::new(Some(external_effect_permit)),
+            });
+        }
         let cleared_goal = state_db
             .thread_goals()
             .delete_thread_goal(thread_id)
@@ -311,17 +578,28 @@ impl GoalService {
             .map_err(|err| {
                 GoalServiceError::Internal(format!("failed to clear thread goal: {err}"))
             })?;
-        let cleared = cleared_goal.is_some();
-        drop(goal_state_permit);
-        drop(runtime);
-
-        if let (Some(runtime), Some(goal)) = (self.runtime_for_thread(thread_id), cleared_goal)
-            && let Err(err) = runtime.apply_external_goal_clear(goal).await
-        {
-            tracing::warn!("failed to apply external goal clear runtime effects: {err}");
+        let runtime_revision = if cleared_goal.is_some() {
+            runtime
+                .as_ref()
+                .map(|runtime| runtime.advance_goal_revision())
+                .transpose()
+                .map_err(GoalServiceError::Internal)?
+        } else {
+            None
+        };
+        if let (Some(runtime), Some(runtime_revision)) = (runtime.as_ref(), runtime_revision) {
+            runtime.clear_active_goal_objective_at_revision(
+                runtime_revision,
+                InactiveGoalHistory::Invalidate,
+            );
         }
-
-        Ok(cleared)
+        drop(goal_state_permit);
+        Ok(GoalClearOutcome {
+            cleared_goal,
+            runtime,
+            runtime_revision,
+            external_effect_permit: Mutex::new(Some(external_effect_permit)),
+        })
     }
 
     pub(crate) fn register_runtime(&self, runtime: &Arc<GoalRuntimeHandle>) {
@@ -351,7 +629,89 @@ impl GoalService {
         runtime
     }
 
+    fn external_effect_lock(&self, thread_id: ThreadId) -> Arc<Semaphore> {
+        let key = thread_id.to_string();
+        let mut locks = self
+            .external_effect_locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Semaphore::new(/*permits*/ 1));
+        locks.insert(key, Arc::downgrade(&lock));
+        lock
+    }
+
     fn runtimes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Weak<GoalRuntimeHandle>>> {
         self.runtimes.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn unchanged_goal_set_outcome(
+    goal: codex_state::ThreadGoal,
+    runtime: Option<Arc<GoalRuntimeHandle>>,
+    external_effect_permit: OwnedSemaphorePermit,
+) -> GoalSetOutcome {
+    let previous_goal = Some(PreviousGoalSnapshot::from(&goal));
+    GoalSetOutcome {
+        goal: protocol_goal_from_state(goal.clone()),
+        state_goal: goal,
+        previous_goal,
+        runtime,
+        runtime_revision: None,
+        runtime_effects: ExternalGoalSetRuntimeEffects {
+            objective_projection: GoalObjectiveProjectionEffect::Preserve,
+            continuation: GoalContinuationEffect::None,
+        },
+        changed: false,
+        external_effect_permit: Arc::new(Mutex::new(Some(external_effect_permit))),
+    }
+}
+
+fn goal_set_request_is_noop(
+    goal: &codex_state::ThreadGoal,
+    objective: Option<&str>,
+    status: Option<codex_state::ThreadGoalStatus>,
+    token_budget: Option<Option<i64>>,
+) -> bool {
+    objective.is_none_or(|objective| goal.objective == objective)
+        && status.is_none_or(|status| goal.status == status)
+        && token_budget.is_none_or(|token_budget| goal.token_budget == token_budget)
+}
+
+fn external_goal_set_runtime_effects(
+    previous_goal: Option<&codex_state::ThreadGoal>,
+    goal: &codex_state::ThreadGoal,
+    turn_running: bool,
+) -> ExternalGoalSetRuntimeEffects {
+    let previous_was_active =
+        previous_goal.is_some_and(|goal| goal.status == codex_state::ThreadGoalStatus::Active);
+    let goal_is_active = goal.status == codex_state::ThreadGoalStatus::Active;
+    let active_projection_changed = goal_is_active
+        && (!previous_was_active
+            || previous_goal.is_none_or(|previous_goal| previous_goal.goal_id != goal.goal_id)
+            || previous_goal
+                .is_some_and(|previous_goal| previous_goal.objective != goal.objective));
+    let objective_projection = if active_projection_changed {
+        if turn_running {
+            GoalObjectiveProjectionEffect::DeferredUntilNextTurn
+        } else {
+            GoalObjectiveProjectionEffect::Activated
+        }
+    } else if previous_was_active && !goal_is_active {
+        GoalObjectiveProjectionEffect::Invalidated
+    } else {
+        GoalObjectiveProjectionEffect::Preserve
+    };
+    let continuation = if goal_is_active && !previous_was_active {
+        GoalContinuationEffect::StartIfIdle
+    } else {
+        GoalContinuationEffect::None
+    };
+    ExternalGoalSetRuntimeEffects {
+        objective_projection,
+        continuation,
     }
 }

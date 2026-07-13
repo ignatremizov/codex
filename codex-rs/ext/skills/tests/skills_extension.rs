@@ -141,7 +141,10 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
         .await;
 
     let expected_catalog = format!(
-        "{SKILLS_INSTRUCTIONS_OPEN_TAG}\n## Skills\n{SKILLS_INTRO_WITH_ABSOLUTE_PATHS}\n### Available skills\n- demo: Demo skill. (file: {skill_prompt_path})\n{SKILLS_INSTRUCTIONS_CLOSE_TAG}"
+        "{SKILLS_INSTRUCTIONS_OPEN_TAG}\n<promoted_skills>[]</promoted_skills>\n\
+         When multiple complete skills inventories are present, this latest inventory supersedes earlier inventories.\n\n\
+         ## Skills\n{SKILLS_INTRO_WITH_ABSOLUTE_PATHS}\n### Available skills\n\
+         - demo: Demo skill. (file: {skill_prompt_path})\n\n{SKILLS_INSTRUCTIONS_CLOSE_TAG}"
     );
     let expected_skill = format!(
         "<skill>\n<name>demo</name>\n<path>{skill_prompt_path}</path>\n{DEMO_SKILL_CONTENTS}\n</skill>"
@@ -1069,15 +1072,9 @@ async fn orchestrator_catalog_snapshot_caches_failure() -> TestResult {
             )
             .await;
         assert!(fragments.is_empty());
-        let warning = event_rx.try_recv()?.into_warning();
-        assert_eq!(warning.thread_id, thread_store.level_id());
-        assert_eq!(warning.turn_id.as_deref(), Some(turn_id));
-        assert_eq!(
-            warning.message,
-            "orchestrator skills unavailable: temporary orchestrator failure"
-        );
+        assert!(event_rx.try_recv().is_err());
     }
-    assert_eq!(1, list_calls.load(Ordering::Relaxed));
+    assert_eq!(2, list_calls.load(Ordering::Relaxed));
 
     Ok(())
 }

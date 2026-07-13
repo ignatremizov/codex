@@ -7,6 +7,15 @@ use codex_extension_api::ContextualUserFragment;
 use codex_protocol::protocol::SkillScope;
 use pretty_assertions::assert_eq;
 
+fn expected_available_skills_body(skill_lines: &[String]) -> String {
+    let inventory = render_available_skills_body(&[], skill_lines);
+    format!(
+        "\n<promoted_skills>[]</promoted_skills>\n\
+         When multiple complete skills inventories are present, this latest inventory supersedes earlier inventories.\n\
+         {inventory}\n"
+    )
+}
+
 fn entry(name: &str, description: &str, short_description: Option<&str>) -> SkillCatalogEntry {
     entry_with_path(
         name,
@@ -85,31 +94,25 @@ fn ordering_follows_render_policy() {
 
     assert_eq!(
         render(SkillCatalogRenderPolicy::CoreCompatible),
-        render_available_skills_body(
-            &[],
-            &[
-                "- system-zeta: Description. (file: /skills/system-zeta/SKILL.md)".to_string(),
-                "- admin-alpha: Description. (file: /skills/admin-alpha/SKILL.md)".to_string(),
-                "- repo-alpha: Description. (file: /skills/repo-alpha-a/SKILL.md)".to_string(),
-                "- repo-alpha: Description. (file: /skills/repo-alpha-z/SKILL.md)".to_string(),
-                "- repo-zeta: Description. (file: /skills/repo-zeta/SKILL.md)".to_string(),
-                "- user-alpha: Description. (file: /skills/user-alpha/SKILL.md)".to_string(),
-            ],
-        )
+        expected_available_skills_body(&[
+            "- system-zeta: Description. (file: /skills/system-zeta/SKILL.md)".to_string(),
+            "- admin-alpha: Description. (file: /skills/admin-alpha/SKILL.md)".to_string(),
+            "- repo-alpha: Description. (file: /skills/repo-alpha-a/SKILL.md)".to_string(),
+            "- repo-alpha: Description. (file: /skills/repo-alpha-z/SKILL.md)".to_string(),
+            "- repo-zeta: Description. (file: /skills/repo-zeta/SKILL.md)".to_string(),
+            "- user-alpha: Description. (file: /skills/user-alpha/SKILL.md)".to_string(),
+        ],)
     );
     assert_eq!(
         render(SkillCatalogRenderPolicy::ExtensionCompatible),
-        render_available_skills_body(
-            &[],
-            &[
-                "- repo-zeta: Description. (file: /skills/repo-zeta/SKILL.md)".to_string(),
-                "- user-alpha: Description. (file: /skills/user-alpha/SKILL.md)".to_string(),
-                "- system-zeta: Description. (file: /skills/system-zeta/SKILL.md)".to_string(),
-                "- admin-alpha: Description. (file: /skills/admin-alpha/SKILL.md)".to_string(),
-                "- repo-alpha: Description. (file: /skills/repo-alpha-z/SKILL.md)".to_string(),
-                "- repo-alpha: Description. (file: /skills/repo-alpha-a/SKILL.md)".to_string(),
-            ],
-        )
+        expected_available_skills_body(&[
+            "- repo-zeta: Description. (file: /skills/repo-zeta/SKILL.md)".to_string(),
+            "- user-alpha: Description. (file: /skills/user-alpha/SKILL.md)".to_string(),
+            "- system-zeta: Description. (file: /skills/system-zeta/SKILL.md)".to_string(),
+            "- admin-alpha: Description. (file: /skills/admin-alpha/SKILL.md)".to_string(),
+            "- repo-alpha: Description. (file: /skills/repo-alpha-z/SKILL.md)".to_string(),
+            "- repo-alpha: Description. (file: /skills/repo-alpha-a/SKILL.md)".to_string(),
+        ],)
     );
 }
 
@@ -144,23 +147,17 @@ fn description_selection_follows_render_policy() {
 
     assert_eq!(
         core.body(),
-        render_available_skills_body(
-            &[],
-            &[
-                "- fallback: fallback description (file: /skills/fallback/SKILL.md)".to_string(),
-                "- shortened: full description (file: /skills/shortened/SKILL.md)".to_string(),
-            ],
-        )
+        expected_available_skills_body(&[
+            "- fallback: fallback description (file: /skills/fallback/SKILL.md)".to_string(),
+            "- shortened: full description (file: /skills/shortened/SKILL.md)".to_string(),
+        ],)
     );
     assert_eq!(
         extension.body(),
-        render_available_skills_body(
-            &[],
-            &[
-                "- shortened: short description (file: /skills/shortened/SKILL.md)".to_string(),
-                "- fallback: fallback description (file: /skills/fallback/SKILL.md)".to_string(),
-            ],
-        )
+        expected_available_skills_body(&[
+            "- shortened: short description (file: /skills/shortened/SKILL.md)".to_string(),
+            "- fallback: fallback description (file: /skills/fallback/SKILL.md)".to_string(),
+        ],)
     );
 }
 

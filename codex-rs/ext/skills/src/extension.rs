@@ -5,6 +5,7 @@ use codex_core_skills::injection::HostSkillsCatalogInWorldState;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
+use codex_extension_api::ActiveGoalObjective;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ContextContributor;
 use codex_extension_api::ContextualUserFragment;
@@ -24,6 +25,7 @@ use codex_extension_api::ToolCall;
 use codex_extension_api::ToolContributor;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::TurnInputContext;
+use codex_extension_api::TurnInputContribution;
 use codex_extension_api::TurnInputContributor;
 use codex_extension_api::WorldStateContributionInput;
 use codex_extension_api::WorldStateSectionContribution;
@@ -144,10 +146,20 @@ where
                 .environments
                 .iter()
                 .any(|environment| environment.environment_id == LOCAL_ENVIRONMENT_ID);
-            input.thread_store.insert(SkillsThreadState::new(
+            let thread_state = SkillsThreadState::new(
                 (self.config_from_host)(input.config),
                 orchestrator_skills_available,
-            ));
+            );
+            if let Some(history) = input
+                .thread_store
+                .get::<codex_extension_api::ConversationHistory>()
+            {
+                thread_state.restore_promoted_skills(&history);
+            }
+            input.thread_store.insert(thread_state);
+            input
+                .thread_store
+                .get_or_init::<ActiveGoalObjective>(ActiveGoalObjective::default);
         })
     }
 }
@@ -231,8 +243,18 @@ where
             if let Some(message) = rendered.warning_message {
                 self.emit_warning(thread_store.level_id(), /*turn_id*/ None, message);
             }
+            let (promoted, unresolved) = thread_state.resolve_promoted_skills(&catalog);
+            if unresolved > 0 {
+                self.emit_unresolved_promotions_warning(
+                    thread_store.level_id(),
+                    /*turn_id*/ None,
+                    unresolved,
+                );
+            }
+            thread_state.acknowledge_promoted_projection(&promoted);
             rendered
                 .fragment
+                .map(|fragment| fragment.with_promoted(thread_state.promoted_skill_identities()))
                 .map(|fragment| PromptFragment::developer_capability(fragment.render()))
                 .into_iter()
                 .collect()
@@ -575,14 +597,19 @@ where
                     self.emit_warning(thread_store.level_id(), Some(&input.turn_id), message);
                 }
                 if let Some(fragment) = rendered.fragment {
-                    fragments.push(Box::new(fragment));
+                    fragments.push(Box::new(
+                        fragment.with_promoted(thread_state.promoted_skill_identities()),
+                    ));
                 }
             }
 
             let mut warnings = catalog.warnings.clone();
             let mut main_prompts_injected = false;
             let mut injected_host_skill_prompts = InjectedHostSkillPrompts::default();
-            for entry in &selected_entries {
+            for entry in selected_entries
+                .iter()
+                .filter(|entry| entry.authority.kind != SkillSourceKind::Orchestrator)
+            {
                 match self
                     .read_main_prompt(
                         entry,
@@ -671,6 +698,162 @@ where
             fragments
         })
     }
+
+    fn contribute_durable<'a>(
+        &'a self,
+        input: TurnInputContext,
+        extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
+        session_store: &'a ExtensionData,
+        thread_store: &'a ExtensionData,
+        turn_store: &'a ExtensionData,
+    ) -> ExtensionFuture<'a, TurnInputContribution> {
+        Box::pin(async move {
+            let mut fragments = self
+                .contribute(
+                    input.clone(),
+                    extension_metrics.clone(),
+                    session_store,
+                    thread_store,
+                    turn_store,
+                )
+                .await;
+            let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
+                return TurnInputContribution::new(fragments);
+            };
+
+            let config = thread_state.config();
+            let host_snapshot = turn_store.get::<HostSkillsSnapshot>();
+            if let Some(host_snapshot) = host_snapshot.as_ref() {
+                *thread_state
+                    .host_snapshot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(Arc::clone(host_snapshot));
+            }
+            let mut catalog = turn_store
+                .get::<ExecutorSkillsStepState>()
+                .map(|executor_skills| executor_skills.0.clone())
+                .unwrap_or_default();
+            catalog.extend(
+                self.list_skills(
+                    SkillListQuery {
+                        turn_id: input.turn_id.clone(),
+                        executor_roots: Vec::new(),
+                        resolved_executor_roots: Vec::new(),
+                        host_snapshot,
+                        include_host_skills: true,
+                        include_bundled_skills: config.bundled_skills_enabled,
+                        include_orchestrator_skills: thread_state.orchestrator_skills_enabled(),
+                        mcp_resources: session_store
+                            .get::<SkillsSessionState>()
+                            .and_then(|state| state.mcp_resources.clone()),
+                        executor_capability_discovery: None,
+                    },
+                    &thread_state,
+                )
+                .await,
+            );
+
+            let mut selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
+            let goal_mentions = thread_store
+                .get::<ActiveGoalObjective>()
+                .and_then(|active_goal| active_goal.snapshot())
+                .map(|text| codex_protocol::user_input::UserInput::Text {
+                    text,
+                    text_elements: Vec::new(),
+                })
+                .into_iter()
+                .collect::<Vec<_>>();
+            for entry in collect_explicit_skill_mentions(&goal_mentions, &catalog) {
+                if !selected_entries.iter().any(|candidate| {
+                    candidate.authority == entry.authority && candidate.id == entry.id
+                }) {
+                    selected_entries.push(entry);
+                }
+            }
+            let promotable_entries = selected_entries
+                .iter()
+                .filter(|entry| {
+                    !entry.prompt_visible
+                        && matches!(
+                            entry.authority.kind,
+                            SkillSourceKind::Host | SkillSourceKind::Orchestrator
+                        )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let (next_promoted, changed, omitted) = thread_state.promoted_with(&promotable_entries);
+            let (mut promoted_entries, unresolved) = thread_state.resolve_promoted_skills(&catalog);
+            for entry in promotable_entries {
+                if !promoted_entries.iter().any(|candidate| {
+                    candidate.authority == entry.authority && candidate.id == entry.id
+                }) {
+                    promoted_entries.push(entry);
+                }
+            }
+            promoted_entries.retain(|entry| {
+                next_promoted
+                    .iter()
+                    .any(|identity| identity.matches_entry(entry))
+            });
+            let projection_changed = thread_state.promoted_projection_changed(&promoted_entries);
+            if unresolved > 0 {
+                self.emit_unresolved_promotions_warning(
+                    thread_store.level_id(),
+                    Some(&input.turn_id),
+                    unresolved,
+                );
+            }
+            if omitted > 0 {
+                self.emit_warning(
+                    thread_store.level_id(),
+                    Some(&input.turn_id),
+                    format!(
+                        "{omitted} skill promotion(s) were omitted because the bounded promoted \
+                         inventory is full."
+                    ),
+                );
+            }
+
+            if (changed || projection_changed) && config.include_instructions {
+                let mut promoted_catalog = catalog.clone();
+                for entry in &mut promoted_catalog.entries {
+                    if promoted_entries.iter().any(|promoted| {
+                        promoted.authority == entry.authority && promoted.id == entry.id
+                    }) {
+                        entry.prompt_visible = true;
+                    }
+                }
+                let include_usage = thread_store
+                    .get::<ModelInfo>()
+                    .is_some_and(|model_info| model_info.include_skills_usage_instructions);
+                let rendered = render_catalog(
+                    extension_metrics.as_deref(),
+                    CatalogSurface::TurnInput,
+                    &promoted_catalog,
+                    include_usage,
+                    SkillCatalogRenderPolicy::ExtensionCompatible,
+                    skill_metadata_budget(
+                        thread_store
+                            .get::<ModelInfo>()
+                            .as_deref()
+                            .and_then(ModelInfo::resolved_context_window),
+                    ),
+                );
+                if let Some(fragment) = rendered.fragment {
+                    fragments.push(Box::new(fragment.with_promoted(next_promoted.clone())));
+                }
+            }
+
+            if changed || projection_changed {
+                TurnInputContribution::with_acknowledgement(fragments, move || {
+                    thread_state.acknowledge_promoted_skills(next_promoted, &promoted_entries);
+                })
+            } else {
+                TurnInputContribution::new(fragments)
+            }
+        })
+    }
 }
 
 impl<C> SkillsExtension<C> {
@@ -756,6 +939,23 @@ impl<C> SkillsExtension<C> {
             turn_id: turn_id.map(str::to_string),
             message,
         });
+    }
+
+    fn emit_unresolved_promotions_warning(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        unresolved: usize,
+    ) {
+        let skill_word = if unresolved == 1 { "skill" } else { "skills" };
+        self.emit_warning(
+            thread_id,
+            turn_id,
+            format!(
+                "{unresolved} promoted {skill_word} could not be resolved; omitted from the \
+                 current skills inventory."
+            ),
+        );
     }
 }
 

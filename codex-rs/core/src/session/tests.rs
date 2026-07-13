@@ -3197,7 +3197,8 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
 
     session
         .start_new_context_window(&step_context, world_state)
-        .await;
+        .await
+        .expect("start new context window");
 
     let live_history = session.clone_history().await;
     assert!(!live_history.raw_items().is_empty());
@@ -4527,7 +4528,7 @@ async fn open_thread_persistence(session: &mut Session) -> PathBuf {
         .expect("thread should have rollout path")
 }
 
-async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
+pub(crate) async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
     let rollout_path = open_thread_persistence(session).await;
     session.ensure_rollout_materialized().await;
     session
@@ -5831,6 +5832,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         agent_status: agent_status_tx,
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
+        durable_context_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
@@ -8020,6 +8022,7 @@ where
         agent_status: agent_status_tx,
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
+        durable_context_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,

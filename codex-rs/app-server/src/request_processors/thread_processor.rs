@@ -21,6 +21,37 @@ const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
 
+fn without_goal_owned_context(mut items: Vec<RolloutItem>) -> Vec<RolloutItem> {
+    items.retain(|item| {
+        !matches!(
+            item,
+            RolloutItem::ResponseItem(response_item) if is_goal_owned_context(response_item)
+        )
+    });
+    for item in &mut items {
+        if let RolloutItem::Compacted(compacted) = item
+            && let Some(replacement_history) = compacted.replacement_history.as_mut()
+        {
+            replacement_history.retain(|item| !is_goal_owned_context(item));
+        }
+    }
+    items
+}
+
+fn is_goal_owned_context(item: &ResponseItem) -> bool {
+    let ResponseItem::Message { content, .. } = item else {
+        return false;
+    };
+    content.iter().any(|content| {
+        let codex_protocol::models::ContentItem::InputText { text } = content else {
+            return false;
+        };
+        let text = text.trim_start();
+        text.starts_with("<codex_internal_context source=\"goal\">")
+            || text.starts_with("<goal_context>")
+    })
+}
+
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
     source_kinds: Option<Vec<ThreadSourceKind>>,
@@ -4057,16 +4088,17 @@ impl ThreadRequestProcessor {
                 "`permissions` cannot be combined with `sandbox`",
             ));
         }
+        let archived_policy = if path.is_some() {
+            ArchivedThreadReadPolicy::Allow
+        } else {
+            ArchivedThreadReadPolicy::Reject
+        };
         let source_thread = self
             .read_stored_thread_for_resume(
                 &thread_id,
                 path.as_ref(),
                 /*include_history*/ false,
-                if path.is_some() {
-                    ArchivedThreadReadPolicy::Allow
-                } else {
-                    ArchivedThreadReadPolicy::Reject
-                },
+                archived_policy,
             )
             .await?;
         let paginated_source = matches!(source_thread.history_mode, ThreadHistoryMode::Paginated);
@@ -4144,6 +4176,8 @@ impl ThreadRequestProcessor {
                     })?,
             )
         };
+        let source_history_items =
+            Arc::new(without_goal_owned_context((*source_history_items).clone()));
         let history_cwd = Some(source_thread.cwd.clone());
 
         // Persist Windows sandbox mode.

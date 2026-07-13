@@ -81,11 +81,13 @@ use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnInputContext;
+use codex_extension_api::TurnInputContributionAcknowledgement;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
 use codex_file_system::FindUpErrorPolicy;
 use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_login::CodexAuth;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ToolInfo;
 use codex_protocol::ResponseItemId;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
@@ -237,22 +239,28 @@ pub(crate) async fn run_turn(
         }
     }
 
-    let (injection_items, explicitly_enabled_connectors) = if turn_context.is_compact_subagent() {
-        (Vec::new(), HashSet::new())
-    } else {
-        let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
-            &sess,
-            first_step_context.as_ref(),
-            &user_input,
-            &mentioned_plugins,
-            &cancellation_token,
-        )
-        .await
-        else {
-            return Ok(None);
+    let (injection_items, explicitly_enabled_connectors, extension_contributions) =
+        if turn_context.is_compact_subagent() {
+            (Vec::new(), HashSet::new(), Vec::new())
+        } else {
+            let Some((injection_items, explicitly_enabled_connectors, extension_contributions)) =
+                build_skills_and_plugins(
+                    &sess,
+                    first_step_context.as_ref(),
+                    &user_input,
+                    &mentioned_plugins,
+                    &cancellation_token,
+                )
+                .await
+            else {
+                return Ok(None);
+            };
+            (
+                injection_items,
+                explicitly_enabled_connectors,
+                extension_contributions,
+            )
         };
-        (injection_items, explicitly_enabled_connectors)
-    };
 
     if run_pending_session_start_hooks(&sess, &turn_context).await {
         return Ok(None);
@@ -273,6 +281,19 @@ pub(crate) async fn run_turn(
     for response_item in injection_items {
         sess.record_conversation_items(&turn_context, std::slice::from_ref(&response_item))
             .await;
+    }
+    for contribution in extension_contributions {
+        sess.record_durable_context_items(
+            Arc::clone(&turn_context),
+            contribution.items,
+            contribution.acknowledgement,
+        )
+        .await
+        .map_err(|err| {
+            CodexErr::Fatal(format!(
+                "failed to persist extension turn input contribution: {err}"
+            ))
+        })?;
     }
 
     track_turn_resolved_config_analytics(&sess, &turn_context, &input).await;
@@ -774,12 +795,16 @@ async fn build_skills_and_plugins(
     user_input: &[UserInput],
     mentioned_plugins: &[crate::plugins::PluginCapabilitySummary],
     cancellation_token: &CancellationToken,
-) -> Option<(Vec<ResponseItem>, HashSet<String>)> {
+) -> Option<(
+    Vec<ResponseItem>,
+    HashSet<String>,
+    Vec<PendingTurnInputContribution>,
+)> {
     let turn_context = step_context.turn.as_ref();
     // Guardian input embeds the parent transcript as untrusted evidence. Do not interpret skill or
     // plugin mentions from that generated prompt as requests to inject additional instructions.
     if crate::guardian::is_guardian_reviewer_source(&turn_context.session_source) {
-        return Some((Vec::new(), HashSet::new()));
+        return Some((Vec::new(), HashSet::new(), Vec::new()));
     }
 
     let tracking = build_track_events_context(
@@ -811,7 +836,7 @@ async fn build_skills_and_plugins(
     };
     let skills_outcome = turn_context.turn_skills.snapshot.outcome();
     let connector_slug_counts = build_connector_slug_counts(&available_connectors);
-    let extension_injection_items =
+    let extension_contributions =
         build_extension_turn_input_items(sess, step_context, user_input, cancellation_token)
             .await?;
     let skill_name_counts_lower =
@@ -904,8 +929,16 @@ async fn build_skills_and_plugins(
         None => skill_items,
     };
     injection_items.extend(plugin_items);
-    injection_items.extend(extension_injection_items);
-    Some((injection_items, explicitly_enabled_connectors))
+    Some((
+        injection_items,
+        explicitly_enabled_connectors,
+        extension_contributions,
+    ))
+}
+
+struct PendingTurnInputContribution {
+    items: Vec<ResponseItem>,
+    acknowledgement: Option<TurnInputContributionAcknowledgement>,
 }
 
 #[tracing::instrument(
@@ -918,7 +951,7 @@ async fn build_extension_turn_input_items(
     step_context: &StepContext,
     user_input: &[UserInput],
     cancellation_token: &CancellationToken,
-) -> Option<Vec<ResponseItem>> {
+) -> Option<Vec<PendingTurnInputContribution>> {
     let turn_context = step_context.turn.as_ref();
     let contributors = sess.services.extensions.turn_input_contributors().to_vec();
     if contributors.is_empty() {
@@ -948,10 +981,10 @@ async fn build_extension_turn_input_items(
     let extension_metrics =
         super::extension_metrics::from_session_telemetry(turn_context.session_telemetry.clone());
 
-    let mut items = Vec::new();
+    let mut contributions = Vec::new();
     for contributor in contributors {
-        let contributed_fragments = contributor
-            .contribute(
+        let contribution = contributor
+            .contribute_durable(
                 input.clone(),
                 Some(Arc::clone(&extension_metrics)),
                 &sess.services.session_extension_data,
@@ -961,14 +994,17 @@ async fn build_extension_turn_input_items(
             .or_cancel(cancellation_token)
             .await
             .ok()?;
-        items.extend(
-            contributed_fragments
+        let (contributed_fragments, acknowledgement) = contribution.into_parts();
+        contributions.push(PendingTurnInputContribution {
+            items: contributed_fragments
                 .into_iter()
-                .map(ContextualUserFragment::into_boxed_response_item),
-        );
+                .map(ContextualUserFragment::into_boxed_response_item)
+                .collect(),
+            acknowledgement,
+        });
     }
 
-    Some(items)
+    Some(contributions)
 }
 
 #[tracing::instrument(
@@ -1638,14 +1674,71 @@ pub(crate) async fn built_tools(
             .instrument(trace_span!("built_tools.load_discoverable_tools"))
             .await
         };
-    let mcp_tool_runtimes = build_mcp_tool_runtimes(
-        &all_mcp_tools,
+    // Freeze the stable direct MCP contract at the session-start exposure boundary. Runtime
+    // refreshes remain callable through deferred exposure without mutating the cached prefix.
+    let session_start_mcp_tools = sess.session_start_mcp_tools_for_exposure().await;
+    let session_start_mcp_servers = sess.session_start_mcp_servers.clone();
+    let explicitly_enabled_connector_ids = sess.get_connector_selection().await;
+    let explicitly_enabled_connectors = connectors.as_ref().map_or_else(Vec::new, |connectors| {
+        connectors
+            .iter()
+            .filter(|connector| explicitly_enabled_connector_ids.contains(connector.id.as_str()))
+            .cloned()
+            .collect()
+    });
+    let all_mcp_tools_by_name = all_mcp_tools
+        .iter()
+        .map(|tool| (tool.canonical_tool_name().to_string(), tool.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut mcp_tool_exposure = build_mcp_tool_exposure(
+        &all_mcp_tools_by_name,
+        &session_start_mcp_tools,
         connectors.as_deref(),
         explicitly_enabled_connectors.as_slice(),
         &turn_context.config,
         &session_start_mcp_servers,
         search_tool_enabled(turn_context),
     );
+    {
+        let mut session_start_direct_mcp_tools = sess.session_start_direct_mcp_tools.lock().await;
+        let current_turn_codex_apps_direct_tools = mcp_tool_exposure
+            .direct_tools
+            .iter()
+            .filter(|(_, tool)| tool.server_name == CODEX_APPS_MCP_SERVER_NAME)
+            .map(|(name, tool)| (name.clone(), tool.clone()))
+            .collect::<HashMap<_, _>>();
+        if let Some(direct_tools) = session_start_direct_mcp_tools.as_ref() {
+            mcp_tool_exposure.direct_tools = direct_tools.clone();
+            mcp_tool_exposure
+                .direct_tools
+                .extend(current_turn_codex_apps_direct_tools);
+        } else {
+            let stable_direct_tools = mcp_tool_exposure
+                .direct_tools
+                .iter()
+                .filter(|(_, tool)| tool.server_name != CODEX_APPS_MCP_SERVER_NAME)
+                .map(|(name, tool)| (name.clone(), tool.clone()))
+                .collect::<HashMap<_, _>>();
+            let direct_mcp_servers = stable_direct_tools
+                .values()
+                .map(|tool| tool.server_name.clone())
+                .collect::<HashSet<_>>();
+            *sess
+                .session_start_direct_mcp_servers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(direct_mcp_servers);
+            *session_start_direct_mcp_tools = Some(stable_direct_tools);
+        }
+    }
+    if let Some(deferred_tools) = mcp_tool_exposure.deferred_tools.as_mut() {
+        for direct_tool_name in mcp_tool_exposure.direct_tools.keys() {
+            deferred_tools.remove(direct_tool_name);
+        }
+        if deferred_tools.is_empty() {
+            mcp_tool_exposure.deferred_tools = None;
+        }
+    }
+    let mcp_tool_runtimes = build_mcp_tool_runtimes(mcp_tool_exposure);
     let tool_router = Arc::new(ToolRouter::from_context(
         turn_context,
         environments,

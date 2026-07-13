@@ -725,6 +725,16 @@ async fn token_budget_context_injects_plain_thread_hint_text() -> Result<()> {
     let thread_id = test.session_configured.thread_id;
     let token_budgets = token_budget_contexts(&request);
     assert_eq!(token_budgets.len(), 1);
+    assert!(
+        token_budgets[0].contains(&format!("manual history hint for thread {thread_id}")),
+        "token-budget context omitted the configured history hint: {:?}",
+        token_budgets[0]
+    );
+    assert!(
+        token_budgets[0].contains("unstructured notes/thread_hint fixture result"),
+        "token-budget context omitted the MCP thread hint: {:?}",
+        token_budgets[0]
+    );
     let captures = assert_regex_match(
         &format!(
             r"^{CONTEXT_WINDOW_OPEN_TAG}\nThread id: {thread_id}\nFirst context window id: ([0-9a-f-]{{36}})\nCurrent context window id: ([0-9a-f-]{{36}})\nmanual history hint for thread {thread_id}\nunstructured notes/thread_hint fixture result\n{CONTEXT_WINDOW_CLOSE_TAG}$"

@@ -452,6 +452,7 @@ impl AvailableSkillsRender {
             AvailableSkillsInstructions::from_skill_lines(
                 self.skill_root_lines,
                 self.skill_lines,
+                Vec::new(),
                 include_skills_usage_instructions,
             )
         })
