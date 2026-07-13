@@ -61,10 +61,11 @@ pub(crate) struct Session {
     pub(crate) installation_id: String,
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
-    pub(super) state: Mutex<SessionState>,
+    pub(super) state: Arc<Mutex<SessionState>>,
     /// Orders accepted settings commits and their persisted events with compaction checkpoints.
     /// Keep this separate from `state` so storage I/O does not block runtime state access.
-    pub(super) thread_settings_persistence: Semaphore,
+    pub(super) thread_settings_persistence: Arc<Semaphore>,
+    pub(super) history_publication: super::durable_context::HistoryPublication,
     /// Serializes rebuild/apply cycles for the running proxy; each cycle
     /// rebuilds from the current SessionState while holding this lock.
     pub(super) managed_network_proxy_refresh_lock: Semaphore,
@@ -1739,8 +1740,9 @@ impl Session {
                 installation_id,
                 tx_event: tx_event.clone(),
                 agent_status,
-                state: Mutex::new(state),
-                thread_settings_persistence: Semaphore::new(/*permits*/ 1),
+                state: Arc::new(Mutex::new(state)),
+                thread_settings_persistence: Arc::new(Semaphore::new(/*permits*/ 1)),
+                history_publication: Default::default(),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
                 guardian_context_mode,
@@ -1876,6 +1878,11 @@ impl Session {
 
             // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
             Box::pin(sess.record_initial_history(initial_history)).await;
+            if let Some(inventory) = sess.state.lock().await.history.annotated_items().iter().rev()
+                .find_map(codex_extension_api::RestoredSkillsInventory::from_envelope)
+            {
+                sess.services.thread_extension_data.insert(inventory);
+            }
             if restore_child_window {
                 sess.state.lock().await.restore_auto_compact_window(
                     /*window_number*/ 0,

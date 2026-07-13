@@ -86,7 +86,7 @@ impl McpHandlerCache {
             .iter()
             .filter(|(name, _)| !current_names.contains(*name))
             .collect::<Vec<_>>();
-        retired_direct.sort_by(|(left, _), (right, _)| left.cmp(right));
+        retired_direct.sort_by_key(|(name, _)| *name);
         all_mcp_tools.extend(retired_direct.into_iter().map(|(_, tool)| tool.clone()));
         append_mcp_tools(&all_mcp_tools, context, &mut cached.handlers, registry)
     }

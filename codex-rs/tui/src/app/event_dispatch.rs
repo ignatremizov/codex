@@ -488,7 +488,7 @@ impl App {
                         thread_id,
                         /*last_turn_id*/ None,
                         /*before_turn_id*/ None,
-                        ForkGoalContinuation::StartIfIdle,
+                        ForkGoalContinuation::GoalFree,
                         selected_profile.as_ref(),
                     ).await {
                         Ok(mut forked) => {

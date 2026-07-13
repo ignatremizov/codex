@@ -378,7 +378,10 @@ async fn activation_fixture(models: Vec<ModelInfo>) -> ActivationFixture {
             .enable(feature)
             .expect("enable test feature");
     }
-    let configuration = &mut mutable.state.get_mut().session_configuration;
+    let configuration = &mut Arc::get_mut(&mut mutable.state)
+        .expect("unshared test state")
+        .get_mut()
+        .session_configuration;
     let config = Arc::make_mut(&mut configuration.original_config_do_not_use);
     config.model = Some(MODEL_A.to_string());
     config.features = mutable.features.clone();
@@ -641,7 +644,10 @@ async fn submitted_sparse_updates_preserve_captured_steps_and_ordering() {
             session.reference_context_item().await.unwrap().summary,
             step.settings.reasoning_summary,
         );
-        session.start_new_context_window(step, world_state).await;
+        session
+            .start_new_context_window(step, world_state)
+            .await
+            .expect("publish window");
         assert_eq!(
             session.reference_context_item().await.unwrap().summary,
             step.settings.reasoning_summary,

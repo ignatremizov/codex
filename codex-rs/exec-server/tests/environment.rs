@@ -453,3 +453,65 @@ async fn capability_discovery_retries_after_executor_reconnects() -> anyhow::Res
     assert!(!cache.take_recovered_discovery());
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capability_discovery_retries_cached_root_errors() -> anyhow::Result<()> {
+    let server = exec_server().await?;
+    let manager = Arc::new(EnvironmentManager::default_for_tests());
+    let cache = ExecutorCapabilityDiscoveryCache::new(Arc::clone(&manager));
+    let root = tempfile::tempdir()?;
+    let root_path = root.path().join("root");
+    std::fs::write(&root_path, b"not a directory")?;
+    let selected_root = SelectedCapabilityRoot {
+        id: "recovering-root".to_string(),
+        location: CapabilityRootLocation::Environment {
+            environment_id: "recovering".to_string(),
+            path: PathUri::from_host_native_path(&root_path)?,
+        },
+    };
+    manager.upsert_environment(
+        "recovering".to_string(),
+        server.websocket_url().to_string(),
+        /*connect_timeout*/ None,
+    )?;
+    manager
+        .get_environment("recovering")
+        .context("recovering environment")?
+        .wait_until_ready()
+        .await?;
+
+    let failed_snapshot = cache
+        .snapshot(std::slice::from_ref(&selected_root), &HashMap::new())
+        .await;
+    let failed_discovery = failed_snapshot.roots()[0]
+        .result
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    assert!(failed_discovery.error.is_some());
+    assert!(!cache.take_recovered_discovery());
+
+    std::fs::remove_file(&root_path)?;
+    std::fs::create_dir(&root_path)?;
+    let recovered_snapshot = cache
+        .snapshot(std::slice::from_ref(&selected_root), &HashMap::new())
+        .await;
+    let recovered_discovery = recovered_snapshot.roots()[0]
+        .result
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    assert_eq!(recovered_discovery.error, None);
+    assert!(cache.take_recovered_discovery());
+    assert!(!cache.take_recovered_discovery());
+
+    std::fs::remove_dir(&root_path)?;
+    let cached_snapshot = cache
+        .snapshot(std::slice::from_ref(&selected_root), &HashMap::new())
+        .await;
+    let cached_discovery = cached_snapshot.roots()[0]
+        .result
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    assert_eq!(cached_discovery.error, None);
+    assert!(!cache.take_recovered_discovery());
+    Ok(())
+}

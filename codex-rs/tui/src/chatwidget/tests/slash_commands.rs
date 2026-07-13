@@ -868,6 +868,81 @@ async fn goal_slash_command_with_extra_os_emits_set_goal_event() {
 }
 
 #[tokio::test]
+async fn goal_skill_mentions_retain_typed_locators_through_pre_session_queue_and_restore() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    let bindings = vec![MentionBinding {
+        sigil: '$',
+        mention: "supervisor".into(),
+        path: "/tmp/selected-provider/supervisor/SKILL.md".into(),
+    }];
+    let command = "/goal use $supervisor for the plan";
+    chat.bottom_pane.set_composer_text_with_mention_bindings(
+        command.into(),
+        Vec::new(),
+        Vec::new(),
+        bindings.clone(),
+    );
+    submit_current_composer(&mut chat);
+    let queued = chat
+        .input_queue
+        .queued_user_messages
+        .front()
+        .expect("queued goal");
+    assert_eq!(
+        (&queued.text, &queued.mention_bindings),
+        (&command.to_string(), &bindings)
+    );
+    assert_no_submit_op(&mut op_rx);
+    let state = chat.capture_thread_input_state().expect("queued state");
+    let (mut restored, mut events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    restored.set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    restored.restore_thread_input_state(
+        Some(state),
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: true,
+        },
+    );
+    assert_eq!(
+        restored
+            .input_queue
+            .queued_user_messages
+            .front()
+            .expect("restored goal")
+            .mention_bindings,
+        bindings
+    );
+    let thread_id = ThreadId::new();
+    restored.thread_id = Some(thread_id);
+    restored.maybe_send_next_queued_input();
+    let draft = next_goal_draft(&mut events, thread_id);
+    assert_eq!(draft.objective, "use $supervisor for the plan");
+    assert_no_submit_op(&mut ops);
+}
+
+#[tokio::test]
+async fn live_goal_skill_mention_keeps_objective_without_submitting_a_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.bottom_pane.set_composer_text_with_mention_bindings(
+        "/goal use $supervisor for the plan".into(),
+        Vec::new(),
+        Vec::new(),
+        vec![MentionBinding {
+            sigil: '$',
+            mention: "supervisor".into(),
+            path: "/tmp/selected-provider/supervisor/SKILL.md".into(),
+        }],
+    );
+    submit_current_composer(&mut chat);
+    let draft = next_goal_draft(&mut rx, thread_id);
+    assert_eq!(draft.objective, "use $supervisor for the plan");
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
 async fn goal_slash_command_uses_plain_text_for_mentions() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);

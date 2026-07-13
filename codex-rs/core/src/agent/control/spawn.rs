@@ -972,6 +972,9 @@ impl LocalAgentControl {
         // Compaction stores response items separately, so sanitize both top-level messages and
         // compacted replacement histories with the same policy.
         let retain_forked_item = |envelope: &mut ResponseItemEnvelope, replaced: &mut bool| {
+            if !super::fork_goal_context::retain_without_goal_context(envelope) {
+                return false;
+            }
             if context_mode == GuardianContextMode::ThreadOwned
                 && multi_agent_version == MultiAgentVersion::V2
                 && matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "user")

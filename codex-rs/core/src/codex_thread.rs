@@ -361,6 +361,29 @@ impl CodexThread {
         }
     }
 
+    /// Transfers an idle-admission lease until reservation, then invokes the trusted
+    /// callback before task registration. Rejected submissions invoke no callback.
+    pub async fn start_turn_if_idle_with_lease(
+        &self,
+        request: TurnInputRequest,
+        lease: impl Send,
+        on_admitted: impl FnOnce(&str) + Send,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        match self
+            .session
+            .start_turn_if_idle_with_lease(request, lease, on_admitted)
+            .await?
+        {
+            TurnInputSubmission::Started { turn_id } => {
+                Ok(StartIfIdleSubmission::Started { turn_id })
+            }
+            TurnInputSubmission::NotSubmitted { reason } => {
+                Ok(StartIfIdleSubmission::NotSubmitted { reason })
+            }
+            TurnInputSubmission::Steered { .. } => unreachable!("idle admission cannot steer"),
+        }
+    }
+
     /// Starts a new internal continuation turn when idle, including in Plan mode.
     /// Rejects if a newer task has started, even if it has already finished.
     /// The input must be a response item; it is never treated as user authorization.

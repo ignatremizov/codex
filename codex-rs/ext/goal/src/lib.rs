@@ -1,5 +1,8 @@
 //! Extension crate for the `/goal` feature.
 
+// Match codex-core's limit for structural Send/Sync proofs through ThreadManager.
+#![recursion_limit = "256"]
+
 mod accounting;
 mod analytics;
 mod api;
@@ -11,9 +14,12 @@ mod spec;
 mod steering;
 mod tool;
 
+pub use api::GoalClearEffects;
+pub use api::GoalClearOutcome;
 pub use api::GoalObjectiveUpdate;
 pub use api::GoalService;
 pub use api::GoalServiceError;
+pub use api::GoalSetEffects;
 pub use api::GoalSetOutcome;
 pub use api::GoalSetRequest;
 pub use api::GoalTokenBudgetUpdate;

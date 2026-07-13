@@ -24,7 +24,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolSpec;
-use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -35,7 +34,6 @@ pub(crate) struct McpPromptState {
     pub(crate) startup_servers: HashMap<String, EffectiveMcpServer>,
     direct_tools: Mutex<Option<HashMap<String, ToolInfo>>>,
     pub(super) first_turn_servers: AsyncMutex<Vec<String>>,
-    pending_persistence: AsyncMutex<Option<BoxFuture<'static, ()>>>,
 }
 
 impl McpPromptState {
@@ -44,7 +42,6 @@ impl McpPromptState {
             startup_servers,
             direct_tools: Mutex::new(None),
             first_turn_servers: AsyncMutex::new(Vec::new()),
-            pending_persistence: AsyncMutex::new(None),
         }
     }
 
@@ -95,9 +92,18 @@ impl McpPromptState {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
         {
-            exposure
-                .direct_tools
-                .retain(|_, tool| tool.server_name == CODEX_APPS_MCP_SERVER_NAME);
+            for (name, tool) in std::mem::take(&mut exposure.direct_tools) {
+                if tool.server_name == CODEX_APPS_MCP_SERVER_NAME {
+                    exposure.direct_tools.insert(name, tool);
+                } else if !frozen.contains_key(&name) {
+                    // A planned direct tool may only have been exposed through Code Mode.
+                    // Freezing its absent declaration must not remove that callable runtime.
+                    exposure
+                        .deferred_tools
+                        .get_or_insert_with(HashMap::new)
+                        .insert(name, tool);
+                }
+            }
             exposure.direct_tools.extend(frozen.clone());
             exposure.allow_direct_fallback = false;
         }
@@ -214,6 +220,7 @@ impl Session {
         if let Some(text) = pending.iter().rev().find_map(|input| match input {
             TurnInput::ResponseItem(envelope) => use_text(&envelope.item, server_name),
             TurnInput::UserInput { .. }
+            | TurnInput::AgentInput { .. }
             | TurnInput::FunctionCallOutput(_)
             | TurnInput::InterAgentCommunication(_) => None,
         }) {
@@ -347,42 +354,65 @@ impl Session {
     pub(crate) async fn record_mcp_use_items(
         &self,
         model_info: &ModelInfo,
-        items: Vec<ResponseItemEnvelope>,
+        mut items: Vec<ResponseItemEnvelope>,
     ) {
-        // Keep ownership of the exact append across cancellation. Retrying an
-        // append can duplicate a committed write; skipping a live duplicate can
-        // lose a write that was still waiting on the store's lock.
-        let mut pending = self.mcp_prompt.pending_persistence.lock().await;
-        if let Some(append) = pending.as_mut() {
-            append.await;
-            *pending = None;
+        // Accepted publication is independently driven. An empty retry/abort still
+        // waits for the same worker; it never recreates a potentially committed append.
+        let permit = super::thread_settings::acquire_persistence_lock(self).await;
+        // A cancelled caller may already have dispatched this un-stamped queued
+        // inventory. Recheck after the preceding worker's installation.
+        {
+            let state = self.state.lock().await;
+            items.retain(|item| {
+                if item.metadata.is_some() || item.item.id().is_some() {
+                    return true;
+                }
+                let ResponseItem::Message { content, .. } = &item.item else {
+                    return true;
+                };
+                let server = content.iter().find_map(|content| match content {
+                    ContentItem::InputText { text } => {
+                        McpServerUseInstructions::parse_server_name(text)
+                    }
+                    ContentItem::OutputText { .. }
+                    | ContentItem::InputImage { .. }
+                    | ContentItem::InputAudio { .. } => None,
+                });
+                let Some(server) = server else {
+                    return true;
+                };
+                // Only the latest inventory for this server can satisfy a retry.
+                // Reverting A -> B -> A must preserve the final accepted A.
+                state
+                    .history
+                    .annotated_items()
+                    .iter()
+                    .rev()
+                    .find(|previous| use_text(&previous.item, &server).is_some())
+                    != Some(item)
+            });
         }
         if items.is_empty() {
             return;
         }
-        // Explicit user-requested inventories are developer messages, not tool
-        // outputs. Record their complete envelopes without model inference or UI events.
-        let mut state = self.state.lock().await;
-        state
-            .history
-            .record_annotated_items(&items, model_info.truncation_policy.into());
-        if let Some(live_thread) = self.live_thread().cloned() {
-            let items = items
-                .into_iter()
-                .map(RolloutItem::ResponseItem)
-                .collect::<Vec<_>>();
-            // There is no await between publishing live history and retaining
-            // its append. Abort and an empty deduplicated retry both finish it.
-            *pending = Some(Box::pin(async move {
-                if let Err(error) = live_thread.append_items(&items).await {
-                    tracing::error!("failed to record MCP use rollout items: {error:#}");
-                }
-            }));
-        }
-        drop(state);
-        if let Some(append) = pending.as_mut() {
-            append.await;
-            *pending = None;
+        let rollout_items = items
+            .iter()
+            .cloned()
+            .map(RolloutItem::ResponseItem)
+            .collect();
+        let policy = model_info.truncation_policy.into();
+        let result = match self.dispatch_history_publication(
+            permit,
+            rollout_items,
+            Vec::new(),
+            /*acknowledgement*/ None,
+            move |state| state.history.record_annotated_items(&items, policy),
+        ) {
+            Ok(receiver) => self.publication_result(receiver).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            tracing::error!("failed to publish MCP use context: {error}");
         }
     }
 
@@ -400,6 +430,7 @@ impl Session {
             .filter_map(|input| match input {
                 TurnInput::ResponseItem(item) => Some(item),
                 TurnInput::UserInput { .. }
+                | TurnInput::AgentInput { .. }
                 | TurnInput::FunctionCallOutput(_)
                 | TurnInput::InterAgentCommunication(_) => None,
             })

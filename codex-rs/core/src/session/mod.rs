@@ -225,9 +225,11 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+mod checkpoint_publication;
 mod code_mode_warning;
 pub(crate) mod context_window;
 mod daemon_recovery;
+mod durable_context;
 mod environment;
 mod extension_interruption;
 pub(crate) mod extension_metrics;
@@ -235,6 +237,7 @@ mod guardian_checkpoint;
 mod handlers;
 mod inject;
 mod reasoning_effort;
+mod world_state_publication;
 pub(crate) use reasoning_effort::RequestEffortUsage;
 mod input_queue;
 mod mcp;
@@ -1871,6 +1874,17 @@ impl Session {
         updates: SessionSettingsUpdate,
         should_commit: impl FnOnce(&SessionConfiguration, &SessionConfiguration) -> bool + Send,
     ) -> ConstraintResult<Option<SessionSettingsCommit>> {
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        self.update_settings_if_with_permit(updates, should_commit, &permit)
+            .await
+    }
+
+    async fn update_settings_if_with_permit(
+        &self,
+        updates: SessionSettingsUpdate,
+        should_commit: impl FnOnce(&SessionConfiguration, &SessionConfiguration) -> bool + Send,
+        _permit: &tokio::sync::OwnedSemaphorePermit,
+    ) -> ConstraintResult<Option<SessionSettingsCommit>> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let (commit, previous_config, new_config, permission_profile_changed, mcp_inputs_changed) = {
             let mut state = self.state.lock().await;
@@ -2057,6 +2071,11 @@ impl Session {
         // Refresh only the user layer from the incoming snapshot. Preserve thread-local
         // layers such as request/session overrides that were present when this session
         // was created.
+        let publication_permit = thread_settings::acquire_persistence_lock(self).await;
+        if let Err(error) = self.check_history_publication() {
+            warn!("skipping runtime refresh after publication failure: {error}");
+            return;
+        }
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let (previous_config, new_config, config) = {
             let mut state = self.state.lock().await;
@@ -2113,6 +2132,7 @@ impl Session {
             (previous_config, new_config, config)
         };
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
+        drop(publication_permit);
         self.schedule_mcp_prewarm();
         self.refresh_hooks(config).await;
     }
@@ -2142,6 +2162,11 @@ impl Session {
     }
 
     pub(crate) async fn refresh_mcp_config(&self, next_config: Config) {
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        if let Err(error) = self.check_history_publication() {
+            warn!("skipping MCP config refresh after publication failure: {error}");
+            return;
+        }
         let mut state = self.state.lock().await;
         let mut config = (*state.session_configuration.original_config_do_not_use).clone();
         config.config_layer_stack = next_config
@@ -2180,6 +2205,7 @@ impl Session {
         self.services.mcp_runtime.invalidate_resource_caches();
         self.mark_mcp_runtime_dirty();
         drop(state);
+        drop(permit);
         self.schedule_mcp_prewarm();
     }
 
@@ -3542,13 +3568,18 @@ impl Session {
             .into_iter()
             .map(ResponseItemEnvelope::new)
             .collect();
-        self.record_prepared_conversation_items(
-            turn_context,
-            model_info,
-            items,
-            image_preparations,
-        )
-        .await;
+        if let Err(error) = self
+            .record_prepared_conversation_items(
+                turn_context,
+                model_info,
+                items,
+                image_preparations,
+                /*acknowledgement*/ None,
+            )
+            .await
+        {
+            error!("failed to publish conversation items: {error}");
+        }
     }
 
     async fn record_prepared_conversation_items(
@@ -3557,7 +3588,10 @@ impl Session {
         model_info: &ModelInfo,
         mut items: Vec<ResponseItemEnvelope>,
         image_preparations: Vec<ImagePreparationMetadata>,
-    ) {
+        acknowledgement: Option<codex_extension_api::TurnInputContributionAcknowledgement>,
+    ) -> CodexResult<()> {
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        self.check_history_publication()?;
         // Save the originating history budget for replay.
         // Preserve any existing tool-specific override.
         let policy: codex_utils_output_truncation::TruncationPolicy =
@@ -3580,9 +3614,6 @@ impl Session {
             .collect::<Vec<_>>();
         {
             let mut state = self.state.lock().await;
-            state
-                .current_time_reminder
-                .note_recorded_items(&response_items);
             if self.guardian_context_mode == crate::context::GuardianContextMode::ThreadOwned {
                 for envelope in &mut items {
                     if matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "assistant")
@@ -3599,10 +3630,36 @@ impl Session {
                     }
                 }
             }
-            state
-                .history
-                .record_annotated_items(&items, model_info.truncation_policy.into());
         }
+        let rollout_items = items
+            .iter()
+            .cloned()
+            .map(RolloutItem::ResponseItem)
+            .collect();
+        // Mark external context before transferring work to the independent worker.
+        // A cancelled result waiter must not bypass the memory privacy gate.
+        if turn_context.config.memories.disable_on_external_context
+            && let Some(item) = response_items
+                .iter()
+                .find(|item| matches!(item, ResponseItem::FunctionCallOutput { call_id: None, .. }))
+        {
+            mark_thread_memory_mode_polluted_if_external_context(self, turn_context, item).await;
+        }
+        let recorded = response_items.clone();
+        let truncation_policy = model_info.truncation_policy.into();
+        let receiver = self.dispatch_history_publication(
+            permit,
+            rollout_items,
+            Vec::new(),
+            acknowledgement,
+            move |state| {
+                state.current_time_reminder.note_recorded_items(&recorded);
+                state
+                    .history
+                    .record_annotated_items(&items, truncation_policy);
+            },
+        )?;
+        self.publication_result(receiver).await?;
         for image in image_preparations {
             self.services
                 .analytics_events_client
@@ -3611,18 +3668,33 @@ impl Session {
                     metadata: image,
                 });
         }
-        let rollout_items: Vec<RolloutItem> =
-            items.into_iter().map(RolloutItem::ResponseItem).collect();
-        self.persist_rollout_items(&rollout_items).await;
-        if turn_context.config.memories.disable_on_external_context
-            && let Some(item) = response_items
-                .iter()
-                .find(|item| matches!(item, ResponseItem::FunctionCallOutput { call_id: None, .. }))
-        {
-            mark_thread_memory_mode_polluted_if_external_context(self, turn_context, item).await;
-        }
         self.send_raw_response_items(turn_context, &response_items)
             .await;
+        Ok(())
+    }
+
+    pub(crate) async fn record_durable_context_items(
+        &self,
+        turn_context: &TurnContext,
+        model_info: &ModelInfo,
+        items: Vec<ResponseItem>,
+        acknowledgement: Option<codex_extension_api::TurnInputContributionAcknowledgement>,
+    ) -> CodexResult<()> {
+        let (items, preparations) = self
+            .prepare_conversation_items_for_history(turn_context, model_info, &items)
+            .await;
+        self.record_prepared_conversation_items(
+            turn_context,
+            model_info,
+            items
+                .into_owned()
+                .into_iter()
+                .map(ResponseItemEnvelope::new)
+                .collect(),
+            preparations,
+            acknowledgement,
+        )
+        .await
     }
 
     pub(crate) async fn record_step_world_state_if_changed(
@@ -3638,9 +3710,10 @@ impl Session {
         {
             return Ok(Arc::clone(previous_world_state));
         }
-        let turn_context = step_context.turn.as_ref();
         // Render model-visible state from the same step used to build and run tools.
         let world_state = Arc::new(self.build_world_state_for_step(step_context).await?);
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        self.check_history_publication()?;
         // Derive the model update and persisted patch from the same two snapshots.
         let previous_snapshot = previous_world_state.snapshot();
         let world_state_snapshot = world_state.snapshot();
@@ -3650,22 +3723,16 @@ impl Session {
         let items = crate::context_manager::updates::merge_contextual_fragments(
             world_state.render_diff(&previous_snapshot),
         );
-        if !items.is_empty() {
-            self.record_conversation_items(turn_context, &step_context.settings.model_info, &items)
-                .await;
-        }
-
-        // ContextManager remembers this for later turns; run_turn owns the live value.
-        self.state
-            .lock()
-            .await
-            .history
-            .set_world_state_baseline(world_state_snapshot);
-        // Record the patch after the context it describes is present in model history.
-        if let Some(world_state_item) = world_state_item {
-            self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
-                .await;
-        }
+        let context_update = world_state_publication::ContextUpdate {
+            world_state: world_state_snapshot,
+            rollout: world_state_item
+                .into_iter()
+                .map(RolloutItem::WorldState)
+                .collect(),
+            reference_context: None,
+        };
+        self.publish_world_state_context(permit, step_context, items, context_update)
+            .await?;
         Ok(world_state)
     }
 
@@ -3900,21 +3967,34 @@ impl Session {
                 std::slice::from_ref(&response_item),
             )
             .await;
-        let items = items.as_ref();
+        let items = items.into_owned();
         let response_item = items[0].clone();
-        {
-            let mut state = self.state.lock().await;
-            state.current_time_reminder.note_recorded_items(items);
-            state.record_items(items.iter(), model_info.truncation_policy.into());
-        }
-        self.persist_rollout_items(&[
-            RolloutItem::InterAgentCommunicationMetadata {
-                trigger_turn: communication.trigger_turn,
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        let recorded = items.clone();
+        let policy = model_info.truncation_policy.into();
+        let result = match self.dispatch_history_publication(
+            permit,
+            vec![
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: communication.trigger_turn,
+                },
+                RolloutItem::ResponseItem(response_item.into()),
+            ],
+            Vec::new(),
+            /*acknowledgement*/ None,
+            move |state| {
+                state.current_time_reminder.note_recorded_items(&recorded);
+                state.record_items(recorded.iter(), policy);
             },
-            RolloutItem::ResponseItem(response_item.into()),
-        ])
-        .await;
-        self.send_raw_response_items(turn_context, items).await;
+        ) {
+            Ok(receiver) => self.publication_result(receiver).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            error!("failed to publish inter-agent context: {error}");
+            return;
+        }
+        self.send_raw_response_items(turn_context, &items).await;
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -3990,86 +4070,18 @@ impl Session {
 
     pub(crate) async fn replace_compacted_history(
         &self,
-        mut items: Vec<ResponseItemEnvelope>,
+        items: Vec<ResponseItemEnvelope>,
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
         metadata: CompactedHistoryMetadata,
-    ) -> Vec<ResponseItemEnvelope> {
-        for envelope in &mut items {
-            Self::assign_missing_response_item_id(&mut envelope.item);
-        }
-        if let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
-            matches!(
-                envelope.item,
-                ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-            )
-        }) {
-            checkpoint
-                .metadata
-                .get_or_insert_default()
-                .compaction_model_hash = metadata.compaction_model_hash;
-        }
-        // Return this exact installed snapshot, not a later read of concurrently updated history.
-        let installed_history = items.clone();
-        let mut compacted_item = CompactedItem {
-            message: metadata.message,
-            replacement_history: Some(items.clone()),
-            retained_context: None,
-            guardian_history: None,
-            mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
-            compaction_summary_tokens: metadata.compaction_summary_tokens,
-            window_number: Some(metadata.window_number),
-            first_window_id: Some(metadata.window_ids.first_window_id.to_string()),
-            previous_window_id: metadata
-                .window_ids
-                .previous_window_id
-                .map(|id| id.to_string()),
-            window_id: Some(metadata.window_ids.window_id.to_string()),
-            compaction_response_id: metadata.compaction_response_id,
-            latest_token_usage_record: self.state.lock().await.latest_token_usage_record.clone(),
-        };
-        // Wait for accepted updates to finish persisting, then keep later updates from
-        // overtaking the current settings snapshot while its checkpoint is written.
-        let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
-        // Compaction starts a new history window, so its WorldState baseline must be full.
-        let mut world_state_item = None;
-        {
-            let mut state = self.state.lock().await;
-            state.replace_annotated_history(
-                items,
-                reference_context_item.clone(),
-                HistoryReplacement::Compaction {
-                    reviewer_compaction_hash: metadata.reviewer_compaction_hash,
-                },
-            );
-            compacted_item.guardian_history = state.history.guardian_history_checkpoint();
-            compacted_item.retained_context = Some(state.history.retained_context().clone());
-            state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
-            if let Some(world_state) = world_state_baseline {
-                let snapshot = world_state.snapshot();
-                world_state_item = Some(WorldStateItem::full(snapshot.clone().into_object()));
-                state.history.set_world_state_baseline(snapshot);
-            }
-        }
-
-        let mut rollout_items = vec![RolloutItem::Compacted(compacted_item)];
-        // Persist the baseline after the replacement history that established it.
-        if let Some(world_state_item) = world_state_item {
-            rollout_items.push(RolloutItem::WorldState(world_state_item));
-        }
-        if let Some(turn_context_item) = reference_context_item {
-            rollout_items.push(RolloutItem::TurnContext(turn_context_item));
-        }
-        // The frozen turn context must not override current settings in persisted metadata.
-        rollout_items.push(RolloutItem::EventMsg(
-            thread_settings::applied_event(self).await,
-        ));
-        self.persist_rollout_items(&rollout_items).await;
-        {
-            let mut state = self.state.lock().await;
-            state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
-        }
-        installed_history
+    ) -> CodexResult<Vec<ResponseItemEnvelope>> {
+        self.publish_compacted_history(
+            items,
+            reference_context_item,
+            world_state_baseline,
+            metadata,
+        )
+        .await
     }
 
     pub fn enabled(&self, feature: Feature) -> bool {
@@ -4461,7 +4473,7 @@ impl Session {
         &self,
         step_context: &StepContext,
         world_state: Arc<WorldState>,
-    ) -> u64 {
+    ) -> CodexResult<u64> {
         let turn_context = step_context.turn.as_ref();
         let history = self.clone_history().await;
         let retained_client_developer_messages =
@@ -4507,9 +4519,9 @@ impl Session {
                 reviewer_compaction_hash: None,
             },
         )
-        .await;
+        .await?;
         self.recompute_token_usage(turn_context).await;
-        window_number
+        Ok(window_number)
     }
 
     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {
@@ -4545,80 +4557,84 @@ impl Session {
             // current instructions, skills, or world state after its trailing decoder prompt.
             return Ok(Arc::new(WorldState::default()));
         }
-        let turn_context = step_context.turn.as_ref();
-        let reference_context_item = {
-            let state = self.state.lock().await;
-            state.reference_context_item()
-        };
-        let turn_context_item = step_context.to_turn_context_item();
-        let turn_context_changed = reference_context_item.as_ref() != Some(&turn_context_item);
-        let should_inject_full_context = reference_context_item.is_none();
         let world_state = Arc::new(self.build_world_state_for_step(step_context).await?);
-        // Full initial context resets the baseline; later turns persist only its changes.
-        let (mut context_items, world_state_item) = if should_inject_full_context {
-            let context_items = self
-                .build_initial_context_with_world_state(step_context, world_state.as_ref())
-                .await;
-            let snapshot = world_state.snapshot();
-            self.state
-                .lock()
-                .await
-                .history
-                .set_world_state_baseline(snapshot.clone());
-            (
-                context_items,
-                Some(WorldStateItem::full(snapshot.into_object())),
-            )
-        } else {
-            let (world_state_items, world_state_item) = {
-                let mut state = self.state.lock().await;
-                let (fragments, rollout_item) =
-                    state.history.update_world_state(world_state.as_ref());
-                (
-                    crate::context_manager::updates::merge_contextual_fragments(fragments),
-                    rollout_item,
-                )
+        loop {
+            let reference_context_item = {
+                let state = self.state.lock().await;
+                state.reference_context_item()
             };
-            (world_state_items, world_state_item)
-        };
-        if !should_inject_full_context && turn_context_changed {
-            context_items.extend(
+            let turn_context_item = step_context.to_turn_context_item();
+            let turn_context_changed = reference_context_item.as_ref() != Some(&turn_context_item);
+            let should_inject_full_context = reference_context_item.is_none();
+            // Contributors can acquire goal leases; render before the publication permit.
+            let full_context = if should_inject_full_context {
+                Some(
+                    self.build_initial_context_with_world_state(step_context, world_state.as_ref())
+                        .await,
+                )
+            } else {
+                None
+            };
+            let turn_context_items = if !should_inject_full_context && turn_context_changed {
                 self.build_turn_context_contribution_items(step_context)
-                    .await,
-            );
-        }
-        // A snapshot can change without producing model-visible or TurnContext updates.
-        let only_world_state_changed = !turn_context_changed && context_items.is_empty();
-        if only_world_state_changed && world_state_item.is_none() {
-            return Ok(world_state);
-        }
-        if !context_items.is_empty() {
-            self.record_conversation_items(
-                turn_context,
-                &step_context.settings.model_info,
-                &context_items,
+                    .await
+            } else {
+                Vec::new()
+            };
+            let permit = thread_settings::acquire_persistence_lock(self).await;
+            self.check_history_publication()?;
+            if self.reference_context_item().await != reference_context_item {
+                drop(permit);
+                continue;
+            }
+            // Full initial context resets the baseline; later turns persist only its changes.
+            let (mut context_items, world_state_item) = if let Some(context_items) = full_context {
+                let snapshot = world_state.snapshot();
+                (
+                    context_items,
+                    Some(WorldStateItem::full(snapshot.into_object())),
+                )
+            } else {
+                let (world_state_items, world_state_item) = {
+                    let state = self.state.lock().await;
+                    let (fragments, rollout_item) = state
+                        .history
+                        .clone()
+                        .update_world_state(world_state.as_ref());
+                    (
+                        crate::context_manager::updates::merge_contextual_fragments(fragments),
+                        rollout_item,
+                    )
+                };
+                (world_state_items, world_state_item)
+            };
+            context_items.extend(turn_context_items);
+            // A snapshot can change without producing model-visible or TurnContext updates.
+            let only_world_state_changed = !turn_context_changed && context_items.is_empty();
+            if only_world_state_changed && world_state_item.is_none() {
+                return Ok(world_state);
+            }
+            let mut rollout = world_state_item
+                .into_iter()
+                .map(RolloutItem::WorldState)
+                .collect::<Vec<_>>();
+            let reference_context = (!only_world_state_changed).then_some(turn_context_item);
+            if let Some(context) = &reference_context {
+                rollout.push(RolloutItem::TurnContext(context.clone()));
+            }
+            self.publish_world_state_context(
+                permit,
+                step_context,
+                context_items,
+                world_state_publication::ContextUpdate {
+                    world_state: world_state.snapshot(),
+                    rollout,
+                    reference_context,
+                },
             )
-            .await;
-        }
-        // Persist state only after any model-visible context generated from it.
-        if let Some(world_state_item) = world_state_item {
-            self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
-                .await;
-        }
-        // A snapshot-only change does not require a duplicate TurnContext record.
-        if only_world_state_changed {
+            .await?;
             return Ok(world_state);
         }
-        // Persist one `TurnContextItem` per real user turn so resume/lazy replay can recover the
-        // latest durable baseline even when this turn emitted no model-visible context diffs.
-        self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item.clone())])
-            .await;
-
-        // Advance the persisted-settings baseline even when this turn emitted no model-visible
-        // context items.
-        let mut state = self.state.lock().await;
-        state.set_reference_context_item(Some(turn_context_item));
-        Ok(world_state)
     }
 
     pub(crate) async fn update_token_usage_info(
@@ -4863,13 +4879,19 @@ impl Session {
             &prepared_items,
             &user_image_content_indices,
         );
-        self.record_prepared_conversation_items(
-            turn_context,
-            model_info,
-            prepared_items,
-            image_preparations,
-        )
-        .await;
+        if let Err(error) = self
+            .record_prepared_conversation_items(
+                turn_context,
+                model_info,
+                prepared_items,
+                image_preparations,
+                /*acknowledgement*/ None,
+            )
+            .await
+        {
+            error!("failed to publish user input: {error}");
+            return;
+        }
         user_message_item.client_id = client_id;
         let turn_item = TurnItem::UserMessage(user_message_item);
         self.emit_turn_item_started(turn_context, &turn_item).await;

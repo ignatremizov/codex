@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
@@ -114,6 +115,9 @@ use wiremock::Request;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path_regex;
+
+#[path = "skills_extension/steer_tests.rs"]
+mod steer_tests;
 
 struct StaticSkillProvider {
     catalog: SkillCatalog,
@@ -1080,33 +1084,42 @@ text({ names: result.skills.map(skill => skill.name), warnings: result.warnings,
             "model-visible skills should include `{name}`: {developer_messages:?}"
         );
     }
-    assert!(
+    assert_eq!(
         developer_messages
             .iter()
-            .all(|message| !message.contains("- demo:explicit-only:")),
-        "model-visible skills should omit the explicit-only skill: {developer_messages:?}"
+            .filter(|message| message.starts_with("<skills_instructions>"))
+            .map(|message| message.contains("- demo:explicit-only:"))
+            .collect::<Vec<_>>(),
+        vec![false, true],
+        "the baseline hides the skill, then explicit invocation promotes it into the latest inventory"
     );
-    let user_messages = request.message_input_texts("user");
-    let skill_instructions = user_messages
+    // Explicit orchestrator selection publishes a short locator in the inventory
+    // and keeps the canonical provider identity in promotion metadata.
+    let promoted_inventory = developer_messages
         .iter()
-        .find(|message| {
-            message.contains("<name>demo:explicit-only</name>")
-                && message.contains("# Explicit-only instructions")
-                && message.contains(REFERENCED_RESOURCE)
-        })
-        .expect("explicit invocation should inject the hidden skill instructions and reference");
-    let resource_access = skill_instructions
-        .split_once("<resource_access>")
-        .and_then(|(_, remainder)| remainder.split_once("</resource_access>"))
+        .rfind(|message| message.starts_with("<skills_instructions>"))
+        .context("explicit invocation should publish a promoted inventory")?;
+    assert!(promoted_inventory.contains("(orchestrator package: o0/explicit-only)"));
+    assert!(promoted_inventory.contains("- `o0` = `skill://demo`"));
+    let promoted_metadata = promoted_inventory
+        .split_once("<promoted_skills>")
+        .and_then(|(_, remainder)| remainder.split_once("</promoted_skills>"))
         .map(|(metadata, _)| metadata)
-        .expect("hidden orchestrator skills should include resource-access metadata");
+        .context("promoted inventory should retain the provider resource identity")?;
+    let encode = |text: &str| {
+        text.as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
     assert_eq!(
-        serde_json::from_str::<Value>(resource_access)?,
-        json!({
-            "authority": { "kind": "orchestrator" },
-            "package": SKILL_PACKAGE,
-            "main_resource": MAIN_RESOURCE,
-        })
+        serde_json::from_str::<Value>(promoted_metadata)?,
+        json!([{
+            "authorityKindHex": encode("orchestrator"),
+            "authorityIdHex": encode(CODEX_APPS_MCP_SERVER_NAME),
+            "packageHex": encode(SKILL_PACKAGE),
+            "resourceHex": encode(MAIN_RESOURCE),
+        }])
     );
     let first_output = requests[1]
         .function_call_output_text(READ_CALL_ID)
@@ -1226,8 +1239,12 @@ text({ names: result.skills.map(skill => skill.name), warnings: result.warnings,
             .function_call_output_text(call_id)
             .expect("skills.read should return the main resource");
         assert_eq!(
-            serde_json::from_str::<Value>(&output)?["resource"],
-            MAIN_RESOURCE
+            serde_json::from_str::<Value>(&output)?,
+            json!({
+                "resource": MAIN_RESOURCE,
+                "contents": format!("# Explicit-only instructions\nRead {REFERENCED_RESOURCE}."),
+                "next_cursor": null,
+            })
         );
     }
     for call_id in [INVALID_CURSOR_CALL_ID, MISSING_PACKAGE_CALL_ID] {

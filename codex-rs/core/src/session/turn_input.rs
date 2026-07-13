@@ -54,6 +54,10 @@ use uuid::Uuid;
 #[path = "turn_input_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "turn_input_admission_tests.rs"]
+mod admission_tests;
+
 /// Why input is starting a turn; shared by admission and input delivery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TurnStartKind {
@@ -137,11 +141,8 @@ impl PreparedTurnInputSettings {
             cyber_access_program,
         } = self.start_options;
         let emit_thread_settings_applied = self.thread_settings_update.is_some();
-        let _settings_guard = if emit_thread_settings_applied {
-            Some(thread_settings::acquire_persistence_lock(session).await)
-        } else {
-            None
-        };
+        let settings_guard = thread_settings::acquire_persistence_lock(session).await;
+        session.check_history_publication()?;
         let mut updates = self.thread_settings_update.unwrap_or_default();
         updates.service_tier_for_turn = service_tier;
 
@@ -149,23 +150,17 @@ impl PreparedTurnInputSettings {
             final_output_json_schema,
             cyber_access_program,
         };
-        let turn_context = match kind {
-            TurnStartKind::User | TurnStartKind::Recovery => Some(
-                session
-                    .new_turn_with_sub_id(submission_id.clone(), updates, options)
-                    .await?,
-            ),
-            TurnStartKind::Automatic => {
-                session
-                    .new_turn_with_sub_id_if(
-                        submission_id.clone(),
-                        updates,
-                        options,
-                        |current, proposed| kind.permits_settings(current, proposed),
-                    )
-                    .await?
-            }
-        };
+        let turn_context = session
+            .new_turn_with_sub_id_if_with_permit(
+                submission_id.clone(),
+                updates,
+                options,
+                |current, proposed| {
+                    kind != TurnStartKind::Automatic || kind.permits_settings(current, proposed)
+                },
+                &settings_guard,
+            )
+            .await?;
         let Some((turn_context, settings_snapshot)) = turn_context else {
             return Ok(None);
         };
@@ -175,7 +170,15 @@ impl PreparedTurnInputSettings {
                 .set_turn_trigger(turn_trigger);
         }
         if emit_thread_settings_applied {
-            thread_settings::emit_applied(session, submission_id, settings_snapshot).await;
+            thread_settings::emit_applied(
+                session,
+                settings_guard,
+                submission_id,
+                settings_snapshot,
+            )
+            .await?;
+        } else {
+            drop(settings_guard);
         }
         if let Some(parent_turn_id) = parent_turn_id {
             turn_context
@@ -196,9 +199,7 @@ impl PreparedTurnInputSettings {
         let Some(thread_settings_update) = self.thread_settings_update else {
             return Ok(());
         };
-        thread_settings::apply_update(session, submission_id, thread_settings_update)
-            .await
-            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))
+        thread_settings::apply_update(session, submission_id, thread_settings_update).await
     }
 }
 
@@ -369,16 +370,68 @@ async fn start_or_steer(
     }
 }
 
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "the previous turn check and idle reservation must be atomic"
-)]
 async fn start_if_idle(
     session: &Arc<Session>,
     request: TurnInputRequest,
     submission_id: String,
     kind: TurnStartKind,
     expected_previous_turn_id: Option<String>,
+) -> CodexResult<TurnInputSubmission> {
+    start_if_idle_with_lease(
+        session,
+        request,
+        submission_id,
+        kind,
+        expected_previous_turn_id,
+        (),
+        |_| {},
+    )
+    .await
+}
+
+impl Session {
+    pub(crate) async fn start_turn_if_idle_with_lease(
+        self: &Arc<Self>,
+        request: TurnInputRequest,
+        lease: impl Send,
+        on_admitted: impl FnOnce(&str) + Send,
+    ) -> CodexResult<TurnInputSubmission> {
+        let kind = match &request.input {
+            SubmittedTurnInput::UserInput { content, .. } => {
+                if content.is_empty() {
+                    TurnStartKind::Automatic
+                } else {
+                    TurnStartKind::User
+                }
+            }
+            SubmittedTurnInput::ResponseItem(_)
+            | SubmittedTurnInput::InterAgentCommunication(_) => TurnStartKind::Automatic,
+        };
+        start_if_idle_with_lease(
+            self,
+            request,
+            self.next_internal_sub_id(),
+            kind,
+            /*expected_previous_turn_id*/ None,
+            lease,
+            on_admitted,
+        )
+        .await
+    }
+}
+
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "the previous turn check and idle reservation must be atomic"
+)]
+async fn start_if_idle_with_lease(
+    session: &Arc<Session>,
+    request: TurnInputRequest,
+    submission_id: String,
+    kind: TurnStartKind,
+    expected_previous_turn_id: Option<String>,
+    lease: impl Send,
+    on_admitted: impl FnOnce(&str) + Send,
 ) -> CodexResult<TurnInputSubmission> {
     let TurnInputRequest {
         input,
@@ -441,6 +494,8 @@ async fn start_if_idle(
         let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
         Arc::clone(&active_turn.turn_state)
     };
+    // The reserved turn now owns admission. Lifecycle callbacks may reacquire the goal lease.
+    drop(lease);
 
     if session.input_queue.has_trigger_turn_mailbox_items().await {
         session.clear_reserved_idle_turn(&turn_state).await;
@@ -504,6 +559,7 @@ async fn start_if_idle(
             }
         }
     }
+    on_admitted(&submission_id);
     session
         .start_task(turn_context, task_input, RegularTask::new())
         .await;
