@@ -992,3 +992,44 @@ async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn skills_list_uses_last_good_config_during_transient_reload_failure() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let instructions_path = codex_home.path().join("instructions.md");
+    std::fs::write(&instructions_path, "Temporary instructions.")?;
+    let instructions_path = serde_json::to_string(&instructions_path.to_string_lossy())?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!("model_instructions_file = {instructions_path}\n"),
+    )?;
+    write_skill(&codex_home, "demo")?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    std::fs::remove_file(codex_home.path().join("instructions.md"))?;
+    let request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![codex_home.path().to_path_buf()],
+            force_reload: true,
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let SkillsListResponse { data } = to_response(response)?;
+
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].errors, Vec::new());
+    assert!(
+        data[0].skills.iter().any(|skill| skill.name == "demo"),
+        "skills/list should continue from the last valid config"
+    );
+    Ok(())
+}
