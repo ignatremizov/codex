@@ -140,4 +140,13 @@ async fn dynamic_tools_update_keeps_catalog_when_persistence_fails() {
         codex_protocol::error::CodexErrorDetails::Fatal(_)
     ));
     assert_eq!(session.dynamic_tools().await.as_ref(), &[]);
+    assert!(session.check_history_publication().is_err());
+    assert!(
+        session
+            .replace_dynamic_tools(Vec::new())
+            .await
+            .expect_err("failed publication requires canonical reload")
+            .to_string()
+            .contains("canonical reload required")
+    );
 }

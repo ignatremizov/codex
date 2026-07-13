@@ -879,7 +879,14 @@ untrusted_as_tool_output = true
             )?;
     }
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let (mut app_server, fork_requests, proxy) = Box::pin(
+        super::session_lifecycle_requests::start_recording_app_server(
+            &app.config,
+            /*blocked_thread_list*/ None,
+            /*failed_thread_name*/ None,
+        ),
+    )
+    .await?;
     let mut started = app_server.start_thread(&app.config).await?;
     let source_thread_id = started.session.thread_id;
     // Keep ordered response fixtures focused on safety retries, not background naming.
@@ -1202,7 +1209,12 @@ untrusted_as_tool_output = true
         let _ = release_steered_response.send(());
         let _ = release_previous_response.send(());
         let _ = release_retry_response.send(());
+        assert!(
+            super::session_lifecycle_requests::recorded_params(&fork_requests, "thread/fork")
+                .is_empty()
+        );
         app_server.shutdown().await?;
+        proxy.await??;
         server.shutdown().await;
         return Ok(());
     }
@@ -1474,7 +1486,19 @@ untrusted_as_tool_output = true
     let _ = release_steered_response.send(());
     let _ = release_previous_response.send(());
     let _ = release_retry_response.send(());
+    let fork_flags: Vec<_> =
+        super::session_lifecycle_requests::recorded_params(&fork_requests, "thread/fork")
+            .into_iter()
+            .map(|params| params["deferGoalContinuation"].clone())
+            .collect();
+    let expected_forks = if scenario == SafetyRetryScenario::RetryTwice {
+        2
+    } else {
+        1
+    };
+    assert_eq!(fork_flags, vec![serde_json::json!(true); expected_forks]);
     app_server.shutdown().await?;
+    proxy.await??;
     server.shutdown().await;
     Ok(())
 }

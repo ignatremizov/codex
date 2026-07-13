@@ -156,7 +156,9 @@ impl ExecutorCapabilityDiscoveryCache {
             // Reuse a concurrent success only for the same captured binding.
             let resolved = entries
                 .iter()
-                .find(|cached| cached.key == discovered_root.key && cached.result.is_ok())
+                .find(|cached| {
+                    cached.key == discovered_root.key && !cached.retryable && cached.result.is_ok()
+                })
                 .map_or(&discovered_root.result, |cached| &cached.result);
             for (key, result) in keys.iter().zip(&mut results) {
                 if *key == discovered_root.key && result.is_none() {
@@ -167,8 +169,13 @@ impl ExecutorCapabilityDiscoveryCache {
                 .iter_mut()
                 .find(|cached| cached.key.selected_root == discovered_root.key.selected_root)
             {
-                if cached.key != discovered_root.key || cached.result.is_err() {
-                    if cached.result.is_err() && discovered_root.result.is_ok() {
+                if cached.key != discovered_root.key || cached.retryable || cached.result.is_err() {
+                    if (cached.retryable || cached.result.is_err())
+                        && discovered_root
+                            .result
+                            .as_ref()
+                            .is_ok_and(|discovery| discovery.error.is_none())
+                    {
                         self.recovered_discovery.store(true, Ordering::Release);
                     }
                     *cached = discovered_root;
@@ -295,10 +302,13 @@ impl ExecutorCapabilityDiscoveryCache {
                             discovery.id, discovery.path
                         ))
                     };
+                    let retryable = result
+                        .as_ref()
+                        .is_ok_and(|discovery| discovery.error.is_some());
                     CachedRoot {
                         key: request.key,
                         result,
-                        retryable: false,
+                        retryable,
                     }
                 })
                 .collect()

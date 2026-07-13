@@ -190,6 +190,7 @@ impl<'a> PreparedSkillCatalog<'a> {
             included_ids: selected.included_ids,
             entries: BTreeMap::new(),
             preserve_empty_fragment: self.policy.style == SkillCatalogRenderStyle::CoreCompatible,
+            included_identities: selected.included_identities,
             report: selected.report,
         })
     }

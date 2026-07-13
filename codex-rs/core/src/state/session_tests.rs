@@ -273,3 +273,42 @@ async fn set_rate_limits_carries_account_metadata_from_codex_to_codex_other() {
         Some(false)
     );
 }
+
+#[tokio::test]
+async fn prepared_context_window_is_installed_only_after_ack_without_new_identity() {
+    let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = std::sync::Arc::clone(&count);
+    let initial = codex_protocol::ContextWindowId::new_uuid_v7();
+    let ids = AutoCompactWindowIds::new_initial(initial.clone());
+    let mut state = SessionState::new_with_auto_compact_window_ids(
+        make_session_configuration_for_tests().await,
+        ids.clone(),
+        std::sync::Arc::new(move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            codex_protocol::ContextWindowId::new_uuid_v7()
+        }),
+        ContextManager::default(),
+    );
+    state.set_auto_compact_window_estimated_prefill(/*tokens*/ 100);
+    let before = state.auto_compact_window_number();
+    let (number, prepared) = state.prepare_auto_compact_window();
+    assert_eq!(state.auto_compact_window_number(), before);
+    assert_eq!(state.auto_compact_window_ids(), &ids);
+    assert_eq!(
+        state.auto_compact_window_snapshot().prefill_input_tokens,
+        Some(100)
+    );
+    assert_eq!(prepared.first_window_id, initial);
+    assert_eq!(prepared.previous_window_id, Some(initial));
+    assert_ne!(prepared.window_id, ids.window_id);
+    assert_eq!(number, before + 1);
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    state.install_prepared_auto_compact_window(number, prepared.clone());
+    assert_eq!(state.auto_compact_window_number(), number);
+    assert_eq!(state.auto_compact_window_ids(), &prepared);
+    assert_eq!(
+        state.auto_compact_window_snapshot().prefill_input_tokens,
+        Some(100)
+    );
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

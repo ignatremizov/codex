@@ -154,7 +154,7 @@ async fn resume_with_saved_server_profile() -> Result<()> {
             thread_id,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
-            ForkGoalContinuation::StartIfIdle,
+            ForkGoalContinuation::GoalFree,
             /*selected_profile*/ None,
         )
         .await?;

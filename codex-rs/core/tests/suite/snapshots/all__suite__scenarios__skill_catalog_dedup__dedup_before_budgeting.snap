@@ -84,6 +84,7 @@ Settings:
         - other:s0: Skill guidance. Skill guidance. Skill guidance. Skill guidance. Skill guidance. Skill guidan...ce.  UNIQUE_DESCRIPTION_END (executor package: e1/s0) [hash=1ce5d9766079d21b]
         - other:s1: Skill guidance. Skill guidance. Skill guidance. Skill guidance. Skill guidance. Skill guidan...ce.  UNIQUE_DESCRIPTION_END (executor package: e1/s1) [hash=d8432891813affeb]
         - other:s2: Skill guidance. Skill guidance. Skill guidance. Skill guidance. Skill guidance. Skill guidan...ce.  UNIQUE_DESCRIPTION_END (executor package: e1/s2) [hash=1c05fa218dd21e8f]
+
         </skills_instructions>
     [04] <skills_instructions>
         This listing updates the skills from the sources shown below. Listings from other sources remain available.
@@ -95,6 +96,7 @@ Settings:
         - demo:s0: Cloud skill instructions. (cloud package: skill://cloud/s0)
         - demo:s1: Cloud skill instructions. (cloud package: skill://cloud/s1)
         - demo:s2: Cloud skill instructions. (cloud package: skill://cloud/s2)
+
         </skills_instructions>
 03:message/developer:
     <multi_agent_role>You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.

@@ -60,8 +60,21 @@ pub(crate) fn continuation_request(
     goal: &ThreadGoal,
     update_plan_enabled: bool,
 ) -> TurnInputRequest {
-    let steering = goal_context_input_item(continuation_prompt(goal, update_plan_enabled));
-    TurnInputRequest::new(TurnInput::ResponseItem(steering)).with_additional_context(
+    let (steering, additional_context) = continuation_context(goal, update_plan_enabled);
+    TurnInputRequest::new(TurnInput::ResponseItem(steering))
+        .with_additional_context(additional_context)
+}
+
+/// Separates continuation instructions from the objective's untrusted source payload.
+pub(crate) fn continuation_context(
+    goal: &ThreadGoal,
+    update_plan_enabled: bool,
+) -> (
+    ResponseItem,
+    std::collections::BTreeMap<String, AdditionalContextEntry>,
+) {
+    (
+        goal_context_input_item(continuation_prompt(goal, update_plan_enabled)),
         [(
             GOAL_OBJECTIVE_CONTEXT.to_owned(),
             AdditionalContextEntry::new(goal.objective.clone(), AdditionalContextKind::Untrusted),

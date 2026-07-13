@@ -11,16 +11,31 @@ use codex_protocol::openai_models::ReasoningEffort;
 use std::sync::Arc;
 
 pub(super) async fn apply(session: &Session) {
-    let _settings_guard = thread_settings::acquire_persistence_lock(session).await;
+    let settings_guard = thread_settings::acquire_persistence_lock(session).await;
+    if session.check_history_publication().is_err() {
+        return;
+    }
     let Ok(Some(commit)) = session
-        .update_settings_if(SessionSettingsUpdate::default(), |current, updated| {
-            current.step_settings != updated.step_settings
-        })
+        .update_settings_if_with_permit(
+            SessionSettingsUpdate::default(),
+            |current, updated| current.step_settings != updated.step_settings,
+            &settings_guard,
+        )
         .await
     else {
         return;
     };
-    thread_settings::emit_applied(session, super::new_submission_id(), commit.snapshot).await;
+    if let Err(error) = thread_settings::emit_applied(
+        session,
+        settings_guard,
+        super::new_submission_id(),
+        commit.snapshot,
+        /*reply*/ None,
+    )
+    .await
+    {
+        tracing::warn!("failed to publish refreshed model settings: {error}");
+    }
 }
 
 pub(super) fn normalize(settings: &mut Arc<StepSettings>, catalog: &[ModelInfo]) {

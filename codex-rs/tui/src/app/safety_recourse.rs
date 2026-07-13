@@ -64,8 +64,8 @@ pub(super) async fn continue_with_rewrite(
                 thread_id,
                 /*last_turn_id*/ None,
                 /*before_turn_id*/ Some(turn_id.clone()),
-                // Deferring also copies the source's current goal, beyond the turn cutoff.
-                ForkGoalContinuation::StartIfIdle,
+                // Rewrite forks exclude the source goal, which may be newer than the turn cutoff.
+                ForkGoalContinuation::GoalFree,
                 selected_profile.as_ref(),
             )
             .await?;

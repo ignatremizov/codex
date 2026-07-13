@@ -64,3 +64,17 @@ async fn correction_changes_only_supported_bounded_choices(scenario: &str) {
     normalize(&mut settings, &[model]);
     assert_eq!(settings, expected);
 }
+
+#[tokio::test]
+async fn catalog_refresh_does_not_reacquire_its_owned_persistence_permit() {
+    let (session, _) = crate::session::tests::make_session_and_context().await;
+    session
+        .check_history_publication()
+        .expect("live fixture history");
+    tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), async {
+        super::apply(&session).await;
+        let _permit = crate::session::thread_settings::acquire_persistence_lock(&session).await;
+    })
+    .await
+    .expect("catalog update and subsequent settings publication must release the permit");
+}

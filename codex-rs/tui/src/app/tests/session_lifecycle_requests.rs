@@ -5036,6 +5036,11 @@ terminal_visualization_instructions = true
         let method = if fork { "thread/fork" } else { "thread/start" };
         let params = recorded_params(&requests, method);
         assert_eq!(params.len(), 1);
+        if fork {
+            let fork_params: codex_app_server_protocol::ThreadForkParams =
+                serde_json::from_value(params[0].clone())?;
+            assert!(!fork_params.defer_goal_continuation);
+        }
         assert_eq!(
             [
                 params[0]["model"].as_str(),
@@ -5606,7 +5611,9 @@ async fn change_directory_scenario() -> Result<()> {
     assert_eq!(params["cwd"], serde_json::json!(trusted));
     assert_eq!(params["approvalsReviewer"].as_str(), Some("auto_review"));
     assert_eq!(params["developerInstructions"], "destination policy");
-    assert_eq!(params["deferGoalContinuation"], serde_json::json!(true));
+    let fork_params: codex_app_server_protocol::ThreadForkParams =
+        serde_json::from_value(params.clone())?;
+    assert!(!fork_params.defer_goal_continuation);
     assert_eq!(&params["runtimeWorkspaceRoots"], &json!([trusted]));
     assert_eq!(rec(&requests, "hooks/list")[0]["cwds"], json!([trusted]));
     for suffix in "start resume settings/update archive".split(' ') {

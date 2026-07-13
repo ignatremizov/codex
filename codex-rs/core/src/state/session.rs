@@ -374,6 +374,29 @@ impl SessionState {
         self.auto_compact_window.restore(window_number, ids);
     }
 
+    /// Reserves the next checkpoint identity without changing the visible context window.
+    pub(crate) fn prepare_auto_compact_window(&self) -> (u64, AutoCompactWindowIds) {
+        let current = self.auto_compact_window.ids();
+        (
+            self.auto_compact_window.window_number().saturating_add(1),
+            AutoCompactWindowIds {
+                first_window_id: current.first_window_id.clone(),
+                previous_window_id: Some(current.window_id.clone()),
+                window_id: (self.context_window_id_generator)(),
+            },
+        )
+    }
+
+    /// Installs an acknowledged checkpoint without allocating a second unrelated window ID.
+    pub(crate) fn install_prepared_auto_compact_window(
+        &mut self,
+        window_number: u64,
+        ids: AutoCompactWindowIds,
+    ) {
+        self.auto_compact_window.advance(ids.window_id.clone());
+        self.auto_compact_window.restore(window_number, ids);
+    }
+
     pub(crate) fn advance_auto_compact_window(&mut self) -> (u64, AutoCompactWindowIds) {
         self.auto_compact_window
             .advance((self.context_window_id_generator)())

@@ -363,6 +363,9 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     sess.services.mcp_runtime.shutdown().await;
 
     sess.drain_code_mode_messages().await;
+    // Accepted Code Mode receipts use the canonical publisher too. Stop their
+    // producers and drain them before closing publication admission.
+    sess.close_history_publication().await;
 
     crate::hook_runtime::run_session_end_hooks(sess).await;
     emit_thread_stop_lifecycle(sess).await;
@@ -678,57 +681,11 @@ pub(super) async fn submission_loop(
                     thread_settings,
                     reply,
                 } => {
-                    let _settings_guard = thread_settings::acquire_persistence_lock(&sess).await;
                     let thread_settings = WithTurnExtensionData {
                         request: thread_settings,
                         turn_extension_init: sub.turn_extension_init,
                     };
-                    match thread_settings::update(&sess, thread_settings, reply.is_some()).await {
-                        Ok(commit) => {
-                            match (reply, commit.host_acceptance) {
-                                (Some(mut reply), Some(acceptance)) => {
-                                    // Leave the submission loop free to process interrupts.
-                                    tokio::spawn(async move {
-                                        tokio::select! {
-                                            _ = reply.closed() => {}
-                                            result = acceptance => {
-                                                let result = result.map_err(|error| {
-                                                    CodexErr::from(std::io::Error::other(format!(
-                                                        "service tier committed locally; host acceptance unconfirmed: {error}"
-                                                    )))
-                                                });
-                                                let _ = reply.send(result);
-                                            }
-                                        }
-                                    });
-                                }
-                                (Some(reply), None) => {
-                                    // The caller may hold a lock its event consumer needs.
-                                    let _ = reply.send(Ok(()));
-                                }
-                                (None, _) => {}
-                            }
-                            thread_settings::emit_applied(&sess, sub.id.clone(), commit.snapshot)
-                                .await;
-                        }
-                        Err(error) => {
-                            let message = format!("invalid thread settings override: {error}");
-                            if let Some(reply) = reply {
-                                let _ = reply.send(Err(CodexErr::InvalidRequest(message)));
-                            } else {
-                                sess.send_event_raw(Event {
-                                    id: sub.id.clone(),
-                                    msg: EventMsg::Error(ErrorEvent {
-                                        misalignment: None,
-                                        message,
-                                        codex_error_info: Some(CodexErrorInfo::BadRequest),
-                                        rejected_audio_file_ids: Vec::new(),
-                                    }),
-                                })
-                                .await;
-                            }
-                        }
-                    }
+                    thread_settings::update(&sess, sub.id.clone(), thread_settings, reply).await;
                     false
                 }
                 Op::ReplaceDynamicTools { tools, reply } => {

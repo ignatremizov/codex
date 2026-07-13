@@ -300,6 +300,16 @@ SET
     updated_at_ms = ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
             "#,
                 )
                 .bind(objective)
@@ -317,7 +327,7 @@ WHERE thread_id = ?
                 .bind(thread_id.to_string())
                 .bind(expected_goal_id)
                 .bind(expected_goal_id)
-                .execute_with_busy_retry(self.pool.as_ref())
+                .fetch_optional_write(self.pool.as_ref())
                 .await?
             }
             (Some(status), None) => {
@@ -334,6 +344,16 @@ SET
     updated_at_ms = ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
             "#,
                 )
                 .bind(objective)
@@ -348,7 +368,7 @@ WHERE thread_id = ?
                 .bind(thread_id.to_string())
                 .bind(expected_goal_id)
                 .bind(expected_goal_id)
-                .execute_with_busy_retry(self.pool.as_ref())
+                .fetch_optional_write(self.pool.as_ref())
                 .await?
             }
             (None, Some(token_budget)) => {
@@ -365,6 +385,16 @@ SET
     updated_at_ms = ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
             "#,
                 )
                 .bind(objective)
@@ -376,7 +406,7 @@ WHERE thread_id = ?
                 .bind(thread_id.to_string())
                 .bind(expected_goal_id)
                 .bind(expected_goal_id)
-                .execute_with_busy_retry(self.pool.as_ref())
+                .fetch_optional_write(self.pool.as_ref())
                 .await?
             }
             (None, None) => {
@@ -389,6 +419,16 @@ SET
     updated_at_ms = ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
             "#,
                     )
                     .bind(objective)
@@ -396,27 +436,37 @@ WHERE thread_id = ?
                     .bind(thread_id.to_string())
                     .bind(expected_goal_id)
                     .bind(expected_goal_id)
-                    .execute_with_busy_retry(self.pool.as_ref())
+                    .fetch_optional_write(self.pool.as_ref())
                     .await?
                 } else {
-                    let goal = self.get_thread_goal(thread_id).await?;
-                    return Ok(match (goal, expected_goal_id) {
-                        (Some(goal), Some(expected_goal_id))
-                            if goal.goal_id != expected_goal_id =>
-                        {
-                            None
-                        }
-                        (goal, _) => goal,
-                    });
+                    let row = sqlx::query(
+                        r#"
+SELECT
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
+FROM thread_goals
+WHERE thread_id = ?
+  AND (? IS NULL OR goal_id = ?)
+                        "#,
+                    )
+                    .bind(thread_id.to_string())
+                    .bind(expected_goal_id)
+                    .bind(expected_goal_id)
+                    .fetch_optional(self.pool.as_ref())
+                    .await?;
+                    return row.map(|row| thread_goal_from_row(&row)).transpose();
                 }
             }
         };
 
-        if result.rows_affected() == 0 {
-            return Ok(None);
-        }
-
-        self.get_thread_goal(thread_id).await
+        result.map(|row| thread_goal_from_row(&row)).transpose()
     }
 
     pub async fn pause_active_thread_goal(
@@ -455,20 +505,26 @@ WHERE thread_id = ?
           AND status = 'budget_limited'
       )
   )
+RETURNING
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
             "#,
         )
         .bind(status.as_str())
         .bind(now_ms)
         .bind(thread_id.to_string())
         .bind(status.as_str())
-        .execute_with_busy_retry(self.pool.as_ref())
+        .fetch_optional_write(self.pool.as_ref())
         .await?;
 
-        if result.rows_affected() == 0 {
-            return Ok(None);
-        }
-
-        self.get_thread_goal(thread_id).await
+        result.map(|row| thread_goal_from_row(&row)).transpose()
     }
 
     pub async fn delete_thread_goal(
