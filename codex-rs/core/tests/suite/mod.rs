@@ -83,6 +83,7 @@ mod cyber_exec_policy;
 mod daybreak_access;
 mod deprecation_notice;
 mod direct_tool_metadata;
+mod durable_publication;
 mod dynamic_tool_cancellation;
 mod exec;
 mod exec_policy;

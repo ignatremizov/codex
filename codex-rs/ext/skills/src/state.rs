@@ -10,13 +10,17 @@ use codex_exec_server::EnvironmentAccessKey;
 use codex_extension_api::CatalogRefreshBackoff;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionMetrics;
+use codex_extension_api::RestoredSkillsInventory;
 use codex_mcp::McpResourceClient;
 use codex_mcp::McpResourceClientAuthKey;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 
 use crate::SkillsExtensionConfig;
 use crate::aliases::SkillAliasState;
 use crate::catalog::SkillAuthority;
 use crate::catalog::SkillCatalog;
+use crate::catalog::SkillCatalogEntry;
 use crate::catalog::SkillPackageId;
 use crate::catalog::SkillProviderError;
 use crate::catalog::SkillProviderResult;
@@ -30,6 +34,9 @@ use crate::catalog_state::CloudSkillGeneration;
 use crate::catalog_state::ExecutorCatalogCacheKey;
 use crate::catalog_state::SkillCatalogState;
 use crate::catalog_state::SkillReadCacheKey;
+use crate::fragments::AvailableSkillsInstructions;
+use crate::fragments::PromotedSkillIdentity;
+use crate::fragments::promoted_metadata_is_bounded;
 use crate::provider::SkillListQuery;
 use crate::provider::SkillReadContext;
 use crate::provider::SkillReadRequest;
@@ -42,6 +49,8 @@ use crate::step_state::SkillStepCatalog;
 #[cfg(test)]
 #[path = "cloud_cache_tests.rs"]
 mod cloud_cache_tests;
+
+const MAX_PROMOTED_SKILLS: usize = 16;
 
 pub(crate) struct SkillsSessionState {
     pub(crate) mcp_resources: Option<Arc<McpResourceClient>>,
@@ -59,6 +68,8 @@ pub struct SkillsThreadState {
     cloud_skills_available: bool,
     catalog_state: Mutex<SkillCatalogState>,
     aliases: SkillAliasState,
+    promoted_skills: Mutex<Vec<PromotedSkillIdentity>>,
+    projected_promoted_skills: Mutex<Vec<PromotedSkillIdentity>>,
     shadow_selection_turn: Mutex<Option<ShadowSelectionTurn>>,
     pub(crate) executor_read_snapshot: Mutex<Option<ExecutorReadSnapshot>>,
     pub(crate) recent_skill_invocations: Arc<RecentSkillInvocations>,
@@ -73,6 +84,8 @@ impl SkillsThreadState {
             cloud_skills_available,
             catalog_state: Mutex::new(SkillCatalogState::default()),
             aliases: SkillAliasState::default(),
+            promoted_skills: Mutex::new(Vec::new()),
+            projected_promoted_skills: Mutex::new(Vec::new()),
             shadow_selection_turn: Mutex::new(None),
             executor_read_snapshot: Mutex::new(None),
             recent_skill_invocations: Arc::new(RecentSkillInvocations::default()),
@@ -467,6 +480,113 @@ impl SkillsThreadState {
             .as_ref()
             .filter(|turn| turn.turn_id == turn_id)
             .map(|turn| Arc::clone(&turn.state))
+    }
+
+    pub(crate) fn restore_promoted_skills(&self, inventory: &RestoredSkillsInventory) {
+        let promoted = match inventory.item() {
+            ResponseItem::Message { content, .. } => content
+                .iter()
+                .find_map(|content| {
+                    let ContentItem::InputText { text } = content else {
+                        return None;
+                    };
+                    AvailableSkillsInstructions::promoted_from_rendered(text)
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        *self
+            .promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = promoted;
+        self.projected_promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    pub(crate) fn resolve_promoted_skills(
+        &self,
+        catalog: &SkillCatalog,
+    ) -> (Vec<SkillCatalogEntry>, usize) {
+        let promoted = self
+            .promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let resolved = promoted
+            .iter()
+            .filter_map(|identity| {
+                catalog
+                    .entries
+                    .iter()
+                    .find(|entry| entry.enabled && identity.matches_entry(entry))
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
+        let omitted = promoted.len().saturating_sub(resolved.len());
+        (resolved, omitted)
+    }
+
+    pub(crate) fn promoted_skill_identities(&self) -> Vec<PromotedSkillIdentity> {
+        self.promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn promoted_with(
+        &self,
+        entries: &[SkillCatalogEntry],
+    ) -> (Vec<PromotedSkillIdentity>, bool, usize) {
+        let promoted = self
+            .promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut next = promoted.clone();
+        let mut omitted = 0usize;
+        for entry in entries {
+            let Some(identity) = PromotedSkillIdentity::from_entry(entry) else {
+                omitted = omitted.saturating_add(1);
+                continue;
+            };
+            if !next.contains(&identity) {
+                if next.len() == MAX_PROMOTED_SKILLS {
+                    omitted = omitted.saturating_add(1);
+                    continue;
+                }
+                next.push(identity);
+                if !promoted_metadata_is_bounded(&next) {
+                    next.pop();
+                    omitted = omitted.saturating_add(1);
+                }
+            }
+        }
+        let changed = next != *promoted;
+        (next, changed, omitted)
+    }
+
+    pub(crate) fn promoted_projection_changed(&self, projected: &[PromotedSkillIdentity]) -> bool {
+        projected
+            != self
+                .projected_promoted_skills
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice()
+    }
+
+    pub(crate) fn acknowledge_promoted_skills(
+        &self,
+        promoted: Vec<PromotedSkillIdentity>,
+        projected: Vec<PromotedSkillIdentity>,
+    ) {
+        *self
+            .promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = promoted;
+        *self
+            .projected_promoted_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = projected;
     }
 }
 

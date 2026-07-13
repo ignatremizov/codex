@@ -26,6 +26,8 @@ pub(super) async fn run_compaction(
     candidate: Option<BackgroundCompactionCandidate>,
     fallback: CompactionFallback,
 ) -> CodexResult<bool> {
+    sess.await_history_publication().await;
+    sess.check_history_publication()?;
     if let Some(candidate) = candidate {
         let installed = build_and_install_compaction(
             sess,
@@ -228,7 +230,7 @@ async fn build_and_install_compaction(
                 started_item: needs_start.then_some(&compaction_item),
             },
         )
-        .await
+        .await?
     } else {
         let (new_history, world_state_baseline) = build_compaction_replacement_history(
             sess,
@@ -254,7 +256,7 @@ async fn build_and_install_compaction(
             world_state_baseline,
             installation,
         )
-        .await
+        .await?
     };
     let Some(installed_history) = installed else {
         return Ok(false);

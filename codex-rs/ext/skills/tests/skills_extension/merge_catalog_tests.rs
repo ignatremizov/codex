@@ -1208,31 +1208,37 @@ async fn v2_implicit_and_explicit_invocations_retain_their_step_catalog() -> Tes
     );
     assert!(detect(&next_step).is_none());
     for (step_store, allowed) in [(&harness.step_store, true), (&next_step, false)] {
-        let fragments = prepared_turn_input(
-            &harness.registry,
-            TurnInputContext {
-                step_store,
-                turn_id: "turn-1".to_string(),
-                user_input: vec![UserInput::Mention {
-                    name: installed.name.clone(),
-                    path: installed.main_prompt.as_str().to_string(),
-                }],
-                environments: Vec::new(),
-            },
-            /*extension_metrics*/ None,
-            &harness.session_store,
-            &harness.thread_store,
-            &harness.turn_store,
-        )
-        .await;
+        let contribution = harness.registry.turn_input_contributors()[0]
+            .contribute_durable(
+                TurnInputContext {
+                    step_store,
+                    turn_id: "turn-1".to_string(),
+                    user_input: vec![UserInput::Mention {
+                        name: installed.name.clone(),
+                        path: installed.main_prompt.as_str().to_string(),
+                    }],
+                    environments: Vec::new(),
+                },
+                /*extension_metrics*/ None,
+                &harness.session_store,
+                &harness.thread_store,
+                &harness.turn_store,
+            )
+            .await;
+        let (fragments, acknowledgement) = contribution.into_parts();
         assert_eq!(fragments.len(), usize::from(allowed));
         if allowed {
             assert!(
                 fragments[0]
                     .render()
                     .expect_text()
-                    .contains("<name>deploy:work</name>")
+                    .contains("- deploy:work:")
             );
+            acknowledgement
+                .ok_or("promoted inventory must have a durable acknowledgement")?
+                .acknowledge();
+            let tools = harness.tools(step_store).await;
+            call_tool(&tools, "read", json!({"package": cloud.id.0})).await?;
         }
     }
     assert_eq!(
