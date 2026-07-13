@@ -976,3 +976,33 @@ fn long_content_parts_keep_both_ends_and_fingerprint_only_the_omitted_middle() {
         .contains("<OMITTED")
     );
 }
+
+#[test]
+fn promoted_skill_fingerprints_normalize_paths_and_retain_identity_changes() {
+    let render = |home: &str, skill: &str, authority: &str| {
+        let encode = |value: &str| {
+            value
+                .bytes()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let package = format!("{home}/skills/{skill}");
+        detailed(&[message(
+            "developer",
+            &format!(
+                "<skills_instructions>\n<promoted_skills>{}</promoted_skills>\n</skills_instructions>",
+                json!([{
+                    "authorityKindHex": encode("host"),
+                    "authorityIdHex": encode(authority),
+                    "packageHex": encode(&package),
+                    "resourceHex": encode(&format!("{package}/SKILL.md")),
+                }]),
+            ),
+        )])
+    };
+    let first = render("/tmp/.tmpFirst", "outline", "host");
+    assert_eq!(first, render("/tmp/.tmpSecond", "outline", "host"));
+    assert_eq!(first, render(r"C:\Temp\fixture", "outline", "host"));
+    assert_ne!(first, render("/tmp/.tmpFirst", "review", "host"));
+    assert_ne!(first, render("/tmp/.tmpFirst", "outline", "other-host"));
+}

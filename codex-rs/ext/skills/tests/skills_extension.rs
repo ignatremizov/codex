@@ -97,6 +97,9 @@ use pretty_assertions::assert_eq;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[path = "skills_extension/promotion_tests.rs"]
+mod promotion_tests;
+
 #[path = "skills_extension/shadow_task_context_tests.rs"]
 mod shadow_task_context_tests;
 
@@ -127,8 +130,8 @@ fn world_state_section<'a>(
         .unwrap_or_else(|| panic!("world-state section {id} should exist"))
 }
 
-async fn prepare_step(
-    registry: &codex_extension_api::ExtensionRegistry<TestConfig>,
+async fn prepare_step<C: Send + Sync + 'static>(
+    registry: &codex_extension_api::ExtensionRegistry<C>,
     input: codex_extension_api::StepPreparationInput<'_>,
 ) {
     for contributor in registry.tool_contributors() {
@@ -268,8 +271,8 @@ async fn skill_world_state_fragments(
     Ok((executor, cloud))
 }
 
-async fn start_registered_turn(
-    registry: &codex_extension_api::ExtensionRegistry<TestConfig>,
+async fn start_registered_turn<C: Send + Sync + 'static>(
+    registry: &codex_extension_api::ExtensionRegistry<C>,
     session_store: &ExtensionData,
     thread_store: &ExtensionData,
     turn_id: &str,
@@ -368,7 +371,10 @@ async fn installed_extension_uses_host_service_snapshot() -> TestResult {
     .await;
 
     let expected_catalog = format!(
-        "{SKILLS_INSTRUCTIONS_OPEN_TAG}\n## Skills\n{SKILLS_INTRO_WITH_ABSOLUTE_PATHS}\n### Available skills\n- demo: Demo skill. (file: {skill_prompt_path})\n{SKILLS_INSTRUCTIONS_CLOSE_TAG}"
+        "{SKILLS_INSTRUCTIONS_OPEN_TAG}\n<promoted_skills>[]</promoted_skills>\n\
+         When multiple complete skills inventories are present, this latest inventory supersedes earlier inventories.\n\n\
+         ## Skills\n{SKILLS_INTRO_WITH_ABSOLUTE_PATHS}\n### Available skills\n\
+         - demo: Demo skill. (file: {skill_prompt_path})\n\n{SKILLS_INSTRUCTIONS_CLOSE_TAG}"
     );
     let expected_skill = format!(
         "<skill>\n<name>demo</name>\n<path>{skill_prompt_path}</path>\n{DEMO_SKILL_CONTENTS}\n</skill>"
