@@ -272,15 +272,13 @@ async fn orchestrator_skill_can_read_referenced_resource_without_an_executor() -
             .iter()
             .any(|text| text.contains("do not treat `skill://` identifiers as filesystem paths"))
     );
-    let skill_fragments = first_request
-        .message_input_texts("user")
-        .into_iter()
-        .filter(|text| text.starts_with("<skill>"))
-        .collect::<Vec<_>>();
-    assert_eq!(1, skill_fragments.len());
-    assert!(skill_fragments[0].contains(&format!("<name>{SKILL_NAME}</name>")));
-    assert!(skill_fragments[0].contains(SKILL_MARKER));
-    assert!(skill_fragments[0].contains(SKILL_REFERENCE_URI));
+    assert!(
+        first_request
+            .message_input_texts("user")
+            .into_iter()
+            .all(|text| !text.starts_with("<skill>")),
+        "orchestrator skills with a durable read route should remain inventory-only"
+    );
 
     let list_output = requests[1]
         .function_call_output_text(SKILLS_LIST_CALL_ID)
@@ -320,7 +318,7 @@ async fn orchestrator_skill_can_read_referenced_resource_without_an_executor() -
     assert_eq!(
         ResourceAppsMcpCallCounts {
             list_resources: 3,
-            main_prompt_reads: 1,
+            main_prompt_reads: 0,
             reference_reads: 1,
         },
         apps_server_calls.snapshot()
@@ -361,7 +359,7 @@ async fn orchestrator_skill_can_read_referenced_resource_without_an_executor() -
     assert_eq!(
         ResourceAppsMcpCallCounts {
             list_resources: 6,
-            main_prompt_reads: 2,
+            main_prompt_reads: 0,
             reference_reads: 1,
         },
         apps_server_calls.snapshot()

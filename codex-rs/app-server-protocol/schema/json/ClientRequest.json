@@ -3738,6 +3738,21 @@
       ],
       "type": "object"
     },
+    "GoalSkillSelection": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
     "ThreadGoalClearParams": {
       "properties": {
         "threadId": {
@@ -3776,6 +3791,15 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "skills": {
+          "items": {
+            "$ref": "#/definitions/GoalSkillSelection"
+          },
+          "type": [
+            "array",
+            "null"
           ]
         },
         "threadId": {

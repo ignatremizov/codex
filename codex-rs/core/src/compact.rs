@@ -41,6 +41,8 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::MAX_SKILLS_INSTRUCTIONS_BYTES;
+use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
@@ -420,13 +422,13 @@ async fn run_compact_task_inner_impl(
         window_id: Some(window_ids.window_id.to_string()),
     };
     sess.replace_compacted_history(
-        turn_context.as_ref(),
+        Arc::clone(&turn_context),
         new_history,
         reference_context_item,
         world_state_baseline,
         compacted_item,
     )
-    .await;
+    .await?;
     sess.recompute_token_usage(&turn_context).await;
 
     let mut completed_compaction_item = compaction_item;
@@ -807,14 +809,75 @@ pub(crate) fn preserve_mcp_server_use_context_items(
     // Replacement histories built by current compaction paths carry MCP-use blocks explicitly.
     // This fallback only preserves blocks for older/foreign compactors that omitted them; it never
     // dedupes or rewrites an existing replacement history.
-    insert_mcp_server_use_context_items_at_compaction_boundary(history, mcp_context)
+    insert_context_items_at_compaction_boundary(history, mcp_context)
+}
+
+pub(crate) fn preserve_promoted_skills_inventory_item(
+    history: Vec<ResponseItem>,
+    additional_history_items: &[ResponseItem],
+) -> Vec<ResponseItem> {
+    if promoted_skills_inventory_text(&history).is_some() {
+        return history;
+    }
+    let inventory = promoted_skills_inventory_text(additional_history_items)
+        .map(developer_message_item)
+        .into_iter()
+        .collect();
+    insert_context_items_at_compaction_boundary(history, inventory)
+}
+
+fn promoted_skills_inventory_text(items: &[ResponseItem]) -> Option<String> {
+    for item in items.iter().rev() {
+        let ResponseItem::Message { role, content, .. } = item else {
+            continue;
+        };
+        if role != "developer" {
+            continue;
+        }
+        for content_item in content.iter().rev() {
+            let ContentItem::InputText { text } = content_item else {
+                continue;
+            };
+            if text.len() <= MAX_SKILLS_INSTRUCTIONS_BYTES
+                && text.trim_start().starts_with(SKILLS_INSTRUCTIONS_OPEN_TAG)
+                && text.contains("<promoted_skills>")
+            {
+                return Some(text.clone());
+            }
+        }
+    }
+    None
+}
+
+fn developer_message_item(text: String) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText { text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
 }
 
 pub(crate) fn insert_mcp_server_use_context_items_at_compaction_boundary(
-    mut history: Vec<ResponseItem>,
+    history: Vec<ResponseItem>,
     mcp_context: Vec<ResponseItem>,
 ) -> Vec<ResponseItem> {
-    if mcp_context.is_empty() {
+    insert_context_items_at_compaction_boundary(history, mcp_context)
+}
+
+pub(crate) fn insert_post_compaction_context_items(
+    history: Vec<ResponseItem>,
+    context_items: Vec<ResponseItem>,
+) -> Vec<ResponseItem> {
+    insert_context_items_at_compaction_boundary(history, context_items)
+}
+
+fn insert_context_items_at_compaction_boundary(
+    mut history: Vec<ResponseItem>,
+    context_items: Vec<ResponseItem>,
+) -> Vec<ResponseItem> {
+    if context_items.is_empty() {
         return history;
     }
     let insertion_index = history
@@ -837,7 +900,7 @@ pub(crate) fn insert_mcp_server_use_context_items_at_compaction_boundary(
             })
         })
         .unwrap_or(history.len());
-    history.splice(insertion_index..insertion_index, mcp_context);
+    history.splice(insertion_index..insertion_index, context_items);
     history
 }
 

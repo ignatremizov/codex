@@ -81,6 +81,7 @@ use codex_async_utils::OrCancelExt;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_extension_api::TurnInputContext;
+use codex_extension_api::TurnInputContributionAcknowledgement;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
 use codex_git_utils::get_git_repo_root_with_fs;
@@ -200,21 +201,27 @@ pub(crate) async fn run_turn(
         }
     }
 
-    let (injection_items, explicitly_enabled_connectors) = if turn_context.is_compact_subagent() {
-        (Vec::new(), HashSet::new())
-    } else {
-        let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
-            &sess,
-            first_step_context.as_ref(),
-            &input,
-            &cancellation_token,
-        )
-        .await
-        else {
-            return Ok(None);
+    let (injection_items, explicitly_enabled_connectors, extension_contributions) =
+        if turn_context.is_compact_subagent() {
+            (Vec::new(), HashSet::new(), Vec::new())
+        } else {
+            let Some((injection_items, explicitly_enabled_connectors, extension_contributions)) =
+                build_skills_and_plugins(
+                    &sess,
+                    first_step_context.as_ref(),
+                    &input,
+                    &cancellation_token,
+                )
+                .await
+            else {
+                return Ok(None);
+            };
+            (
+                injection_items,
+                explicitly_enabled_connectors,
+                extension_contributions,
+            )
         };
-        (injection_items, explicitly_enabled_connectors)
-    };
 
     if run_pending_session_start_hooks(&sess, &turn_context).await {
         return Ok(None);
@@ -235,6 +242,19 @@ pub(crate) async fn run_turn(
     for response_item in injection_items {
         sess.record_conversation_items(&turn_context, std::slice::from_ref(&response_item))
             .await;
+    }
+    for contribution in extension_contributions {
+        sess.record_durable_context_items(
+            Arc::clone(&turn_context),
+            contribution.items,
+            contribution.acknowledgement,
+        )
+        .await
+        .map_err(|err| {
+            CodexErr::Fatal(format!(
+                "failed to persist extension turn input contribution: {err}"
+            ))
+        })?;
     }
 
     track_turn_resolved_config_analytics(&sess, &turn_context, &input).await;
@@ -558,12 +578,16 @@ async fn build_skills_and_plugins(
     step_context: &StepContext,
     input: &[TurnInput],
     cancellation_token: &CancellationToken,
-) -> Option<(Vec<ResponseItem>, HashSet<String>)> {
+) -> Option<(
+    Vec<ResponseItem>,
+    HashSet<String>,
+    Vec<PendingTurnInputContribution>,
+)> {
     let turn_context = step_context.turn.as_ref();
     // Guardian input embeds the parent transcript as untrusted evidence. Do not interpret skill or
     // plugin mentions from that generated prompt as requests to inject additional instructions.
     if crate::guardian::is_guardian_reviewer_source(&turn_context.session_source) {
-        return Some((Vec::new(), HashSet::new()));
+        return Some((Vec::new(), HashSet::new(), Vec::new()));
     }
 
     let user_input = input
@@ -623,7 +647,7 @@ async fn build_skills_and_plugins(
     };
     let skills_outcome = turn_context.turn_skills.snapshot.outcome();
     let connector_slug_counts = build_connector_slug_counts(&available_connectors);
-    let extension_injection_items =
+    let extension_contributions =
         build_extension_turn_input_items(sess, turn_context, &user_input, cancellation_token)
             .await?;
     let skill_name_counts_lower =
@@ -716,8 +740,16 @@ async fn build_skills_and_plugins(
         None => skill_items,
     };
     injection_items.extend(plugin_items);
-    injection_items.extend(extension_injection_items);
-    Some((injection_items, explicitly_enabled_connectors))
+    Some((
+        injection_items,
+        explicitly_enabled_connectors,
+        extension_contributions,
+    ))
+}
+
+struct PendingTurnInputContribution {
+    items: Vec<ResponseItem>,
+    acknowledgement: Option<TurnInputContributionAcknowledgement>,
 }
 
 #[tracing::instrument(
@@ -730,7 +762,7 @@ async fn build_extension_turn_input_items(
     turn_context: &TurnContext,
     user_input: &[UserInput],
     cancellation_token: &CancellationToken,
-) -> Option<Vec<ResponseItem>> {
+) -> Option<Vec<PendingTurnInputContribution>> {
     let contributors = sess.services.extensions.turn_input_contributors().to_vec();
     if contributors.is_empty() {
         return Some(Vec::new());
@@ -758,10 +790,10 @@ async fn build_extension_turn_input_items(
         environments,
     };
 
-    let mut items = Vec::new();
+    let mut contributions = Vec::new();
     for contributor in contributors {
-        let contributed_fragments = contributor
-            .contribute(
+        let contribution = contributor
+            .contribute_durable(
                 input.clone(),
                 &sess.services.session_extension_data,
                 &sess.services.thread_extension_data,
@@ -770,14 +802,17 @@ async fn build_extension_turn_input_items(
             .or_cancel(cancellation_token)
             .await
             .ok()?;
-        items.extend(
-            contributed_fragments
+        let (contributed_fragments, acknowledgement) = contribution.into_parts();
+        contributions.push(PendingTurnInputContribution {
+            items: contributed_fragments
                 .into_iter()
-                .map(ContextualUserFragment::into_boxed_response_item),
-        );
+                .map(ContextualUserFragment::into_boxed_response_item)
+                .collect(),
+            acknowledgement,
+        });
     }
 
-    Some(items)
+    Some(contributions)
 }
 
 #[tracing::instrument(

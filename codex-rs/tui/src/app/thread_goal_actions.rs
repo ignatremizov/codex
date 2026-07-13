@@ -133,6 +133,7 @@ impl App {
         mode: ThreadGoalSetMode,
     ) {
         let codex_home = app_server.codex_home_path(&self.config.codex_home);
+        let skill_selections = draft.skill_selections.clone();
         let mode = if matches!(mode, ThreadGoalSetMode::ConfirmIfExists) {
             let result = app_server.thread_goal_get(thread_id).await;
             if self.current_displayed_thread_id() != Some(thread_id) {
@@ -200,7 +201,13 @@ impl App {
         };
 
         let result = app_server
-            .thread_goal_set(thread_id, Some(objective), Some(status), token_budget)
+            .thread_goal_set(
+                thread_id,
+                Some(objective),
+                Some(status),
+                skill_selections,
+                token_budget,
+            )
             .await;
 
         match result {
@@ -237,6 +244,7 @@ impl App {
                 thread_id,
                 /*objective*/ None,
                 Some(status),
+                /*skills*/ None,
                 /*token_budget*/ None,
             )
             .await;

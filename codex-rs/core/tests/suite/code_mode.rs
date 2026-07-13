@@ -658,8 +658,14 @@ async fn code_mode_only_guides_all_tools_search_and_calls_deferred_app_tools() -
 const searchResult = await tools.tool_search({
   query: "calendar timezone option 99",
 });
+const toolName = "mcp__codex_apps__calendar_timezone_option_99";
 const tool = searchResult.find(
-  ({ name }) => name === "mcp__codex_apps__calendar_timezone_option_99"
+  (candidate) =>
+    candidate.name === toolName ||
+    candidate.tools?.some(
+      ({ name }) =>
+        name === toolName || `${candidate.name}${name}` === toolName
+    )
 );
 if (!tool) {
   text(JSON.stringify({
@@ -667,7 +673,7 @@ if (!tool) {
     searchFound: Array.isArray(searchResult) && searchResult.length > 0,
   }));
 } else {
-  const result = await tools[tool.name]({ timezone: "UTC" });
+  const result = await tools[toolName]({ timezone: "UTC" });
   text(JSON.stringify({
     found: true,
     searchFound: Array.isArray(searchResult) && searchResult.length > 0,

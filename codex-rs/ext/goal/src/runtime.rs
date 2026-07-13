@@ -1,12 +1,17 @@
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 use codex_core::ThreadManager;
+use codex_extension_api::GoalSkillActivations;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadGoal;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 
 use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
@@ -17,8 +22,10 @@ use crate::metrics::GoalMetrics;
 use crate::steering::continuation_steering_item;
 use crate::steering::objective_updated_steering_item;
 use crate::tool::protocol_goal_from_state;
-use tokio::sync::Semaphore;
-use tokio::sync::SemaphorePermit;
+
+mod skill_projection;
+
+pub(crate) use skill_projection::InactiveGoalHistory;
 
 #[derive(Clone)]
 pub struct GoalRuntimeHandle {
@@ -36,6 +43,32 @@ pub(crate) enum ActiveGoalStopReason {
     UsageLimit,
 }
 
+#[derive(Clone, Copy)]
+enum GoalRestoreReason {
+    ThreadStart,
+    ThreadResume,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GoalSkillProjectionEffect {
+    Preserve,
+    Activated,
+    Invalidated,
+    DeferredUntilNextTurn,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GoalContinuationEffect {
+    None,
+    StartIfIdle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExternalGoalSetRuntimeEffects {
+    pub(crate) skill_projection: GoalSkillProjectionEffect,
+    pub(crate) continuation: GoalContinuationEffect,
+}
+
 struct GoalRuntimeInner {
     thread_id: ThreadId,
     state_dbs: Arc<codex_state::StateRuntime>,
@@ -44,9 +77,11 @@ struct GoalRuntimeInner {
     metrics: GoalMetrics,
     thread_manager: Weak<ThreadManager>,
     accounting_state: Arc<GoalAccountingState>,
+    goal_skill_activations: Arc<GoalSkillActivations>,
     enabled: AtomicBool,
     tools_available_for_thread: bool,
-    goal_state_lock: Semaphore,
+    goal_state_lock: Arc<Semaphore>,
+    goal_revision: Mutex<u64>,
 }
 
 pub(crate) struct AccountedGoalProgress {
@@ -78,6 +113,7 @@ impl std::fmt::Debug for GoalRuntimeHandle {
 }
 
 impl GoalRuntimeHandle {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         thread_id: ThreadId,
         state_dbs: Arc<codex_state::StateRuntime>,
@@ -85,6 +121,7 @@ impl GoalRuntimeHandle {
         metrics: GoalMetrics,
         thread_manager: Weak<ThreadManager>,
         accounting_state: Arc<GoalAccountingState>,
+        goal_skill_activations: Arc<GoalSkillActivations>,
         config: GoalRuntimeConfig,
     ) -> Self {
         Self {
@@ -96,19 +133,33 @@ impl GoalRuntimeHandle {
                 metrics,
                 thread_manager,
                 accounting_state,
+                goal_skill_activations,
                 enabled: AtomicBool::new(config.enabled),
                 tools_available_for_thread: config.tools_available_for_thread,
-                goal_state_lock: Semaphore::new(/*permits*/ 1),
+                goal_state_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+                goal_revision: Mutex::new(0),
             }),
         }
     }
 
     pub(crate) fn set_enabled(&self, enabled: bool) {
-        self.inner.enabled.store(enabled, Ordering::Relaxed);
+        let previous = self.inner.enabled.swap(enabled, Ordering::AcqRel);
+        if previous != enabled
+            && let Err(err) = self.advance_goal_revision()
+        {
+            tracing::error!(
+                thread_id = %self.thread_id(),
+                "failed to advance goal revision after configuration change: {err}"
+            );
+        }
+        if !enabled {
+            self.clear_goal_skill_activations();
+            self.inner.accounting_state.clear_active_goal();
+        }
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
-        self.inner.enabled.load(Ordering::Relaxed)
+        self.inner.enabled.load(Ordering::Acquire)
     }
 
     pub(crate) fn tools_visible(&self) -> bool {
@@ -123,21 +174,55 @@ impl GoalRuntimeHandle {
         Arc::clone(&self.inner.accounting_state)
     }
 
-    pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
+    pub(crate) async fn goal_state_permit(&self) -> Result<OwnedSemaphorePermit, String> {
         self.inner
             .goal_state_lock
-            .acquire()
+            .clone()
+            .acquire_owned()
             .await
             .map_err(|err| err.to_string())
     }
 
+    pub(crate) fn goal_revision(&self) -> u64 {
+        *self
+            .inner
+            .goal_revision
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn advance_goal_revision(&self) -> Result<u64, String> {
+        let mut current = self
+            .inner
+            .goal_revision
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let revision = current
+            .checked_add(1)
+            .ok_or_else(|| "goal runtime revision is exhausted".to_string())?;
+        // Keep revision publication and activation ownership rebinding serialized. Callers that
+        // observed the previous revision can only mutate the bridge before this critical section
+        // or fail its revision-bound compare-and-swap after it.
+        *current = revision;
+        Ok(revision)
+    }
+
+    pub(crate) fn goal_revision_is(&self, expected: u64) -> bool {
+        self.goal_revision() == expected
+    }
+
     pub async fn prepare_external_goal_mutation(&self) -> Result<(), String> {
+        let _goal_state_permit = self.goal_state_permit().await?;
+        self.prepare_external_goal_mutation_locked().await
+    }
+
+    pub(crate) async fn prepare_external_goal_mutation_locked(&self) -> Result<(), String> {
         if !self.is_enabled() {
             return Ok(());
         }
 
         if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {
-            self.account_active_goal_progress(
+            self.account_active_goal_progress_locked(
                 turn_id.as_str(),
                 &format!("{turn_id}:external-goal-mutation"),
                 codex_state::GoalAccountingMode::ActiveOnly,
@@ -147,7 +232,7 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
-        self.account_idle_goal_progress(
+        self.account_idle_goal_progress_locked(
             &format!("{}:external-goal-mutation", self.inner.thread_id),
             codex_state::GoalAccountingMode::ActiveOnly,
             BudgetLimitedGoalDisposition::ClearActive,
@@ -156,13 +241,89 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
-    pub async fn apply_external_goal_set(
+    pub(crate) async fn apply_external_goal_set_locked(
         &self,
         goal: codex_state::ThreadGoal,
         previous_goal: Option<PreviousGoalSnapshot>,
-    ) -> Result<(), String> {
+        skill_selections: Vec<codex_protocol::protocol::GoalSkillSelection>,
+        effects: ExternalGoalSetRuntimeEffects,
+        expected_revision: u64,
+    ) -> Result<bool, String> {
+        if !self.goal_revision_is(expected_revision) {
+            self.fail_closed_external_projection(effects, expected_revision)
+                .await;
+            return Ok(false);
+        }
+        let verification = self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .get_thread_goal_with_skill_selections(self.thread_id())
+            .await;
+        let (current_goal, current_skill_selections) = match verification {
+            Ok(Some(current)) => current,
+            Ok(None) => {
+                self.fail_closed_external_projection(effects, expected_revision)
+                    .await;
+                return Ok(false);
+            }
+            Err(err) => {
+                self.fail_closed_external_projection(effects, expected_revision)
+                    .await;
+                return Err(err.to_string());
+            }
+        };
+        if !same_goal_mutation(&current_goal, &goal) || current_skill_selections != skill_selections
+        {
+            self.fail_closed_external_projection(effects, expected_revision)
+                .await;
+            return Ok(false);
+        }
+        let goal = current_goal;
         if !self.is_enabled() {
-            return Ok(());
+            if !matches!(
+                effects.skill_projection,
+                GoalSkillProjectionEffect::Invalidated
+            ) {
+                self.clear_goal_skill_activations_at_revision(
+                    expected_revision,
+                    InactiveGoalHistory::Invalidate,
+                );
+            }
+            return Ok(false);
+        }
+        match effects.skill_projection {
+            GoalSkillProjectionEffect::Preserve | GoalSkillProjectionEffect::Invalidated => {}
+            GoalSkillProjectionEffect::Activated => {
+                if goal.status != codex_state::ThreadGoalStatus::Active
+                    || !self.activate_goal_skill_selections_at_revision(
+                        expected_revision,
+                        goal.goal_id.clone(),
+                        skill_selections.clone(),
+                    )
+                {
+                    self.fail_closed_external_projection(effects, expected_revision)
+                        .await;
+                    return Ok(false);
+                }
+            }
+            GoalSkillProjectionEffect::DeferredUntilNextTurn => {
+                if goal.status == codex_state::ThreadGoalStatus::Active
+                    && self.inner.accounting_state.current_turn_id().is_none()
+                    && !self.activate_goal_skill_selections_at_revision(
+                        expected_revision,
+                        goal.goal_id.clone(),
+                        skill_selections.clone(),
+                    )
+                {
+                    self.fail_closed_external_projection(effects, expected_revision)
+                        .await;
+                    return Ok(false);
+                }
+            }
+        }
+        if !self.goal_revision_is(expected_revision) {
+            return Ok(false);
         }
 
         let replaced_existing_goal = previous_goal
@@ -189,6 +350,9 @@ impl GoalRuntimeHandle {
         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
             !replaced_existing_goal && previous_goal.objective != goal.objective
         });
+        let continue_if_idle = goal.status == codex_state::ThreadGoalStatus::Active
+            && self.inner.accounting_state.current_turn_id().is_none()
+            && matches!(effects.continuation, GoalContinuationEffect::StartIfIdle);
         match goal.status {
             codex_state::ThreadGoalStatus::Active => {
                 if self.inner.accounting_state.current_turn_id().is_some() {
@@ -201,11 +365,15 @@ impl GoalRuntimeHandle {
                         .accounting_state
                         .mark_idle_goal_active(goal.goal_id.clone());
                 }
+                if !self.is_enabled() {
+                    self.inner.accounting_state.clear_active_goal();
+                    self.clear_goal_skill_activations();
+                    return Ok(false);
+                }
                 if objective_changed {
                     let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
                     self.inject_active_turn_steering(item).await;
                 }
-                self.continue_if_idle().await?;
             }
             codex_state::ThreadGoalStatus::BudgetLimited => {
                 if self.inner.accounting_state.current_turn_id().is_none() {
@@ -219,19 +387,57 @@ impl GoalRuntimeHandle {
                 self.inner.accounting_state.clear_active_goal();
             }
         }
-        Ok(())
+        Ok(continue_if_idle)
     }
 
-    pub async fn apply_external_goal_clear(
+    pub(crate) async fn fail_closed_external_projection(
         &self,
-        goal: codex_state::ThreadGoal,
+        effects: ExternalGoalSetRuntimeEffects,
+        expected_revision: u64,
+    ) {
+        match effects.skill_projection {
+            GoalSkillProjectionEffect::Activated => {
+                self.clear_goal_skill_activations_at_revision(
+                    expected_revision,
+                    InactiveGoalHistory::Invalidate,
+                );
+            }
+            GoalSkillProjectionEffect::Invalidated
+            | GoalSkillProjectionEffect::Preserve
+            | GoalSkillProjectionEffect::DeferredUntilNextTurn => {}
+        }
+    }
+
+    pub(crate) async fn apply_external_goal_clear_locked(
+        &self,
+        goal: Option<codex_state::ThreadGoal>,
+        expected_revision: u64,
     ) -> Result<(), String> {
-        if !self.is_enabled() {
+        if !self.goal_revision_is(expected_revision) {
             return Ok(());
         }
-
-        self.inner.analytics.cleared(&goal);
+        match self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .get_thread_goal(self.thread_id())
+            .await
+        {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Ok(());
+            }
+            Err(err) => {
+                return Err(err.to_string());
+            }
+        }
         self.inner.accounting_state.clear_active_goal();
+        if self.is_enabled()
+            && self.goal_revision_is(expected_revision)
+            && let Some(goal) = goal
+        {
+            self.inner.analytics.cleared(&goal);
+        }
         Ok(())
     }
 
@@ -240,7 +446,6 @@ impl GoalRuntimeHandle {
             .await
     }
 
-    /// Accounts the ending turn and stops its active goal after a terminal error.
     pub(crate) async fn stop_active_goal_for_turn(
         &self,
         turn_id: &str,
@@ -269,7 +474,7 @@ impl GoalRuntimeHandle {
                 ("usage-limit", codex_state::ThreadGoalStatus::UsageLimited)
             }
         };
-        self.account_active_goal_progress(
+        self.account_active_goal_progress_locked(
             turn_id,
             &format!("{turn_id}:{event_name}-progress"),
             codex_state::GoalAccountingMode::ActiveOnly,
@@ -286,6 +491,7 @@ impl GoalRuntimeHandle {
             .map_err(|err| err.to_string())?
         else {
             self.inner.accounting_state.clear_active_goal();
+            self.clear_goal_skill_activations();
             return Ok(());
         };
         let can_stop = active_goal.status == codex_state::ThreadGoalStatus::Active
@@ -293,6 +499,7 @@ impl GoalRuntimeHandle {
                 && status == codex_state::ThreadGoalStatus::UsageLimited);
         if !can_stop {
             self.inner.accounting_state.clear_active_goal();
+            self.clear_goal_skill_activations();
             return Ok(());
         }
         let previous_status = Some(active_goal.status);
@@ -312,8 +519,11 @@ impl GoalRuntimeHandle {
             .await
             .map_err(|err| err.to_string())?
         else {
+            self.inner.accounting_state.clear_active_goal();
+            self.clear_goal_skill_activations();
             return Ok(());
         };
+        let revision = self.advance_goal_revision()?;
         self.inner
             .metrics
             .record_terminal_if_status_changed(previous_status, &goal);
@@ -323,6 +533,7 @@ impl GoalRuntimeHandle {
             GoalEventAttribution::Turn(turn_id),
         );
         self.inner.accounting_state.clear_active_goal();
+        self.clear_goal_skill_activations_at_revision(revision, InactiveGoalHistory::Invalidate);
         let goal = protocol_goal_from_state(goal);
         self.inner.event_emitter.thread_goal_updated(
             format!("{turn_id}:{event_name}"),
@@ -332,26 +543,77 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
+    pub async fn restore_after_start(&self) -> Result<(), String> {
+        self.restore_persisted_goal(GoalRestoreReason::ThreadStart)
+            .await
+    }
+
     pub async fn restore_after_resume(&self) -> Result<(), String> {
+        self.restore_persisted_goal(GoalRestoreReason::ThreadResume)
+            .await
+    }
+
+    async fn restore_persisted_goal(&self, reason: GoalRestoreReason) -> Result<(), String> {
         if !self.is_enabled() {
+            let revision = self.goal_revision();
+            self.clear_goal_skill_activations_at_revision(
+                revision,
+                InactiveGoalHistory::Invalidate,
+            );
+            self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }
 
-        let goal = self
+        let _goal_state_permit = self.goal_state_permit().await?;
+        let revision = self.goal_revision();
+        let goal = match self
             .inner
             .state_dbs
             .thread_goals()
-            .get_thread_goal(self.thread_id())
+            .get_thread_goal_with_skill_selections(self.thread_id())
             .await
-            .map_err(|err| err.to_string())?;
+        {
+            Ok(goal) => goal,
+            Err(err) => {
+                self.clear_goal_skill_activations_at_revision(
+                    revision,
+                    InactiveGoalHistory::Invalidate,
+                );
+                self.inner.accounting_state.clear_active_goal();
+                return Err(err.to_string());
+            }
+        };
         match goal {
-            Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
+            Some((goal, skill_selections))
+                if goal.status == codex_state::ThreadGoalStatus::Active =>
+            {
+                if !self.activate_goal_skill_selections_at_revision(
+                    revision,
+                    goal.goal_id.clone(),
+                    skill_selections,
+                ) {
+                    self.inner.accounting_state.clear_active_goal();
+                    return Ok(());
+                }
                 self.inner
                     .accounting_state
                     .mark_idle_goal_active(goal.goal_id);
-                self.inner.metrics.record_resumed();
+                if !self.is_enabled() {
+                    self.inner.accounting_state.clear_active_goal();
+                    self.clear_goal_skill_activations();
+                    return Ok(());
+                }
+                if matches!(reason, GoalRestoreReason::ThreadResume) {
+                    self.inner.metrics.record_resumed();
+                }
             }
-            Some(_) | None => self.inner.accounting_state.clear_active_goal(),
+            Some(_) | None => {
+                self.clear_goal_skill_activations_at_revision(
+                    revision,
+                    InactiveGoalHistory::Invalidate,
+                );
+                self.inner.accounting_state.clear_active_goal();
+            }
         }
         Ok(())
     }
@@ -359,11 +621,13 @@ impl GoalRuntimeHandle {
     pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
         if !self.tools_visible() {
             self.inner.accounting_state.clear_active_goal();
+            self.clear_goal_skill_activations();
             return Ok(());
         }
         // Hold this through the read/start window so external set/clear cannot
         // change the goal after we read it but before the continuation launches.
         let _goal_state_permit = self.goal_state_permit().await?;
+        let revision = self.goal_revision();
 
         let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
             tracing::debug!("skipping goal continuation because thread manager is unavailable");
@@ -374,24 +638,41 @@ impl GoalRuntimeHandle {
             return Ok(());
         };
 
-        let Some(goal) = self
+        let Some((goal, skill_selections)) = self
             .inner
             .state_dbs
             .thread_goals()
-            .get_thread_goal(self.thread_id())
+            .get_thread_goal_with_skill_selections(self.thread_id())
             .await
             .map_err(|err| err.to_string())?
         else {
             self.inner.accounting_state.clear_active_goal();
+            self.clear_goal_skill_activations_at_revision(revision, InactiveGoalHistory::Preserve);
             return Ok(());
         };
         if goal.status != codex_state::ThreadGoalStatus::Active {
+            self.inner.accounting_state.clear_active_goal();
+            self.clear_goal_skill_activations_at_revision(revision, InactiveGoalHistory::Preserve);
+            return Ok(());
+        }
+        if !self.activate_goal_skill_selections_at_revision(
+            revision,
+            goal.goal_id.clone(),
+            skill_selections,
+        ) {
+            self.inner.accounting_state.clear_active_goal();
+            return Ok(());
+        }
+        if !self.goal_revision_is(revision) {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }
         let item = continuation_steering_item(&protocol_goal_from_state(goal));
 
-        if let Err(err) = thread.try_start_turn_if_idle(vec![item]).await {
+        if let Err(err) = thread
+            .try_start_turn_if_idle_with_lease(vec![item], _goal_state_permit)
+            .await
+        {
             let reason = err.reason();
             tracing::debug!(
                 ?reason,
@@ -435,6 +716,23 @@ impl GoalRuntimeHandle {
         mode: codex_state::GoalAccountingMode,
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) -> Result<Option<AccountedGoalProgress>, String> {
+        let _goal_state_permit = self.goal_state_permit().await?;
+        self.account_active_goal_progress_locked(
+            turn_id,
+            event_id,
+            mode,
+            budget_limited_goal_disposition,
+        )
+        .await
+    }
+
+    async fn account_active_goal_progress_locked(
+        &self,
+        turn_id: &str,
+        event_id: &str,
+        mode: codex_state::GoalAccountingMode,
+        budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
+    ) -> Result<Option<AccountedGoalProgress>, String> {
         let accounting = self.accounting_state();
         let _accounting_permit = accounting
             .progress_accounting_permit()
@@ -462,6 +760,15 @@ impl GoalRuntimeHandle {
         Ok(match outcome {
             codex_state::GoalAccountingOutcome::Updated(goal) => {
                 let goal_id = goal.goal_id.clone();
+                if previous_status != Some(goal.status) {
+                    let revision = self.advance_goal_revision()?;
+                    if goal.status != codex_state::ThreadGoalStatus::Active {
+                        self.clear_goal_skill_activations_at_revision(
+                            revision,
+                            InactiveGoalHistory::Invalidate,
+                        );
+                    }
+                }
                 self.inner
                     .metrics
                     .record_terminal_if_status_changed(previous_status, &goal);
@@ -491,7 +798,7 @@ impl GoalRuntimeHandle {
         })
     }
 
-    async fn account_idle_goal_progress(
+    async fn account_idle_goal_progress_locked(
         &self,
         event_id: &str,
         mode: codex_state::GoalAccountingMode,
@@ -524,6 +831,15 @@ impl GoalRuntimeHandle {
         Ok(match outcome {
             codex_state::GoalAccountingOutcome::Updated(goal) => {
                 let goal_id = goal.goal_id.clone();
+                if previous_status != Some(goal.status) {
+                    let revision = self.advance_goal_revision()?;
+                    if goal.status != codex_state::ThreadGoalStatus::Active {
+                        self.clear_goal_skill_activations_at_revision(
+                            revision,
+                            InactiveGoalHistory::Invalidate,
+                        );
+                    }
+                }
                 self.inner
                     .metrics
                     .record_terminal_if_status_changed(previous_status, &goal);
@@ -572,4 +888,13 @@ impl GoalRuntimeHandle {
                 .then_some(goal.status)
         }))
     }
+}
+
+fn same_goal_mutation(left: &codex_state::ThreadGoal, right: &codex_state::ThreadGoal) -> bool {
+    left.thread_id == right.thread_id
+        && left.goal_id == right.goal_id
+        && left.objective == right.objective
+        && left.status == right.status
+        && left.token_budget == right.token_budget
+        && left.created_at == right.created_at
 }
