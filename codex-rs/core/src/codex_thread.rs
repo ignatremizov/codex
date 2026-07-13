@@ -332,6 +332,20 @@ impl CodexThread {
         self.session.try_start_turn_if_idle(items).await
     }
 
+    /// Starts automatic idle work while retaining `reservation_lease` until the
+    /// session has atomically reserved the idle turn.
+    ///
+    /// The lease is released before turn-start lifecycle contributors run.
+    pub async fn try_start_turn_if_idle_with_lease(
+        &self,
+        items: Vec<ResponseItem>,
+        reservation_lease: impl Send,
+    ) -> Result<(), TryStartTurnIfIdleError> {
+        self.session
+            .try_start_turn_if_idle_with_lease(items, reservation_lease)
+            .await
+    }
+
     pub async fn set_app_server_client_info(
         &self,
         app_server_client_name: Option<String>,

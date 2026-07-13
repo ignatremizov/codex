@@ -27,6 +27,7 @@ use codex_code_mode::InProcessCodeModeSessionProvider;
 use codex_code_mode::ProcessOwnedCodeModeSessionProvider;
 use codex_core_plugins::PluginsManager;
 use codex_exec_server::EnvironmentManager;
+use codex_extension_api::ConversationHistory;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::LoadedUserInstructions;
@@ -1632,7 +1633,7 @@ impl ThreadManagerState {
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         parent_trace: Option<W3cTraceContext>,
         environments: Vec<TurnEnvironmentSelection>,
-        thread_extension_init: ExtensionDataInit,
+        mut thread_extension_init: ExtensionDataInit,
         supports_openai_form_elicitation: bool,
         user_shell_override: Option<crate::shell::Shell>,
     ) -> CodexResult<NewThread> {
@@ -1657,6 +1658,29 @@ impl ThreadManagerState {
                 }
                 threads.remove(&resumed.conversation_id);
             }
+        }
+        if matches!(
+            &initial_history,
+            InitialHistory::Resumed(_) | InitialHistory::Forked(_)
+        ) {
+            let mut response_items = Vec::new();
+            for item in initial_history.get_rollout_items() {
+                match item {
+                    RolloutItem::ResponseItem(item) => response_items.push(item.clone()),
+                    RolloutItem::Compacted(compacted) => {
+                        if let Some(replacement_history) = &compacted.replacement_history {
+                            response_items.clone_from(replacement_history);
+                        }
+                    }
+                    RolloutItem::SessionMeta(_)
+                    | RolloutItem::InterAgentCommunication(_)
+                    | RolloutItem::InterAgentCommunicationMetadata { .. }
+                    | RolloutItem::TurnContext(_)
+                    | RolloutItem::WorldState(_)
+                    | RolloutItem::EventMsg(_) => {}
+                }
+            }
+            thread_extension_init.insert(ConversationHistory::new(response_items));
         }
         let user_instructions = self
             .user_instructions_for_spawn(&session_source, parent_thread_id, forked_from_thread_id)
