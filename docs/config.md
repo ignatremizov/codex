@@ -29,6 +29,16 @@ Omitting this setting leaves requested empty-poll windows uncapped. A configured
 
 Wait countdowns are advisory estimates, not process deadlines. Pauses or scheduling can extend the actual wait, and unrepresentable deadlines have no countdown. Cancelling a poll does not terminate its process. Turn interruption clears the countdown, but an individually cancelled poll without a subsequent visible lifecycle event can retain its estimate until it expires. History replay does not restart countdowns.
 
+## User-shell command timeout
+
+The optional `user_shell_command_timeout_ms` setting controls the maximum runtime of user-shell commands started with `!` or `/shell`:
+
+```toml
+user_shell_command_timeout_ms = 3600000
+```
+
+When unset, the default is one hour. An explicit timeout supplied by the request takes precedence over the configured value. Setting the configuration value to `0` disables the deadline while keeping the command interruptible.
+
 ## Lifecycle hooks
 
 Admins can set top-level `allow_managed_hooks_only = true` in
