@@ -46,12 +46,16 @@ pub(super) fn agent_nickname_candidates(config: &Config, role_name: Option<&str>
 
 fn keep_forked_rollout_item(item: &RolloutItem, preserve_reference_context_item: bool) -> bool {
     match item {
-        RolloutItem::ResponseItem(ResponseItem::Message { role, phase, .. }) => match role.as_str()
-        {
-            "system" | "developer" | "user" => true,
-            "assistant" => *phase == Some(MessagePhase::FinalAnswer),
-            _ => false,
-        },
+        RolloutItem::ResponseItem(message @ ResponseItem::Message { role, phase, .. }) => {
+            if is_goal_owned_context_item(message) {
+                return false;
+            }
+            match role.as_str() {
+                "system" | "developer" | "user" => true,
+                "assistant" => *phase == Some(MessagePhase::FinalAnswer),
+                _ => false,
+            }
+        }
         RolloutItem::ResponseItem(
             ResponseItem::AdditionalTools { .. }
             | ResponseItem::AgentMessage { .. }
@@ -78,6 +82,20 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_reference_context_item:
         RolloutItem::TurnContext(_) | RolloutItem::WorldState(_) => preserve_reference_context_item,
         RolloutItem::Compacted(_) | RolloutItem::EventMsg(_) | RolloutItem::SessionMeta(_) => true,
     }
+}
+
+fn is_goal_owned_context_item(item: &ResponseItem) -> bool {
+    let ResponseItem::Message { content, .. } = item else {
+        return false;
+    };
+    content.iter().any(|content| {
+        let ContentItem::InputText { text } = content else {
+            return false;
+        };
+        let text = text.trim_start();
+        text.starts_with("<codex_internal_context source=\"goal\">")
+            || text.starts_with("<goal_context>")
+    })
 }
 
 fn is_multi_agent_v2_usage_hint_message(item: &ResponseItem, usage_hint_texts: &[String]) -> bool {
@@ -695,10 +713,11 @@ impl AgentControl {
                 && let Some(replacement_history) = compacted.replacement_history.as_mut()
             {
                 replacement_history.retain(|response_item| {
-                    !is_multi_agent_v2_usage_hint_message(
-                        response_item,
-                        &multi_agent_v2_usage_hint_texts_to_filter,
-                    )
+                    !is_goal_owned_context_item(response_item)
+                        && !is_multi_agent_v2_usage_hint_message(
+                            response_item,
+                            &multi_agent_v2_usage_hint_texts_to_filter,
+                        )
                 });
             }
         }

@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::Weak;
-use std::time::Duration;
 
 use codex_analytics::AnalyticsEventsClient;
+use codex_extension_api::ActiveGoalObjective;
+use codex_extension_api::ConversationHistory;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -28,6 +29,7 @@ use codex_extension_api::TurnStopInput;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalRuntimeHandle;
 use codex_goal_extension::GoalService;
+use codex_goal_extension::GoalServiceError;
 use codex_goal_extension::GoalSetRequest;
 use codex_goal_extension::GoalTokenBudgetUpdate;
 use codex_goal_extension::install_with_backend;
@@ -589,7 +591,6 @@ async fn turn_error_blocks_goal() -> anyhow::Result<()> {
             json!({ "objective": "ship goal extension backend" }),
         ))
         .await?;
-
     harness
         .notify_turn_error("turn-1", CodexErrorInfo::Other)
         .await;
@@ -600,6 +601,14 @@ async fn turn_error_blocks_goal() -> anyhow::Result<()> {
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+    assert!(
+        harness
+            .thread_store
+            .get::<ActiveGoalObjective>()
+            .expect("active goal objective state")
+            .snapshot()
+            .is_none()
+    );
     Ok(())
 }
 
@@ -817,6 +826,14 @@ async fn update_goal_can_block_and_accounts_final_progress() -> anyhow::Result<(
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(23, goal.tokens_used);
     assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+    assert!(
+        harness
+            .thread_store
+            .get::<ActiveGoalObjective>()
+            .expect("active goal objective state")
+            .snapshot()
+            .is_none()
+    );
 
     assert_eq!(
         vec![
@@ -935,13 +952,38 @@ async fn goal_service_external_set_active_resets_baseline_without_live_thread() 
             runtime.as_ref(),
             GoalSetRequest {
                 thread_id,
-                objective: GoalObjectiveUpdate::Set("new objective"),
+                objective: GoalObjectiveUpdate::Set("new objective $supervisor"),
                 status: Some(ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep,
             },
         )
         .await?;
+    let goal_after_set = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("updated goal should exist"))?;
+    runtime
+        .thread_goals()
+        .account_thread_goal_usage(
+            thread_id,
+            /*time_delta_seconds*/ 0,
+            /*token_delta*/ 7,
+            codex_state::GoalAccountingMode::ActiveOnly,
+            Some(goal_after_set.goal_id.as_str()),
+        )
+        .await?;
     outcome.apply_runtime_effects(&harness.goal_service).await;
+    let activation = harness
+        .thread_store
+        .get::<ActiveGoalObjective>()
+        .expect("active goal objective state")
+        .snapshot();
+    assert_eq!(
+        Some("old objective".to_string()),
+        activation,
+        "a running turn must keep the skill projection that matched its input"
+    );
 
     harness
         .record_token_usage(
@@ -962,7 +1004,228 @@ async fn goal_service_external_set_active_resets_baseline_without_live_thread() 
         .get_thread_goal(thread_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
-    assert_eq!(30, goal.tokens_used);
+    assert_eq!(37, goal.tokens_used);
+    assert!(
+        harness
+            .goal_service
+            .clear_thread_goal(runtime.as_ref(), thread_id)
+            .await?
+    );
+    assert!(
+        harness
+            .thread_store
+            .get::<ActiveGoalObjective>()
+            .expect("active goal objective state")
+            .snapshot()
+            .is_none()
+    );
+    let active_goal_objective = harness
+        .thread_store
+        .get::<ActiveGoalObjective>()
+        .expect("active goal objective state");
+    active_goal_objective.replace(Some("unrelated objective".to_string()));
+    let absent_goal_projection = Some("unrelated objective".to_string());
+    assert!(
+        !harness
+            .goal_service
+            .clear_thread_goal(runtime.as_ref(), thread_id)
+            .await?,
+        "repeated clear should report that the database row was already absent"
+    );
+    assert_eq!(
+        absent_goal_projection.clone(),
+        harness
+            .thread_store
+            .get::<ActiveGoalObjective>()
+            .expect("active goal objective state")
+            .snapshot(),
+        "an absent-goal clear must not rotate or revoke unrelated runtime authority"
+    );
+    let absent_set = harness
+        .goal_service
+        .set_thread_goal(
+            runtime.as_ref(),
+            GoalSetRequest {
+                thread_id,
+                objective: GoalObjectiveUpdate::Keep,
+                status: None,
+                token_budget: GoalTokenBudgetUpdate::Keep,
+            },
+        )
+        .await;
+    let Err(absent_set_error) = absent_set else {
+        panic!("an absent-goal set should fail");
+    };
+    assert_eq!(
+        GoalServiceError::InvalidRequest(format!(
+            "cannot update goal for thread {thread_id}: no goal exists"
+        )),
+        absent_set_error
+    );
+    assert_eq!(
+        absent_goal_projection,
+        harness
+            .thread_store
+            .get::<ActiveGoalObjective>()
+            .expect("active goal objective state")
+            .snapshot(),
+        "an absent-goal set must not rotate or revoke unrelated runtime authority"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cloned_goal_set_outcomes_share_one_effect_application() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let goal_service = GoalService::new();
+    let outcome = goal_service
+        .set_thread_goal(
+            runtime.as_ref(),
+            GoalSetRequest {
+                thread_id,
+                objective: GoalObjectiveUpdate::Set("clone-compatible goal"),
+                status: Some(ThreadGoalStatus::Active),
+                token_budget: GoalTokenBudgetUpdate::Keep,
+            },
+        )
+        .await?;
+    let cloned = outcome.clone();
+
+    let effects = outcome
+        .acquire_current_effects()
+        .await
+        .expect("the first clone should acquire the shared effects");
+    assert!(
+        cloned.acquire_current_effects().await.is_none(),
+        "a cloned outcome must not acquire the same effects twice"
+    );
+    effects.apply_runtime_effects().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_external_set_effects_cannot_reactivate_a_replaced_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let stale_outcome = harness
+        .goal_service
+        .set_thread_goal(
+            runtime.as_ref(),
+            GoalSetRequest {
+                thread_id,
+                objective: GoalObjectiveUpdate::Set("goal A $stale"),
+                status: Some(ThreadGoalStatus::Active),
+                token_budget: GoalTokenBudgetUpdate::Keep,
+            },
+        )
+        .await?;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "update_goal")
+        .handle(tool_call(
+            "update_goal",
+            "complete-goal-a",
+            json!({ "status": "complete" }),
+        ))
+        .await?;
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "create-goal-b",
+            json!({ "objective": "goal B" }),
+        ))
+        .await?;
+
+    stale_outcome
+        .apply_runtime_effects(&harness.goal_service)
+        .await;
+    let current_goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("replacement goal should exist"))?;
+    assert_eq!("goal B", current_goal.objective);
+    let activation = harness
+        .thread_store
+        .get::<ActiveGoalObjective>()
+        .expect("active goal objective state")
+        .snapshot();
+    assert_eq!(
+        Some("goal B".to_string()),
+        activation,
+        "stale goal A effects must not replace goal B's objective projection"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn mismatched_post_write_goal_fails_closed_against_current_state() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let goal = runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "review the change $reviewer",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await?;
+    let harness = GoalExtensionHarness::new(Arc::clone(&runtime), thread_id).await?;
+    harness.resume_thread().await;
+    let activations = harness
+        .thread_store
+        .get::<ActiveGoalObjective>()
+        .expect("active goal objective state");
+    let outcome = harness
+        .goal_service
+        .set_thread_goal(
+            runtime.as_ref(),
+            GoalSetRequest {
+                thread_id,
+                objective: GoalObjectiveUpdate::Set("plan the change $planner"),
+                status: None,
+                token_budget: GoalTokenBudgetUpdate::Keep,
+            },
+        )
+        .await?;
+    assert_eq!(
+        Some("plan the change $planner".to_string()),
+        activations.snapshot(),
+        "the prepared update should project its objective until verification"
+    );
+    runtime
+        .thread_goals()
+        .update_thread_goal(
+            thread_id,
+            codex_state::GoalUpdate {
+                objective: Some("superseding write".to_string()),
+                status: None,
+                token_budget: None,
+                expected_goal_id: Some(goal.goal_id),
+            },
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("superseding goal write should succeed"))?;
+
+    outcome.apply_runtime_effects(&harness.goal_service).await;
+
+    assert!(
+        activations.snapshot().is_none(),
+        "effects prepared for an older row snapshot must fail closed"
+    );
+    let current_goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should still exist"))?;
+    assert_eq!("superseding write", current_goal.objective);
     Ok(())
 }
 
@@ -1007,7 +1270,7 @@ async fn thread_stop_unregisters_goal_runtime_from_service() -> anyhow::Result<(
 }
 
 #[tokio::test]
-async fn thread_resume_rehydrates_active_goal_idle_accounting() -> anyhow::Result<()> {
+async fn thread_start_restores_current_active_goal_objective() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
@@ -1015,7 +1278,35 @@ async fn thread_resume_rehydrates_active_goal_idle_accounting() -> anyhow::Resul
         .thread_goals()
         .replace_thread_goal(
             thread_id,
-            "ship goal extension backend",
+            "ship goal extension backend with $supervisor",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await?;
+
+    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+
+    assert_eq!(
+        Some("ship goal extension backend with $supervisor".to_string()),
+        harness
+            .thread_store
+            .get::<ActiveGoalObjective>()
+            .expect("active goal objective state")
+            .snapshot()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_restores_current_active_goal_objective() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "ship goal extension backend with $supervisor",
             codex_state::ThreadGoalStatus::Active,
             /*token_budget*/ None,
         )
@@ -1023,32 +1314,95 @@ async fn thread_resume_rehydrates_active_goal_idle_accounting() -> anyhow::Resul
     let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
 
     harness.resume_thread().await;
-    tokio::time::sleep(Duration::from_millis(1_100)).await;
-    harness
-        .runtime_handle()
-        .prepare_external_goal_mutation()
-        .await
-        .map_err(anyhow::Error::msg)?;
-
-    let goal = runtime
-        .thread_goals()
-        .get_thread_goal(thread_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
-    assert_eq!(ThreadGoalStatus::Active, protocol_status(goal.status));
-    assert!(
-        goal.time_used_seconds >= 1,
-        "resumed idle accounting should add elapsed wall-clock time"
-    );
+    let resumed_activation = harness
+        .thread_store
+        .get::<ActiveGoalObjective>()
+        .expect("active goal objective state")
+        .snapshot();
     assert_eq!(
-        vec![CapturedGoalEvent {
-            event_id: format!("{thread_id}:external-goal-mutation"),
-            turn_id: None,
-            status: ThreadGoalStatus::Active,
-            tokens_used: 0,
-        }],
-        harness.sink.goal_events()
+        Some("ship goal extension backend with $supervisor".to_string()),
+        resumed_activation
     );
+
+    harness.disable_goals();
+    assert!(
+        harness
+            .thread_store
+            .get::<ActiveGoalObjective>()
+            .expect("active goal objective state")
+            .snapshot()
+            .is_none()
+    );
+    harness.resume_thread().await;
+    assert!(
+        harness
+            .thread_store
+            .get::<ActiveGoalObjective>()
+            .expect("active goal objective state")
+            .snapshot()
+            .is_none(),
+        "resume while goals are disabled must not rehydrate the objective"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_goal_store_read_failure_clears_objective_projection() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "active before resume failure with $reviewer",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await?;
+    let harness = GoalExtensionHarness::new(Arc::clone(&runtime), thread_id).await?;
+    harness.resume_thread().await;
+    let activations = harness
+        .thread_store
+        .get::<ActiveGoalObjective>()
+        .expect("active goal objective state");
+    assert!(activations.snapshot().is_some());
+
+    runtime.close().await;
+    harness.resume_thread().await;
+
+    assert!(activations.snapshot().is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_goal_store_read_failure_clears_objective_projection() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "active before turn failure with $reviewer",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await?;
+    let harness = GoalExtensionHarness::new(Arc::clone(&runtime), thread_id).await?;
+    harness.resume_thread().await;
+    let activations = harness
+        .thread_store
+        .get::<ActiveGoalObjective>()
+        .expect("active goal objective state");
+    assert!(activations.snapshot().is_some());
+
+    runtime.close().await;
+    harness
+        .start_turn("failed-read-turn", &TokenUsage::default())
+        .await;
+
+    assert!(activations.snapshot().is_none());
     Ok(())
 }
 
@@ -1058,7 +1412,6 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
     let api = GoalService::new();
-
     let set = api
         .set_thread_goal(
             runtime.as_ref(),
@@ -1084,7 +1437,18 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
     assert_eq!(ThreadGoalStatus::Active, get.status);
     assert_eq!(Some(123), get.token_budget);
     assert_eq!(Some("ship goal API ownership"), metadata.preview.as_deref());
+    drop(set);
 
+    api.set_thread_goal(
+        runtime.as_ref(),
+        GoalSetRequest {
+            thread_id,
+            objective: GoalObjectiveUpdate::Keep,
+            status: Some(ThreadGoalStatus::Paused),
+            token_budget: GoalTokenBudgetUpdate::Keep,
+        },
+    )
+    .await?;
     assert!(api.clear_thread_goal(runtime.as_ref(), thread_id).await?);
     assert_eq!(
         None,
@@ -1152,7 +1516,7 @@ fn tool_names(tools: &[Arc<dyn ToolExecutor<ToolCall>>]) -> Vec<String> {
 }
 
 struct GoalExtensionHarness {
-    registry: codex_extension_api::ExtensionRegistry<()>,
+    registry: codex_extension_api::ExtensionRegistry<bool>,
     session_store: ExtensionData,
     thread_store: ExtensionData,
     goal_service: Arc<GoalService>,
@@ -1165,7 +1529,7 @@ impl GoalExtensionHarness {
         thread_id: ThreadId,
     ) -> anyhow::Result<Self> {
         let sink = Arc::new(RecordingEventSink::default());
-        let mut builder = ExtensionRegistryBuilder::<()>::with_event_sink(sink.clone());
+        let mut builder = ExtensionRegistryBuilder::<bool>::with_event_sink(sink.clone());
         let goal_service = Arc::new(GoalService::new());
         install_with_backend(
             &mut builder,
@@ -1174,7 +1538,7 @@ impl GoalExtensionHarness {
             /*metrics_client*/ None,
             Weak::new(),
             Arc::clone(&goal_service),
-            |_| true,
+            |enabled| *enabled,
         );
         let registry = builder.build();
         let session_store = ExtensionData::new("session-1");
@@ -1183,7 +1547,7 @@ impl GoalExtensionHarness {
         for contributor in registry.thread_lifecycle_contributors() {
             contributor
                 .on_thread_start(ThreadStartInput {
-                    config: &(),
+                    config: &true,
                     session_source: &session_source,
                     persistent_thread_state_available: true,
                     environments: &[],
@@ -1265,6 +1629,12 @@ impl GoalExtensionHarness {
     }
 
     async fn resume_thread(&self) {
+        self.resume_thread_with_history(&ConversationHistory::default())
+            .await;
+    }
+
+    async fn resume_thread_with_history(&self, conversation_history: &ConversationHistory) {
+        self.thread_store.insert(conversation_history.clone());
         for contributor in self.registry.thread_lifecycle_contributors() {
             contributor
                 .on_thread_resume(ThreadResumeInput {
@@ -1273,6 +1643,7 @@ impl GoalExtensionHarness {
                 })
                 .await;
         }
+        self.thread_store.remove::<ConversationHistory>();
     }
 
     async fn stop_thread(&self) {
@@ -1283,6 +1654,12 @@ impl GoalExtensionHarness {
                     thread_store: &self.thread_store,
                 })
                 .await;
+        }
+    }
+
+    fn disable_goals(&self) {
+        for contributor in self.registry.config_contributors() {
+            contributor.on_config_changed(&self.session_store, &self.thread_store, &true, &false);
         }
     }
 
