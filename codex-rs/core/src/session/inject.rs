@@ -46,6 +46,14 @@ impl Session {
         self: &Arc<Self>,
         input: Vec<ResponseItem>,
     ) -> Result<(), TryStartTurnIfIdleError> {
+        self.try_start_turn_if_idle_with_lease(input, ()).await
+    }
+
+    pub(crate) async fn try_start_turn_if_idle_with_lease(
+        self: &Arc<Self>,
+        input: Vec<ResponseItem>,
+        reservation_lease: impl Send,
+    ) -> Result<(), TryStartTurnIfIdleError> {
         if input.is_empty() {
             return Ok(());
         }
@@ -73,6 +81,10 @@ impl Session {
             let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
             Arc::clone(&active_turn.turn_state)
         };
+        // The active-turn placeholder now prevents another turn from starting. Release any
+        // extension-owned state lease before turn-start lifecycle runs so contributors may
+        // reacquire their own state locks without deadlocking.
+        drop(reservation_lease);
 
         if self.input_queue.has_trigger_turn_mailbox_items().await {
             self.clear_reserved_idle_turn(&turn_state).await;

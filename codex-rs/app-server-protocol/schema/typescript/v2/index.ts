@@ -161,6 +161,7 @@ export type { GetAccountResponse } from "./GetAccountResponse";
 export type { GetAccountTokenUsageResponse } from "./GetAccountTokenUsageResponse";
 export type { GetWorkspaceMessagesResponse } from "./GetWorkspaceMessagesResponse";
 export type { GitInfo } from "./GitInfo";
+export type { GoalSkillSelection } from "./GoalSkillSelection";
 export type { GrantedPermissionProfile } from "./GrantedPermissionProfile";
 export type { GuardianApprovalReview } from "./GuardianApprovalReview";
 export type { GuardianApprovalReviewAction } from "./GuardianApprovalReviewAction";

@@ -22,6 +22,7 @@ const GOAL_FILE_NAME: &str = "goal-objective.md";
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GoalDraft {
     pub(crate) objective: String,
+    pub(crate) skill_selections: Option<Vec<codex_app_server_protocol::GoalSkillSelection>>,
     pub(crate) text_elements: Vec<TextElement>,
     pub(crate) pending_pastes: Vec<(String, String)>,
     pub(crate) local_images: Vec<LocalImageAttachment>,
