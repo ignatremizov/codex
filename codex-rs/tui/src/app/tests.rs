@@ -80,7 +80,10 @@ use codex_app_server_protocol::AdditionalNetworkPermissions;
 use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::AskForApproval;
+use codex_app_server_protocol::CommandAction;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
+use codex_app_server_protocol::CommandExecutionSource;
+use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileUpdateChange;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -1368,6 +1371,112 @@ async fn replay_thread_snapshot_keeps_queue_when_running_state_only_comes_from_s
         new_op_rx.try_recv().is_err(),
         "restored queue should stay queued when replay did not prove the turn finished"
     );
+}
+
+#[tokio::test]
+async fn replay_only_snapshot_clears_stale_pending_start_for_new_user_turn() {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+    app.chat_widget.handle_thread_session(session.clone());
+    app.chat_widget
+        .restore_user_message_to_composer(crate::chatwidget::UserMessage::from("previous"));
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let input_state = app
+        .chat_widget
+        .capture_thread_input_state()
+        .expect("expected pending turn state");
+
+    let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
+        make_chatwidget_manual_with_sender().await;
+    app.chat_widget = chat_widget;
+    app.replay_thread_snapshot_with_in_flight_state(
+        ThreadEventSnapshot {
+            session: Some(session),
+            turns: Vec::new(),
+            events: Vec::new(),
+            input_state: Some(input_state),
+        },
+        /*resume_restored_queue*/ false,
+        /*preserve_in_flight_turn*/ false,
+    );
+    while new_op_rx.try_recv().is_ok() {}
+
+    app.chat_widget
+        .restore_user_message_to_composer(crate::chatwidget::UserMessage::from("continue"));
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(matches!(
+        next_user_turn_op(&mut new_op_rx),
+        Op::UserTurn { .. }
+    ));
+    assert!(app.chat_widget.queued_user_message_texts().is_empty());
+}
+
+#[tokio::test]
+async fn replay_only_snapshot_keeps_command_history_without_restoring_background_terminal() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.replay_thread_snapshot_with_in_flight_state(
+        ThreadEventSnapshot {
+            session: None,
+            turns: vec![test_turn(
+                "turn-1",
+                TurnStatus::Completed,
+                vec![ThreadItem::CommandExecution {
+                    id: "exec-1".to_string(),
+                    plugin_id: None,
+                    script_path: None,
+                    command: "sleep 20".to_string(),
+                    cwd: test_path_buf("/tmp/project").abs().into(),
+                    process_id: Some("123".to_string()),
+                    source: CommandExecutionSource::UnifiedExecStartup,
+                    status: CommandExecutionStatus::InProgress,
+                    command_actions: vec![CommandAction::Unknown {
+                        command: "sleep 20".to_string(),
+                    }],
+                    aggregated_output: None,
+                    exit_code: None,
+                    duration_ms: None,
+                }],
+            )],
+            events: Vec::new(),
+            input_state: None,
+        },
+        /*resume_restored_queue*/ false,
+        /*preserve_in_flight_turn*/ false,
+    );
+
+    let mut replayed_history = String::new();
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            replayed_history.push_str(&lines_to_single_string(
+                &cell.transcript_lines(/*width*/ 80),
+            ));
+        }
+    }
+    assert!(
+        replayed_history.contains("sleep 20"),
+        "replay-only transcript should retain command history: {replayed_history:?}"
+    );
+
+    app.chat_widget.add_ps_output();
+    let mut process_list = String::new();
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            process_list.push_str(&lines_to_single_string(
+                &cell.transcript_lines(/*width*/ 80),
+            ));
+        }
+    }
+    assert_snapshot!(process_list, @r"
+    /ps
+
+    Background terminals
+
+      • No background terminals running.
+    ");
 }
 
 #[tokio::test]

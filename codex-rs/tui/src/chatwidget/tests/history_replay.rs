@@ -77,6 +77,148 @@ async fn resumed_initial_messages_render_history() {
 }
 
 #[tokio::test]
+async fn replayed_command_execution_is_visible_in_transcript() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.replay_thread_turns(
+        vec![AppServerTurn {
+            id: "turn-1".to_string(),
+            items: vec![AppServerThreadItem::CommandExecution {
+                id: "exec-1".to_string(),
+                plugin_id: None,
+                script_path: None,
+                command: "sleep 20".to_string(),
+                cwd: test_path_buf("/home/user/project").abs().into(),
+                process_id: None,
+                source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                status: AppServerCommandExecutionStatus::Completed,
+                command_actions: vec![AppServerCommandAction::Unknown {
+                    command: "sleep 20".to_string(),
+                }],
+                aggregated_output: None,
+                exit_code: Some(0),
+                duration_ms: Some(20_000),
+            }],
+            items_view: codex_app_server_protocol::TurnItemsView::Full,
+            status: AppServerTurnStatus::Completed,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        }],
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<String>();
+    insta::assert_snapshot!(rendered, @"• Ran sleep 20\n  └ (no output)\n");
+}
+
+#[tokio::test]
+async fn resumed_history_keeps_command_without_restoring_background_terminal() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.replay_thread_turns(
+        vec![AppServerTurn {
+            id: "turn-1".to_string(),
+            items: vec![AppServerThreadItem::CommandExecution {
+                id: "exec-1".to_string(),
+                plugin_id: None,
+                script_path: None,
+                command: "sleep 20".to_string(),
+                cwd: test_path_buf("/home/user/project").abs().into(),
+                process_id: Some("123".to_string()),
+                source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                status: AppServerCommandExecutionStatus::InProgress,
+                command_actions: vec![AppServerCommandAction::Unknown {
+                    command: "sleep 20".to_string(),
+                }],
+                aggregated_output: None,
+                exit_code: None,
+                duration_ms: None,
+            }],
+            items_view: codex_app_server_protocol::TurnItemsView::Full,
+            status: AppServerTurnStatus::Completed,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        }],
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    assert_eq!(
+        (
+            chat.unified_exec_processes.len(),
+            chat.completed_unified_exec_processes.len(),
+        ),
+        (0, 0)
+    );
+    chat.add_ps_output();
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<String>();
+    insta::assert_snapshot!(rendered, @r"
+    • Ran sleep 20
+      └ (no output)
+
+    /ps
+
+    Background terminals
+
+      • No background terminals running.
+    ");
+}
+
+#[tokio::test]
+async fn thread_snapshot_keeps_live_background_terminals() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.replay_thread_turns(
+        vec![AppServerTurn {
+            id: "turn-1".to_string(),
+            items: vec![AppServerThreadItem::CommandExecution {
+                id: "exec-1".to_string(),
+                plugin_id: None,
+                script_path: None,
+                command: "sleep 20".to_string(),
+                cwd: test_path_buf("/home/user/project").abs().into(),
+                process_id: Some("123".to_string()),
+                source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                status: AppServerCommandExecutionStatus::InProgress,
+                command_actions: vec![AppServerCommandAction::Unknown {
+                    command: "sleep 20".to_string(),
+                }],
+                aggregated_output: None,
+                exit_code: None,
+                duration_ms: None,
+            }],
+            items_view: codex_app_server_protocol::TurnItemsView::Full,
+            status: AppServerTurnStatus::InProgress,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        }],
+        ReplayKind::ThreadSnapshot,
+    );
+
+    assert_eq!(
+        (
+            chat.unified_exec_processes.len(),
+            chat.completed_unified_exec_processes.len(),
+        ),
+        (1, 0)
+    );
+    chat.add_ps_output();
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<String>();
+    assert!(rendered.contains("sleep 20"));
+}
+
+#[tokio::test]
 async fn replayed_failed_turns_preserve_overload_warnings_between_retries() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     let prompt = "The workspace also looks super confusing with its separator.";
