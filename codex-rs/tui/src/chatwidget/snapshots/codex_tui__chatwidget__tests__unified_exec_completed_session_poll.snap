@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests.rs
+expression: combined
+---
+• Checked background terminal output · gh run watch 29332067759

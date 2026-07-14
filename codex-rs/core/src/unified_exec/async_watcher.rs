@@ -188,9 +188,8 @@ async fn process_chunk(
     }
 }
 
-/// Emit an ExecCommandEnd event for a unified exec session, using the transcript
-/// as the primary source of aggregated_output and falling back to the provided
-/// text when the transcript is empty.
+/// Emit an ExecCommandEnd event for a unified exec session, using the complete
+/// initial-call output when available and otherwise the streaming transcript.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn emit_exec_end_for_unified_exec(
     session_ref: Arc<Session>,
@@ -323,11 +322,11 @@ async fn resolve_aggregated_output(
     transcript: &Arc<Mutex<HeadTailBuffer>>,
     fallback: String,
 ) -> String {
-    let guard = transcript.lock().await;
-    if guard.retained_bytes() == 0 {
+    if !fallback.is_empty() {
         return fallback;
     }
 
+    let guard = transcript.lock().await;
     String::from_utf8_lossy(&guard.to_bytes_with_omission_marker()).to_string()
 }
 
