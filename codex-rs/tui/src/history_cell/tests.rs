@@ -559,6 +559,13 @@ fn unified_exec_interaction_cell_renders_wait() {
 }
 
 #[test]
+fn unified_exec_interaction_cell_renders_completed_output_check() {
+    let cell = new_unified_exec_output_check(/*command_display*/ None);
+    let lines = render_transcript(&cell);
+    assert_eq!(lines, vec!["• Checked background terminal output"]);
+}
+
+#[test]
 fn final_message_separator_hides_short_worked_label_and_includes_runtime_metrics() {
     let summary = RuntimeMetricsSummary {
         tool_calls: RuntimeMetricTotals {
