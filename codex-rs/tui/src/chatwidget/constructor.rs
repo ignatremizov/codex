@@ -216,6 +216,7 @@ impl ChatWidget {
             task_complete_pending: false,
             unified_exec_processes: Vec::new(),
             pending_terminal_restore: None,
+            completed_unified_exec_processes: VecDeque::new(),
             mcp_startup_status: None,
             mcp_startup_last_diagnostics: HashMap::new(),
             mcp_activation: mcp_activation::McpActivation::default(),

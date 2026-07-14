@@ -249,6 +249,7 @@ async fn command_start_before_message_completion_does_not_duplicate_preamble() -
                 thread_id,
                 snapshot,
                 /*resume_restored_queue*/ false,
+                ReplayKind::ThreadSnapshot,
             )?;
             while let Ok(event) = app_events.try_recv() {
                 app.handle_event(&mut tui, &mut app_server, event).await?;
@@ -280,7 +281,9 @@ async fn command_start_before_message_completion_does_not_duplicate_preamble() -
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(
-            transcript_snapshot.matches(PREAMBLE).count(),
+            transcript_snapshot
+                .matches("I’ll inspect the relevant streaming path first.")
+                .count(),
             1,
             "preamble must appear once with replay={replay}: {transcript_snapshot}"
         );

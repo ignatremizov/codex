@@ -833,7 +833,19 @@ impl App {
                 display,
             });
         }
-        self.render_thread_snapshot(tui, app_server, thread_id, snapshot, !is_replay_only)?;
+        let replay_kind = if is_replay_only {
+            ReplayKind::ReplayOnlyThreadSnapshot
+        } else {
+            ReplayKind::ThreadSnapshot
+        };
+        self.render_thread_snapshot(
+            tui,
+            app_server,
+            thread_id,
+            snapshot,
+            !is_replay_only,
+            replay_kind,
+        )?;
         if !is_replay_only
             && let Some(message) = self
                 .side_threads
@@ -887,6 +899,7 @@ impl App {
         thread_id: ThreadId,
         snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
+        replay_kind: ReplayKind,
     ) -> Result<()> {
         let retain_side_view = self.side_retention_enabled(tui);
         let side_parent = |id| {
@@ -930,9 +943,16 @@ impl App {
         } else {
             AppEvent::ResetTranscriptForThreadSwitch
         });
-        self.replay_thread_snapshot(snapshot, resume_restored_queue);
-        self.app_event_tx
-            .send(AppEvent::RestoreBackgroundTerminals(thread_id));
+        // A foreign writer is observed and frozen, not finalized as failed historical work.
+        if external_writer || replay_kind == ReplayKind::ThreadSnapshot {
+            self.replay_thread_snapshot(snapshot, resume_restored_queue);
+        } else {
+            self.replay_thread_snapshot_with_kind(snapshot, resume_restored_queue, replay_kind);
+        }
+        if replay_kind == ReplayKind::ThreadSnapshot {
+            self.app_event_tx
+                .send(AppEvent::RestoreBackgroundTerminals(thread_id));
+        }
         if let Some(thread_id) = self.chat_widget.thread_id()
             && let Some(active) = self
                 .chat_widget
