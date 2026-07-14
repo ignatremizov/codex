@@ -139,12 +139,15 @@ async fn working_deadline_rearms_and_hidden_rows_do_not_spend_exposure() {
     );
     assert!(requests.try_recv().is_err());
 
-    app.handle_thread_event_replay(ThreadBufferedEvent::Notification(Box::new(notification(
-        "turn/started",
-        thread,
-        /*turn*/ 1,
-        "inProgress",
-    ))));
+    app.handle_thread_event_replay(
+        ThreadBufferedEvent::Notification(Box::new(notification(
+            "turn/started",
+            thread,
+            /*turn*/ 1,
+            "inProgress",
+        ))),
+        ReplayKind::ThreadSnapshot,
+    );
     assert!(app.turn_tips.current.is_none());
     assert_eq!(
         (app.turn_tips.starts, app.turn_tips.completions_shown),
