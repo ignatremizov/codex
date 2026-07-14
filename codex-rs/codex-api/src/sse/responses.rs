@@ -527,12 +527,21 @@ async fn process_sse_with_treatment(
             }
         };
 
-        trace!("SSE event: {}", &sse.data);
+        trace!(
+            target: "codex_api::raw_response_event",
+            transport = "sse",
+            payload = %sse.data,
+            "raw response event"
+        );
 
         let event: ResponsesStreamEvent = match serde_json::from_str(&sse.data) {
             Ok(event) => event,
             Err(e) => {
-                debug!("Failed to parse SSE event: {e}, data: {}", &sse.data);
+                debug!(
+                    error = %e,
+                    payload_bytes = sse.data.len(),
+                    "failed to parse SSE event"
+                );
                 continue;
             }
         };
