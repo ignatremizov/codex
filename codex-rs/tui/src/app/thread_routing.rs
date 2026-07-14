@@ -1632,8 +1632,20 @@ impl App {
         self.recap.seed_from_turns(&turns, now);
         self.schedule_recap_check(thread_id, now);
 
-        self.chat_widget
-            .replay_thread_turns(turns, ReplayKind::ResumeInitialMessages);
+        // This boundary receives app-server start/resume responses, not raw saved history.
+        // The server interrupts stale turns on cold resume and merges its authoritative active
+        // turn on live resume. An InProgress response therefore identifies a live attachment.
+        // Foreign-writer history is observed and frozen by the caller rather than marked failed.
+        let replay_kind = if self.chat_widget.is_external_writer_view()
+            || turns
+                .iter()
+                .any(|turn| turn.status == TurnStatus::InProgress)
+        {
+            ReplayKind::ThreadSnapshot
+        } else {
+            ReplayKind::ResumeInitialMessages
+        };
+        self.chat_widget.replay_thread_turns(turns, replay_kind);
         if should_buffer_initial_replay {
             self.app_event_tx
                 .send(AppEvent::EndInitialHistoryReplayBuffer);
@@ -1859,8 +1871,21 @@ impl App {
 
     pub(super) fn replay_thread_snapshot(
         &mut self,
+        snapshot: ThreadEventSnapshot,
+        resume_restored_queue: bool,
+    ) {
+        self.replay_thread_snapshot_with_kind(
+            snapshot,
+            resume_restored_queue,
+            ReplayKind::ThreadSnapshot,
+        );
+    }
+
+    pub(super) fn replay_thread_snapshot_with_kind(
+        &mut self,
         mut snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
+        replay_kind: ReplayKind,
     ) {
         let mut reasoning_replay = reasoning_replay::ReasoningReplay::new(&mut snapshot);
         let replayed_final_items = realtime_delivery::completed_agent_items(&snapshot);
@@ -1956,12 +1981,12 @@ impl App {
         self.chat_widget.restore_thread_input_state(
             snapshot.input_state,
             ThreadInputStateRestoreMode {
-                preserve_in_flight_turn: true,
+                preserve_in_flight_turn: replay_kind == ReplayKind::ThreadSnapshot,
             },
         );
         if !snapshot.turns.is_empty() {
             self.chat_widget
-                .replay_thread_turns(snapshot.turns, ReplayKind::ThreadSnapshot);
+                .replay_thread_turns(snapshot.turns, replay_kind);
         }
         for (event, changes) in snapshot.events.into_iter().zip(request_changes) {
             reasoning_replay.before_event(&event, &mut self.chat_widget);
@@ -1969,10 +1994,16 @@ impl App {
                 (ThreadBufferedEvent::Request(request), Some(changes)) => {
                     self.handle_file_change_request(*request, changes)
                 }
-                (event, _) => self.handle_thread_event_replay(event),
+                (event, _) => self.handle_thread_event_replay(event, replay_kind),
             }
         }
         reasoning_replay.restore(&mut self.chat_widget);
+        if replay_kind != ReplayKind::ThreadSnapshot {
+            // Closed and replay-only threads cannot own process-local terminals. Keep persisted
+            // command items in the transcript, but discard any `InProgress` item state rebuilt
+            // while replaying saved turns or buffered events.
+            self.chat_widget.finalize_replayed_process_tracking();
+        }
         if should_buffer_replay {
             self.app_event_tx
                 .send(AppEvent::EndInitialHistoryReplayBuffer);
@@ -2132,17 +2163,21 @@ impl App {
         }
     }
 
-    pub(super) fn handle_thread_event_replay(&mut self, event: ThreadBufferedEvent) {
+    pub(super) fn handle_thread_event_replay(
+        &mut self,
+        event: ThreadBufferedEvent,
+        replay_kind: ReplayKind,
+    ) {
         self.turn_tips.dismiss();
         match event {
             ThreadBufferedEvent::Notification(notification) => self
                 .chat_widget
-                .handle_server_notification(*notification, Some(ReplayKind::ThreadSnapshot)),
+                .handle_server_notification(*notification, Some(replay_kind)),
             ThreadBufferedEvent::Request(request) => {
                 let may_open_protected_view =
                     self.startup_request_may_open_protected_view(request.as_ref());
                 self.chat_widget
-                    .handle_server_request(*request, Some(ReplayKind::ThreadSnapshot));
+                    .handle_server_request(*request, Some(replay_kind));
                 if may_open_protected_view
                     && self.startup_protected_input_boundary
                     && !self.chat_widget.has_active_modal()
