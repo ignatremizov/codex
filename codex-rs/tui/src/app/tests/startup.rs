@@ -1007,7 +1007,7 @@ async fn auto_declined_mcp_elicitations_do_not_leave_startup_quarantine_armed() 
                 .note_server_request(&request);
             let event = ThreadBufferedEvent::Request(Box::new(request));
             if replay {
-                app.handle_thread_event_replay(event);
+                app.handle_thread_event_replay(event, ReplayKind::ThreadSnapshot);
             } else {
                 app.handle_thread_event_now(event);
             }
@@ -1863,6 +1863,7 @@ async fn ignore_same_thread_resume_allows_retrying_read_only_view() -> Result<()
             input_state: None,
         },
         /*resume_restored_queue*/ false,
+        ReplayKind::ThreadSnapshot,
     )?;
     assert!(app.chat_widget.is_external_writer_view());
     assert!(!app.chat_widget.is_task_running_for_test());
