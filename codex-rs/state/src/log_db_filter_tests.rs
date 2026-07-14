@@ -149,3 +149,74 @@ async fn sqlite_sink_filters_noisy_targets_without_dropping_useful_diagnostics()
         ]
     );
 }
+
+#[tokio::test]
+async fn sqlite_default_filter_drops_raw_response_payload_logs() -> anyhow::Result<()> {
+    let codex_home =
+        std::env::temp_dir().join(format!("codex-state-log-db-filter-{}", Uuid::new_v4()));
+    let _cleanup = scopeguard::guard(codex_home.clone(), |codex_home| {
+        let _ = std::fs::remove_dir_all(codex_home);
+    });
+    let runtime = StateRuntime::init(
+        crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+        "test-provider".to_string(),
+    )
+    .await?;
+    let layer = start(runtime.clone());
+    let raw_capture = codex_home.join("opt-in-trace.log");
+
+    let guard = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::fs::File::create(&raw_capture)?)
+                .with_filter(
+                    Targets::new()
+                        .with_default(LevelFilter::OFF)
+                        .with_target("codex_api::raw_response_event", LevelFilter::TRACE),
+                ),
+        )
+        .with(layer.clone().with_filter(default_filter()))
+        .set_default();
+
+    tracing::trace!(
+        target: "codex_api::raw_response_event",
+        "dropped-raw-response-payload"
+    );
+    tracing::trace!(target: "codex_api::sse::responses", "dropped-sse-trace");
+    tracing::debug!(target: "codex_api::sse::responses", "retained-sse-debug");
+    tracing::debug!(
+        target: "codex_api::endpoint::responses_websocket",
+        "retained-websocket-debug"
+    );
+    tracing::trace!(target: "codex_state", "retained-default-trace");
+
+    layer.flush().await;
+    drop(guard);
+
+    assert!(std::fs::read_to_string(raw_capture)?.contains("dropped-raw-response-payload"));
+    let logs = runtime.query_logs(&crate::LogQuery::default()).await?;
+    assert_eq!(
+        logs.iter()
+            .map(|row| (
+                row.level.as_str(),
+                row.target.as_str(),
+                row.message.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "DEBUG",
+                "codex_api::sse::responses",
+                Some("retained-sse-debug")
+            ),
+            (
+                "DEBUG",
+                "codex_api::endpoint::responses_websocket",
+                Some("retained-websocket-debug")
+            ),
+            ("TRACE", "codex_state", Some("retained-default-trace")),
+        ]
+    );
+
+    Ok(())
+}
