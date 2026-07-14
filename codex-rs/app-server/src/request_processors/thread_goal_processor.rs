@@ -163,7 +163,8 @@ impl ThreadGoalRequestProcessor {
             outcome.goal.clone()
         };
 
-        if current_effects.is_some() {
+        let has_current_effects = current_effects.is_some();
+        if has_current_effects {
             let thread_goal_updated_item = RolloutItem::EventMsg(EventMsg::ThreadGoalUpdated(
                 codex_protocol::protocol::ThreadGoalUpdatedEvent {
                     thread_id,
@@ -186,6 +187,14 @@ impl ThreadGoalRequestProcessor {
             }
         }
 
+        // Install goal runtime effects before acknowledging the request. The TUI can begin the
+        // goal continuation as soon as it receives the response; publishing the response first
+        // would let that turn observe an empty GoalSkillActivations projection and skip skill
+        // promotion.
+        if let Some(current_effects) = current_effects {
+            current_effects.apply_runtime_effects().await;
+        }
+
         let goal = ThreadGoal::from(goal);
         self.outgoing
             .send_response(
@@ -193,10 +202,9 @@ impl ThreadGoalRequestProcessor {
                 ThreadGoalSetResponse { goal: goal.clone() },
             )
             .await;
-        if let Some(current_effects) = current_effects {
+        if has_current_effects {
             self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx)
                 .await;
-            current_effects.apply_runtime_effects().await;
         }
         Ok(())
     }
