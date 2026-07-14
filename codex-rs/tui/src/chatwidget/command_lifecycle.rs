@@ -101,6 +101,12 @@ impl ChatWidget {
             .find(|process| process.key == process_id)
             .map(|process| process.command_display.clone());
         if stdin.is_empty() && active_command_display.is_none() {
+            // Empty polls emit a deadline-bearing interaction when they start and a second
+            // interaction without a deadline when they finish. If the process has already left
+            // the active map, render only the completion half of that pair.
+            if deadline_at_ms.is_some() {
+                return;
+            }
             let command_display = self
                 .completed_unified_exec_processes
                 .iter()

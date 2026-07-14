@@ -643,6 +643,11 @@ async fn unified_exec_completed_session_poll_snapshot() {
     );
     end_exec(&mut chat, completed, "", "", /*exit_code*/ 0);
     drain_insert_history(&mut rx);
+    chat.on_terminal_interaction(
+        "completed-proc".to_string(),
+        String::new(),
+        Some(future_deadline_at_ms(60_000)),
+    );
     terminal_interaction(&mut chat, "call-poll", "completed-proc", "");
 
     let cells = drain_insert_history(&mut rx);
