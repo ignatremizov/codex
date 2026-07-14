@@ -1744,9 +1744,14 @@ impl App {
                 preserve_in_flight_turn: true,
             },
         );
+        let replay_kind = if preserve_in_flight_turn {
+            ReplayKind::ThreadSnapshot
+        } else {
+            ReplayKind::ReplayOnlyThreadSnapshot
+        };
         if !snapshot.turns.is_empty() {
             self.chat_widget
-                .replay_thread_turns(snapshot.turns, ReplayKind::ThreadSnapshot);
+                .replay_thread_turns(snapshot.turns, replay_kind);
         }
         for (event, changes) in snapshot.events.into_iter().zip(request_changes) {
             if suppress_replay_notices && replay_filter::event_is_notice(&event) {
@@ -1756,8 +1761,14 @@ impl App {
                 (ThreadBufferedEvent::Request(request), Some(changes)) => {
                     self.handle_file_change_request(*request, changes)
                 }
-                (event, _) => self.handle_thread_event_replay(event),
+                (event, _) => self.handle_thread_event_replay(event, replay_kind),
             }
+        }
+        if !preserve_in_flight_turn {
+            // Closed and replay-only threads cannot own process-local terminals. Keep persisted
+            // command items in the transcript, but discard any `InProgress` item state rebuilt
+            // while replaying saved turns or buffered events.
+            self.chat_widget.finalize_replayed_process_tracking();
         }
         if should_buffer_replay {
             self.app_event_tx
@@ -1922,16 +1933,20 @@ impl App {
         }
     }
 
-    pub(super) fn handle_thread_event_replay(&mut self, event: ThreadBufferedEvent) {
+    pub(super) fn handle_thread_event_replay(
+        &mut self,
+        event: ThreadBufferedEvent,
+        replay_kind: ReplayKind,
+    ) {
         match event {
             ThreadBufferedEvent::Notification(notification) => self
                 .chat_widget
-                .handle_server_notification(*notification, Some(ReplayKind::ThreadSnapshot)),
+                .handle_server_notification(*notification, Some(replay_kind)),
             ThreadBufferedEvent::Request(request) => {
                 let may_open_protected_view =
                     self.startup_request_may_open_protected_view(request.as_ref());
                 self.chat_widget
-                    .handle_server_request(*request, Some(ReplayKind::ThreadSnapshot));
+                    .handle_server_request(*request, Some(replay_kind));
                 if may_open_protected_view
                     && self.startup_protected_input_boundary
                     && !self.chat_widget.has_active_view()

@@ -18,6 +18,11 @@ pub(super) struct UnifiedExecProcessSummary {
     pub(super) recent_chunks: Vec<String>,
 }
 
+pub(super) struct CompletedUnifiedExecProcess {
+    pub(super) key: String,
+    pub(super) command_display: String,
+}
+
 pub(super) struct UnifiedExecWaitState {
     command_display: String,
 }

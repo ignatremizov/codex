@@ -704,7 +704,7 @@ async fn auto_declined_mcp_elicitations_do_not_leave_startup_quarantine_armed() 
                 .note_server_request(&request);
             let event = ThreadBufferedEvent::Request(Box::new(request));
             if replay {
-                app.handle_thread_event_replay(event);
+                app.handle_thread_event_replay(event, ReplayKind::ThreadSnapshot);
             } else {
                 app.handle_thread_event_now(event);
             }
