@@ -1314,6 +1314,39 @@ async fn thread_stop_unregisters_goal_runtime_from_service() -> anyhow::Result<(
 }
 
 #[tokio::test]
+async fn thread_start_restores_skills_from_current_active_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let goal_skills = vec![codex_protocol::protocol::GoalSkillSelection {
+        name: "supervisor".to_string(),
+        path: "/skills/supervisor/SKILL.md".to_string(),
+    }];
+    runtime
+        .thread_goals()
+        .replace_thread_goal_with_skill_selections(
+            thread_id,
+            "ship goal extension backend",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+            &goal_skills,
+        )
+        .await?;
+
+    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+
+    assert_eq!(
+        goal_skills,
+        harness
+            .thread_store
+            .get::<GoalSkillActivations>()
+            .expect("goal skill activation state")
+            .snapshot()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_resume_restores_skills_from_current_active_goal() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;

@@ -142,6 +142,12 @@ where
             });
             runtime.set_enabled(enabled);
             self.goal_service.register_runtime(&runtime);
+            if let Err(err) = runtime.restore_after_start().await {
+                tracing::warn!(
+                    "failed to restore goal runtime after thread start for {}: {err}",
+                    runtime.thread_id()
+                );
+            }
         })
     }
 

@@ -43,6 +43,12 @@ pub(crate) enum ActiveGoalStopReason {
     UsageLimit,
 }
 
+#[derive(Clone, Copy)]
+enum GoalRestoreReason {
+    ThreadStart,
+    ThreadResume,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GoalSkillProjectionEffect {
     Preserve,
@@ -537,7 +543,17 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
+    pub async fn restore_after_start(&self) -> Result<(), String> {
+        self.restore_persisted_goal(GoalRestoreReason::ThreadStart)
+            .await
+    }
+
     pub async fn restore_after_resume(&self) -> Result<(), String> {
+        self.restore_persisted_goal(GoalRestoreReason::ThreadResume)
+            .await
+    }
+
+    async fn restore_persisted_goal(&self, reason: GoalRestoreReason) -> Result<(), String> {
         if !self.is_enabled() {
             let revision = self.goal_revision();
             self.clear_goal_skill_activations_at_revision(
@@ -587,7 +603,9 @@ impl GoalRuntimeHandle {
                     self.clear_goal_skill_activations();
                     return Ok(());
                 }
-                self.inner.metrics.record_resumed();
+                if matches!(reason, GoalRestoreReason::ThreadResume) {
+                    self.inner.metrics.record_resumed();
+                }
             }
             Some(_) | None => {
                 self.clear_goal_skill_activations_at_revision(
