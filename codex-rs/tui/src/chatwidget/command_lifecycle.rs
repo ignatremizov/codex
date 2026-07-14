@@ -5,6 +5,8 @@
 
 use super::*;
 
+const MAX_COMPLETED_UNIFIED_EXEC_PROCESSES: usize = 16;
+
 impl ChatWidget {
     pub(super) fn flush_unified_exec_wait_streak(&mut self) {
         let Some(wait) = self.unified_exec_wait_streak.take() else {
@@ -93,14 +95,29 @@ impl ChatWidget {
         if !self.bottom_pane.is_task_running() {
             return;
         }
-        let command_display = self
+        let active_command_display = self
             .unified_exec_processes
             .iter()
             .find(|process| process.key == process_id)
             .map(|process| process.command_display.clone());
-        if stdin.is_empty() && command_display.is_none() {
+        if stdin.is_empty() && active_command_display.is_none() {
+            // Empty polls emit a deadline-bearing interaction when they start and a second
+            // interaction without a deadline when they finish. If the process has already left
+            // the active map, render only the completion half of that pair.
+            if deadline_at_ms.is_some() {
+                return;
+            }
+            let command_display = self
+                .completed_unified_exec_processes
+                .iter()
+                .rev()
+                .find(|process| process.key == process_id)
+                .map(|process| process.command_display.clone());
+            self.flush_answer_stream_with_separator();
+            self.add_to_history(history_cell::new_unified_exec_output_check(command_display));
             return;
         }
+        let command_display = active_command_display;
 
         self.flush_answer_stream_with_separator();
         if stdin.is_empty() {
@@ -210,6 +227,8 @@ impl ChatWidget {
         command: &str,
     ) {
         let key = process_id.unwrap_or(call_id).to_string();
+        self.completed_unified_exec_processes
+            .retain(|process| process.key != key);
         let command = split_command_string(command);
         let command_display = strip_bash_lc_and_escape(&command);
         if let Some(existing) = self
@@ -237,10 +256,21 @@ impl ChatWidget {
         process_id: Option<&str>,
     ) {
         let key = process_id.unwrap_or(call_id);
-        let before = self.unified_exec_processes.len();
-        self.unified_exec_processes
-            .retain(|process| process.key != key);
-        if self.unified_exec_processes.len() != before {
+        if let Some(index) = self
+            .unified_exec_processes
+            .iter()
+            .position(|process| process.key == key)
+        {
+            let process = self.unified_exec_processes.remove(index);
+            self.completed_unified_exec_processes
+                .push_back(CompletedUnifiedExecProcess {
+                    key: process.key,
+                    command_display: process.command_display,
+                });
+            while self.completed_unified_exec_processes.len() > MAX_COMPLETED_UNIFIED_EXEC_PROCESSES
+            {
+                self.completed_unified_exec_processes.pop_front();
+            }
             self.sync_unified_exec_footer();
         }
     }
