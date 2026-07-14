@@ -631,6 +631,29 @@ async fn unified_exec_interaction_after_task_complete_is_suppressed() {
 }
 
 #[tokio::test]
+async fn unified_exec_completed_session_poll_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+
+    let completed = begin_unified_exec_startup(
+        &mut chat,
+        "call-watch",
+        "completed-proc",
+        "gh run watch 29332067759",
+    );
+    end_exec(&mut chat, completed, "", "", /*exit_code*/ 0);
+    drain_insert_history(&mut rx);
+    terminal_interaction(&mut chat, "call-poll", "completed-proc", "");
+
+    let cells = drain_insert_history(&mut rx);
+    let combined = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert_chatwidget_snapshot!("unified_exec_completed_session_poll", combined);
+}
+
+#[tokio::test]
 async fn unified_exec_wait_after_final_agent_message_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     handle_turn_started(&mut chat, "turn-1");
