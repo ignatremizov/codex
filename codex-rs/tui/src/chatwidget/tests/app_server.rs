@@ -1187,7 +1187,7 @@ async fn live_app_server_strict_review_required_notification_renders_message() {
     let cells = drain_insert_history_transcript(&mut rx);
     assert_eq!(cells.len(), 1, "expected one warning history cell");
     assert_chatwidget_snapshot!("strict_review_required", lines_to_single_string(&cells[0]));
-    chat.on_exec_command_output_delta("cmd-1", "streamed output\n");
+    chat.on_exec_command_output_delta("cmd-1", "streamed output\n", /*replay_kind*/ None);
     assert!(
         lines_to_single_string(
             &chat

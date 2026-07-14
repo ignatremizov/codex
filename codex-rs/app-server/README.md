@@ -17,6 +17,21 @@ terminating the process or sending a delayed clear. An individually cancelled
 poll with no subsequent visible lifecycle event may retain its advisory estimate
 until expiry; an interrupted turn clears it immediately.
 
+# Legacy command history reconstruction
+
+Cold history reads can reconstruct `exec_command` and `write_stdin` results from
+top-level raw tool records in Legacy rollouts. Poll output updates the original
+command item even when the poll belongs to a later turn; rolling back that later
+turn restores the command's earlier output. Persisted command lifecycle records
+remain authoritative, including their output and attribution.
+
+The first session header determines the reconstruction mode and initial working
+directory. An existing header without `history_mode` defaults to Legacy.
+Headerless raw records, and raw records preceding a delayed header, are not
+backfilled. Embedded ancestor headers cannot change that decision. Paginated
+history and compaction replacement context do not synthesize command items.
+These reads do not restore live process ownership.
+
 # Goal mutation and fork semantics
 
 `thread/goal/set` preserves an existing goal's identity and accumulated usage when

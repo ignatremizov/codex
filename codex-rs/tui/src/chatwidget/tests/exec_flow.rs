@@ -137,7 +137,11 @@ async fn failed_exploration_keeps_overlapping_commands_active_until_all_finish()
     let followup = begin_exec(&mut chat, "call-followup", "cat bar.txt");
 
     assert!(drain_insert_history(&mut rx).is_empty());
-    chat.on_exec_command_output_delta("call-running", "streamed output\n");
+    chat.on_exec_command_output_delta(
+        "call-running",
+        "streamed output\n",
+        /*replay_kind*/ None,
+    );
     let transcript = chat
         .active_cell_transcript_lines(/*width*/ 80)
         .expect("overlapping command should remain active");
@@ -1056,6 +1060,36 @@ async fn unified_exec_interaction_after_task_complete_is_suppressed() {
         cells.is_empty(),
         "expected unified exec interaction after task complete to be suppressed"
     );
+}
+
+#[tokio::test]
+async fn unified_exec_completed_session_poll_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+
+    let completed = begin_unified_exec_startup(
+        &mut chat,
+        "call-watch",
+        "completed-proc",
+        "gh run watch 29332067759",
+    );
+    end_exec(&mut chat, completed, "", "", /*exit_code*/ 0);
+    drain_insert_history(&mut rx);
+    chat.on_terminal_interaction(
+        "turn-1".to_string(),
+        "call-watch".to_string(),
+        "completed-proc".to_string(),
+        String::new(),
+        Some(future_deadline_at_ms(/*offset_ms*/ 60_000)),
+    );
+    terminal_interaction(&mut chat, "call-watch", "completed-proc", "");
+
+    let cells = drain_insert_history_transcript(&mut rx);
+    let combined = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert_chatwidget_snapshot!("unified_exec_completed_session_poll", combined);
 }
 
 #[tokio::test]

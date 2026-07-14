@@ -112,7 +112,7 @@ impl ChatWidget {
             faster_model,
             ..
         } = notification;
-        if matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages))
+        if replay_kind.is_some_and(|kind| !kind.preserves_live_processes())
             || !self.turn_lifecycle.agent_turn_running
             || self.turn_lifecycle.last_turn_id.as_deref() != Some(turn_id.as_str())
             || self
