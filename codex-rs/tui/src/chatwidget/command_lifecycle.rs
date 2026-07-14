@@ -69,9 +69,14 @@ impl ChatWidget {
         );
     }
 
-    pub(super) fn on_exec_command_output_delta(&mut self, call_id: &str, delta: &str) {
+    pub(super) fn on_exec_command_output_delta(
+        &mut self,
+        call_id: &str,
+        delta: &str,
+        replay_kind: Option<ReplayKind>,
+    ) {
         self.track_unified_exec_output_chunk(call_id, delta.as_bytes());
-        if !self.bottom_pane.is_task_running() {
+        if replay_kind.is_none() && !self.bottom_pane.is_task_running() {
             return;
         }
 
@@ -121,12 +126,31 @@ impl ChatWidget {
         {
             return;
         }
-        let command_display = self
+        let active_command_display = self
             .unified_exec_processes
             .iter()
             .find(|process| process.key == process_id && process.call_id == item_id)
             .map(|process| process.command_display.clone());
-        if stdin.is_empty() && command_display.is_none() {
+        if stdin.is_empty() && active_command_display.is_none() {
+            // Legacy/buffered interactions can arrive after completion. A missing estimate
+            // alone does not establish completion; require the original completed exec identity.
+            if deadline_at_ms.is_some() {
+                return;
+            }
+            let Some(command_display) = self
+                .completed_unified_exec_processes
+                .iter()
+                .rev()
+                .find(|process| process.key == process_id && process.call_id == item_id)
+                .map(|process| process.command_display.clone())
+            else {
+                return;
+            };
+            self.clear_status_countdown_if_owner(&countdown_owner);
+            self.flush_answer_stream_with_separator();
+            self.add_to_history(history_cell::new_unified_exec_output_check(Some(
+                command_display,
+            )));
             return;
         }
         if stdin.is_empty()
@@ -146,6 +170,7 @@ impl ChatWidget {
             self.clear_status_countdown_if_owner(&countdown_owner);
             return;
         }
+        let command_display = active_command_display;
 
         self.flush_answer_stream_with_separator();
         if stdin.is_empty() {
@@ -256,6 +281,8 @@ impl ChatWidget {
         command: &str,
     ) {
         let key = process_id.unwrap_or(call_id).to_string();
+        self.completed_unified_exec_processes
+            .retain(|process| process.key != key);
         let command = split_command_string(command);
         let command_display = strip_bash_lc_and_escape(&command);
         if let Some(existing) = self
@@ -275,20 +302,6 @@ impl ChatWidget {
             });
         }
         self.sync_unified_exec_footer();
-    }
-
-    pub(super) fn track_unified_exec_process_end(
-        &mut self,
-        call_id: &str,
-        process_id: Option<&str>,
-    ) {
-        let key = process_id.unwrap_or(call_id);
-        let before = self.unified_exec_processes.len();
-        self.unified_exec_processes
-            .retain(|process| process.key != key || process.call_id != call_id);
-        if self.unified_exec_processes.len() != before {
-            self.sync_unified_exec_footer();
-        }
     }
 
     pub(super) fn sync_unified_exec_footer(&mut self) {

@@ -18,6 +18,12 @@ pub(super) struct UnifiedExecProcessSummary {
     pub(super) recent_chunks: crate::exec_cell::LiveCommandOutput,
 }
 
+pub(super) struct CompletedUnifiedExecProcess {
+    pub(super) key: String,
+    pub(super) call_id: String,
+    pub(super) command_display: String,
+}
+
 pub(super) struct UnifiedExecWaitState {
     command_display: String,
 }

@@ -3,6 +3,8 @@ use std::sync::Arc;
 use super::Buffer;
 use super::Emitter;
 use super::TRAILING_OUTPUT_GRACE;
+use super::emit_exec_end_for_unified_exec;
+use super::resolve_aggregated_output;
 use super::spawn_exit_watcher;
 use super::start_streaming_output;
 use super::utf8_boundary;
@@ -30,6 +32,70 @@ struct StreamingOutputHarness {
     transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
     context: UnifiedExecContext,
     rx_event: async_channel::Receiver<Event>,
+}
+
+#[tokio::test]
+async fn initial_completion_preserves_collected_output_over_a_partial_stream() {
+    let (session, turn, rx_event) = make_session_and_context_with_rx().await;
+    let step = crate::session::step_context::StepContext::for_test(Arc::clone(&turn));
+    let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+    transcript.lock().await.push_chunk(b"partial");
+    #[allow(deprecated)]
+    let cwd = turn.cwd.clone().into();
+    emit_exec_end_for_unified_exec(
+        session,
+        turn,
+        Arc::clone(&step.settings.model_info),
+        "initial-completion".to_string(),
+        vec!["run".to_string()],
+        cwd,
+        /*process_id*/ None,
+        /*plugin_attribution*/ None,
+        transcript,
+        "complete é\n".to_string(),
+        /*exit_code*/ 0,
+        Duration::from_millis(50),
+        /*timed_out*/ false,
+    )
+    .await;
+    let event = tokio::time::timeout(Duration::from_secs(5), rx_event.recv())
+        .await
+        .expect("completion timeout")
+        .expect("completion event");
+    let EventMsg::ItemCompleted(completed) = event.msg else {
+        panic!("expected ItemCompleted");
+    };
+    let TurnItem::CommandExecution(item) = completed.item else {
+        panic!("expected CommandExecution");
+    };
+    assert_eq!(
+        (item.status, item.aggregated_output, item.exit_code),
+        (
+            CommandExecutionStatus::Completed,
+            Some("complete é\n".to_string()),
+            Some(0)
+        ),
+    );
+}
+
+#[tokio::test]
+async fn background_completion_preserves_stream_omission_markers_and_unicode() {
+    let mut buffer = HeadTailBuffer::default();
+    buffer.push_chunk(
+        "é".repeat(crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES)
+            .as_bytes(),
+    );
+    assert!(buffer.omitted_bytes() > 0);
+    let expected = String::from_utf8_lossy(&buffer.to_bytes_with_omission_marker()).into_owned();
+    let transcript = Arc::new(tokio::sync::Mutex::new(buffer));
+    assert_eq!(
+        resolve_aggregated_output(&transcript, String::new()).await,
+        expected
+    );
+    assert_eq!(
+        resolve_aggregated_output(&transcript, "collected é\n".to_string()).await,
+        "collected é\n",
+    );
 }
 
 async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {

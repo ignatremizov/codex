@@ -28,7 +28,7 @@ impl ChatWidget {
             return;
         }
 
-        if replay_kind != Some(ReplayKind::ResumeInitialMessages)
+        if replay_kind.is_none_or(ReplayKind::preserves_live_processes)
             && !self.recover_resumed_reasoning(&notification)
         {
             return;
@@ -44,8 +44,8 @@ impl ChatWidget {
         }
         self.thread_usage.replaying_turn_completion = replay_kind.is_some();
         let from_replay = replay_kind.is_some();
-        let is_resume_initial_replay =
-            matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages));
+        let is_history_only_replay =
+            replay_kind.is_some_and(|kind| !kind.preserves_live_processes());
         let is_retry_error = matches!(
             &notification,
             ServerNotification::Error(ErrorNotification {
@@ -53,7 +53,7 @@ impl ChatWidget {
                 ..
             })
         );
-        if !is_resume_initial_replay && !is_retry_error {
+        if !is_history_only_replay && !is_retry_error {
             self.restore_retry_status_header_if_present();
         }
         match notification {
@@ -99,7 +99,7 @@ impl ChatWidget {
                 }
                 self.turn_lifecycle.last_turn_id = Some(notification.turn.id);
                 self.last_non_retry_error = None;
-                if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages)) {
+                if replay_kind.is_none_or(ReplayKind::preserves_live_processes) {
                     self.warning_display_state.startup_complete = true;
                     self.on_task_started();
                 }
@@ -187,7 +187,11 @@ impl ChatWidget {
                 }
             }
             ServerNotification::CommandExecutionOutputDelta(notification) => {
-                self.on_exec_command_output_delta(&notification.item_id, &notification.delta);
+                self.on_exec_command_output_delta(
+                    &notification.item_id,
+                    &notification.delta,
+                    replay_kind,
+                );
             }
             ServerNotification::FileChangeOutputDelta(notification) => {
                 self.on_patch_apply_output_delta(notification.item_id, notification.delta);
@@ -596,14 +600,14 @@ impl ChatWidget {
                         .entry((notification.turn_id.clone(), id.clone()))
                         .or_insert(realtime::RealtimeAgentItemOrigin::Typed);
                 }
-                if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages))
+                if replay_kind.is_none_or(ReplayKind::preserves_live_processes)
                     && !self.is_realtime_delegated_reasoning_item(&notification.turn_id, &id)
                 {
                     self.on_reasoning_item_started(id);
                 }
             }
             ThreadItem::ContextCompaction { id, .. }
-                if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages)) =>
+                if replay_kind.is_none_or(ReplayKind::preserves_live_processes) =>
             {
                 // Buffered starts reconstruct an in-flight compaction when switching tasks.
                 let elapsed = if replay_kind == Some(ReplayKind::ThreadSnapshot) {
@@ -618,7 +622,11 @@ impl ChatWidget {
                 self.on_context_compaction_started(id, notification.turn_id, elapsed);
             }
             item @ ThreadItem::CommandExecution { .. } => {
-                self.on_command_execution_started(item, deadline_at_ms, &notification.turn_id);
+                if replay_kind.is_some_and(|kind| !kind.preserves_live_processes()) {
+                    self.handle_command_execution_started_now(item);
+                } else {
+                    self.on_command_execution_started(item, deadline_at_ms, &notification.turn_id);
+                }
             }
             ThreadItem::FileChange { id: _, changes, .. } => {
                 self.on_patch_apply_begin(file_update_changes_to_display(changes));
@@ -698,7 +706,11 @@ impl ChatWidget {
         }
         match notification.item {
             item @ ThreadItem::CommandExecution { .. } => {
-                self.on_command_execution_completed(item, &notification.turn_id)
+                if replay_kind.is_some_and(|kind| !kind.preserves_live_processes()) {
+                    self.handle_command_execution_completed_now(item);
+                } else {
+                    self.on_command_execution_completed(item, &notification.turn_id);
+                }
             }
             item => self.handle_thread_item(
                 item,

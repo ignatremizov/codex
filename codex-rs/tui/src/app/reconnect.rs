@@ -415,8 +415,18 @@ impl App {
             self.active_thread_id = Some(id);
             self.active_thread_rx = Some(receiver);
             self.recap.seed_from_turns(&snapshot.turns, Instant::now());
+            let replay_kind = if self.thread_unavailable(id) {
+                ReplayKind::ReplayOnlyThreadSnapshot
+            } else {
+                ReplayKind::ThreadSnapshot
+            };
             self.render_thread_snapshot(
-                tui, app_server, id, snapshot, /*resume_restored_queue*/ false,
+                tui,
+                app_server,
+                id,
+                snapshot,
+                /*resume_restored_queue*/ false,
+                replay_kind,
             )?;
             self.config = self.chat_widget.config_ref().clone();
             self.refresh_pending_thread_approvals().await;

@@ -57,7 +57,7 @@ async fn offscreen_activation_is_buffered_and_only_rendered_on_replay() {
         .cloned()
         .expect("buffered activation");
     app.active_thread_id = Some(origin);
-    app.handle_thread_event_replay(event);
+    app.handle_thread_event_replay(event, ReplayKind::ThreadSnapshot);
     let mut rendered = Vec::new();
     while let Ok(event) = receiver.try_recv() {
         if let AppEvent::InsertHistoryCell(cell) = event {

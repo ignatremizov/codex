@@ -146,7 +146,11 @@ impl ChatWidget {
                 self.warning_display_state.startup_complete = true;
                 self.turn_lifecycle.last_turn_id = Some(turn_id.clone());
                 self.last_non_retry_error = None;
-                self.on_task_started();
+                // Initial resume retains its existing task/reasoning lifecycle independently
+                // of whether historical terminal processes can be restored.
+                if replay_kind != ReplayKind::ReplayOnlyThreadSnapshot {
+                    self.on_task_started();
+                }
             }
             let trailing_reasoning_id = (status == TurnStatus::InProgress)
                 .then(|| items.last())
@@ -238,6 +242,16 @@ impl ChatWidget {
                     Some(replay_kind),
                 );
             }
+            if !replay_kind.preserves_live_processes() {
+                self.finalize_replayed_process_tracking();
+            }
+        }
+        if !replay_kind.preserves_live_processes() {
+            // Process-local terminals cannot survive a cold or replay-only boundary. Persisted
+            // in-progress command items remain useful audit history, but must not repopulate
+            // `/ps` or the live footer. A cold resume may subsequently receive genuinely live
+            // buffered events; replay-only callers finalize once more after their event buffer.
+            self.finalize_replayed_process_tracking();
         }
     }
 
@@ -381,6 +395,17 @@ impl ChatWidget {
             item @ ThreadItem::CommandExecution {
                 status: codex_app_server_protocol::CommandExecutionStatus::InProgress,
                 ..
+            } if from_replay
+                && replay_kind
+                    .is_some_and(|replay_kind| !replay_kind.preserves_live_processes()) =>
+            {
+                // A replay-only command cannot still own a process. Materialize the saved start
+                // as an active cell so the replay boundary can finalize it into audit history.
+                self.handle_command_execution_started_now(item);
+            }
+            item @ ThreadItem::CommandExecution {
+                status: codex_app_server_protocol::CommandExecutionStatus::InProgress,
+                ..
             } => self.on_command_execution_started(item, /*deadline_at_ms*/ None, &turn_id),
             item @ ThreadItem::CommandExecution {
                 source: ExecCommandSource::Agent | ExecCommandSource::UnifiedExecStartup,
@@ -497,7 +522,11 @@ impl ChatWidget {
             ThreadItem::Sleep(_) => {}
         }
 
-        if matches!(replay_kind, Some(ReplayKind::ThreadSnapshot)) && turn_id.is_empty() {
+        if matches!(
+            replay_kind,
+            Some(ReplayKind::ThreadSnapshot | ReplayKind::ReplayOnlyThreadSnapshot)
+        ) && turn_id.is_empty()
+        {
             self.request_redraw();
         }
     }

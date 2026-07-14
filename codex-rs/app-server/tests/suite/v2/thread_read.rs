@@ -11,6 +11,9 @@ use codex_app_server::in_process;
 use codex_app_server::in_process::InProcessStartArgs;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::CommandAction;
+use codex_app_server_protocol::CommandExecutionSource;
+use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::ImageReference;
 use codex_app_server_protocol::InitializeCapabilities;
@@ -84,6 +87,7 @@ use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::UpdateThreadMetadataParams;
 use codex_utils_absolute_path::test_support::PathExt;
+use codex_utils_path_uri::LegacyAppPathString;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -229,6 +233,117 @@ async fn thread_read_can_include_turns() -> Result<()> {
             .contains(&"deprecationNotice".to_string())
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_read_reconstructs_legacy_exec_and_later_poll_without_loading_thread() -> Result<()>
+{
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    let filename_ts = "2025-01-05T12-00-00";
+    let conversation_id = create_fake_rollout_with_text_elements(
+        codex_home.path(),
+        filename_ts,
+        "2025-01-05T12:00:00Z",
+        "Run a command",
+        vec![],
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let saved_rollout = rollout_path(codex_home.path(), filename_ts, &conversation_id);
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(saved_rollout)?;
+    for (kind, payload) in [
+        (
+            "response_item",
+            json!({
+                "type":"function_call", "name":"exec_command", "call_id":"exec-1",
+                "arguments":json!({"cmd":"run","workdir":"/tmp"}).to_string(),
+            }),
+        ),
+        (
+            "response_item",
+            json!({
+                "type":"function_call_output", "call_id":"exec-1",
+                "output":"Chunk ID: 1\nWall time: 0.5 seconds\nProcess running with session ID 42\nOutput:\nfirst",
+            }),
+        ),
+        (
+            "event_msg",
+            json!({
+                "type":"task_started", "turn_id":"poll-turn", "model_context_window":null,
+            }),
+        ),
+        (
+            "response_item",
+            json!({
+                "type":"function_call", "name":"write_stdin", "call_id":"poll-1",
+                "arguments":json!({"session_id":42,"chars":""}).to_string(),
+            }),
+        ),
+        (
+            "response_item",
+            json!({
+                "type":"function_call_output", "call_id":"poll-1",
+                "output":"Chunk ID: 2\nWall time: 0.5 seconds\nProcess exited with code 0\nOutput:\nsecond",
+            }),
+        ),
+    ] {
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp":"2025-01-05T12:01:00Z", "type":kind, "payload":payload,
+            })
+        )?;
+    }
+    drop(file);
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: conversation_id,
+            include_turns: true,
+        })
+        .await?;
+    let ThreadReadResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    assert_eq!(thread.history_mode, ThreadHistoryMode::Legacy);
+    assert_eq!(thread.status, ThreadStatus::NotLoaded);
+    assert_eq!(thread.turns.len(), 2);
+    let commands: Vec<_> = thread.turns[0]
+        .items
+        .iter()
+        .filter(|item| matches!(item, ThreadItem::CommandExecution { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(
+        commands,
+        vec![ThreadItem::CommandExecution {
+            model_context: None,
+            id: "exec-1".to_string(),
+            plugin_id: None,
+            script_path: None,
+            command: "run".to_string(),
+            cwd: LegacyAppPathString::from_string("/tmp"),
+            process_id: Some("42".to_string()),
+            source: CommandExecutionSource::UnifiedExecStartup,
+            status: CommandExecutionStatus::Completed,
+            command_actions: vec![CommandAction::Unknown {
+                command: "run".to_string()
+            }],
+            aggregated_output: Some("firstsecond".to_string()),
+            exit_code: Some(0),
+            duration_ms: Some(1000),
+        }]
+    );
+    assert_eq!(thread.turns[1].id, "poll-turn");
+    assert!(thread.turns[1].items.is_empty());
     Ok(())
 }
 

@@ -697,7 +697,19 @@ impl App {
         // Transfer replay state before stopping its backend voice session.
         self.retain_realtime_replay_state_before_replace();
         self.stop_realtime_conversation(app_server).await;
-        self.render_thread_snapshot(tui, app_server, thread_id, snapshot, !is_replay_only)?;
+        let replay_kind = if is_replay_only {
+            ReplayKind::ReplayOnlyThreadSnapshot
+        } else {
+            ReplayKind::ThreadSnapshot
+        };
+        self.render_thread_snapshot(
+            tui,
+            app_server,
+            thread_id,
+            snapshot,
+            !is_replay_only,
+            replay_kind,
+        )?;
         if is_replay_only
             && self
                 .thread_event_channels
@@ -726,6 +738,7 @@ impl App {
         thread_id: ThreadId,
         snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
+        replay_kind: ReplayKind,
     ) -> Result<()> {
         let init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,
@@ -748,7 +761,12 @@ impl App {
         self.pending_thread_switch_resets += 1;
         self.app_event_tx
             .send(AppEvent::ResetTranscriptForThreadSwitch);
-        self.replay_thread_snapshot(snapshot, resume_restored_queue);
+        // A foreign writer is observed and frozen, not finalized as failed historical work.
+        if external_writer || replay_kind == ReplayKind::ThreadSnapshot {
+            self.replay_thread_snapshot(snapshot, resume_restored_queue);
+        } else {
+            self.replay_thread_snapshot_with_kind(snapshot, resume_restored_queue, replay_kind);
+        }
         if external_writer {
             self.chat_widget.show_external_writer_thread();
         }

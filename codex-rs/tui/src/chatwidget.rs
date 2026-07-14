@@ -325,6 +325,8 @@ mod empty_state_policy;
 pub(crate) use self::connectors::ConnectorScopeGeneration;
 use self::connectors::ConnectorsState;
 mod exec_state;
+mod terminal_history;
+use self::exec_state::CompletedUnifiedExecProcess;
 use self::exec_state::RunningCommand;
 use self::exec_state::UnifiedExecProcessSummary;
 use self::exec_state::UnifiedExecWaitState;
@@ -666,6 +668,7 @@ pub(crate) struct ChatWidget {
     safety_buffering: SafetyBufferingState,
     task_complete_pending: bool,
     unified_exec_processes: Vec<UnifiedExecProcessSummary>,
+    completed_unified_exec_processes: VecDeque<CompletedUnifiedExecProcess>,
     /// Tracks per-server MCP startup state while startup is in progress.
     ///
     /// The map is `Some(_)` from the first startup status update until the
@@ -878,6 +881,17 @@ pub(crate) enum InterruptedTurnNoticeMode {
 pub(crate) enum ReplayKind {
     ResumeInitialMessages,
     ThreadSnapshot,
+    /// Replay a saved thread snapshot without reviving process-local in-flight state.
+    ReplayOnlyThreadSnapshot,
+}
+
+impl ReplayKind {
+    fn preserves_live_processes(self) -> bool {
+        match self {
+            Self::ThreadSnapshot => true,
+            Self::ResumeInitialMessages | Self::ReplayOnlyThreadSnapshot => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
