@@ -40,6 +40,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
+use tracing::trace;
 use tungstenite::extensions::ExtensionsConfig;
 use tungstenite::extensions::compression::deflate::DeflateConfig;
 use tungstenite::protocol::WebSocketConfig;
@@ -674,7 +675,17 @@ async fn run_websocket_response_stream(
                 let event = match serde_json::from_str::<ResponsesStreamEvent>(&text) {
                     Ok(event) => event,
                     Err(err) => {
-                        debug!("failed to parse websocket event: {err}, data: {text}");
+                        trace!(
+                            target: "codex_api::raw_response_event",
+                            transport = "websocket",
+                            payload = %text,
+                            "raw malformed response event"
+                        );
+                        debug!(
+                            error = %err,
+                            payload_bytes = text.len(),
+                            "failed to parse websocket event"
+                        );
                         continue;
                     }
                 };
