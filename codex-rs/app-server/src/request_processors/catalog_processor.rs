@@ -496,7 +496,16 @@ impl CatalogRequestProcessor {
             cwds
         };
 
-        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let config = match self.load_latest_config(/*fallback_cwd*/ None).await {
+            Ok(config) => config,
+            Err(err) => {
+                warn!(
+                    error = %err.message,
+                    "failed to reload config for skills/list; using last known good config"
+                );
+                self.config.as_ref().clone()
+            }
+        };
         let auth = self.auth_manager.auth().await;
         let workspace_codex_plugins_enabled = self
             .workspace_codex_plugins_enabled(&config, auth.as_ref())
