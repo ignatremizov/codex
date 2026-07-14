@@ -73,6 +73,9 @@ use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
 
+mod non_paginated_exec;
+use self::non_paginated_exec::NonPaginatedExecHistory;
+
 #[cfg(test)]
 use crate::protocol::v2::CommandAction;
 #[cfg(test)]
@@ -292,6 +295,7 @@ pub struct ThreadHistoryBuilder {
     // finished turn's item index without adding it to the public Turn type.
     turns: Vec<PendingTurn>,
     current_turn: Option<PendingTurn>,
+    non_paginated_exec_history: NonPaginatedExecHistory,
     next_item_index: i64,
     current_rollout_index: usize,
     next_rollout_index: usize,
@@ -312,6 +316,7 @@ impl ThreadHistoryBuilder {
         Self {
             turns: Vec::new(),
             current_turn: None,
+            non_paginated_exec_history: NonPaginatedExecHistory::default(),
             next_item_index: 1,
             current_rollout_index: 0,
             next_rollout_index: 0,
@@ -547,16 +552,20 @@ impl ThreadHistoryBuilder {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
             RolloutItem::ResponseItem(item) => self.handle_response_item(&item.item),
+            RolloutItem::SessionMeta(meta) => self
+                .non_paginated_exec_history
+                .record_session_meta(&meta.meta, self.current_rollout_index),
+            RolloutItem::TurnContext(context) => self
+                .non_paginated_exec_history
+                .record_turn_context(context, self.current_rollout_index),
             RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
-            | RolloutItem::TurnContext(_)
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::WorldState(_)
             | RolloutItem::RealtimeItem(_)
             | RolloutItem::RetainedContext(_)
             | RolloutItem::SecurityRiskScore(_)
-            | RolloutItem::DynamicToolsUpdated { .. }
-            | RolloutItem::SessionMeta(_) => {}
+            | RolloutItem::DynamicToolsUpdated { .. } => {}
         }
     }
 
@@ -609,6 +618,29 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_response_item(&mut self, item: &codex_protocol::models::ResponseItem) {
+        let fallback_turn_id = self
+            .current_turn
+            .as_ref()
+            .map(|turn| turn.id.clone())
+            .unwrap_or_else(|| format!("rollout-{}", self.current_rollout_index));
+        if let Some(update) = self.non_paginated_exec_history.handle_response_item(
+            item,
+            self.current_rollout_index,
+            &fallback_turn_id,
+        ) {
+            if self
+                .current_turn
+                .as_ref()
+                .is_none_or(|turn| turn.id != update.turn_id)
+                && !self.turns.iter().any(|turn| turn.id == update.turn_id)
+            {
+                self.finish_current_turn();
+                let turn = self.new_turn(Some(update.turn_id.clone()));
+                self.record_changed_pending_turn(&turn);
+                self.current_turn = Some(turn);
+            }
+            self.upsert_item_in_turn_id(&update.turn_id, update.item);
+        }
         let codex_protocol::models::ResponseItem::Message {
             role, content, id, ..
         } = item
@@ -827,6 +859,10 @@ impl ThreadHistoryBuilder {
         turn_id: &str,
         item: &codex_protocol::items::TurnItem,
     ) {
+        if let codex_protocol::items::TurnItem::CommandExecution(command) = item {
+            self.non_paginated_exec_history
+                .mark_authoritative(&command.id, turn_id);
+        }
         let is_review_mode_item = matches!(
             item,
             codex_protocol::items::TurnItem::EnteredReviewMode(_)
@@ -885,12 +921,16 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_exec_command_begin(&mut self, payload: &ExecCommandBeginEvent) {
+        self.non_paginated_exec_history
+            .mark_authoritative(&payload.call_id, &payload.turn_id);
         let item = build_command_execution_begin_item(payload);
         let times = ItemTimes::legacy_start(payload.started_at_ms);
         self.upsert_item(Some(&payload.turn_id), item, times);
     }
 
     fn handle_exec_command_end(&mut self, payload: &ExecCommandEndEvent) {
+        self.non_paginated_exec_history
+            .mark_authoritative(&payload.call_id, &payload.turn_id);
         let item = build_command_execution_end_item(payload);
         // Command completions can arrive out of order. Unified exec may return
         // while a PTY is still running, then emit ExecCommandEnd later from a
@@ -1618,6 +1658,13 @@ impl ThreadHistoryBuilder {
                 .map(|turn| turn.id.clone())
                 .collect()
         };
+        let cutoff = self
+            .turns
+            .get(self.turns.len().saturating_sub(n))
+            .map_or(self.next_rollout_index, |turn| turn.rollout_start_index);
+        let restored_commands = self
+            .non_paginated_exec_history
+            .rollback(cutoff, &removed_turn_ids);
         self.record_removed_turn_ids(removed_turn_ids);
 
         if n >= self.turns.len() {
@@ -1628,6 +1675,9 @@ impl ThreadHistoryBuilder {
 
         let item_count: usize = self.turns.iter().map(|t| t.items.len()).sum();
         self.next_item_index = i64::try_from(item_count.saturating_add(1)).unwrap_or(i64::MAX);
+        for update in restored_commands {
+            self.upsert_item_in_turn_id(&update.turn_id, update.item);
+        }
     }
 
     fn finish_current_turn(&mut self) {

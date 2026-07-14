@@ -50,7 +50,7 @@ async fn overlapping_mcp_login_preserves_first_start() {
         .await
         .snapshot();
     for event in snapshot.events {
-        app.handle_thread_event_replay(event);
+        app.handle_thread_event_replay(event, ReplayKind::ThreadSnapshot);
     }
     assert!(next_history_message(&mut events).contains("first start failed"));
     assert!(app.pending_mcp_login_start.is_none());
@@ -116,7 +116,7 @@ async fn mcp_login_retry_suppresses_old_completion_and_late_browser_open() {
         .snapshot();
     assert_eq!(snapshot.events.len(), 1);
     for event in snapshot.events {
-        app.handle_thread_event_replay(event);
+        app.handle_thread_event_replay(event, ReplayKind::ThreadSnapshot);
     }
     assert_eq!(
         next_history_message(&mut events),
@@ -171,7 +171,10 @@ async fn mcp_login_retry_suppresses_old_completion_and_late_browser_open() {
         .await
         .snapshot();
     assert_eq!(snapshot.events.len(), 2);
-    app.handle_thread_event_replay(snapshot.events.last().unwrap().clone());
+    app.handle_thread_event_replay(
+        snapshot.events.last().unwrap().clone(),
+        ReplayKind::ThreadSnapshot,
+    );
     assert!(next_history_message(&mut events).contains("Signed in to other."));
     server.shutdown().await.unwrap();
 }
@@ -213,7 +216,7 @@ async fn mcp_login_results_survive_thread_switch_and_session_refresh() {
         assert_eq!(snapshot.events.len(), 1);
         app.active_thread_id = Some(origin);
         for event in snapshot.events {
-            app.handle_thread_event_replay(event);
+            app.handle_thread_event_replay(event, ReplayKind::ThreadSnapshot);
         }
         assert_snapshot!(
             format!("mcp_login_switched_thread_{success}"),
@@ -285,7 +288,7 @@ async fn rejected_mcp_login_retry_preserves_previous_result() {
         .snapshot();
     assert_eq!(snapshot.events.len(), 2);
     for event in snapshot.events {
-        app.handle_thread_event_replay(event);
+        app.handle_thread_event_replay(event, ReplayKind::ThreadSnapshot);
     }
     let messages = std::iter::from_fn(|| events.try_recv().ok())
         .filter_map(|event| {

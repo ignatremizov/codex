@@ -213,6 +213,7 @@ async fn command_start_before_message_completion_does_not_duplicate_preamble() -
                 thread_id,
                 snapshot,
                 /*resume_restored_queue*/ false,
+                ReplayKind::ThreadSnapshot,
             )?;
             while let Ok(event) = app_events.try_recv() {
                 app.handle_event(&mut tui, &mut app_server, event).await?;
