@@ -107,6 +107,8 @@ mod startup_warnings_tests;
 mod stream_animation_tests;
 #[path = "tests/streaming_interleave_e2e.rs"]
 mod streaming_interleave_e2e;
+#[path = "tests/terminal_history_tests.rs"]
+mod terminal_history_tests;
 #[path = "tests/thread_usage.rs"]
 mod thread_usage;
 #[path = "tests/transcript_composer.rs"]
@@ -7113,6 +7115,7 @@ async fn snapshot_thread_switch_discards_queued_previous_history() -> Result<()>
             input_state: None,
         },
         /*resume_restored_queue*/ false,
+        ReplayKind::ThreadSnapshot,
     )?;
     assert_eq!(app.pending_thread_switch_resets, 1);
     while let Ok(event) = events.try_recv() {

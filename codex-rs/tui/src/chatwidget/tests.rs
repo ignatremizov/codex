@@ -305,6 +305,8 @@ mod status_surface_command_tests;
 mod status_surface_previews;
 #[path = "tests/subagent_activity_tests.rs"]
 mod subagent_activity;
+#[path = "tests/terminal_history_tests.rs"]
+mod terminal_history_tests;
 #[path = "tests/terminal_program_status.rs"]
 mod terminal_program_status;
 mod terminal_title;
