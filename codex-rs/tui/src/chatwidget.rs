@@ -334,6 +334,7 @@ use self::connectors::ConnectorsState;
 mod dictation;
 use self::dictation::DictationUiState;
 mod exec_state;
+use self::exec_state::CompletedUnifiedExecProcess;
 use self::exec_state::RunningCommand;
 use self::exec_state::UnifiedExecProcessSummary;
 use self::exec_state::UnifiedExecWaitState;
@@ -601,6 +602,7 @@ pub(crate) struct ChatWidget {
     safety_buffering: SafetyBufferingState,
     task_complete_pending: bool,
     unified_exec_processes: Vec<UnifiedExecProcessSummary>,
+    completed_unified_exec_processes: VecDeque<CompletedUnifiedExecProcess>,
     /// Tracks per-server MCP startup state while startup is in progress.
     ///
     /// The map is `Some(_)` from the first startup status update until the
