@@ -7,6 +7,7 @@ use codex_app_server_protocol::CapabilityRootLocation;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SelectedCapabilityRoot;
+use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -15,6 +16,7 @@ use codex_utils_path_uri::PathUri;
 use core_test_support::responses;
 use core_test_support::skip_if_remote;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
@@ -22,6 +24,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const EXECUTOR_SKILL_NAME: &str = "demo-plugin:deploy";
 const EXECUTOR_SKILL_MARKER: &str = "EXECUTOR_SKILL_BODY_MARKER";
 const LOCAL_SKILL_MARKER: &str = "LOCAL_SKILL_BODY_MARKER";
+const GOAL_SKILL_NAME: &str = "guidance";
 
 #[tokio::test]
 async fn selected_executor_root_injects_only_the_current_turn_body() -> Result<()> {
@@ -174,6 +177,104 @@ async fn selected_executor_root_injects_only_the_current_turn_body() -> Result<(
     assert_eq!(
         1, retained_skill_fragments,
         "the executor exception must not append a second carried-forward body"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_selected_hidden_host_skill_is_promoted_on_first_continuation() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("goal-continuation"),
+            responses::ev_assistant_message("goal-response", "Done"),
+            responses::ev_completed_with_tokens("goal-continuation", /*total_tokens*/ 200),
+        ]),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    write_skill_test_config(codex_home.path(), &server.uri())?;
+    let config_path = codex_home.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        config.replace(
+            "model_auto_compact_token_limit = 200000\n",
+            "model_auto_compact_token_limit = 200000\n[features]\ngoals = true\n",
+        ),
+    )?;
+    let skill_dir = codex_home.path().join("skills").join(GOAL_SKILL_NAME);
+    std::fs::create_dir_all(skill_dir.join("agents"))?;
+    let skill_path = skill_dir.join("SKILL.md");
+    std::fs::write(
+        &skill_path,
+        format!(
+            "---\nname: {GOAL_SKILL_NAME}\ndescription: Explicit-only goal guidance.\n---\n\n\
+             # Guidance\n"
+        ),
+    )?;
+    std::fs::write(
+        skill_dir.join("agents/openai.yaml"),
+        "policy:\n  allow_implicit_invocation: false\n",
+    )?;
+
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(READ_TIMEOUT, app_server.initialize()).await??;
+
+    let request_id = app_server
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        READ_TIMEOUT,
+        app_server.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(response)?;
+
+    let goal_id = app_server
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({
+                "threadId": thread.id,
+                "objective": "Use the explicitly selected guidance skill.",
+                "skills": [{
+                    "name": GOAL_SKILL_NAME,
+                    "path": skill_path.to_string_lossy(),
+                }],
+                "tokenBudget": 100,
+            })),
+        )
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        READ_TIMEOUT,
+        app_server.read_stream_until_response_message(RequestId::Integer(goal_id)),
+    )
+    .await??;
+    let _: ThreadGoalSetResponse = to_response(response)?;
+    timeout(
+        READ_TIMEOUT,
+        app_server.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let request = response_mock.single_request();
+    let developer_context = request.message_input_texts("developer");
+    assert!(
+        developer_context.iter().any(|text| {
+            text.contains("<promoted_skills>")
+                && text.contains(GOAL_SKILL_NAME)
+                && text.contains(&skill_path.to_string_lossy().replace('\\', "/"))
+        }),
+        "the first goal continuation should expose its selected hidden host skill"
     );
 
     Ok(())
