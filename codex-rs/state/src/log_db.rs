@@ -69,6 +69,9 @@ pub fn default_filter() -> Targets {
         .with_target("tower::buffer", LevelFilter::WARN)
         .with_target("codex_otel.log_only", LevelFilter::OFF)
         .with_target("codex_otel.trace_safe", LevelFilter::OFF)
+        // Keep full response payloads available to opt-in non-SQLite subscribers without
+        // persisting high-volume, sensitive protocol data.
+        .with_target("codex_api::raw_response_event", LevelFilter::OFF)
         .with_target("rmcp", LevelFilter::INFO)
         .with_target("codex_api::responses_websocket_timing", LevelFilter::OFF)
         .with_target("codex_core::post_sampling_token_estimate", LevelFilter::OFF)
