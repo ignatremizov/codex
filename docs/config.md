@@ -82,6 +82,16 @@ disabled_tools = [
 ]
 ```
 
+## Editing earlier prompts
+
+The TUI edits an earlier prompt by rolling the current conversation back in place. To preserve the
+source conversation and continue the edit on a new branch instead, enable:
+
+```toml
+[features]
+fork_prompt_edits = true
+```
+
 ## Multi-Agent V2
 
 By default, MultiAgentV2 `spawn_agent` starts subagents without copying the
