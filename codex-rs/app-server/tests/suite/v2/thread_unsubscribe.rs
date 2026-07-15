@@ -547,16 +547,17 @@ async fn v2_child_idle_eviction_preserves_mail_and_followup_context() -> Result<
         (
             "spawn_agent",
             json!({
-                "task_name": "worker", "fork_turns": "none", "message": "Initial child task"
+                "task_name": "worker", "fork_turns": "none", "message": "Initial child task",
+                "task_message": "Initial child task"
             }),
         ),
         (
             "send_message",
-            json!({"target": "worker", "message": "Unread note for later"}),
+            json!({"target": "worker", "message": "Unread note for later", "task_message": "Unread note for later"}),
         ),
         (
             "followup_task",
-            json!({"target": "worker", "message": "Continue the child task"}),
+            json!({"target": "worker", "message": "Continue the child task", "task_message": "Continue the child task"}),
         ),
     ] {
         let call_id = format!("idle-eviction-{tool}");

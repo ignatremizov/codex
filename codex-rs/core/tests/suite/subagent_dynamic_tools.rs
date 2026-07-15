@@ -40,8 +40,7 @@ async fn fresh_v2_subagent_can_call_parent_dynamic_tool_when_enabled() -> Result
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let spawn_args =
-        json!({"message": CHILD_PROMPT, "task_name": "echo_worker", "fork_turns": "none"});
+    let spawn_args = json!({"message": CHILD_PROMPT, "task_message": CHILD_PROMPT, "task_name": "echo_worker", "fork_turns": "none"});
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {

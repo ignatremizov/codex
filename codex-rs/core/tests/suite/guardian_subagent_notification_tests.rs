@@ -72,7 +72,8 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
                 MULTI_AGENT_V2_NAMESPACE,
                 "spawn_agent",
                 &json!({
-                    "task_name": "worker", "fork_turns": "none", "message": "Run the checks."
+                    "task_name": "worker", "fork_turns": "none", "message": "Run the checks.",
+                    "task_message": "Run the checks."
                 })
                 .to_string(),
             ),

@@ -640,7 +640,7 @@ async fn cancelled_spawn_discards_provisional_child(caller: SpawnCaller) -> anyh
         ),
         SpawnCaller::NativeV2 => (
             "collaboration",
-            json!({"message":"child startup task", "task_name":"worker", "fork_turns":"all"}),
+            json!({"message":"child startup task", "task_message":"child startup task", "task_name":"worker", "fork_turns":"all"}),
         ),
     };
     responses::mount_sse_once(

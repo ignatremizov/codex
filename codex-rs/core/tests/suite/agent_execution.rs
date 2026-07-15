@@ -2,6 +2,7 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_core::AgentTreeShutdownFailure;
 use codex_core::AgentTreeShutdownFailureReason;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
@@ -194,6 +195,7 @@ async fn v2_nested_spawn_checks_shared_active_execution_capacity() -> Result<()>
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
         });
     let test = builder.build(&server).await?;
     test.submit_turn(FIRST_PROMPT).await?;
@@ -226,7 +228,10 @@ async fn child_turn_start_preserves_root_attribution() -> Result<()> {
         "first-call",
         "spawn_agent",
         json!({
-            "message": FIRST_TASK, "task_name": "first", "fork_turns": "none",
+            "message": FIRST_TASK,
+            "task_message": FIRST_TASK,
+            "task_name": "first",
+            "fork_turns": "none",
         }),
     )
     .await;
@@ -327,25 +332,36 @@ enum ResidencyReload {
     OwnerRevokesWorkspaceRoot,
 }
 
-#[test_case(ResidencyReload::Sender; "sender preserves stricter child")]
-#[test_case(ResidencyReload::OwnerNarrowsPermissions; "owner narrows cached permissions")]
-#[test_case(ResidencyReload::OwnerPreservesStricterChild; "owner preserves stricter child")]
-#[test_case(ResidencyReload::OwnerRevokesWorkspaceRoot; "owner revokes cached workspace root")]
+#[test_case(ResidencyReload::Sender, MultiAgentMessageDelivery::Encrypted; "sender preserves stricter child")]
+#[test_case(ResidencyReload::OwnerNarrowsPermissions, MultiAgentMessageDelivery::Encrypted; "owner narrows cached permissions")]
+#[test_case(ResidencyReload::OwnerPreservesStricterChild, MultiAgentMessageDelivery::Encrypted; "owner preserves stricter child")]
+#[test_case(ResidencyReload::OwnerRevokesWorkspaceRoot, MultiAgentMessageDelivery::Encrypted; "owner revokes cached workspace root")]
+#[test_case(ResidencyReload::Sender, MultiAgentMessageDelivery::EncryptedWithAudit; "audited queue stays unloaded")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     reload: ResidencyReload,
+    message_delivery: MultiAgentMessageDelivery,
 ) -> Result<()> {
     const EVICT_PROMPT: &str = "spawn the replacement worker";
     const FOLLOWUP_PROMPT: &str = "continue the original worker";
     const FOLLOWUP_TASK: &str = "continue work in the original environment";
+    const QUEUE_PROMPT: &str = "queue context without reloading the worker";
+    const QUEUED_MESSAGE: &str = "opaque queued worker context";
+    const QUEUED_AUDIT: &str = "Readable queued assignment without waking the worker.";
 
     let server = start_mock_server().await;
+    let task_args = |mut args: serde_json::Value| {
+        if message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
+            args["task_message"] = args["message"].clone();
+        }
+        args
+    };
     mount_root_collaboration_call(
         &server,
         FIRST_PROMPT,
         "first-call",
         "spawn_agent",
-        json!({ "message": FIRST_TASK, "task_name": "first", "fork_turns": "none" }),
+        task_args(json!({ "message": FIRST_TASK, "task_name": "first", "fork_turns": "none" })),
     )
     .await;
     mount_completed_worker(&server, FIRST_TASK, "first-call").await;
@@ -355,7 +371,9 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         EVICT_PROMPT,
         "replacement-call",
         "spawn_agent",
-        json!({ "message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }),
+        task_args(
+            json!({ "message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }),
+        ),
     )
     .await;
     mount_completed_worker(&server, SECOND_TASK, "replacement-call").await;
@@ -365,22 +383,43 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         FOLLOWUP_PROMPT,
         "followup-call",
         "followup_task",
-        json!({ "target": "first", "message": FOLLOWUP_TASK }),
+        task_args(json!({ "target": "first", "message": FOLLOWUP_TASK })),
     )
     .await;
     let reloaded_worker_request =
         mount_completed_worker(&server, FOLLOWUP_TASK, "followup-call").await;
+    let mut queue_args = json!({ "target": "first", "message": QUEUED_MESSAGE });
+    if message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
+        queue_args["task_message"] = json!(QUEUED_AUDIT);
+    }
+    let queued = mount_root_collaboration_call(
+        &server,
+        QUEUE_PROMPT,
+        "queue-unloaded",
+        "send_message",
+        queue_args,
+    )
+    .await;
+    let listed = mount_root_collaboration_call(
+        &server,
+        "inspect the queued assignment",
+        "list-unloaded",
+        "list_agents",
+        json!({}),
+    )
+    .await;
 
     let mut builder = test_codex()
         .with_model("gpt-5.6-sol")
         .with_exec_server_url("none")
-        .with_config(|config| {
+        .with_config(move |config| {
             for feature in [Feature::Collab, Feature::MultiAgentV2] {
                 config
                     .features
                     .enable(feature)
                     .expect("test config should allow feature update");
             }
+            config.multi_agent_v2.message_delivery = message_delivery;
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
             config
                 .permissions
@@ -519,6 +558,45 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
             .await
             .is_err()
     );
+    test.submit_text_turn(QUEUE_PROMPT).await?;
+    assert_eq!(
+        queued.function_call_output_text("queue-unloaded"),
+        Some(String::new())
+    );
+    assert!(
+        test.thread_manager
+            .get_thread(first_thread_id)
+            .await
+            .is_err(),
+        "queue-only acceptance must preserve local eviction"
+    );
+    assert_eq!(
+        created_threads.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    );
+    test.submit_text_turn("inspect the queued assignment")
+        .await?;
+    let roster: serde_json::Value = serde_json::from_str(
+        &listed
+            .function_call_output_text("list-unloaded")
+            .context("list_agents must return the accepted assignment")?,
+    )?;
+    let first = roster["agents"]
+        .as_array()
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent["agent_name"] == "/root/first")
+        })
+        .context("evicted worker must remain listed")?;
+    assert_eq!(
+        first["last_task_message"],
+        if message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
+            json!(QUEUED_AUDIT)
+        } else {
+            serde_json::Value::Null
+        }
+    );
 
     if reload != ResidencyReload::Sender {
         submit_thread_settings(
@@ -618,6 +696,13 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     };
     let reloaded_tools = worker_tools(&reloaded_worker_request);
     assert!(reloaded_tools.to_string().contains("### `exec_command`"));
+    let resumed = reloaded_worker_request
+        .requests()
+        .into_iter()
+        .find(|request| request.header("thread-id") == Some(first_thread_id.to_string()))
+        .context("follow-up must reach the original worker")?;
+    assert!(resumed.body_contains_text(QUEUED_MESSAGE));
+    assert!(!resumed.body_contains_text(QUEUED_AUDIT));
 
     Ok(())
 }

@@ -4,6 +4,7 @@ use super::*;
 use crate::suite::settings_commits::COMMITTED_MODEL;
 use crate::suite::settings_commits::PauseAfterCommit;
 use codex_core::config::Config;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::Op;
@@ -45,6 +46,7 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
             config.features.enable(Feature::MultiAgentV2).unwrap();
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
             config.multi_agent_v2.hide_spawn_agent_metadata = true;
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
         })
         .build_with_auto_env(&server)
         .await?;
