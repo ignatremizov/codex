@@ -307,6 +307,9 @@ pub struct InteractionEdge {
     pub kind: InteractionEdgeKind,
     pub source: TraceAnchor,
     pub target: TraceAnchor,
+    /// Human-readable content carried by this interaction, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_content: Option<String>,
     pub started_at_unix_ms: i64,
     pub ended_at_unix_ms: Option<i64>,
     pub carried_item_ids: Vec<ConversationItemId>,
