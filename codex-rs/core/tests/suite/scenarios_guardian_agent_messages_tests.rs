@@ -3,6 +3,7 @@
 use codex_core::StartIfIdleSubmission;
 use codex_core::TurnInputRequest;
 use codex_core::config::Constrained;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
@@ -125,6 +126,7 @@ async fn encrypted_parent_reply_survives_incremental_guardian_reviews(
                     .enable(feature)
                     .expect("enable test feature");
             }
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             let namespace = native_call_namespace.unwrap_or("team");
             config.multi_agent_v2.tool_namespace =
                 (namespace != "functions").then(|| namespace.to_owned());

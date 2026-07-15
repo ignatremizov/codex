@@ -33,7 +33,9 @@ async fn worker_guardian_sees_goal_set_after_spawn(origin: &str) -> Result<()> {
         ))
         .enable_feature(Feature::GuardianApproval)
         .enable_feature(Feature::Collab)
-        .enable_feature(Feature::MultiAgentV2)
+        .with_extra_config(
+            "[features.multi_agent_v2]\nenabled = true\nmessage_delivery = \"encrypted\"",
+        )
         .enable_feature(Feature::Goals)
         .disable_feature(Feature::GuardianV2)
         .disable_feature(Feature::EnableRequestCompression)

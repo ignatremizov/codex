@@ -526,7 +526,7 @@ async fn child_human_approval_survives_attachment_and_rejects_unrelated_clients(
                         "spawn",
                         "collaboration",
                         "spawn_agent",
-                        &json!({"task_name": "child", "message": "Run echo", "fork_turns": "none"})
+                        &json!({"task_name": "child", "message": "Run echo", "task_message": "Run echo", "fork_turns": "none"})
                             .to_string(),
                     ),
                 ]),
