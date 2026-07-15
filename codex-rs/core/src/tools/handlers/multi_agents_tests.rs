@@ -2,6 +2,7 @@ use super::*;
 use crate::ThreadManager;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
+use crate::config::MultiAgentMessageDelivery;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
@@ -180,6 +181,7 @@ struct ListAgentsResult {
 struct ListedAgentResult {
     agent_name: String,
     agent_status: serde_json::Value,
+    last_task_message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -408,6 +410,7 @@ async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "fork_context_v2",
                 "agent_type": role_name,
                 "fork_turns": "all"
@@ -449,6 +452,7 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "fork_context_v2",
                 "model": "gpt-5-child-override",
                 "reasoning_effort": "low"
@@ -483,6 +487,7 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "incompatible_model",
                 "model": "gpt-5.4",
                 "fork_turns": "none"
@@ -960,6 +965,7 @@ async fn multi_agent_v2_full_history_fork_accepts_explicit_service_tier() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "fork_with_tier",
                 "service_tier": ServiceTier::Fast.request_value()
             })),
@@ -1021,6 +1027,7 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "partial_fork",
                 "agent_type": role_name,
                 "fork_turns": "1"
@@ -1099,7 +1106,8 @@ async fn multi_agent_v2_spawn_requires_task_name() {
         Arc::new(turn),
         "spawn_agent",
         function_payload(json!({
-            "message": "inspect this repo"
+            "message": "inspect this repo",
+            "task_message": "inspect this repo"
         })),
     );
     let Err(err) = SpawnAgentHandlerV2::default().handle(invocation).await else {
@@ -1109,6 +1117,80 @@ async fn multi_agent_v2_spawn_requires_task_name() {
         panic!("missing task_name should surface as a model-facing error");
     };
     assert!(message.contains("missing field `task_name`"));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_requires_task_message() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "inspect this repo",
+            "task_name": "worker"
+        })),
+    );
+    let Err(err) = SpawnAgentHandlerV2::default().handle(invocation).await else {
+        panic!("missing task_message should be rejected");
+    };
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("missing task_message should surface as a model-facing error");
+    };
+    assert_eq!(
+        message,
+        "task_message is required when message_delivery is encrypted_with_audit"
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_empty_task_message() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "encrypted-spawn-message",
+            "task_message": "   ",
+            "task_name": "worker"
+        })),
+    );
+    let Err(err) = SpawnAgentHandlerV2::default().handle(invocation).await else {
+        panic!("empty task_message should be rejected");
+    };
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("empty task_message should surface as a model-facing error");
+    };
+    assert!(message.contains("task_message must not be empty"));
 }
 
 #[tokio::test]
@@ -1134,6 +1216,7 @@ async fn multi_agent_v2_spawn_rejects_legacy_items_field() {
         "spawn_agent",
         function_payload(json!({
             "message": "inspect this repo",
+            "task_message": "inspect this repo",
             "items": [{"type": "text", "text": "inspect this repo"}],
             "task_name": "worker"
         })),
@@ -1197,6 +1280,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
             "spawn_agent",
             function_payload(json!({
                 "message": "encrypted-spawn-message",
+                "task_message": "inspect this repo",
                 "task_name": "test_process"
             })),
         ))
@@ -1232,20 +1316,21 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                     if communication.author == AgentPath::root()
                         && communication.recipient.as_str() == "/root/test_process"
                         && communication.other_recipients.is_empty()
-                        && communication.content.is_empty()
+                        && communication.content == "inspect this repo"
                         && communication.encrypted_content.as_deref() == Some("encrypted-spawn-message")
                         && communication.trigger_turn
             )
     }));
 
-    SendMessageHandlerV2
+    SendMessageHandlerV2::default()
         .handle(invocation(
             session.clone(),
             turn.clone(),
             "send_message",
             function_payload(json!({
                 "target": "test_process",
-                "message": "encrypted-send-message"
+                "message": "encrypted-send-message",
+                "task_message": "send audit message"
             })),
         ))
         .await
@@ -1259,7 +1344,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                     if communication.author == AgentPath::root()
                         && communication.recipient.as_str() == "/root/test_process"
                         && communication.other_recipients.is_empty()
-                        && communication.content.is_empty()
+                        && communication.content == "send audit message"
                         && communication.encrypted_content.as_deref() == Some("encrypted-send-message")
                         && !communication.trigger_turn
             )
@@ -1290,6 +1375,7 @@ async fn multi_agent_v2_spawn_rejects_legacy_fork_context() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "worker",
                 "fork_context": true
             })),
@@ -1330,6 +1416,7 @@ async fn multi_agent_v2_spawn_rejects_invalid_fork_turns_string() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "worker",
                 "fork_turns": "banana"
             })),
@@ -1370,6 +1457,7 @@ async fn multi_agent_v2_spawn_rejects_zero_fork_turns() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "worker",
                 "fork_turns": "0"
             })),
@@ -1434,14 +1522,15 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_role: None,
     });
 
-    SendMessageHandlerV2
+    SendMessageHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
             "send_message",
             function_payload(json!({
                 "target": "/root",
-                "message": "encrypted-done"
+                "message": "encrypted-done",
+                "task_message": "done"
             })),
         ))
         .await
@@ -1455,7 +1544,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
                     if communication.author == child_path
                         && communication.recipient == AgentPath::root()
                         && communication.other_recipients.is_empty()
-                        && communication.content.is_empty()
+                        && communication.content == "done"
                         && communication.encrypted_content.as_deref() == Some("encrypted-done")
                         && !communication.trigger_turn
             )
@@ -1510,7 +1599,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         agent_role: None,
     });
 
-    let Err(err) = FollowupTaskHandlerV2
+    let Err(err) = FollowupTaskHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -1518,6 +1607,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
             function_payload(json!({
                 "target": "/root",
                 "message": "run this",
+                "task_message": "run this",
             })),
         ))
         .await
@@ -1567,6 +1657,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "worker"
             })),
         ))
@@ -1584,6 +1675,55 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         .get_thread(agent_id)
         .await
         .expect("child thread should exist");
+
+    SendMessageHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "worker",
+                "message": "opaque follow-up",
+                "task_message": "review the tests"
+            })),
+        ))
+        .await
+        .expect("audited send_message should succeed");
+    let audited_list_output = ListAgentsHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should expose the audited update");
+    let (audited_list_content, _) = expect_text_output(audited_list_output);
+    let audited_list: ListAgentsResult =
+        serde_json::from_str(&audited_list_content).expect("list_agents result should be json");
+    let audited_worker = audited_list
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == "/root/worker")
+        .expect("worker agent should be listed");
+    assert_eq!(
+        audited_worker.last_task_message.as_deref(),
+        Some("review the tests")
+    );
+
+    SendMessageHandlerV2::new(MultiAgentMessageDelivery::Encrypted)
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "worker",
+                "message": "opaque encrypted-only follow-up"
+            })),
+        ))
+        .await
+        .expect("encrypted-only send_message should succeed");
+
     let child_turn = child_thread.session.new_default_turn().await;
     child_thread
         .session
@@ -1626,6 +1766,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         .find(|agent| agent.agent_name == "/root/worker")
         .expect("worker agent should be listed");
     assert_eq!(worker.agent_status, json!({"completed": "done"}));
+    assert_eq!(worker.last_task_message, None);
     assert_eq!(success, Some(true));
 }
 
@@ -1736,6 +1877,7 @@ async fn multi_agent_v2_list_agents_omits_closed_agents() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "worker"
             })),
         ))
@@ -1796,6 +1938,7 @@ async fn multi_agent_v2_list_agents_keeps_interrupted_resident_agents() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "worker"
             })),
         ))
@@ -1868,6 +2011,7 @@ async fn multi_agent_v2_send_message_rejects_legacy_items_field() {
             "spawn_agent",
             function_payload(json!({
                 "message": "boot worker",
+                "task_message": "boot worker",
                 "task_name": "worker"
             })),
         ))
@@ -1892,7 +2036,7 @@ async fn multi_agent_v2_send_message_rejects_legacy_items_field() {
         })),
     );
 
-    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+    let Err(err) = SendMessageHandlerV2::default().handle(invocation).await else {
         panic!("legacy items field should be rejected in v2");
     };
     let FunctionCallError::RespondToModel(message) = err else {
@@ -1924,6 +2068,7 @@ async fn multi_agent_v2_send_message_rejects_interrupt_parameter() {
             "spawn_agent",
             function_payload(json!({
                 "message": "boot worker",
+                "task_message": "boot worker",
                 "task_name": "worker"
             })),
         ))
@@ -1943,18 +2088,19 @@ async fn multi_agent_v2_send_message_rejects_interrupt_parameter() {
         function_payload(json!({
             "target": agent_id.to_string(),
             "message": "continue",
+            "task_message": "continue",
             "interrupt": true
         })),
     );
 
-    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+    let Err(err) = SendMessageHandlerV2::default().handle(invocation).await else {
         panic!("send_message interrupt parameter should be rejected");
     };
     let FunctionCallError::RespondToModel(message) = err else {
         panic!("expected model-facing parse error");
     };
     assert!(message.starts_with(
-        "failed to parse function arguments: unknown field `interrupt`, expected `target` or `message`"
+        "failed to parse function arguments: unknown field `interrupt`, expected one of `target`, `message`, `task_message`"
     ));
 
     let ops = manager.captured_ops();
@@ -2001,6 +2147,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
             "spawn_agent",
             function_payload(json!({
                 "message": "boot worker",
+                "task_message": "boot worker",
                 "task_name": "worker"
             })),
         ))
@@ -2035,7 +2182,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         )
         .await;
 
-    FollowupTaskHandlerV2
+    FollowupTaskHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -2043,6 +2190,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
             function_payload(json!({
                 "target": agent_id.to_string(),
                 "message": "continue",
+                "task_message": "continue the task",
             })),
         ))
         .await
@@ -2055,6 +2203,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
                 Op::InterAgentCommunication { communication }
                     if communication.author == AgentPath::root()
                         && communication.recipient == worker_path
+                        && communication.content == "continue the task"
                         && communication.encrypted_content.as_deref() == Some("continue")
                         && communication.trigger_turn
             )
@@ -2154,6 +2303,7 @@ async fn multi_agent_v2_followup_task_rejects_legacy_items_field() {
             "spawn_agent",
             function_payload(json!({
                 "message": "boot worker",
+                "task_message": "boot worker",
                 "task_name": "worker"
             })),
         ))
@@ -2175,7 +2325,7 @@ async fn multi_agent_v2_followup_task_rejects_legacy_items_field() {
         })),
     );
 
-    let Err(err) = FollowupTaskHandlerV2.handle(invocation).await else {
+    let Err(err) = FollowupTaskHandlerV2::default().handle(invocation).await else {
         panic!("legacy items field should be rejected in v2");
     };
     let FunctionCallError::RespondToModel(message) = err else {
@@ -2207,6 +2357,7 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
             "spawn_agent",
             function_payload(json!({
                 "message": "boot worker",
+                "task_message": "boot worker",
                 "task_name": "worker"
             })),
         ))
@@ -2285,6 +2436,7 @@ async fn multi_agent_v2_spawn_omits_agent_id_when_named() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "test_process"
             })),
         ))
@@ -2323,6 +2475,7 @@ async fn multi_agent_v2_spawn_surfaces_task_name_validation_errors() {
         "spawn_agent",
         function_payload(json!({
             "message": "inspect this repo",
+            "task_message": "inspect this repo",
             "task_name": "BadName"
         })),
     );
@@ -2545,6 +2698,7 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
         "spawn_agent",
         function_payload(json!({
             "message": "hello",
+            "task_message": "hello",
             "task_name": "child",
             "fork_turns": "none"
         })),
@@ -3014,6 +3168,7 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
             "spawn_agent",
             function_payload(json!({
                 "message": "boot worker",
+                "task_message": "boot worker",
                 "task_name": "worker"
             })),
         ))
@@ -3497,6 +3652,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "test_process"
             })),
         ))
@@ -3587,6 +3743,7 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
             "spawn_agent",
             function_payload(json!({
                 "message": "boot worker",
+                "task_message": "boot worker",
                 "task_name": "worker"
             })),
         ))
@@ -3669,6 +3826,7 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
                 "spawn_agent",
                 function_payload(json!({
                     "message": format!("boot {task_name}"),
+                    "task_message": format!("boot {task_name}"),
                     "task_name": task_name
                 })),
             ))
@@ -3759,6 +3917,7 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
             "spawn_agent",
             function_payload(json!({
                 "message": "boot worker",
+                "task_message": "boot worker",
                 "task_name": "worker"
             })),
         ))
@@ -3848,6 +4007,7 @@ async fn multi_agent_v2_interrupt_agent_accepts_task_name_target() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "worker"
             })),
         ))
@@ -3872,6 +4032,7 @@ async fn multi_agent_v2_interrupt_agent_accepts_task_name_target() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect a child task",
+                "task_message": "inspect a child task",
                 "task_name": "child"
             })),
         ))
@@ -3969,6 +4130,7 @@ async fn multi_agent_v2_interrupt_agent_accepts_unloaded_task_name_target() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
+                "task_message": "inspect this repo",
                 "task_name": "worker"
             })),
         ))

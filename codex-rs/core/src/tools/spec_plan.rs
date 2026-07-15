@@ -813,17 +813,24 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                             .expose_spawn_agent_model_overrides,
                         multi_agent_version: turn_context.multi_agent_version,
                         usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                        message_delivery: turn_context.config.multi_agent_v2.message_delivery,
                     }),
                     tool_namespace,
                 ),
                 exposure,
             ));
             planned_tools.add_arc(override_tool_exposure(
-                multi_agent_v2_handler(SendMessageHandlerV2, tool_namespace),
+                multi_agent_v2_handler(
+                    SendMessageHandlerV2::new(turn_context.config.multi_agent_v2.message_delivery),
+                    tool_namespace,
+                ),
                 exposure,
             ));
             planned_tools.add_arc(override_tool_exposure(
-                multi_agent_v2_handler(FollowupTaskHandlerV2, tool_namespace),
+                multi_agent_v2_handler(
+                    FollowupTaskHandlerV2::new(turn_context.config.multi_agent_v2.message_delivery),
+                    tool_namespace,
+                ),
                 exposure,
             ));
             planned_tools.add_arc(override_tool_exposure(
@@ -857,6 +864,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                     expose_spawn_agent_model_overrides: true,
                     multi_agent_version: turn_context.multi_agent_version,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                    message_delivery: turn_context.config.multi_agent_v2.message_delivery,
                 }),
                 exposure,
             );

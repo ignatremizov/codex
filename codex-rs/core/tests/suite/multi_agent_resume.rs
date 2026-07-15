@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_features::Feature;
 use codex_protocol::protocol::AgentStatus;
 use core_test_support::responses::ev_assistant_message;
@@ -67,6 +68,7 @@ fn configure_multi_agent_v2(config: &mut codex_core::config::Config) {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
+    config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Plaintext;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
