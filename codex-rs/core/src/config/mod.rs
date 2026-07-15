@@ -66,6 +66,7 @@ use codex_features::FeatureOverrides;
 use codex_features::FeatureToml;
 use codex_features::Features;
 use codex_features::FeaturesToml;
+pub use codex_features::MultiAgentMessageDelivery;
 use codex_features::MultiAgentV2ConfigToml;
 use codex_features::NetworkProxyConfigToml;
 use codex_features::TokenBudgetConfigToml;
@@ -1176,6 +1177,7 @@ pub struct MultiAgentV2Config {
     pub hide_spawn_agent_metadata: bool,
     pub expose_spawn_agent_model_overrides: bool,
     pub non_code_mode_only: bool,
+    pub message_delivery: MultiAgentMessageDelivery,
 }
 
 impl MultiAgentV2Config {
@@ -1199,6 +1201,7 @@ impl MultiAgentV2Config {
             hide_spawn_agent_metadata: true,
             expose_spawn_agent_model_overrides: true,
             non_code_mode_only: true,
+            message_delivery: MultiAgentMessageDelivery::EncryptedWithAudit,
         }
     }
 }
@@ -2594,6 +2597,9 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let non_code_mode_only = base
         .and_then(|config| config.non_code_mode_only)
         .unwrap_or(default.non_code_mode_only);
+    let message_delivery = base
+        .and_then(|config| config.message_delivery)
+        .unwrap_or(default.message_delivery);
 
     MultiAgentV2Config {
         max_concurrent_threads_per_session,
@@ -2608,6 +2614,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         hide_spawn_agent_metadata,
         expose_spawn_agent_model_overrides,
         non_code_mode_only,
+        message_delivery,
     }
 }
 
