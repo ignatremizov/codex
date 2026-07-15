@@ -4,6 +4,7 @@ use super::*;
 use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::ThreadEvictionOutcome;
 use codex_core::TurnInputRequest;
+use codex_core::TurnInputSubmission;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_protocol::models::ActivePermissionProfile;
@@ -13,6 +14,7 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::ThreadIdle;
+use core_test_support::responses::received_responses_requests;
 use core_test_support::responses::sse_response;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
@@ -104,6 +106,11 @@ extends = "startup"
             .enable(Feature::Sqlite)
             .expect("enable SQLite");
         config.multi_agent_v2.max_concurrent_threads_per_session = 3;
+        // Bind the sender's later workspace-write profile to the executor fixture.
+        config.workspace_roots = vec![config.cwd.clone()];
+        config
+            .permissions
+            .set_workspace_roots(config.workspace_roots.clone());
     };
     let mut builder = test_codex()
         .with_extensions(Arc::new(extensions.build()))
@@ -173,7 +180,12 @@ extends = "startup"
             prompt,
             call_id,
             "spawn_agent",
-            json!({"task_name": name, "message": task, "fork_turns": "none"}),
+            json!({
+                "task_name": name,
+                "message": task,
+                "task_message": task,
+                "fork_turns": "none",
+            }),
         )
         .await;
         mount_completed_worker(&server, task, call_id).await;
@@ -186,7 +198,7 @@ extends = "startup"
         children.push((child_id, child));
     }
     let (worker_id, worker) = &children[0];
-    let (_, sender) = &children[1];
+    let (sender_id, sender) = &children[1];
     let overrides = match selection {
         WorkerPermissions::ReadOnly => ThreadSettingsOverrides {
             permission_profile: Some(PermissionProfile::read_only()),
@@ -256,25 +268,60 @@ extends = "startup"
             assert!(initial.thread_manager.get_thread(*worker_id).await.is_err());
             std::fs::remove_file(&instructions)?;
         }
-        let delivery = mount_root_collaboration_call(
+        mount_root_collaboration_call(
             &server,
             prompt,
             call_id,
             "followup_task",
-            json!({"target": "/root/worker", "message": message}),
+            json!({"target": "/root/worker", "message": message, "task_message": message}),
         )
         .await;
         mount_completed_worker(&server, message, call_id).await;
-        sender
+        let TurnInputSubmission::Started { turn_id, .. } = sender
             .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
                 text: prompt.to_string(),
                 text_elements: Vec::new(),
             }]))
-            .await?;
-        wait_for_event(sender, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+            .await?
+        else {
+            anyhow::bail!("expected a new turn for {call_id}");
+        };
+        let EventMsg::TurnComplete(completed) = wait_for_event(
+            sender,
+            |event| matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == turn_id),
+        )
+        .await
+        else {
+            unreachable!("the predicate requires the sender's terminal event");
+        };
+        assert!(
+            completed.error.is_none(),
+            "{call_id} sender turn failed before completing the fixture: {completed:?}"
+        );
+        // The completion drain may receive the reply before the one-shot fixture.
+        // Decode both text and content-item outputs from the actual model request.
+        let requests = received_responses_requests(&server).await;
+        let response = requests
+            .iter()
+            .find(|request| {
+                request.input().iter().any(|item| {
+                    item["type"] == "function_call_output" && item["call_id"] == call_id
+                })
+            })
+            .with_context(|| {
+                let sender_thread = sender_id.to_string();
+                let sender_requests = requests
+                    .iter()
+                    .filter(|request| {
+                        request.header("thread-id").as_deref() == Some(sender_thread.as_str())
+                    })
+                    .count();
+                format!("missing {call_id} delivery reply after {sender_requests} sender requests; terminal event: {completed:?}")
+            })?;
         assert_eq!(
-            delivery.function_call_output_text(call_id),
-            Some(String::new())
+            response.function_call_output_content_and_success(call_id),
+            Some((Some(String::new()), None)),
+            "{call_id} must report successful delivery"
         );
         let worker = initial.thread_manager.get_thread(*worker_id).await?;
         wait_for_event(&worker, |event| matches!(event, EventMsg::TurnComplete(_))).await;

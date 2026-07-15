@@ -6,6 +6,19 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## Multi-agent V2 message delivery
+
+Select the representation for new V2 task and message payloads with:
+
+```toml
+[features.multi_agent_v2]
+message_delivery = "encrypted_with_audit"
+```
+
+The accepted values are `encrypted` (provider-opaque payload only), `encrypted_with_audit` (encrypted payload plus a separate readable audit copy), and `plaintext` (one readable payload). Omitting the setting selects `encrypted_with_audit`. Readable audit copies and plaintext messages can contain sensitive task details; encryption of the recipient payload does not protect those local copies.
+
+This setting does not itself enable a different multi-agent runtime or change the selected model. Delivery validation and rendering use the resolved thread policy; existing persisted messages retain their recorded representation rather than being converted on resume.
+
 ## Unified exec yield windows
 
 The optional `unified_exec_yield_time_ms` and `unified_exec_write_stdin_yield_time_ms` settings control the default time before unified-exec returns an output snapshot when the individual tool call does not provide `yield_time_ms`:

@@ -130,7 +130,12 @@ async fn http_board_is_shared_with_children(mode: BoardMode) -> anyhow::Result<(
             tool(
                 "spawn-worker",
                 "spawn_agent",
-                json!({"task_name":"worker","message":"Say ready.","fork_turns":"none"}),
+                json!({
+                    "task_name": "worker",
+                    "message": "Say ready.",
+                    "task_message": "Say ready.",
+                    "fork_turns": "none",
+                }),
             ),
             done(),
             done(),

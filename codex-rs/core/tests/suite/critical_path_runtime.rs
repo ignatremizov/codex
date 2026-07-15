@@ -402,7 +402,7 @@ async fn spawned_child_has_independent_timing_and_parent_wait_is_tools(
                 "spawn-worker",
                 "collaboration",
                 "spawn_agent",
-                r#"{"task_name":"worker","fork_turns":"none","message":"Run the timing gate."}"#,
+                r#"{"task_name":"worker","fork_turns":"none","message":"Run the timing gate.","task_message":"Run the timing gate."}"#,
             ),
             responses::ev_completed("root-spawn"),
         ]),
