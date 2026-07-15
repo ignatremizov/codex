@@ -1280,17 +1280,6 @@ impl Session {
                     mcp_connection_manager,
                 )
                 .await?;
-            {
-                let manager = sess.services.mcp_connection_manager.load_full();
-                let tools = manager
-                    .list_all_tools()
-                    .await
-                    .into_iter()
-                    .map(|tool| (tool.canonical_tool_name().to_string(), tool))
-                    .collect();
-                let mut session_start_mcp_tools = sess.session_start_mcp_tools.lock().await;
-                *session_start_mcp_tools = tools;
-            }
             sess.schedule_startup_prewarm(session_configuration.base_instructions.clone())
                 .await;
             let session_start_source = match &initial_history {

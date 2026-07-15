@@ -1910,6 +1910,7 @@ impl Session {
                 return self.input_queue.has_pending_mailbox_items().await;
             };
             let turn_state = active_turn_state.lock().await;
+            let accepts_mailbox_delivery = turn_state.accepts_mailbox_delivery_for_current_turn();
             let mut has_follow_up_before_mcp_use = false;
             let mut mcp_use_boundary_pending = false;
             for item in turn_state.pending_input() {
@@ -1917,11 +1918,17 @@ impl Session {
                     mcp_use_boundary_pending = true;
                     break;
                 }
-                has_follow_up_before_mcp_use = true;
+                if !matches!(
+                    item,
+                    TurnInput::InterAgentCommunication(communication)
+                        if !communication.trigger_turn && !accepts_mailbox_delivery
+                ) {
+                    has_follow_up_before_mcp_use = true;
+                }
             }
             (
                 has_follow_up_before_mcp_use,
-                turn_state.accepts_mailbox_delivery_for_current_turn(),
+                accepts_mailbox_delivery,
                 mcp_use_boundary_pending,
             )
         };
