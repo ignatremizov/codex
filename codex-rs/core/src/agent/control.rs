@@ -135,7 +135,24 @@ impl LocalAgentControl {
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
+        let submission = self.runtime.registry.mailbox_submission(agent_id);
         let thread = state.get_thread(agent_id).await?;
+        let _submission_permit = Arc::clone(&submission.semaphore)
+            .acquire_owned()
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!("mailbox submission semaphore closed: {err}"))
+            })?;
+        let current_thread = state.get_thread(agent_id).await?;
+        if !Arc::ptr_eq(&thread, &current_thread)
+            || !self
+                .runtime
+                .registry
+                .submission_is_current(agent_id, &submission)
+        {
+            return Err(CodexErr::ThreadNotFound(agent_id));
+        }
+        let last_task_message = non_empty_task_message(render_input_preview(&input));
         let result = match thread
             .start_or_steer_turn(TurnInputRequest::user_input(input).on_start(start_options))
             .await
@@ -153,8 +170,17 @@ impl LocalAgentControl {
             )),
             Err(err) => Err(err),
         };
-        self.handle_thread_request_result(agent_id, &state, result)
-            .await
+        let result = self
+            .handle_thread_request_result(agent_id, &state, &thread, result)
+            .await;
+        if result.is_ok() {
+            self.runtime.registry.update_last_task_message(
+                agent_id,
+                &submission,
+                last_task_message,
+            );
+        }
+        result
     }
 
     pub(crate) async fn send_inter_agent_communication(
@@ -165,8 +191,8 @@ impl LocalAgentControl {
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
+        let thread = state.get_thread(agent_id).await?;
         if communication.trigger_turn {
-            let thread = state.get_thread(agent_id).await?;
             thread
                 .ensure_execution_capacity_for_turn_start(self)
                 .await?;
@@ -174,6 +200,7 @@ impl LocalAgentControl {
         self.send_inter_agent_communication_after_capacity_check(
             agent_id,
             &state,
+            &thread,
             communication,
             agent_communication_context,
             start_options,
@@ -234,6 +261,7 @@ impl LocalAgentControl {
         &self,
         agent_id: ThreadId,
         state: &Arc<ThreadManagerState>,
+        thread: &Arc<crate::codex_thread::CodexThread>,
         communication: InterAgentCommunication,
         context: AgentCommunicationContext,
         start_options: TurnStartOptions,
@@ -241,6 +269,7 @@ impl LocalAgentControl {
         self.submit_inter_agent_communication(
             agent_id,
             state,
+            thread,
             communication,
             context,
             start_options,
@@ -252,10 +281,30 @@ impl LocalAgentControl {
         &self,
         agent_id: ThreadId,
         state: &Arc<ThreadManagerState>,
+        thread: &Arc<crate::codex_thread::CodexThread>,
         communication: InterAgentCommunication,
         context: AgentCommunicationContext,
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
+        let submission = self.runtime.registry.mailbox_submission(agent_id);
+        let _submission_permit = Arc::clone(&submission.semaphore)
+            .acquire_owned()
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!("mailbox submission semaphore closed: {err}"))
+            })?;
+        let current_thread = state.get_thread(agent_id).await?;
+        if !Arc::ptr_eq(thread, &current_thread)
+            || !self
+                .runtime
+                .registry
+                .submission_is_current(agent_id, &submission)
+        {
+            return Err(CodexErr::ThreadNotFound(agent_id));
+        }
+        let last_task_message = context
+            .updates_last_task_message()
+            .then(|| non_empty_task_message(communication.content.clone()));
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
         let (parent_turn_id, root_turn_id) = if communication.trigger_turn {
@@ -270,9 +319,10 @@ impl LocalAgentControl {
             .handle_thread_request_result(
                 agent_id,
                 state,
+                thread,
                 state
-                    .send_op(
-                        agent_id,
+                    .send_op_to_thread(
+                        thread,
                         Op::InterAgentCommunication {
                             communication,
                             start_options,
@@ -293,18 +343,29 @@ impl LocalAgentControl {
                 agent_id,
             );
         }
+        if result.is_ok()
+            && let Some(last_task_message) = last_task_message
+        {
+            self.runtime.registry.update_last_task_message(
+                agent_id,
+                &submission,
+                last_task_message,
+            );
+        }
         result
     }
 
     /// Interrupt the current task for an existing agent thread.
     pub(crate) async fn interrupt_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
+        let thread = state.get_thread(agent_id).await?;
         self.handle_thread_request_result(
             agent_id,
             &state,
+            &thread,
             state
-                .send_op(
-                    agent_id,
+                .send_op_to_thread(
+                    &thread,
                     Op::Interrupt,
                     /*parent_turn_id*/ None,
                     /*root_turn_id*/ None,
@@ -318,13 +379,17 @@ impl LocalAgentControl {
         &self,
         agent_id: ThreadId,
         state: &Arc<ThreadManagerState>,
+        thread: &Arc<crate::codex_thread::CodexThread>,
         result: CodexResult<String>,
     ) -> CodexResult<String> {
         if result
             .as_ref()
             .is_err_and(|err| matches!(err.details(), CodexErrorDetails::InternalAgentDied))
+            && state
+                .remove_thread_if_matches(&agent_id, thread)
+                .await
+                .is_some()
         {
-            let _ = state.remove_thread(&agent_id).await;
             self.forget_v2_residency(agent_id);
             self.runtime.registry.release_spawned_thread(agent_id);
         }
@@ -542,6 +607,7 @@ impl LocalAgentControl {
             agent_path,
             agent_nickname,
             agent_role,
+            last_task_message: None,
         })
     }
 
@@ -688,6 +754,10 @@ pub(crate) fn render_input_preview(input: &[UserInput]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn non_empty_task_message(message: String) -> Option<String> {
+    (!message.is_empty()).then_some(message)
 }
 
 fn thread_spawn_depth(session_source: &SessionSource) -> Option<i32> {

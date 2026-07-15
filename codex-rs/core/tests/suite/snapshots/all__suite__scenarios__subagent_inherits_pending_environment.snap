@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 1641
 expression: snapshot
 ---
 Scenario: A parent spawns a child before the selected environment is configured. The child sees it starting, waits, and receives the ready result after an ordinary parent turn-settings update.
@@ -28,10 +29,18 @@ Scenario: A parent spawns a child before the selected environment is configured.
 04:message/user:
     Delegate waiting for the shared workspace, and report what the worker finds.
 -- request 2 (request; parent waits for the worker) --
-05:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Wait for the shared workspace to become ready.","task_name":"worker"}
+05:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Wait for the shared workspace to become ready.","task_message":"Wait for...red workspace to become ready.","task_name":"worker"} [hash=05d6e7bfa83c59ed]
 06:function_call_output:{"task_name":"/root/worker"}
+07:message/user:
+    <environment_context>
+      <current_date><CURRENT_DATE></current_date>
+      <timezone><HOST_TIMEZONE></timezone>
+      <subagents>
+        <agent name="/root/worker" />
+      </subagents>
+    </environment_context>
 
-## Window 2 (after request 2: input diverged at item 01, settings changed (tools))
+## Window 2 (after request 2: input diverged at item 01)
 -- request 3 (request; child sees the inherited starting environment) --
 00:message/developer[2]:
     [01] <PERMISSIONS_INSTRUCTIONS>
@@ -87,7 +96,7 @@ Scenario: A parent spawns a child before the selected environment is configured.
       <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
     </environment_context>
 
-## Window 4 (after request 4: input diverged at item 01, settings changed (tools))
+## Window 4 (after request 4: input diverged at item 01)
 -- request 5 (request; parent receives the child result) --
 00:message/developer[2]:
     [01] <PERMISSIONS_INSTRUCTIONS>
@@ -110,12 +119,20 @@ Scenario: A parent spawns a child before the selected environment is configured.
     </environment_context>
 04:message/user:
     Delegate waiting for the shared workspace, and report what the worker finds.
-05:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Wait for the shared workspace to become ready.","task_name":"worker"}
+05:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Wait for the shared workspace to become ready.","task_message":"Wait for...red workspace to become ready.","task_name":"worker"} [hash=05d6e7bfa83c59ed]
 06:function_call_output:{"task_name":"/root/worker"}
-07:function_call/collaboration.wait_agent:{"timeout_ms":10000}
-08:function_call_output:{"message":"Wait completed.","timed_out":false}
-09:agent_message
-10:message/user:
+07:message/user:
+    <environment_context>
+      <current_date><CURRENT_DATE></current_date>
+      <timezone><HOST_TIMEZONE></timezone>
+      <subagents>
+        <agent name="/root/worker" />
+      </subagents>
+    </environment_context>
+08:function_call/collaboration.wait_agent:{"timeout_ms":10000}
+09:function_call_output:{"message":"Wait completed.","timed_out":false}
+10:agent_message
+11:message/user:
     <environment_context>
       <cwd><CWD></cwd>
       <shell><HOST_SHELL></shell>

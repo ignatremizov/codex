@@ -8,6 +8,7 @@ use codex_core::GuardianRootMessage;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
 use codex_core::config::Constrained;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_history::CompactedItem;
@@ -411,7 +412,12 @@ pub(super) async fn code_mode_guardian_request_history() -> Result<Vec<Responses
                     SPAWN_CALL_ID,
                     "collaboration",
                     "spawn_agent",
-                    &json!({"message": INITIAL_TASK, "task_name": "worker"}).to_string(),
+                    &json!({
+                        "message": INITIAL_TASK,
+                        "task_message": INITIAL_TASK,
+                        "task_name": "worker",
+                    })
+                    .to_string(),
                 ),
                 ev_completed("root-spawn"),
             ],
@@ -776,6 +782,7 @@ async fn run_guardian_subagent_review(
                     .enable(feature)
                     .expect("enable multi-agent feature");
             }
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config

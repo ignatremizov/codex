@@ -1395,6 +1395,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                                 .multi_agent_v2
                                 .usage_hint_text
                                 .clone(),
+                            message_delivery: turn_context.config.multi_agent_v2.message_delivery,
                         },
                         spawn_agent_description.map(str::to_owned),
                     ),
@@ -1408,7 +1409,9 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
             if !turn_context.config.multi_agent_v2.disable_direct_message {
                 registry.register_trusted_with_exposure(
                     multi_agent_v2_handler(
-                        SendMessageHandlerV2,
+                        SendMessageHandlerV2::new(
+                            turn_context.config.multi_agent_v2.message_delivery,
+                        ),
                         tool_namespace,
                         model_messages.multi_agent_tool_description_override("send_message"),
                     ),
@@ -1416,7 +1419,9 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 );
                 registry.register_trusted_with_exposure(
                     multi_agent_v2_handler(
-                        FollowupTaskHandlerV2,
+                        FollowupTaskHandlerV2::new(
+                            turn_context.config.multi_agent_v2.message_delivery,
+                        ),
                         tool_namespace,
                         model_messages.multi_agent_tool_description_override("followup_task"),
                     ),
@@ -1467,6 +1472,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     hide_agent_type_model_reasoning: false,
                     expose_spawn_agent_model_overrides: true,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                    message_delivery: turn_context.config.multi_agent_v2.message_delivery,
                 }),
                 exposure,
             );

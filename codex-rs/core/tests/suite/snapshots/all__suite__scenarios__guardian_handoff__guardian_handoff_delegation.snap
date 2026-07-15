@@ -7,8 +7,8 @@ Scenario: Complete Guardian request history: root delegates through alpha to lea
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (1; hash=ae2f2f1f9dcd0cd9):
-        - namespace/functions; hash=fd8638eaf7cabb95
+00:additional_tools/developer (1; hash=a472d7cc0311720b):
+        - namespace/functions; hash=2ba659e6af7280e3
           - custom/exec
           - function/wait
 01:message/developer:
@@ -47,7 +47,7 @@ Scenario: Complete Guardian request history: root delegates through alpha to lea
 05:agent_message
 06:message/user[3]:
     [01]
-        [2] tool spawn_agent call: {"fork_turns":"none","message":"Inspect.","task_name":"leaf"}
+        [2] tool spawn_agent call: {"fork_turns":"none","message":"Inspect.","task_message":"Inspect.","task_name":"leaf"}
 
     [02]
         [3] tool spawn_agent result: {"task_name":"/root/alpha/leaf"}

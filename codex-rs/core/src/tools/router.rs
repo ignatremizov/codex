@@ -42,12 +42,8 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
-    pub(crate) fn direct_source(&self) -> ToolCallSource {
-        if self.tool_name.namespace.as_deref() == Some("collaboration")
-            && matches!(
-                self.tool_name.name.as_str(),
-                "spawn_agent" | "send_message" | "followup_task"
-            )
+    pub(crate) fn direct_source(&self, runtime: Option<&dyn CoreToolRuntime>) -> ToolCallSource {
+        if runtime.is_some_and(CoreToolRuntime::is_agent_message_tool)
             && self
                 .encrypted_function_args
                 .as_ref()
@@ -61,11 +57,26 @@ impl ToolCall {
 }
 
 pub(crate) fn tool_log_payload<'a>(
+    tool_name: &ToolName,
+    runtime: Option<&dyn CoreToolRuntime>,
     payload: &'a ToolPayload,
     source: &ToolCallSource,
 ) -> Cow<'a, str> {
+    // The structured communication event is the audit record for collaboration messages. Keep
+    // their raw payload out of generic tool logs in both plaintext and encrypted delivery modes.
+    if runtime.map_or_else(
+        || {
+            matches!(
+                tool_name.name.as_str(),
+                "spawn_agent" | "send_message" | "followup_task"
+            )
+        },
+        CoreToolRuntime::is_agent_message_tool,
+    ) {
+        return Cow::Borrowed("[message arguments]");
+    }
     if matches!(source, ToolCallSource::DirectPlaintextMessage) {
-        return Cow::Borrowed("[plaintext arguments]");
+        return Cow::Borrowed("[redacted arguments]");
     }
     payload.log_payload()
 }
