@@ -31,6 +31,7 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 
 use crate::config::CurrentTimeReminderConfig;
+use crate::config::MultiAgentMessageDelivery;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
@@ -1310,34 +1311,57 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_message_schemas_are_encrypted() {
-    let plan = probe(|turn| {
-        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-    })
-    .await;
-    let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
-        panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
-    };
-    for tool_name in ["spawn_agent", "send_message", "followup_task"] {
-        let Some(ResponsesApiNamespaceTool::Function(tool)) = namespace.tools.iter().find(|tool| {
-            matches!(
-                tool,
-                ResponsesApiNamespaceTool::Function(tool) if tool.name == tool_name
-            )
-        }) else {
-            panic!("expected {tool_name} in {MULTI_AGENT_V2_NAMESPACE} namespace");
+async fn multi_agent_v2_message_schemas_follow_configured_delivery() {
+    for (message_delivery, encrypted, includes_audit) in [
+        (MultiAgentMessageDelivery::Encrypted, Some(true), false),
+        (
+            MultiAgentMessageDelivery::EncryptedWithAudit,
+            Some(true),
+            true,
+        ),
+        (MultiAgentMessageDelivery::Plaintext, None, false),
+    ] {
+        let plan = probe(move |turn| {
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+            update_config(turn, |config| {
+                config.multi_agent_v2.message_delivery = message_delivery;
+            });
+        })
+        .await;
+        let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
+            panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
         };
-        let properties = tool
-            .parameters
-            .properties
-            .as_ref()
-            .expect("tool should use object params");
-        assert_eq!(
-            properties
-                .get("message")
-                .and_then(|schema| schema.encrypted),
-            Some(true)
-        );
+        for tool_name in ["spawn_agent", "send_message", "followup_task"] {
+            let Some(ResponsesApiNamespaceTool::Function(tool)) =
+                namespace.tools.iter().find(|tool| {
+                    matches!(
+                        tool,
+                        ResponsesApiNamespaceTool::Function(tool) if tool.name == tool_name
+                    )
+                })
+            else {
+                panic!("expected {tool_name} in {MULTI_AGENT_V2_NAMESPACE}");
+            };
+            let properties = tool
+                .parameters
+                .properties
+                .as_ref()
+                .expect("tool should use object params");
+            assert_eq!(
+                properties
+                    .get("message")
+                    .and_then(|schema| schema.encrypted),
+                encrypted
+            );
+            assert_eq!(properties.contains_key("task_message"), includes_audit);
+            assert_eq!(
+                tool.parameters
+                    .required
+                    .as_ref()
+                    .is_some_and(|required| required.contains(&"task_message".to_string())),
+                includes_audit
+            );
+        }
     }
 }
 

@@ -3745,6 +3745,7 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
     let server = responses::start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
+        "task_message": CHILD_PROMPT,
         "task_name": "worker",
     }))?;
     let _parent_turn = responses::mount_sse_once_match(
