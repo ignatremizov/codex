@@ -85,6 +85,8 @@ use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::ThreadRollbackParams;
+use codex_app_server_protocol::ThreadRollbackResponse;
 use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
@@ -1059,6 +1061,24 @@ impl AppServerSession {
             .await
             .wrap_err("thread/compact/start failed in TUI")?;
         Ok(())
+    }
+
+    pub(crate) async fn thread_rollback(
+        &mut self,
+        thread_id: ThreadId,
+        num_turns: u32,
+    ) -> Result<ThreadRollbackResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadRollback {
+                request_id,
+                params: ThreadRollbackParams {
+                    thread_id: thread_id.to_string(),
+                    num_turns,
+                },
+            })
+            .await
+            .wrap_err("thread/rollback failed in TUI")
     }
 
     pub(crate) async fn thread_shell_command(
