@@ -3,6 +3,15 @@
 use super::*;
 
 impl ChatWidget {
+    pub(crate) fn reset_transient_state_after_thread_rollback(&mut self) {
+        self.clear_pending_token_activity_refreshes();
+        self.clear_pending_rate_limit_reset_hint();
+        self.transcript.reset_copy_history();
+        self.transcript.reset_turn_flags();
+        self.transcript.last_plan_progress = None;
+        self.refresh_status_surfaces();
+    }
+
     fn on_session_configured_with_display_and_fork_parent_title(
         &mut self,
         session: ThreadSessionState,

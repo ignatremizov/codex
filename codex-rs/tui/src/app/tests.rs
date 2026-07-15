@@ -4800,6 +4800,39 @@ fn test_turn(turn_id: &str, status: TurnStatus, items: Vec<ThreadItem>) -> Turn 
     }
 }
 
+fn test_thread_rollback_response(
+    thread_id: ThreadId,
+    turns: Vec<Turn>,
+) -> codex_app_server_protocol::ThreadRollbackResponse {
+    codex_app_server_protocol::ThreadRollbackResponse {
+        thread: Thread {
+            id: thread_id.to_string(),
+            extra: None,
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: String::new(),
+            ephemeral: false,
+            history_mode: Default::default(),
+            model_provider: "openai".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            recency_at: Some(0),
+            status: codex_app_server_protocol::ThreadStatus::Idle,
+            path: None,
+            cwd: test_path_buf("/tmp/project").abs(),
+            cli_version: "0.0.0".to_string(),
+            source: codex_app_server_protocol::SessionSource::Cli,
+            thread_source: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: None,
+            turns,
+        },
+    }
+}
+
 fn turn_started_notification(thread_id: ThreadId, turn_id: &str) -> ServerNotification {
     ServerNotification::TurnStarted(TurnStartedNotification {
         thread_id: thread_id.to_string(),
@@ -5171,9 +5204,112 @@ async fn fresh_session_config_uses_current_service_tier() {
     );
 }
 
+async fn append_completed_rollout_turn(
+    rollout_path: &Path,
+    turn_id: &str,
+    message: &str,
+    images: Option<Vec<String>>,
+    local_images: Vec<PathBuf>,
+) -> Result<()> {
+    for item in [
+        RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: turn_id.to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::default(),
+        })),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: message.to_string(),
+            images,
+            local_images,
+            ..Default::default()
+        })),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: turn_id.to_string(),
+            last_agent_message: None,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+    ] {
+        codex_rollout::append_rollout_item_to_path(rollout_path, &item).await?;
+    }
+    Ok(())
+}
+
 #[tokio::test]
-async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
+async fn backtrack_selection_rolls_back_in_place_by_default() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget.handle_thread_session(test_thread_session(
+        thread_id,
+        test_path_buf("/tmp/project"),
+    ));
+    while app_event_rx.try_recv().is_ok() {}
+    app.transcript_cells = vec![
+        Arc::new(UserHistoryCell {
+            message: "first prompt".to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+        }) as Arc<dyn HistoryCell>,
+        Arc::new(AgentMessageCell::new(
+            vec![Line::from("first response")],
+            /*is_first_line*/ true,
+        )) as Arc<dyn HistoryCell>,
+        Arc::new(UserHistoryCell {
+            message: "second prompt".to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+        }) as Arc<dyn HistoryCell>,
+        Arc::new(AgentMessageCell::new(
+            vec![Line::from("second response")],
+            /*is_first_line*/ true,
+        )) as Arc<dyn HistoryCell>,
+    ];
+    let transcript_before: Vec<String> = app
+        .transcript_cells
+        .iter()
+        .map(|cell| lines_to_single_string(&cell.display_lines(/*width*/ 80)))
+        .collect();
+
+    app.apply_backtrack_selection(BacktrackSelection {
+        thread_id,
+        nth_user_message: 1,
+        prompt: crate::chatwidget::UserMessage::from("second prompt"),
+    });
+
+    assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::RollbackSessionForPromptEdit {
+            thread_id: event_thread_id,
+            nth_user_message: 1,
+            prompt,
+        }) if event_thread_id == thread_id
+            && prompt == crate::chatwidget::UserMessage::from("second prompt")
+    );
+    assert_matches!(
+        app_event_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    );
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "");
+    assert!(app.backtrack.pending_rollback.is_some());
+    let transcript_pending: Vec<String> = app
+        .transcript_cells
+        .iter()
+        .map(|cell| lines_to_single_string(&cell.display_lines(/*width*/ 80)))
+        .collect();
+    assert_eq!(transcript_pending, transcript_before);
+}
+
+#[tokio::test]
+async fn backtrack_selection_preserves_selected_prompt_and_requests_branch_when_enabled() {
+    let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let _ = app.config.features.enable(Feature::ForkPromptEdits);
 
     let user_cell = |text: &str,
                      text_elements: Vec<TextElement>,
@@ -5312,6 +5448,7 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
     };
     assert_eq!(selection, expected);
 
+    while op_rx.try_recv().is_ok() {}
     app.apply_backtrack_selection(selection);
     let event = std::iter::from_fn(|| app_event_rx.try_recv().ok())
         .find(|event| matches!(event, AppEvent::ForkSessionForPromptEdit { .. }))
@@ -5326,6 +5463,10 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
             && nth_user_message == expected.nth_user_message
             && prompt == expected.prompt
     );
+    assert_matches!(
+        op_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    );
 
     let transcript_after: Vec<String> = app
         .transcript_cells
@@ -5333,6 +5474,125 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
         .map(|cell| lines_to_single_string(&cell.display_lines(/*width*/ 80)))
         .collect();
     assert_eq!(transcript_after, transcript_before);
+}
+
+#[tokio::test]
+async fn backtrack_rollback_response_rebases_store_and_replaces_event_transport() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let retained_turn = test_turn("turn-1", TurnStatus::Completed, Vec::new());
+    let removed_turn = test_turn("turn-2", TurnStatus::Completed, Vec::new());
+    app.thread_event_channels.insert(
+        thread_id,
+        ThreadEventChannel::new_with_session(
+            /*capacity*/ 4,
+            test_thread_session(thread_id, test_path_buf("/tmp/project")),
+            vec![retained_turn.clone(), removed_turn],
+        ),
+    );
+    app.activate_thread_channel(thread_id).await;
+    let history_response = HistoryLookupResponse {
+        offset: 3,
+        log_id: 7,
+        entry: Some("retained history".to_string()),
+    };
+    app.enqueue_thread_history_entry_response(thread_id, history_response)
+        .await?;
+    app.enqueue_thread_notification(
+        thread_id,
+        turn_started_notification(thread_id, "stale-turn"),
+    )
+    .await
+    .expect("stale event should enqueue");
+
+    app.handle_backtrack_thread_rollback_response(
+        thread_id,
+        &test_thread_rollback_response(thread_id, vec![retained_turn.clone()]),
+    )
+    .await;
+
+    let rx = app
+        .active_thread_rx
+        .as_mut()
+        .expect("active receiver should remain attached");
+    assert_matches!(
+        rx.try_recv(),
+        Ok(ThreadBufferedEvent::HistoryEntryResponse(HistoryLookupResponse {
+            offset: 3,
+            log_id: 7,
+            entry: Some(entry),
+        })) if entry == "retained history"
+    );
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+
+    let snapshot = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("thread channel should remain registered")
+        .store
+        .lock()
+        .await
+        .snapshot();
+    assert_eq!(snapshot.turns, vec![retained_turn]);
+    assert_matches!(
+        snapshot.events.as_slice(),
+        [ThreadBufferedEvent::HistoryEntryResponse(HistoryLookupResponse {
+            offset: 3,
+            log_id: 7,
+            entry: Some(entry),
+        })] if entry == "retained history"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn backtrack_rollback_rejects_sends_blocked_on_the_old_transport() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.thread_event_channels.insert(
+        thread_id,
+        ThreadEventChannel::new_with_session(
+            /*capacity*/ 1,
+            test_thread_session(thread_id, test_path_buf("/tmp/project")),
+            vec![test_turn("turn-1", TurnStatus::Completed, Vec::new())],
+        ),
+    );
+    app.activate_thread_channel(thread_id).await;
+    app.enqueue_thread_notification(
+        thread_id,
+        turn_started_notification(thread_id, "stale-turn-1"),
+    )
+    .await?;
+    app.enqueue_thread_notification(
+        thread_id,
+        turn_started_notification(thread_id, "stale-turn-2"),
+    )
+    .await?;
+
+    app.handle_backtrack_thread_rollback_response(
+        thread_id,
+        &test_thread_rollback_response(thread_id, Vec::new()),
+    )
+    .await;
+    tokio::task::yield_now().await;
+
+    assert_matches!(
+        app.active_thread_rx
+            .as_mut()
+            .expect("replacement receiver should remain active")
+            .try_recv(),
+        Err(TryRecvError::Empty)
+    );
+    let snapshot = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("thread channel should remain registered")
+        .store
+        .lock()
+        .await
+        .snapshot();
+    assert!(snapshot.events.is_empty());
+    Ok(())
 }
 
 #[tokio::test]
@@ -5357,6 +5617,134 @@ async fn backtrack_branch_failure_restores_selected_prompt_snapshot() {
         "backtrack_branch_failure_restores_selected_prompt",
         rendered
     );
+}
+
+#[tokio::test]
+async fn prompt_edit_rolls_back_selected_prompt_in_place_by_default() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let config = app.chat_widget.config_ref().clone();
+    let filename_ts = "2025-01-05T11-00-00";
+    let source_thread_id = app_test_support::create_fake_rollout(
+        config.codex_home.as_path(),
+        filename_ts,
+        "2025-01-05T11:00:00Z",
+        "unused preview",
+        Some("test-provider"),
+        /*git_info*/ None,
+    )
+    .expect("materialized rollout should be created");
+    let source_path =
+        app_test_support::rollout_path(config.codex_home.as_path(), filename_ts, &source_thread_id);
+    let session_meta = std::fs::read_to_string(&source_path)?
+        .lines()
+        .next()
+        .expect("fake rollout should have session metadata")
+        .to_string();
+    std::fs::write(&source_path, format!("{session_meta}\n"))?;
+    append_completed_rollout_turn(
+        &source_path,
+        "turn-1",
+        "first prompt",
+        /*images*/ None,
+        Vec::new(),
+    )
+    .await?;
+    append_completed_rollout_turn(
+        &source_path,
+        "turn-2",
+        "second prompt",
+        /*images*/ None,
+        Vec::new(),
+    )
+    .await?;
+
+    let source_thread_id = ThreadId::from_string(&source_thread_id)?;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
+    let started = app_server
+        .resume_thread(
+            config,
+            source_thread_id,
+            crate::app_server_session::ResumeModelSettings::OverrideFromCurrentConfig,
+        )
+        .await?;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    while app_event_rx.try_recv().is_ok() {}
+    app.transcript_cells = vec![
+        Arc::new(UserHistoryCell {
+            message: "first prompt".to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+        }) as Arc<dyn HistoryCell>,
+        Arc::new(AgentMessageCell::new(
+            vec![Line::from("first response")],
+            /*is_first_line*/ true,
+        )) as Arc<dyn HistoryCell>,
+        Arc::new(UserHistoryCell {
+            message: "second prompt".to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+        }) as Arc<dyn HistoryCell>,
+        Arc::new(AgentMessageCell::new(
+            vec![Line::from("second response")],
+            /*is_first_line*/ true,
+        )) as Arc<dyn HistoryCell>,
+    ];
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    app.apply_backtrack_selection(BacktrackSelection {
+        thread_id: source_thread_id,
+        nth_user_message: 1,
+        prompt: crate::chatwidget::UserMessage::from("second prompt"),
+    });
+    let rollback_event = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find(|event| matches!(event, AppEvent::RollbackSessionForPromptEdit { .. }))
+        .expect("default prompt edit should request an in-place rollback");
+    let control = Box::pin(app.handle_event(&mut tui, &mut app_server, rollback_event)).await?;
+
+    assert!(matches!(control, AppRunControl::Continue));
+    assert_eq!(app.chat_widget.thread_id(), Some(source_thread_id));
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "second prompt"
+    );
+    assert!(app.backtrack.pending_rollback.is_none());
+    assert!(app.backtrack_render_pending);
+    assert_eq!(user_count(&app.transcript_cells), 1);
+    assert_eq!(
+        app_server
+            .thread_read(source_thread_id, /*include_turns*/ true)
+            .await?
+            .turns
+            .iter()
+            .map(|turn| turn.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["turn-1"]
+    );
+    let stored_turn_ids = app
+        .thread_event_channels
+        .get(&source_thread_id)
+        .expect("active thread channel")
+        .store
+        .lock()
+        .await
+        .turns
+        .iter()
+        .map(|turn| turn.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(stored_turn_ids, vec!["turn-1".to_string()]);
+
+    let rendered_lines = app
+        .transcript_cells
+        .iter()
+        .flat_map(|cell| cell.display_lines(/*width*/ 80))
+        .collect::<Vec<_>>();
+    let rendered = lines_to_single_string(&rendered_lines).trim().to_string();
+    assert_app_snapshot!("prompt_edit_rollback_retains_prior_transcript", rendered);
+    app_server.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -5390,32 +5778,7 @@ async fn prompt_edit_forks_before_selected_prompt_and_preserves_source() -> Resu
             vec![PathBuf::from("/tmp/fake-image.png")],
         ),
     ] {
-        for item in [
-            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                turn_id: turn_id.to_string(),
-                trace_id: None,
-                started_at: None,
-                model_context_window: None,
-                collaboration_mode_kind: ModeKind::default(),
-            })),
-            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
-                message: message.to_string(),
-                images,
-                local_images,
-                ..Default::default()
-            })),
-            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: turn_id.to_string(),
-                last_agent_message: None,
-                error: None,
-                started_at: None,
-                completed_at: None,
-                duration_ms: None,
-                time_to_first_token_ms: None,
-            })),
-        ] {
-            codex_rollout::append_rollout_item_to_path(&source_path, &item).await?;
-        }
+        append_completed_rollout_turn(&source_path, turn_id, message, images, local_images).await?;
     }
 
     let source_thread_id = ThreadId::from_string(&source_thread_id)?;

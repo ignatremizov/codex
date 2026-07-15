@@ -108,6 +108,8 @@ pub enum Feature {
     UnifiedExecZshFork,
     /// Removed compatibility flag. Transcript scrollback reflow on terminal resize is always on.
     TerminalResizeReflow,
+    /// Fork the conversation when editing an earlier TUI prompt instead of rolling back in place.
+    ForkPromptEdits,
     /// Add terminal-specific visualization guidance to TUI developer instructions.
     TerminalVisualizationInstructions,
     /// Stream structured progress while apply_patch input is being generated.
@@ -883,6 +885,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "terminal_resize_reflow",
         stage: Stage::Removed,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::ForkPromptEdits,
+        key: "fork_prompt_edits",
+        stage: Stage::Stable,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::WebSearchRequest,
