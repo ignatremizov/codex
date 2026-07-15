@@ -172,15 +172,29 @@ jobs:
               sha256sum "${archive}" > "${archive}.sha256"
             done
 
-      - name: Upload Linux artifact
+      - name: Upload Linux binaries archive
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: codex-x86_64-unknown-linux-gnu-${{ github.run_id }}
+          name: codex-x86_64-unknown-linux-gnu-binaries-${{ github.run_id }}
           path: |
             codex-rs/codex-x86_64-unknown-linux-gnu.tar.gz
             codex-rs/codex-x86_64-unknown-linux-gnu.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload Linux Codex package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-package-x86_64-unknown-linux-gnu-${{ github.run_id }}
+          path: |
             codex-rs/dist/x86_64-unknown-linux-gnu/codex-package-x86_64-unknown-linux-gnu.tar.gz
             codex-rs/dist/x86_64-unknown-linux-gnu/codex-package-x86_64-unknown-linux-gnu.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload Linux app-server package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-app-server-package-x86_64-unknown-linux-gnu-${{ github.run_id }}
+          path: |
             codex-rs/dist/x86_64-unknown-linux-gnu/codex-app-server-package-x86_64-unknown-linux-gnu.tar.gz
             codex-rs/dist/x86_64-unknown-linux-gnu/codex-app-server-package-x86_64-unknown-linux-gnu.tar.gz.sha256
           retention-days: 14
@@ -473,15 +487,29 @@ jobs:
               sha256sum "${archive}" > "${archive}.sha256"
             done
 
-      - name: Upload macOS Intel artifact
+      - name: Upload macOS Intel binaries archive
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: codex-x86_64-apple-darwin-${{ github.run_id }}
+          name: codex-x86_64-apple-darwin-binaries-${{ github.run_id }}
           path: |
             codex-rs/codex-x86_64-apple-darwin.tar.gz
             codex-rs/codex-x86_64-apple-darwin.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload macOS Intel Codex package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-package-x86_64-apple-darwin-${{ github.run_id }}
+          path: |
             codex-rs/dist/x86_64-apple-darwin/codex-package-x86_64-apple-darwin.tar.gz
             codex-rs/dist/x86_64-apple-darwin/codex-package-x86_64-apple-darwin.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload macOS Intel app-server package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-app-server-package-x86_64-apple-darwin-${{ github.run_id }}
+          path: |
             codex-rs/dist/x86_64-apple-darwin/codex-app-server-package-x86_64-apple-darwin.tar.gz
             codex-rs/dist/x86_64-apple-darwin/codex-app-server-package-x86_64-apple-darwin.tar.gz.sha256
           retention-days: 14
