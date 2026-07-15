@@ -12370,6 +12370,7 @@ wait_agent_enabled = false
 disable_direct_message = true
 message_board_in_memory = true
 non_code_mode_only = true
+message_delivery = "plaintext"
 
 [agents]
 max_concurrent_threads_per_session = 9
@@ -12427,6 +12428,10 @@ max_concurrent_threads_per_session = 9
     assert!(config.multi_agent_v2.disable_direct_message);
     assert!(config.multi_agent_v2.message_board_in_memory);
     assert!(config.multi_agent_v2.non_code_mode_only);
+    assert_eq!(
+        config.multi_agent_v2.message_delivery,
+        MultiAgentMessageDelivery::Plaintext
+    );
 
     Ok(())
 }
@@ -12641,11 +12646,52 @@ subagent_developer_instructions = "  \t  "
     .expect("multi-agent v2 config should parse");
 
     let expected = MultiAgentV2Config {
+        max_concurrent_threads_per_session: 4,
+        min_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS,
+        max_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS,
+        default_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS,
+        usage_hint_text: None,
+        root_agent_usage_hint_text: None,
+        subagent_usage_hint_text: None,
         subagent_developer_instructions: Some(String::new()),
         multi_agent_mode_hint_text: Some(String::new()),
-        ..resolve_multi_agent_v2_config(&ConfigToml::default())
+        tool_namespace: Some(DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE.to_string()),
+        hide_spawn_agent_metadata: true,
+        expose_spawn_agent_model_overrides: true,
+        wait_agent_enabled: true,
+        disable_direct_message: false,
+        message_board_in_memory: false,
+        non_code_mode_only: true,
+        message_delivery: MultiAgentMessageDelivery::EncryptedWithAudit,
     };
     assert_eq!(resolve_multi_agent_v2_config(&config_toml), expected);
+}
+
+#[test]
+fn multi_agent_v2_message_delivery_modes_resolve() {
+    for (value, expected) in [
+        ("encrypted", MultiAgentMessageDelivery::Encrypted),
+        (
+            "encrypted_with_audit",
+            MultiAgentMessageDelivery::EncryptedWithAudit,
+        ),
+        ("plaintext", MultiAgentMessageDelivery::Plaintext),
+    ] {
+        let config_toml = toml::from_str(&format!(
+            "[features.multi_agent_v2]\nmessage_delivery = \"{value}\"\n"
+        ))
+        .expect("multi-agent v2 delivery mode should parse");
+
+        assert_eq!(
+            resolve_multi_agent_v2_config(&config_toml).message_delivery,
+            expected
+        );
+    }
+
+    assert_eq!(
+        resolve_multi_agent_v2_config(&ConfigToml::default()).message_delivery,
+        MultiAgentMessageDelivery::EncryptedWithAudit
+    );
 }
 
 #[tokio::test]

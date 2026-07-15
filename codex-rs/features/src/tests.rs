@@ -746,6 +746,7 @@ wait_agent_enabled = false
 disable_direct_message = true
 message_board_in_memory = true
 non_code_mode_only = true
+message_delivery = "plaintext"
 "#,
     )
     .expect("features table should deserialize");
@@ -775,8 +776,34 @@ non_code_mode_only = true
             disable_direct_message: Some(true),
             message_board_in_memory: Some(true),
             non_code_mode_only: Some(true),
+            message_delivery: Some(crate::MultiAgentMessageDelivery::Plaintext),
         }))
     );
+}
+
+#[test]
+fn multi_agent_v2_message_delivery_modes_deserialize() {
+    for (value, expected) in [
+        ("encrypted", crate::MultiAgentMessageDelivery::Encrypted),
+        (
+            "encrypted_with_audit",
+            crate::MultiAgentMessageDelivery::EncryptedWithAudit,
+        ),
+        ("plaintext", crate::MultiAgentMessageDelivery::Plaintext),
+    ] {
+        let features: FeaturesToml = toml::from_str(&format!(
+            "[multi_agent_v2]\nmessage_delivery = \"{value}\"\n"
+        ))
+        .expect("features table should deserialize");
+
+        assert_eq!(
+            features.multi_agent_v2,
+            Some(FeatureToml::Config(crate::MultiAgentV2ConfigToml {
+                message_delivery: Some(expected),
+                ..Default::default()
+            }))
+        );
+    }
 }
 
 #[test]
