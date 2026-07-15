@@ -104,3 +104,32 @@ fn modes_without_audit_reject_task_message() {
         );
     }
 }
+
+#[test]
+fn delivery_rejects_oversized_message_payloads() {
+    let oversized = "x".repeat(MAX_AGENT_MESSAGE_PAYLOAD_BYTES + 1);
+    let plaintext_error = PreparedAgentMessage::from_tool_args(
+        oversized,
+        /*task_message*/ None,
+        MultiAgentMessageDelivery::Plaintext,
+    )
+    .expect_err("oversized plaintext should be rejected");
+    let encrypted_with_audit_error = PreparedAgentMessage::from_tool_args(
+        "opaque".to_string(),
+        Some("x".repeat(MAX_AGENT_MESSAGE_PAYLOAD_BYTES)),
+        MultiAgentMessageDelivery::EncryptedWithAudit,
+    )
+    .expect_err("oversized combined payload should be rejected");
+
+    assert_eq!(
+        (plaintext_error, encrypted_with_audit_error,),
+        (
+            FunctionCallError::RespondToModel(
+                "message payload must not exceed 8192 bytes".to_string()
+            ),
+            FunctionCallError::RespondToModel(
+                "combined message and task_message payload must not exceed 8192 bytes".to_string()
+            ),
+        )
+    );
+}

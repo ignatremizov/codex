@@ -13,6 +13,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
+pub(crate) const MAX_AGENT_MESSAGE_PAYLOAD_BYTES: usize = 8 * 1024;
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
@@ -705,7 +706,9 @@ fn multi_agent_message_schema(
         }
         MultiAgentMessageDelivery::Plaintext => " Plaintext.",
     };
-    let schema = JsonSchema::string(Some(format!("{description}{delivery_description}")));
+    let schema = JsonSchema::string(Some(format!(
+        "{description}{delivery_description} The combined message payload for this call must not exceed {MAX_AGENT_MESSAGE_PAYLOAD_BYTES} bytes."
+    )));
     match message_delivery {
         MultiAgentMessageDelivery::Encrypted | MultiAgentMessageDelivery::EncryptedWithAudit => {
             schema.with_encrypted()

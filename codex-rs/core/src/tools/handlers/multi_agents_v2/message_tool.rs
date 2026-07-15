@@ -8,6 +8,7 @@ use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::config::MultiAgentMessageDelivery;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::handlers::multi_agents_spec::MAX_AGENT_MESSAGE_PAYLOAD_BYTES;
 use codex_protocol::protocol::InterAgentCommunication;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,6 +84,7 @@ impl PreparedAgentMessage {
                             .to_string(),
                     ));
                 }
+                validate_message_payload_size(&message, /*task_message*/ None)?;
                 Ok(Self::Encrypted {
                     encrypted_content: message,
                 })
@@ -99,6 +101,7 @@ impl PreparedAgentMessage {
                         "task_message must not be empty".to_string(),
                     ));
                 }
+                validate_message_payload_size(&message, Some(&task_message))?;
                 Ok(Self::EncryptedWithAudit {
                     encrypted_content: message,
                     audit_content: task_message,
@@ -111,6 +114,7 @@ impl PreparedAgentMessage {
                             .to_string(),
                     ));
                 }
+                validate_message_payload_size(&message, /*task_message*/ None)?;
                 Ok(Self::Plaintext { content: message })
             }
         }
@@ -152,6 +156,26 @@ impl PreparedAgentMessage {
             ),
         }
     }
+}
+
+fn validate_message_payload_size(
+    message: &str,
+    task_message: Option<&str>,
+) -> Result<(), FunctionCallError> {
+    let payload_bytes = message
+        .len()
+        .saturating_add(task_message.map_or(0, str::len));
+    if payload_bytes > MAX_AGENT_MESSAGE_PAYLOAD_BYTES {
+        let fields = if task_message.is_some() {
+            "combined message and task_message"
+        } else {
+            "message"
+        };
+        return Err(FunctionCallError::RespondToModel(format!(
+            "{fields} payload must not exceed {MAX_AGENT_MESSAGE_PAYLOAD_BYTES} bytes"
+        )));
+    }
+    Ok(())
 }
 
 /// Handles the shared MultiAgentV2 message flow for both `send_message` and `followup_task`.
