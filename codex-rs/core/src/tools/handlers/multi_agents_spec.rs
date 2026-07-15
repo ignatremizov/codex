@@ -1,5 +1,6 @@
 use super::multi_agents_common::MAX_SPAWN_AGENT_MODEL_OVERRIDES;
 use super::multi_agents_common::model_supports_multi_agent_backend;
+use crate::config::MultiAgentMessageDelivery;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::JsonSchema;
@@ -29,6 +30,7 @@ pub struct SpawnAgentToolOptions {
     pub expose_spawn_agent_model_overrides: bool,
     pub multi_agent_version: MultiAgentVersion,
     pub usage_hint_text: Option<String>,
+    pub message_delivery: MultiAgentMessageDelivery,
 }
 
 impl Default for SpawnAgentToolOptions {
@@ -40,6 +42,7 @@ impl Default for SpawnAgentToolOptions {
             expose_spawn_agent_model_overrides: false,
             multi_agent_version: MultiAgentVersion::Disabled,
             usage_hint_text: None,
+            message_delivery: MultiAgentMessageDelivery::default(),
         }
     }
 }
@@ -100,7 +103,8 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
     let inherited_model_guidance = (options.expose_spawn_agent_model_overrides
         && !options.hide_agent_type_model_reasoning)
         .then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
-    let mut properties = spawn_agent_common_properties_v2(&options.agent_type_description);
+    let mut properties =
+        spawn_agent_common_properties_v2(&options.agent_type_description, options.message_delivery);
     if options.hide_agent_type_model_reasoning {
         properties.remove("agent_type");
         properties.remove("service_tier");
@@ -116,6 +120,20 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
                 .to_string(),
         )),
     );
+    if options.message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
+        properties.insert(
+            "task_message".to_string(),
+            JsonSchema::string(Some(
+                "Human-readable audit record of the delegated task. Keep it concise and complete."
+                    .to_string(),
+            )),
+        );
+    }
+    let mut required = vec!["task_name".to_string()];
+    if options.message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
+        required.push("task_message".to_string());
+    }
+    required.push("message".to_string());
 
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
@@ -126,11 +144,7 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
         ),
         strict: false,
         defer_loading: None,
-        parameters: JsonSchema::object(
-            properties,
-            Some(vec!["task_name".to_string(), "message".to_string()]),
-            Some(false.into()),
-        ),
+        parameters: JsonSchema::object(properties, Some(required), Some(false.into())),
         output_schema: Some(spawn_agent_output_schema_v2(
             options.hide_agent_type_model_reasoning,
         )),
@@ -175,8 +189,8 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
     })
 }
 
-pub fn create_send_message_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+pub fn create_send_message_tool(message_delivery: MultiAgentMessageDelivery) -> ToolSpec {
+    let mut properties = BTreeMap::from([
         (
             "target".to_string(),
             JsonSchema::string(Some(
@@ -185,12 +199,23 @@ pub fn create_send_message_tool() -> ToolSpec {
         ),
         (
             "message".to_string(),
-            JsonSchema::string(Some(
-                "Message text to queue on the target agent.".to_string(),
-            ))
-            .with_encrypted(),
+            multi_agent_message_schema("Message to queue on the target agent.", message_delivery),
         ),
     ]);
+    if message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
+        properties.insert(
+            "task_message".to_string(),
+            JsonSchema::string(Some(
+                "Human-readable audit record of the message. Keep it concise and complete."
+                    .to_string(),
+            )),
+        );
+    }
+    let mut required = vec!["target".to_string()];
+    if message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
+        required.push("task_message".to_string());
+    }
+    required.push("message".to_string());
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
@@ -198,17 +223,13 @@ pub fn create_send_message_tool() -> ToolSpec {
             .to_string(),
         strict: false,
         defer_loading: None,
-        parameters: JsonSchema::object(
-            properties,
-            Some(vec!["target".to_string(), "message".to_string()]),
-            Some(false.into()),
-        ),
+        parameters: JsonSchema::object(properties, Some(required), Some(false.into())),
         output_schema: None,
     })
 }
 
-pub fn create_followup_task_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+pub fn create_followup_task_tool(message_delivery: MultiAgentMessageDelivery) -> ToolSpec {
+    let mut properties = BTreeMap::from([
         (
             "target".to_string(),
             JsonSchema::string(Some(
@@ -218,12 +239,26 @@ pub fn create_followup_task_tool() -> ToolSpec {
         ),
         (
             "message".to_string(),
-            JsonSchema::string(Some(
-                "Message text to send to the target agent.".to_string(),
-            ))
-            .with_encrypted(),
+            multi_agent_message_schema(
+                "Follow-up task to send to the target agent.",
+                message_delivery,
+            ),
         ),
     ]);
+    if message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
+        properties.insert(
+            "task_message".to_string(),
+            JsonSchema::string(Some(
+                "Human-readable audit record of the follow-up task. Keep it concise and complete."
+                    .to_string(),
+            )),
+        );
+    }
+    let mut required = vec!["target".to_string()];
+    if message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
+        required.push("task_message".to_string());
+    }
+    required.push("message".to_string());
 
     ToolSpec::Function(ResponsesApiTool {
         name: "followup_task".to_string(),
@@ -231,7 +266,7 @@ pub fn create_followup_task_tool() -> ToolSpec {
             .to_string(),
         strict: false,
         defer_loading: None,
-        parameters: JsonSchema::object(properties, Some(vec!["target".to_string(), "message".to_string()]), Some(false.into())),
+        parameters: JsonSchema::object(properties, Some(required), Some(false.into())),
         output_schema: None,
     })
 }
@@ -460,9 +495,13 @@ fn list_agents_output_schema() -> Value {
                         "agent_status": {
                             "description": "Last known status of the agent.",
                             "allOf": [agent_status_output_schema()]
+                        },
+                        "last_task_message": {
+                            "type": ["string", "null"],
+                            "description": "Most recent user or inter-agent instruction received by the agent, when available."
                         }
                     },
-                    "required": ["agent_name", "agent_status"],
+                    "required": ["agent_name", "agent_status", "last_task_message"],
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."
@@ -613,14 +652,14 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
     ])
 }
 
-fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<String, JsonSchema> {
+fn spawn_agent_common_properties_v2(
+    agent_type_description: &str,
+    message_delivery: MultiAgentMessageDelivery,
+) -> BTreeMap<String, JsonSchema> {
     BTreeMap::from([
         (
             "message".to_string(),
-            JsonSchema::string(Some(
-                "Initial plain-text task for the new agent.".to_string(),
-            ))
-            .with_encrypted(),
+            multi_agent_message_schema("Initial task for the new agent.", message_delivery),
         ),
         (
             "agent_type".to_string(),
@@ -653,6 +692,26 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
             )),
         ),
     ])
+}
+
+fn multi_agent_message_schema(
+    description: &str,
+    message_delivery: MultiAgentMessageDelivery,
+) -> JsonSchema {
+    let delivery_description = match message_delivery {
+        MultiAgentMessageDelivery::Encrypted => " Responses encrypts this field.",
+        MultiAgentMessageDelivery::EncryptedWithAudit => {
+            " Responses encrypts this field for opaque delivery; provide the separate human-readable audit field copy too."
+        }
+        MultiAgentMessageDelivery::Plaintext => " Plaintext.",
+    };
+    let schema = JsonSchema::string(Some(format!("{description}{delivery_description}")));
+    match message_delivery {
+        MultiAgentMessageDelivery::Encrypted | MultiAgentMessageDelivery::EncryptedWithAudit => {
+            schema.with_encrypted()
+        }
+        MultiAgentMessageDelivery::Plaintext => schema,
+    }
 }
 
 fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchema>) {
