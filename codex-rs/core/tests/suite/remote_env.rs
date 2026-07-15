@@ -993,7 +993,11 @@ async fn deferred_executor_spawn_agent_inherits_ready_step_environments(
     let spawn_call_id = "spawn-in-ready-environment";
     let message = "inspect the ready step environment";
     let spawn_arguments = if multi_agent_v2 {
-        json!({ "message": message, "task_name": "worker" })
+        json!({
+            "message": message,
+            "task_message": message,
+            "task_name": "worker",
+        })
     } else {
         json!({ "message": message })
     }

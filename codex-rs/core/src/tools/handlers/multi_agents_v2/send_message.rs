@@ -2,10 +2,20 @@ use super::message_tool::MessageDeliveryMode;
 use super::message_tool::SendMessageArgs;
 use super::message_tool::handle_message_string_tool;
 use super::*;
+use crate::config::MultiAgentMessageDelivery;
 use crate::tools::handlers::multi_agents_spec::create_send_message_tool;
 use codex_tools::ToolSpec;
 
-pub(crate) struct Handler;
+#[derive(Default)]
+pub(crate) struct Handler {
+    message_delivery: MultiAgentMessageDelivery,
+}
+
+impl Handler {
+    pub(crate) fn new(message_delivery: MultiAgentMessageDelivery) -> Self {
+        Self { message_delivery }
+    }
+}
 
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
@@ -13,7 +23,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_send_message_tool()
+        create_send_message_tool(self.message_delivery)
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
@@ -33,6 +43,8 @@ impl Handler {
             MessageDeliveryMode::QueueOnly,
             args.target,
             args.message,
+            args.task_message,
+            self.message_delivery,
         )
         .await
         .map(boxed_tool_output)

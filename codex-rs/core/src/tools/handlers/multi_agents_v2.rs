@@ -2,9 +2,6 @@
 
 use crate::agent::AgentStatus;
 use crate::agent::agent_resolver::resolve_agent_target;
-use crate::context::ContextualUserFragment;
-use crate::context::InterAgentMessage;
-use crate::context::InterAgentMessageType;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -22,7 +19,6 @@ use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SubAgentActivityKind;
 use codex_tools::ToolName;
 use serde::Deserialize;
@@ -52,33 +48,4 @@ pub(crate) async fn emit_sub_agent_activity(
     let item = TurnItem::SubAgentActivity(item);
     session.emit_turn_item_started(turn, &item).await;
     session.emit_turn_item_completed(turn, item).await;
-}
-
-fn communication_from_tool_message(
-    author: AgentPath,
-    recipient: AgentPath,
-    message: String,
-    source: &crate::tools::context::ToolCallSource,
-    trigger_turn: bool,
-) -> InterAgentCommunication {
-    if !matches!(
-        source,
-        crate::tools::context::ToolCallSource::DirectPlaintextMessage
-    ) {
-        return InterAgentCommunication::new_encrypted(
-            author,
-            recipient,
-            Vec::new(),
-            message,
-            trigger_turn,
-        );
-    }
-    let message_type = if trigger_turn {
-        InterAgentMessageType::NewTask
-    } else {
-        InterAgentMessageType::Message
-    };
-    let content =
-        InterAgentMessage::new(message_type, recipient.clone(), author.clone(), message).render();
-    InterAgentCommunication::new(author, recipient, Vec::new(), content, trigger_turn)
 }
