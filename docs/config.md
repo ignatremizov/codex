@@ -66,6 +66,17 @@ disabled_tools = [
 ]
 ```
 
+## Editing earlier prompts
+
+The TUI edits an earlier prompt in place by default. To preserve the source conversation and reopen the selected prompt as an editable draft on a new branch instead, enable:
+
+```toml
+[features]
+fork_prompt_edits = true
+```
+
+The branch retains history before the selected turn. Creating it does not submit the draft or automatically continue a goal, and it does not undo filesystem changes. This option also works when editing an existing Legacy session; it does not change that session's stored history mode.
+
 ## Notify
 
 `notify` is deprecated and will be removed in a future release. Existing configurations still work for compatibility, but new automation should use lifecycle hooks instead.

@@ -4,14 +4,14 @@
 //! mediates a key rendering boundary for the transcript overlay.
 //!
 //! Overall goal: keep the main chat view and the transcript overlay in sync while allowing users
-//! to edit an earlier prompt in place. Confirming a selection reverts before
-//! the selected turn and restores its prompt in the composer.
+//! to edit an earlier prompt in place, or on a source-preserving branch when `fork_prompt_edits`
+//! is enabled. Both paths validate the selected turn before restoring its prompt in the composer.
 //!
 //! Backtrack operates as a small state machine:
 //! - The first `Esc` in the main view "primes" the feature and captures a base thread id.
 //! - A subsequent `Esc` starts compact transcript browsing and highlights the latest user prompt.
 //! - Left/Right choose prompts, Ctrl+T toggles details, and Esc restores the browsing origin.
-//! - `Enter` requests a revert before the selected prompt and reopens it for editing.
+//! - `Enter` requests the configured edit before the selected prompt and reopens it for editing.
 //!
 //! Owned sessions use the shared transcript viewport for `Ctrl+T`; inline sessions retain the
 //! overlay. Both render committed cells and a live tail from the current `ChatWidget.active_cell`.
@@ -120,7 +120,7 @@ impl App {
         }
     }
 
-    /// Revert the current thread before the selected prompt.
+    /// Request the configured edit before the selected prompt, retaining its visible identity.
     pub(crate) fn apply_backtrack_selection(&mut self, selection: BacktrackSelection) {
         if self.chat_widget.side_conversation_active() {
             self.reset_backtrack_state();

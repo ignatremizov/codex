@@ -657,6 +657,11 @@ impl App {
                         return Ok(AppRunControl::Continue);
                     }
                 };
+                if self.config.features.enabled(Feature::ForkPromptEdits) {
+                    self.fork_for_prompt_edit(tui, app_server, thread_id, before_turn_id, prompt)
+                        .await;
+                    return Ok(AppRunControl::Continue);
+                }
                 let reverted = match app_server.revert_thread(thread_id, before_turn_id, &retained_turns).await {
                     Ok(reverted) => reverted,
                     Err(err) => {

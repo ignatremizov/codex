@@ -578,7 +578,8 @@ pub(crate) enum AppEvent {
         name: Option<String>,
     },
 
-    /// Revert before a selected prompt, retaining its identity across queued history pages.
+    /// Edit before a selected prompt in place or on an opt-in fork, retaining its identity
+    /// across queued history pages.
     RevertSessionForPromptEdit {
         thread_id: ThreadId,
         selected_cell: Arc<dyn HistoryCell>,

@@ -1,0 +1,9 @@
+---
+source: tui/src/app/tests/prompt_edit_tests.rs
+expression: rendered
+---
+› older prompt
+
+
+› retained prompt
+Draft: use $skill @sample $google-calendar
