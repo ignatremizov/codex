@@ -144,7 +144,7 @@ async fn partial_answers_survive_forked_child_requests(
             sse(vec![
                 if code_mode {
                     ev_custom_tool_call("spawn-worker", "exec",
-                        r#"text(await tools.collaboration__spawn_agent({task_name: "worker", message: "Check both inherited results.", fork_turns: "all"}));"#)
+                        r#"text(await tools.collaboration__spawn_agent({task_name: "worker", message: "Check both inherited results.", task_message: "Check both inherited results.", fork_turns: "all"}));"#)
                 } else { ev_function_call_with_namespace(
                     "spawn-worker",
                     "collaboration",
@@ -152,6 +152,7 @@ async fn partial_answers_survive_forked_child_requests(
                     &json!({
                         "task_name": "worker",
                         "message": "Check both inherited results.",
+                        "task_message": "Check both inherited results.",
                         "fork_turns": "all",
                     })
                     .to_string(),

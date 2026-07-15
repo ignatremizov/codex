@@ -61,12 +61,12 @@ impl ThreadLifecycleContributor<Config> for PauseShutdown {
 async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()> {
     const QUEUED_TASK: &str = "handle this accepted task after dispatch resumes";
     let server = start_mock_server().await;
-    mount_root_collaboration_call(
+    let first_spawn = mount_root_collaboration_call(
         &server,
         FIRST_PROMPT,
         "first-call",
         "spawn_agent",
-        json!({ "message": FIRST_TASK, "task_name": "first", "fork_turns": "none" }),
+        json!({ "message": FIRST_TASK, "task_message": FIRST_TASK, "task_name": "first", "fork_turns": "none" }),
     )
     .await;
     mount_completed_worker(&server, FIRST_TASK, "first-call").await;
@@ -75,7 +75,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         "queue a followup",
         "queued-mail",
         "followup_task",
-        json!({ "target": "first", "message": QUEUED_TASK }),
+        json!({ "target": "first", "message": QUEUED_TASK, "task_message": QUEUED_TASK }),
     )
     .await;
     let worker = mount_completed_worker(&server, QUEUED_TASK, "queued-mail").await;
@@ -92,7 +92,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         "reclaim the queued worker",
         "blocked-spawn",
         "spawn_agent",
-        json!({ "message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }),
+        json!({ "message": SECOND_TASK, "task_message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }),
     )
     .await;
 
@@ -118,11 +118,21 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         .await?;
     let mut created = test.thread_manager.subscribe_thread_created();
     test.submit_turn(FIRST_PROMPT).await?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            &first_spawn
+                .function_call_output_text("first-call")
+                .context("initial spawn must return its admission result")?,
+        )?,
+        json!({"task_name": "/root/first"}),
+    );
     eprintln!(
         "queued-eviction: initial spawn returned; waiting for parent idle and child publication"
     );
     ThreadIdle::wait(&test.codex).await;
-    let first_id = created.recv().await?;
+    let first_id = timeout(Duration::from_secs(10), created.recv())
+        .await
+        .context("accepted initial spawn must publish its child")??;
     let first = test.thread_manager.get_thread(first_id).await?;
     wait_for_event(&first, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     ThreadIdle::wait(&first).await;
@@ -182,7 +192,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
                 "cancelled-spawn",
                 MULTI_AGENT_V2_NAMESPACE,
                 "spawn_agent",
-                &json!({ "message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }).to_string(),
+                &json!({ "message": SECOND_TASK, "task_message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }).to_string(),
             ),
             ev_completed("eviction-response"),
         ]),
@@ -207,7 +217,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         "send during eviction",
         "late-mail",
         "send_message",
-        json!({ "target": "first", "message": "must not disappear behind shutdown" }),
+        json!({ "target": "first", "message": "must not disappear behind shutdown", "task_message": "must not disappear behind shutdown" }),
     )
     .await;
     let send = test.submit_turn("send during eviction");
@@ -235,7 +245,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         "retry replacement",
         "replacement-call",
         "spawn_agent",
-        json!({ "message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }),
+        json!({ "message": SECOND_TASK, "task_message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }),
     )
     .await;
     mount_completed_worker(&server, SECOND_TASK, "replacement-call").await;

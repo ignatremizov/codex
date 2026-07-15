@@ -1226,6 +1226,8 @@ async fn child_completion_wakes_parent_after_final_answer() -> Result<()> {
             configure_scenario_catalog(config);
             config.model_reasoning_effort = Some(ReasoningEffort::Medium);
             config.include_environment_context = false;
+            config.multi_agent_v2.message_delivery =
+                codex_core::config::MultiAgentMessageDelivery::Plaintext;
             for feature in [
                 Feature::Collab,
                 Feature::MultiAgentV2,

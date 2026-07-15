@@ -12,6 +12,7 @@ use codex_core::ForkSnapshot;
 use codex_core::TurnInputRequest;
 use codex_core::compact::content_items_to_text;
 use codex_core::config::Config;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_core::config::ThreadStoreConfig;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -813,6 +814,7 @@ async fn standalone_fork_retains_inherited_user_instructions(
                     .enable(feature)
                     .expect("enable test feature");
             }
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
         })
         .build_with_auto_env(&server)
         .await?;
@@ -1016,6 +1018,7 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
                     .enable(feature)
                     .expect("enable test feature");
             }
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
         })
         .build_with_auto_env(&server)
         .await?;
@@ -1247,6 +1250,7 @@ async fn retained_answers_cross_real_session_boundaries(
                     .enable(feature)
                     .expect("enable test feature");
             }
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
         })
         .build_with_auto_env(&server)
         .await?;

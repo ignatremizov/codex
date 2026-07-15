@@ -1447,17 +1447,9 @@ impl ThreadManager {
         thread_id: &ThreadId,
         expected: &Arc<CodexThread>,
     ) -> Option<Arc<CodexThread>> {
-        let mut threads = self.state.threads.write().await;
-        if threads
-            .get(thread_id)
-            .is_some_and(|thread| Arc::ptr_eq(thread, expected))
-        {
-            threads.remove(thread_id).inspect(|thread| {
-                thread.session.services.mcp_runtime.revoke_ema();
-            })
-        } else {
-            None
-        }
+        self.state
+            .remove_thread_if_matches(thread_id, expected)
+            .await
     }
 
     /// Tries to shut down all tracked threads concurrently within the provided timeout.
@@ -1832,12 +1824,26 @@ impl ThreadManagerState {
         message_delivery: Option<crate::agent_communication::MessageDelivery>,
     ) -> CodexResult<String> {
         let thread = self.get_thread(thread_id).await?;
+        self.send_op_to_thread(&thread, op, parent_turn_id, root_turn_id, message_delivery)
+            .await
+    }
+
+    /// Submit to the captured runtime without resolving its identifier again.
+    pub(crate) async fn send_op_to_thread(
+        &self,
+        thread: &Arc<CodexThread>,
+        op: Op,
+        parent_turn_id: Option<String>,
+        root_turn_id: Option<String>,
+        message_delivery: Option<crate::agent_communication::MessageDelivery>,
+    ) -> CodexResult<String> {
+        let thread_id = thread.session.thread_id;
         let residency_guard = if matches!(op, Op::InterAgentCommunication { .. }) {
             thread
                 .session
                 .services
                 .local_agent_runtime
-                .pin_v2_residency(self, &thread)
+                .pin_v2_residency(self, thread)
                 .await?
         } else {
             None
@@ -1870,6 +1876,24 @@ impl ThreadManagerState {
             .inspect(|thread| {
                 thread.session.services.mcp_runtime.revoke_ema();
             })
+    }
+
+    pub(crate) async fn remove_thread_if_matches(
+        &self,
+        thread_id: &ThreadId,
+        expected: &Arc<CodexThread>,
+    ) -> Option<Arc<CodexThread>> {
+        let mut threads = self.threads.write().await;
+        if threads
+            .get(thread_id)
+            .is_some_and(|thread| Arc::ptr_eq(thread, expected))
+        {
+            threads.remove(thread_id).inspect(|thread| {
+                thread.session.services.mcp_runtime.revoke_ema();
+            })
+        } else {
+            None
+        }
     }
 
     pub(crate) async fn effective_multi_agent_version_for_spawn(
