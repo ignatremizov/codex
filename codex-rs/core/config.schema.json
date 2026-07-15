@@ -1749,6 +1749,32 @@
       },
       "type": "object"
     },
+    "MultiAgentMessageDelivery": {
+      "description": "Controls how MultiAgentV2 task and message payloads are delivered and audited.",
+      "oneOf": [
+        {
+          "description": "Preserve the provider-opaque encrypted payload without a local plaintext copy.",
+          "enum": [
+            "encrypted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Preserve encrypted delivery and request a separate human-readable audit copy.",
+          "enum": [
+            "encrypted_with_audit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Deliver and persist one plaintext message without an encrypted payload.",
+          "enum": [
+            "plaintext"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "MultiAgentV2ConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -1778,6 +1804,14 @@
           "maximum": 3600000.0,
           "minimum": 0.0,
           "type": "integer"
+        },
+        "message_delivery": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MultiAgentMessageDelivery"
+            }
+          ],
+          "description": "Selects encrypted delivery, encrypted delivery with a plaintext audit copy, or plaintext delivery for MultiAgentV2 tasks and messages."
         },
         "min_wait_timeout_ms": {
           "format": "int64",
