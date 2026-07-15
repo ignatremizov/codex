@@ -24,6 +24,7 @@ use codex_protocol::user_input::UserInput;
 use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
+use core_test_support::TempDirExt;
 use core_test_support::managed_network_requirements_loader;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ev_assistant_message;
@@ -146,7 +147,7 @@ async fn guardian_network_approval_preserves_action_and_outcome_routing() -> Res
         submit_managed_network_turn(
             &test,
             prompt,
-            vec![local(test.config.cwd.clone())],
+            vec![local(test.cwd.abs())],
             ApprovalsReviewer::AutoReview,
             AskForApproval::OnRequest,
         )
@@ -167,7 +168,7 @@ async fn guardian_network_approval_preserves_action_and_outcome_routing() -> Res
             "trigger": {
                 "callId": first_call_id,
                 "command": ["/bin/sh", "-c", first_command],
-                "cwd": test.config.cwd,
+                "cwd": test.cwd.abs(),
                 "sandboxPermissions": "use_default",
                 "toolName": "exec_command",
                 "tty": false,
@@ -248,7 +249,7 @@ async fn cancelled_guardian_network_review_fails_closed_without_rewriting_turn_s
     submit_managed_network_turn(
         &test,
         marker,
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )
@@ -276,7 +277,7 @@ async fn cancelled_guardian_network_review_fails_closed_without_rewriting_turn_s
     submit_managed_network_turn(
         &test,
         "verify preserved state",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::User,
         AskForApproval::OnRequest,
     )
@@ -367,7 +368,7 @@ async fn timed_out_guardian_network_review_uses_timeout_outcome_without_user_fal
     submit_managed_network_turn(
         &test,
         "time out the Guardian network review",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )
@@ -409,7 +410,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
 
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
-    let environments = vec![local(test.config.cwd.clone())];
+    let environments = vec![local(test.cwd.abs())];
 
     mount_exec_network_turn(
         &server,
@@ -433,7 +434,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     );
     assert_eq!(approval.approval_id, None);
     assert!(!approval.turn_id.is_empty());
-    assert_eq!(approval.cwd, test.config.cwd);
+    assert_eq!(approval.cwd, test.cwd.abs());
     assert_eq!(
         approval.reason.as_deref(),
         Some("codex-network-test.invalid is not in the allowed_domains")
@@ -551,7 +552,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     submit_managed_network_turn(
         &test,
         "a different protocol must prompt and the user abort must stay a user outcome",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::User,
         AskForApproval::OnRequest,
     )
@@ -592,7 +593,7 @@ async fn allowing_network_policy_amendment_persists_context_and_bypasses_prompt(
 
     let server = start_mock_server().await;
     let test = managed_network_unified_exec_test(&server).await?;
-    let environments = vec![local(test.config.cwd.clone())];
+    let environments = vec![local(test.cwd.abs())];
     let first_responses = mount_exec_network_turn(
         &server,
         "resp-network-amendment-1",
@@ -694,7 +695,7 @@ async fn unattributed_network_request_uses_active_turn_environment_fallback() ->
     submit_managed_network_turn(
         &test,
         "hold the active turn",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::User,
         AskForApproval::OnRequest,
     )
@@ -711,7 +712,7 @@ async fn unattributed_network_request_uses_active_turn_environment_fallback() ->
     let proxy_request = tokio::spawn(raw_http_proxy_request(proxy_addr, NETWORK_TEST_HOST));
     let approval = expect_network_approval(&test, LOCAL_ENVIRONMENT_ID).await?;
     assert_eq!(approval.command, ["network-access", NETWORK_TEST_TARGET]);
-    assert_eq!(approval.cwd, test.config.cwd);
+    assert_eq!(approval.cwd, test.cwd.abs());
     test.codex
         .submit(Op::ExecApproval {
             id: approval.effective_approval_id(),
@@ -776,7 +777,7 @@ async fn ambiguous_unattributed_network_request_is_not_assigned_to_active_calls(
     submit_managed_network_turn(
         &test,
         "start two active commands",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::User,
         AskForApproval::OnRequest,
     )
@@ -936,7 +937,7 @@ async fn guardian_receives_exact_triggers_for_concurrent_network_requests() -> R
     submit_managed_network_turn(
         &test,
         "run both network requests",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )
@@ -1023,7 +1024,7 @@ async fn guardian_receives_exact_trigger_for_single_network_request() -> Result<
     submit_managed_network_turn(
         &test,
         "run one network request",
-        vec![local(test.config.cwd.clone())],
+        vec![local(test.cwd.abs())],
         ApprovalsReviewer::AutoReview,
         AskForApproval::OnRequest,
     )
@@ -1250,6 +1251,12 @@ async fn submit_managed_network_turn(
     approvals_reviewer: ApprovalsReviewer,
     approval_policy: AskForApproval,
 ) -> Result<()> {
+    let turn_cwd = environments
+        .first()
+        .context("managed network turn requires an execution environment")?
+        .cwd
+        .to_abs_path()
+        .context("managed network turn cwd must be host-compatible")?;
     let permission_profile = PermissionProfile::workspace_write_with(
         &[],
         NetworkSandboxPolicy::Enabled,
@@ -1257,9 +1264,8 @@ async fn submit_managed_network_turn(
         /*exclude_slash_tmp*/ false,
     );
     let (sandbox_policy, permission_profile) =
-        turn_permission_fields(permission_profile, test.config.cwd.as_path());
-    let turn_environment_selections =
-        TurnEnvironmentSelections::new(test.config.cwd.clone(), environments);
+        turn_permission_fields(permission_profile, turn_cwd.as_path());
+    let turn_environment_selections = TurnEnvironmentSelections::new(turn_cwd, environments);
 
     test.codex
         .submit(Op::UserInput {
