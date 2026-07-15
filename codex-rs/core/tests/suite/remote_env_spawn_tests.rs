@@ -119,19 +119,27 @@ pub(crate) async fn pending_subagent_scenario(
                     let args = if v1 {
                         json!({"message": message, "fork_context": true})
                     } else {
-                        json!({"task_name": "worker", "message": message, "fork_turns": "none"})
+                        json!({
+                            "task_name": "worker",
+                            "message": message,
+                            "task_message": message,
+                            "fork_turns": "none",
+                        })
                     };
                     tool(SPAWN, namespace, "spawn_agent", args)
                 }
                 1 => {
-                    notify_parent_request.notify_one();
+                    let output = call_output(&body, SPAWN).expect("spawn result");
+                    let receipt: Value = serde_json::from_str(output).unwrap_or_else(|error| {
+                        panic!("spawn was not accepted: {output}: {error}")
+                    });
                     let mut args = json!({"timeout_ms": 10000});
                     if v1 {
-                        let output = call_output(&body, SPAWN).expect("spawn result");
-                        let output: Value =
-                            serde_json::from_str(output).expect("spawn result JSON");
-                        args["targets"] = json!([output["agent_id"]]);
+                        args["targets"] = json!([receipt["agent_id"]]);
+                    } else {
+                        assert_eq!(receipt, json!({"task_name": "/root/worker"}));
                     }
+                    notify_parent_request.notify_one();
                     tool(WAIT_CHILD, namespace, "wait_agent", args)
                 }
                 2 => {

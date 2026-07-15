@@ -111,7 +111,8 @@ impl ToolCallRuntime {
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<ResponseItemEnvelope, CodexErr>> {
         let error_call = call.clone();
-        let source = call.direct_source();
+        let runtime = self.step_context.tool_router.tool_runtime(&call.tool_name);
+        let source = call.direct_source(runtime.as_deref());
         let recorder = self.session.services.executed_tool_calls.clone();
         let item_id_generator = Arc::clone(&self.session.item_id_generator);
         let recorded_call = recorder.prepare_direct_call(&call, &source, &self.step_context);

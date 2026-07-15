@@ -6,6 +6,7 @@ use codex_core::AgentRuntimeOwnership;
 use codex_core::TurnInputRequest;
 use codex_core::config::AgentRoleConfig;
 use codex_core::config::Config;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -73,6 +74,7 @@ fn configure_priority_role(config: &mut Config) {
             .enable(feature)
             .expect("test config should allow feature update");
     }
+    config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
     config.model_provider.request_max_retries = Some(0);
     config.model_provider.stream_max_retries = Some(0);
     let role_path = config.codex_home.join("priority-worker.toml");

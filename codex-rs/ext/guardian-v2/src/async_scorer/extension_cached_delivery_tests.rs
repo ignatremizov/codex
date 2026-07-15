@@ -152,7 +152,12 @@ async fn confirmed_root_delivery_invalidates_root_and_worker_cached_approvals() 
                 "spawn-worker",
                 "collaboration",
                 "spawn_agent",
-                &json!({"message": "Inspect the deployment.", "task_name": "worker"}).to_string(),
+                &json!({
+                    "message": "Inspect the deployment.",
+                    "task_message": "Inspect the deployment.",
+                    "task_name": "worker",
+                })
+                .to_string(),
             ),
             ev_completed("spawn-worker"),
         ]),

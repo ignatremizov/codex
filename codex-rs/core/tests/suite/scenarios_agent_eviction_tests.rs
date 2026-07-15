@@ -83,18 +83,19 @@ async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
             "spawn_agent",
             json!({
                 "task_name": "worker", "fork_turns": "none",
-                "message": "Check who owns the API migration."
+                "message": "Check who owns the API migration.",
+                "task_message": "Check who owns the API migration."
             }),
             "Mira owns the API migration.",
         ),
         (
             "send_message",
-            json!({"target": "worker", "message": "Use the new API for the migration."}),
+            json!({"target": "worker", "message": "Use the new API for the migration.", "task_message": "Use the new API for the migration."}),
             "",
         ),
         (
             "followup_task",
-            json!({"target": "worker", "message": "Continue the migration with the queued note."}),
+            json!({"target": "worker", "message": "Continue the migration with the queued note.", "task_message": "Continue the migration with the queued note."}),
             "I will continue with Mira using the new API.",
         ),
     ] {

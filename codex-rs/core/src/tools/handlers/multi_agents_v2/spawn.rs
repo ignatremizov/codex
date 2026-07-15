@@ -7,7 +7,7 @@ use crate::thread_spawn::ThreadSpawnRequest;
 use crate::tools::handlers::multi_agents::collab_tool_call_status;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
-use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
+use crate::tools::handlers::multi_agents_v2::message_tool::prepare_agent_message;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -45,13 +45,14 @@ impl ToolExecutor<ToolInvocation> for Handler {
     where
         ToolInvocation: 'a,
     {
+        let message_delivery = self.options.message_delivery;
         Box::pin(async move {
             let analytics = invocation.session.services.analytics_events_client.clone();
             let sender_thread_id = invocation.session.thread_id;
             let turn_id = invocation.step_context.turn.sub_id.clone();
             let call_id = invocation.call_id.clone();
             let started_at_ms = now_unix_timestamp_ms();
-            let result = handle_spawn_agent(invocation).await;
+            let result = handle_spawn_agent(invocation, message_delivery).await;
             let completed_at_ms = now_unix_timestamp_ms();
             let (status, receiver_thread_ids, agents_states) = match &result {
                 Ok((_, thread_id, agent_status, _)) => (
@@ -94,6 +95,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
 
 async fn handle_spawn_agent(
     invocation: ToolInvocation,
+    message_delivery: crate::config::MultiAgentMessageDelivery,
 ) -> Result<
     (
         SpawnAgentResult,
@@ -115,7 +117,8 @@ async fn handle_spawn_agent(
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     let fork_mode = args.fork_mode()?;
-    let message = message_content(args.message)?;
+    let prepared_message =
+        prepare_agent_message(args.message, args.task_message, message_delivery, &source)?;
     let role_name = args
         .agent_type
         .as_deref()
@@ -128,7 +131,7 @@ async fn handle_spawn_agent(
         &call_id,
         ThreadSpawnRequest {
             task_name: args.task_name,
-            message: agent_message_from_tool(message, &source),
+            message: prepared_message,
             fork_mode: fork_mode.clone(),
             agent_type: args.agent_type.clone(),
             model: args.model,
@@ -194,6 +197,10 @@ async fn handle_spawn_agent(
 }
 
 impl CoreToolRuntime for Handler {
+    fn is_agent_message_tool(&self) -> bool {
+        true
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }
@@ -204,6 +211,11 @@ impl CoreToolRuntime for Handler {
 struct SpawnAgentArgs {
     message: String,
     task_name: String,
+    #[serde(
+        default,
+        deserialize_with = "super::message_tool::deserialize_task_message"
+    )]
+    task_message: Option<String>,
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,

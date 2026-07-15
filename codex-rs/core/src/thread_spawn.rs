@@ -53,6 +53,9 @@ impl ThreadSpawnRequest {
     ) -> Result<(ThreadCreateRequest, AgentMessage), ThreadSpawnError> {
         let message_text = match &self.message {
             AgentMessage::Plaintext(text) | AgentMessage::Encrypted(text) => text,
+            AgentMessage::EncryptedWithAudit {
+                encrypted_content, ..
+            } => encrypted_content,
         };
         if message_text.trim().is_empty() {
             return Err(ThreadSpawnError::Preparation(

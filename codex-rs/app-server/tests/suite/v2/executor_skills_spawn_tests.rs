@@ -158,6 +158,7 @@ async fn spawned_agent_inherits_selected_executor_skill(
                     &json!({
                         "task_name": "worker",
                         "message": "List the executor skills and read the deploy skill.",
+                        "task_message": "List the executor skills and read the deploy skill.",
                         "fork_turns": fork_turns,
                     })
                     .to_string(),
