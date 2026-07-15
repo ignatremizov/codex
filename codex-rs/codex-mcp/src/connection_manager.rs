@@ -612,7 +612,7 @@ impl McpConnectionManager {
 
     /// Returns cached and already-initialized tools without waiting for pending MCP servers.
     pub fn list_all_tools_available_now(&self) -> Vec<ToolInfo> {
-        let tools = self
+        let tools: Vec<_> = self
             .clients
             .values()
             .filter_map(AsyncManagedClient::listed_tools_if_available)
