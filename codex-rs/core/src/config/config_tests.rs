@@ -12496,6 +12496,7 @@ disable_native_tools = true
 disable_direct_message = true
 message_board_in_memory = true
 non_code_mode_only = true
+message_delivery = "plaintext"
 
 [agents]
 max_concurrent_threads_per_session = 9
@@ -12555,6 +12556,10 @@ max_concurrent_threads_per_session = 9
     assert!(config.multi_agent_v2.disable_direct_message);
     assert!(config.multi_agent_v2.message_board_in_memory);
     assert!(config.multi_agent_v2.non_code_mode_only);
+    assert_eq!(
+        config.multi_agent_v2.message_delivery,
+        MultiAgentMessageDelivery::Plaintext
+    );
 
     Ok(())
 }
@@ -12774,6 +12779,33 @@ subagent_developer_instructions = "  \t  "
         ..resolve_multi_agent_v2_config(&ConfigToml::default())
     };
     assert_eq!(resolve_multi_agent_v2_config(&config_toml), expected);
+}
+
+#[test]
+fn multi_agent_v2_message_delivery_modes_resolve() {
+    for (value, expected) in [
+        ("encrypted", MultiAgentMessageDelivery::Encrypted),
+        (
+            "encrypted_with_audit",
+            MultiAgentMessageDelivery::EncryptedWithAudit,
+        ),
+        ("plaintext", MultiAgentMessageDelivery::Plaintext),
+    ] {
+        let config_toml = toml::from_str(&format!(
+            "[features.multi_agent_v2]\nmessage_delivery = \"{value}\"\n"
+        ))
+        .expect("multi-agent v2 delivery mode should parse");
+
+        assert_eq!(
+            resolve_multi_agent_v2_config(&config_toml).message_delivery,
+            expected
+        );
+    }
+
+    assert_eq!(
+        resolve_multi_agent_v2_config(&ConfigToml::default()).message_delivery,
+        MultiAgentMessageDelivery::EncryptedWithAudit
+    );
 }
 
 #[tokio::test]
