@@ -114,6 +114,7 @@ async fn regular_mcp_definition_cache_preserves_live_session_state() -> anyhow::
                 SERVER_NAME.to_string(),
                 serde_json::from_value(json!({
                     "command": command,
+                    "cwd": config.cwd,
                     "environment_id": environment_id,
                     "env": {
                         "MCP_TEST_APP_ONLY_CWD_MARKER_FILE": app_only_cwd_marker_file,
