@@ -33,13 +33,6 @@ class FormatterResult:
     returncode: int
 
 
-def just_formatter_group(*, check: bool) -> FormatterGroup:
-    args = ["just", "--unstable", "--fmt"]
-    if check:
-        args.append("--check")
-    return FormatterGroup("Just", (Command(tuple(args)),))
-
-
 def rust_formatter_group(*, check: bool) -> FormatterGroup:
     rust_workspace = REPO_ROOT / "codex-rs"
     repository_files = subprocess.check_output(
@@ -158,7 +151,6 @@ def python_scripts_formatter_group(*, check: bool) -> FormatterGroup:
 
 def formatter_groups(*, check: bool) -> tuple[FormatterGroup, ...]:
     return (
-        just_formatter_group(check=check),
         rust_formatter_group(check=check),
         buildifier_formatter_group(check=check),
         python_sdk_formatter_group(check=check),
