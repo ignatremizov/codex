@@ -899,7 +899,9 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     if lifecycle.uses_root_worker() {
         mock_config = mock_config
             .enable_feature(Feature::Collab)
-            .enable_feature(Feature::MultiAgentV2);
+            .with_extra_config(
+                "[features.multi_agent_v2]\nenabled = true\nmessage_delivery = \"encrypted\"",
+            );
     }
     if matches!(lifecycle, ThreadLifecycle::RootUserInputCompaction) {
         mock_config = mock_config

@@ -7,6 +7,7 @@ use anyhow::Result;
 use codex_core::GuardianRootMessage;
 use codex_core::TurnInputRequest;
 use codex_core::config::Constrained;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_features::Feature;
 use codex_history::CompactedItem;
 use codex_history::InitialHistory;
@@ -313,6 +314,7 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization(
                     .enable(feature)
                     .expect("enable multi-agent feature");
             }
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             config
                 .features
                 .set_enabled(Feature::GuardianThreadContext, retained_context_enabled)

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
@@ -183,6 +184,7 @@ async fn v2_nested_spawn_checks_shared_active_execution_capacity() -> Result<()>
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
         });
     let test = builder.build(&server).await?;
     test.submit_turn(FIRST_PROMPT).await?;
@@ -323,6 +325,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
                     .enable(feature)
                     .expect("test config should allow feature update");
             }
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             config.multi_agent_v2.max_concurrent_threads_per_session = 2;
             config
                 .permissions

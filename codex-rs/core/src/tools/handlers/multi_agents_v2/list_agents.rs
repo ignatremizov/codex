@@ -61,6 +61,16 @@ impl Handler {
                     .map(ToString::to_string)
                     .unwrap_or_else(|| agent.thread_id.to_string()),
                 agent_status: agent.status,
+                last_task_message: if agent
+                    .metadata
+                    .agent_path
+                    .as_ref()
+                    .is_some_and(codex_protocol::AgentPath::is_root)
+                {
+                    Some("Main thread".to_string())
+                } else {
+                    agent.metadata.last_task_message
+                },
             })
             .collect();
         Ok(boxed_tool_output(ListAgentsResult { agents }))
@@ -83,6 +93,7 @@ struct ListAgentsArgs {
 struct ListedAgent {
     agent_name: String,
     agent_status: AgentStatus,
+    last_task_message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

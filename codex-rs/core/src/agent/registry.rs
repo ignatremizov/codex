@@ -13,8 +13,10 @@ use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use tokio::sync::Semaphore;
 
 /// This structure is used to add some limits on the multi-agent capabilities for Codex. In
 /// the current implementation, it limits:
@@ -34,19 +36,50 @@ struct ActiveAgents {
     thread_paths: HashMap<ThreadId, RegisteredAgent>,
     used_agent_nicknames: HashSet<String>,
     nickname_reset_count: usize,
+    /// Retain the same gate while any registration or in-flight submission owns it.
+    submission_gates: HashMap<ThreadId, Weak<Semaphore>>,
 }
 
 struct RegisteredAgent {
     path: String,
     evicted_environments: Option<Vec<TurnEnvironmentSelection>>,
+    submission: Arc<AgentSubmission>,
+}
+
+/// Registration identity and the shared gate ordering accepted recipient input.
+pub(crate) struct AgentSubmission {
+    pub(crate) semaphore: Arc<Semaphore>,
+    registered: bool,
 }
 
 impl RegisteredAgent {
-    fn new(path: String) -> Self {
+    fn new(path: String, semaphore: Arc<Semaphore>) -> Self {
         Self {
             path,
             evicted_environments: None,
+            submission: Arc::new(AgentSubmission {
+                semaphore,
+                registered: true,
+            }),
         }
+    }
+}
+
+impl ActiveAgents {
+    fn submission_gate(&mut self, thread_id: ThreadId) -> Arc<Semaphore> {
+        self.submission_gates
+            .retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = self
+            .submission_gates
+            .get(&thread_id)
+            .and_then(Weak::upgrade)
+        {
+            return gate;
+        }
+        let gate = Arc::new(Semaphore::new(/*permits*/ 1));
+        self.submission_gates
+            .insert(thread_id, Arc::downgrade(&gate));
+        gate
     }
 }
 
@@ -142,9 +175,11 @@ impl AgentRegistry {
             })
             .agent_id;
         if let Some(root_thread_id) = root_thread_id {
+            let gate = active_agents.submission_gate(root_thread_id);
             active_agents
                 .thread_paths
-                .insert(root_thread_id, RegisteredAgent::new(root_path));
+                .entry(root_thread_id)
+                .or_insert_with(|| RegisteredAgent::new(root_path, gate));
         }
     }
 
@@ -221,6 +256,57 @@ impl AgentRegistry {
             .collect()
     }
 
+    pub(crate) fn mailbox_submission(&self, thread_id: ThreadId) -> Arc<AgentSubmission> {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(agent) = active_agents.thread_paths.get(&thread_id) {
+            return Arc::clone(&agent.submission);
+        }
+        Arc::new(AgentSubmission {
+            semaphore: active_agents.submission_gate(thread_id),
+            registered: false,
+        })
+    }
+
+    pub(crate) fn submission_is_current(
+        &self,
+        thread_id: ThreadId,
+        submission: &Arc<AgentSubmission>,
+    ) -> bool {
+        let active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match active_agents.thread_paths.get(&thread_id) {
+            Some(agent) => Arc::ptr_eq(&agent.submission, submission),
+            None => !submission.registered,
+        }
+    }
+
+    pub(crate) fn update_last_task_message(
+        &self,
+        thread_id: ThreadId,
+        submission: &Arc<AgentSubmission>,
+        last_task_message: Option<String>,
+    ) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(agent) = active_agents.thread_paths.get(&thread_id) else {
+            return;
+        };
+        if !Arc::ptr_eq(&agent.submission, submission) {
+            return;
+        }
+        let path = agent.path.clone();
+        if let Some(metadata) = active_agents.agent_tree.get_mut(&path) {
+            metadata.last_task_message = last_task_message;
+        }
+    }
+
     fn register_spawned_thread(&self, agent_metadata: AgentMetadata) {
         let Some(thread_id) = agent_metadata.agent_id else {
             return;
@@ -237,9 +323,10 @@ impl AgentRegistry {
         if let Some(agent_nickname) = agent_metadata.agent_nickname.clone() {
             active_agents.used_agent_nicknames.insert(agent_nickname);
         }
+        let gate = active_agents.submission_gate(thread_id);
         if let Some(previous_agent) = active_agents
             .thread_paths
-            .insert(thread_id, RegisteredAgent::new(key.clone()))
+            .insert(thread_id, RegisteredAgent::new(key.clone(), gate))
             && previous_agent.path != key
         {
             active_agents

@@ -1,6 +1,7 @@
 //! Spawned agents inherit the invoking step's model settings after active-turn updates.
 
 use super::*;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::protocol::MultiAgentVersion;
 use pretty_assertions::assert_eq;
@@ -54,6 +55,7 @@ async fn explicit_child_model_keeps_runtime_v2_tools_across_catalog_tags(
                 .enable(Feature::MultiAgentV2)
                 .expect("enable V2");
             config.multi_agent_v2.tool_namespace = Some("delegation".to_string());
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             config.multi_agent_v2.expose_spawn_agent_model_overrides = true;
             for model in &mut config.model_catalog.as_mut().expect("catalog").models {
                 model.tool_mode = Some(ToolMode::Direct);
@@ -160,6 +162,7 @@ async fn unknown_child_model_reports_the_full_catalog_without_creating_a_child()
                 .enable(Feature::MultiAgentV2)
                 .expect("enable V2");
             config.multi_agent_v2.expose_spawn_agent_model_overrides = true;
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             let catalog = config.model_catalog.as_mut().expect("catalog");
             let mut hidden = catalog.models[1].clone();
             hidden.visibility = ModelVisibility::Hide;
@@ -280,6 +283,7 @@ async fn spawn_inherits_captured_settings_after_a_turn_update(
                     .features
                     .enable(Feature::MultiAgentV2)
                     .expect("enable V2");
+                config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             } else {
                 config
                     .features

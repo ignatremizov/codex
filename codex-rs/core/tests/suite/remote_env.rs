@@ -14,6 +14,7 @@ use codex_core::WaitForEnvironmentToolConfig;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CopyOptions;
 use codex_exec_server::CreateDirectoryOptions;
@@ -2564,6 +2565,7 @@ async fn deferred_executor_spawn_agent_inherits_ready_step_environments(
             assert!(config.features.enable(Feature::Collab).is_ok());
             if multi_agent_v2 {
                 assert!(config.features.enable(Feature::MultiAgentV2).is_ok());
+                config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             } else {
                 assert!(config.features.disable(Feature::MultiAgentV2).is_ok());
             }
