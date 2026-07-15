@@ -5,6 +5,7 @@ use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
 use codex_core::config::AgentRoleConfig;
 use codex_core::config::CurrentTimeReminderConfig;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_models_manager::bundled_models_response;
@@ -1359,6 +1360,7 @@ async fn grandchild_full_fork_preserves_context_baseline(
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             config.model = Some(V2_DEFAULT_MODEL.to_string());
             config.agent_default_subagent_model = Some(V2_DEFAULT_MODEL.to_string());
             config.developer_instructions = Some(INSTRUCTIONS.to_string());
@@ -1608,6 +1610,7 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             .features
             .enable(Feature::MultiAgentV2)
             .expect("test config should allow feature update");
+        config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
         let model_catalog = config.model_catalog.get_or_insert_with(|| {
             bundled_models_response().expect("bundled models.json should parse")
         });
@@ -2205,7 +2208,7 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
             ev_response_created("resp-turn1-1"),
             ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
-                MULTI_AGENT_V1_NAMESPACE,
+                MULTI_AGENT_V2_NAMESPACE,
                 "spawn_agent",
                 &spawn_args,
             ),
@@ -2246,6 +2249,7 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
             .features
             .enable(Feature::MultiAgentV2)
             .expect("test config should allow feature update");
+        config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
         config.developer_instructions = Some("Parent developer instructions.".to_string());
     });
     let test = builder.build(&server).await?;
@@ -2262,12 +2266,16 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
     Ok(())
 }
 
-#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Legacy; "encrypted")]
-#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), true, ThreadHistoryMode::Paginated; "plaintext")]
-#[test_case(Some("gpt-5.6-luna"), None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Legacy; "luna encrypted leaf")]
-#[test_case(Some("gpt-5.5"), Some(ReasoningEffort::High), Some(ReasoningEffort::Ultra), Some("high"), false, ThreadHistoryMode::Paginated; "legacy encrypted leaf")]
-#[test_case(None, None, Some(ReasoningEffort::Persistent), Some("disabled"), false, ThreadHistoryMode::Paginated; "inherited persistent effort")]
-#[test_case(None, None, None, None, false, ThreadHistoryMode::Legacy; "unknown model without effort default")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Legacy, MultiAgentMessageDelivery::Encrypted; "encrypted")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), true, ThreadHistoryMode::Paginated, MultiAgentMessageDelivery::Plaintext; "plaintext")]
+#[test_case(Some("gpt-5.6-luna"), None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Legacy, MultiAgentMessageDelivery::Encrypted; "luna encrypted child")]
+#[test_case(Some("gpt-5.5"), Some(ReasoningEffort::High), Some(ReasoningEffort::Ultra), Some("high"), false, ThreadHistoryMode::Paginated, MultiAgentMessageDelivery::Encrypted; "legacy encrypted child")]
+#[test_case(None, None, Some(ReasoningEffort::Persistent), Some("disabled"), false, ThreadHistoryMode::Paginated, MultiAgentMessageDelivery::Encrypted; "inherited persistent effort")]
+#[test_case(None, None, None, None, false, ThreadHistoryMode::Legacy, MultiAgentMessageDelivery::Encrypted; "unknown model without effort default")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), true, ThreadHistoryMode::Legacy, MultiAgentMessageDelivery::Encrypted; "trusted plaintext under encryption")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), true, ThreadHistoryMode::Paginated, MultiAgentMessageDelivery::EncryptedWithAudit; "trusted plaintext under audit")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Legacy, MultiAgentMessageDelivery::Plaintext; "configured plaintext")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Paginated, MultiAgentMessageDelivery::EncryptedWithAudit; "encrypted with audit")]
 #[tokio::test]
 async fn multi_agent_v2_spawn_sends_agent_message_to_child(
     model: Option<&str>,
@@ -2276,6 +2284,7 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
     expected_reasoning_effort: Option<&str>,
     plaintext: bool,
     history_mode: ThreadHistoryMode,
+    message_delivery: MultiAgentMessageDelivery,
 ) -> Result<()> {
     let output: &'static Mutex<Vec<u8>> = Box::leak(Box::new(Mutex::new(Vec::new())));
     let subscriber = tracing_subscriber::fmt()
@@ -2291,7 +2300,8 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
     );
 
     let server = start_mock_server().await;
-    let message = if plaintext {
+    let delivers_plaintext = plaintext || message_delivery == MultiAgentMessageDelivery::Plaintext;
+    let message = if delivers_plaintext {
         "plaintext delegated task"
     } else {
         "opaque-encrypted-message"
@@ -2300,6 +2310,12 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
         "message": message,
         "task_name": "worker",
     });
+    let audit_text = (!plaintext
+        && message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit)
+        .then_some("audit-visible child task");
+    if let Some(audit_text) = audit_text {
+        spawn_args["task_message"] = json!(audit_text);
+    }
     if let Some(model) = model {
         spawn_args["model"] = json!(model);
         if model == "gpt-5.5" {
@@ -2310,12 +2326,8 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
         spawn_args["reasoning_effort"] = json!(reasoning_effort);
     }
     let spawn_args = serde_json::to_string(&spawn_args)?;
-    let mut spawn_event = ev_function_call_with_namespace(
-        SPAWN_CALL_ID,
-        MULTI_AGENT_V2_NAMESPACE,
-        "spawn_agent",
-        &spawn_args,
-    );
+    let mut spawn_event =
+        ev_function_call_with_namespace(SPAWN_CALL_ID, "delegation", "spawn_agent", &spawn_args);
     if plaintext {
         spawn_event["item"]["encrypted_function_args"] = json!([]);
     }
@@ -2369,6 +2381,8 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
+            config.multi_agent_v2.message_delivery = message_delivery;
+            config.multi_agent_v2.tool_namespace = Some("delegation".to_string());
             if plaintext {
                 config
                     .features
@@ -2376,7 +2390,7 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
                     .expect("enable tool-call metadata");
             }
         });
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_auto_env(&server).await?;
     let root_thread_id = test.session_configured.thread_id;
 
     test.submit_text_turn(TURN_1_PROMPT).await?;
@@ -2439,7 +2453,10 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
         ),
         expected_settings,
     );
-    let content = if plaintext {
+    if let Some(audit_text) = audit_text {
+        assert!(!child_request.body_contains_text(audit_text));
+    }
+    let content = if delivers_plaintext {
         vec![json!({
             "type": "input_text",
             "text": format!(
@@ -2470,40 +2487,10 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
         })])
     );
     if model.is_some() {
-        let declares_collaboration = |tools: &Value| {
-            tools.as_array().is_some_and(|tools| {
-                tools
-                    .iter()
-                    .any(|tool| tool["name"] == MULTI_AGENT_V2_NAMESPACE)
-            })
-        };
         assert!(
-            !declares_collaboration(&child_body["tools"]),
-            "leaf workers must not receive top-level collaboration tools",
+            child_body.to_string().contains("\"name\":\"delegation\""),
+            "resolved V2 workers retain collaboration tools regardless of catalog tag",
         );
-        let input = child_request.input();
-        if let Some(last_declaration) = input.iter().rposition(|item| {
-            item["type"] == "additional_tools" && declares_collaboration(&item["tools"])
-        }) {
-            let removed_namespace = format!("- {MULTI_AGENT_V2_NAMESPACE}");
-            let collaboration_removed = input[last_declaration + 1..]
-                .iter()
-                .filter(|item| item["role"] == "developer")
-                .filter_map(|item| {
-                    let kinds =
-                        item["internal_chat_message_metadata_passthrough"]["content_item_kinds"]
-                            .as_array()?;
-                    let index = kinds
-                        .iter()
-                        .position(|kind| kind == "tools.removed_definition")?;
-                    item["content"][index]["text"].as_str()
-                })
-                .any(|text| text.lines().any(|line| line == removed_namespace));
-            assert!(
-                collaboration_removed,
-                "leaf workers must mark inherited collaboration tools unavailable",
-            );
-        }
     }
     if plaintext {
         let parent_request = parent_request_log
@@ -2527,7 +2514,7 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
             tool_call_metadata(parent_request.function_call_output(SPAWN_CALL_ID)),
             json!({
                 "executed_tool_calls": [{
-                    "name": "collaboration__spawn_agent",
+                    "name": "delegation__spawn_agent",
                     "arguments": serde_json::from_str::<Value>(&spawn_args)?,
                 }],
                 "tool_calls_complete": true,
@@ -2560,8 +2547,56 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
         .expect("spawn send event");
     assert!(send.contains(&format!("sender_thread_id={root_thread_id}")));
     assert!(send.contains(&format!("receiver_thread_id={child_thread_id}")));
-    let logged_message = if plaintext { "[plaintext]" } else { message };
-    assert!(send.contains(&format!("content=\"{logged_message}\"")));
+    if delivers_plaintext {
+        assert!(send.contains(message));
+        assert!(send.contains("encrypted_content_present=false"));
+    } else {
+        assert!(
+            !logs.contains(message),
+            "ordinary logs must not contain ciphertext"
+        );
+        assert!(send.contains("encrypted_content_present=true"));
+        if let Some(audit_text) = audit_text {
+            assert!(send.contains(audit_text));
+            let parent_request = parent_request_log
+                .requests()
+                .into_iter()
+                .find(|request| {
+                    request
+                        .inputs_of_type("function_call_output")
+                        .iter()
+                        .any(|item| item["call_id"] == SPAWN_CALL_ID)
+                })
+                .expect("parent request after accepted spawn");
+            assert!(parent_request.body_contains_text(audit_text));
+            test.codex.flush_rollout().await?;
+            let rollout = codex_rollout::RolloutRecorder::get_rollout_history(
+                &test.codex.rollout_path().expect("sender rollout"),
+            )
+            .await?;
+            assert!(
+                rollout.get_rollout_items().iter().any(|item| {
+                    let RolloutItem::ResponseItem(envelope) = item else {
+                        return false;
+                    };
+                    let codex_protocol::models::ResponseItem::FunctionCall {
+                        call_id,
+                        arguments,
+                        ..
+                    } = &envelope.item
+                    else {
+                        return false;
+                    };
+                    call_id == SPAWN_CALL_ID
+                        && serde_json::from_str::<Value>(arguments)
+                            .is_ok_and(|arguments| arguments["task_message"] == audit_text)
+                }),
+                "sender rollout retains the complete audit copy"
+            );
+        } else {
+            assert_eq!(log_field(send, "content"), Some(""));
+        }
+    }
 
     let communication_id = log_field(send, "communication_id").expect("communication ID");
     logs.lines()
@@ -2718,6 +2753,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.model_provider.supports_websockets = false;
@@ -2952,6 +2988,7 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn(
                     .enable(feature)
                     .expect("test config should allow feature update");
             }
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(0);
             config.model_provider.supports_websockets = false;
@@ -3303,7 +3340,7 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
             ev_response_created("resp-turn1-1"),
             ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
-                MULTI_AGENT_V1_NAMESPACE,
+                MULTI_AGENT_V2_NAMESPACE,
                 "spawn_agent",
                 &spawn_args,
             ),
@@ -3348,6 +3385,7 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
             config.include_skill_instructions = false;
         });
     let test = builder.build(&server).await?;

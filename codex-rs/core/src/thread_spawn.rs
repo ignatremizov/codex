@@ -72,6 +72,9 @@ pub(crate) async fn spawn(
     } = request;
     let message_text = match &message {
         AgentMessage::Plaintext(text) | AgentMessage::Encrypted(text) => text,
+        AgentMessage::EncryptedWithAudit {
+            encrypted_content, ..
+        } => encrypted_content,
     };
     if message_text.trim().is_empty() {
         return Err(ThreadSpawnError::Preparation(

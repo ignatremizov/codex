@@ -1,3 +1,4 @@
+use super::delivery::CapturedRecipient;
 use super::residency::is_v2_resident_session_source;
 use super::spawn_guard::PendingSpawn;
 use super::spawn_telemetry::SpawnMeasurements;
@@ -994,6 +995,7 @@ impl LocalAgentControl {
                 self.send_inter_agent_communication_after_capacity_check(
                     new_thread.thread_id,
                     &state,
+                    CapturedRecipient::Loaded(Arc::clone(&new_thread.thread)),
                     communication,
                     context,
                     start_options,
