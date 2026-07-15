@@ -653,6 +653,7 @@ tool_namespace = "agents"
 hide_spawn_agent_metadata = true
 expose_spawn_agent_model_overrides = true
 non_code_mode_only = true
+message_delivery = "plaintext"
 "#,
     )
     .expect("features table should deserialize");
@@ -678,6 +679,7 @@ non_code_mode_only = true
             hide_spawn_agent_metadata: Some(true),
             expose_spawn_agent_model_overrides: Some(true),
             non_code_mode_only: Some(true),
+            message_delivery: Some(crate::MultiAgentMessageDelivery::Plaintext),
         }))
     );
 }

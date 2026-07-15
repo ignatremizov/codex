@@ -238,6 +238,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_features::MultiAgentMessageDelivery;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
 
@@ -256,6 +257,7 @@ mod tests {
             .features
             .enable(Feature::TokenBudget)
             .expect("token_budget should be enableable in tests");
+        config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Plaintext;
         config.rollout_budget = Some(crate::config::RolloutBudgetConfig {
             limit_tokens: 100_000,
             reminder_at_remaining_tokens: vec![50_000, 25_000, 10_000],
@@ -331,6 +333,7 @@ mod tests {
                 max_wait_timeout_ms: Some(_),
                 default_wait_timeout_ms: Some(_),
                 hide_spawn_agent_metadata: Some(_),
+                message_delivery: Some(MultiAgentMessageDelivery::Plaintext),
                 ..
             })
         ));
