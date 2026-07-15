@@ -230,6 +230,47 @@ impl App {
 
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::RollbackSessionForPromptEdit {
+                thread_id,
+                nth_user_message,
+                mut prompt,
+            } => {
+                if self.chat_widget.thread_id() != Some(thread_id)
+                    || self.active_thread_id != Some(thread_id)
+                {
+                    self.handle_backtrack_rollback_failed();
+                    return Ok(AppRunControl::Continue);
+                }
+
+                let rollback = match app_server
+                    .thread_read(thread_id, /*include_turns*/ true)
+                    .await
+                {
+                    Ok(thread) => match crate::app_backtrack::backtrack_rollback_turn_count(
+                        &thread.turns,
+                        nth_user_message,
+                        &mut prompt,
+                    ) {
+                        Ok(num_turns) => app_server.thread_rollback(thread_id, num_turns).await,
+                        Err(err) => Err(err),
+                    },
+                    Err(err) => Err(err),
+                };
+                self.chat_widget.restore_user_message_to_composer(prompt);
+                match rollback {
+                    Ok(response) => {
+                        self.handle_backtrack_thread_rollback_response(thread_id, &response)
+                            .await;
+                    }
+                    Err(err) => {
+                        self.handle_backtrack_rollback_failed();
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to roll back before the selected prompt: {err}"
+                        ));
+                    }
+                }
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::ForkSessionForPromptEdit {
                 thread_id,
                 nth_user_message,
