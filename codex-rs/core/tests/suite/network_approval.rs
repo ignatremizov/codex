@@ -1256,7 +1256,7 @@ fn network_exec_args(command: &str) -> Value {
         "shell": "/bin/sh",
         "cmd": command,
         "login": false,
-        "yield_time_ms": 1_000,
+        "yield_time_ms": 10_000,
     })
 }
 
