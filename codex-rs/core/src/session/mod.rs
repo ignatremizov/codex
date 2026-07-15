@@ -1446,7 +1446,9 @@ impl Session {
                 .is_none()
         };
         if direct_contract_unfrozen {
-            let ready_tools = self.collect_ready_session_start_implicit_mcp_tools().await;
+            let ready_tools = self
+                .collect_available_session_start_implicit_mcp_tools()
+                .await;
             let mut session_start_mcp_tools = self.session_start_mcp_tools.lock().await;
             let direct_contract_still_unfrozen = {
                 self.session_start_direct_mcp_servers
@@ -1462,26 +1464,35 @@ impl Session {
         self.session_start_mcp_tools.lock().await.clone()
     }
 
-    async fn collect_ready_session_start_implicit_mcp_tools(&self) -> HashMap<String, McpToolInfo> {
+    async fn collect_available_session_start_implicit_mcp_tools(
+        &self,
+    ) -> HashMap<String, McpToolInfo> {
         let manager = self.services.mcp_connection_manager.load_full();
-        let mut tools = HashMap::new();
+        let available_tools = manager.list_all_tools_available_now();
+        let available_servers = available_tools
+            .iter()
+            .map(|tool| tool.server_name.clone())
+            .collect::<HashSet<_>>();
         for (server_name, server_config) in &self.session_start_mcp_servers {
-            if !(server_config.enabled() && server_config.allow_implicit_invocation()) {
-                continue;
+            if server_config.enabled()
+                && server_config.allow_implicit_invocation()
+                && !available_servers.contains(server_name.as_str())
+            {
+                let _ = manager
+                    .wait_for_server_ready(server_name, std::time::Duration::from_secs(5))
+                    .await;
             }
-            let _ = manager
-                .wait_for_server_ready(server_name, std::time::Duration::from_secs(5))
-                .await;
-            tools.extend(
-                manager
-                    .list_all_tools()
-                    .await
-                    .into_iter()
-                    .filter(|tool| tool.server_name == *server_name)
-                    .map(|tool| (tool.canonical_tool_name().to_string(), tool)),
-            );
         }
-        tools
+        manager
+            .list_all_tools_available_now()
+            .into_iter()
+            .filter(|tool| {
+                self.session_start_mcp_servers
+                    .get(&tool.server_name)
+                    .is_some_and(|server| server.enabled() && server.allow_implicit_invocation())
+            })
+            .map(|tool| (tool.canonical_tool_name().to_string(), tool))
+            .collect()
     }
 
     async fn record_initial_history(&self, conversation_history: InitialHistory) {

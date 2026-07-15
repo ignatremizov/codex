@@ -568,6 +568,25 @@ impl AsyncManagedClient {
         }
     }
 
+    pub(crate) fn listed_tools_if_available(&self) -> Option<Vec<ToolInfo>> {
+        let tools = if !self.startup_complete.load(Ordering::Acquire) {
+            self.cached_tools()
+        } else if let Some(client) = self
+            .startup_reconnect
+            .as_ref()
+            .and_then(|reconnect| reconnect.current_client())
+        {
+            Some(client.listed_tools())
+        } else {
+            match self.client.clone().now_or_never()? {
+                Ok(client) => Some(client.listed_tools()),
+                Err(_) if self.is_codex_apps_mcp_server => self.cached_tools(),
+                Err(_) => None,
+            }
+        }?;
+        Some(self.prepare_tools(tools))
+    }
+
     pub(crate) async fn listed_tools(&self) -> Option<Vec<ToolInfo>> {
         // Plugin provenance is resolved per-session rather than stored in shared cache payloads.
         let tools = if !self.startup_complete.load(Ordering::Acquire)

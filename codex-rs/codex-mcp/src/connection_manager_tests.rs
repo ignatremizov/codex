@@ -734,7 +734,7 @@ async fn list_all_tools_uses_shared_codex_apps_cache_while_client_is_pending() {
         },
     );
 
-    let tools = manager.list_all_tools().await;
+    let tools = manager.list_all_tools_available_now();
     let tool = tools
         .iter()
         .find(|tool| {
@@ -744,6 +744,10 @@ async fn list_all_tools_uses_shared_codex_apps_cache_while_client_is_pending() {
         .expect("tool from shared cache");
     assert_eq!(tool.server_name, CODEX_APPS_MCP_SERVER_NAME);
     assert_eq!(tool.callable_name, "calendar_create_event");
+    assert_eq!(
+        model_tool_names(&manager.list_all_tools().await),
+        model_tool_names(&tools)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -979,6 +983,7 @@ async fn list_all_tools_blocks_while_client_is_pending_without_cached_tools() {
         },
     );
 
+    assert!(manager.list_all_tools_available_now().is_empty());
     let timeout_result =
         tokio::time::timeout(Duration::from_millis(10), manager.list_all_tools()).await;
     assert!(timeout_result.is_err());

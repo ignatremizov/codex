@@ -610,6 +610,18 @@ impl McpConnectionManager {
         tools
     }
 
+    /// Returns cached and already-initialized tools without waiting for pending MCP servers.
+    pub fn list_all_tools_available_now(&self) -> Vec<ToolInfo> {
+        let tools = self
+            .clients
+            .values()
+            .filter_map(AsyncManagedClient::listed_tools_if_available)
+            .flatten()
+            .map(|tool| self.with_server_metadata(tool))
+            .collect();
+        normalize_tools_for_model_with_prefix(tools, self.prefix_mcp_tool_names)
+    }
+
     /// Returns one tool from the current live connection.
     pub async fn tool_info(&self, server: &str, tool: &str) -> Option<ToolInfo> {
         let client = self.clients.get(server)?;
