@@ -60,6 +60,7 @@ pub use codex_core::config::Config;
 pub use codex_core::config::Constrained;
 pub use codex_core::config::ExtraConfig;
 pub use codex_core::config::GhostSnapshotConfig;
+pub use codex_core::config::MultiAgentMessageDelivery;
 pub use codex_core::config::MultiAgentV2Config;
 pub use codex_core::config::NetworkProxySpec;
 pub use codex_core::config::Permissions;
