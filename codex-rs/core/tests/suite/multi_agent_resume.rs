@@ -2,6 +2,7 @@ use anyhow::Result;
 use codex_analytics::AnalyticsEventsClient;
 use codex_core::TurnInputRequest;
 use codex_core::config::AgentRoleConfig;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::models::PermissionProfile;
@@ -174,6 +175,7 @@ fn configure_multi_agent_v2_with_role(
             nickname_candidates: None,
         },
     );
+    config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -4,6 +4,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use codex_core::PromptCacheKey;
 use codex_core::StartThreadOptions;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::protocol::TurnEnvironmentSelection;
@@ -159,6 +160,7 @@ async fn api_key_subagent_inherits_prompt_cache_key_policy(policy: PromptCacheKe
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
         });
     let mut test = builder.build(&server).await?;
     start_with_prompt_cache_key(&mut test, policy.clone()).await?;

@@ -9,7 +9,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::InterAgentCommunication;
 use serde::Deserialize;
 use serde::Serialize;
-use std::borrow::Cow;
 use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -53,28 +52,27 @@ impl AgentCommunicationContext {
             sender_thread_id,
         }
     }
+
+    pub(crate) fn updates_last_task_message(&self) -> bool {
+        matches!(
+            self.kind,
+            AgentCommunicationKind::Spawn
+                | AgentCommunicationKind::Message
+                | AgentCommunicationKind::Followup
+        )
+    }
 }
 
-pub(crate) fn send_log_content(
-    communication: &InterAgentCommunication,
-) -> Option<Cow<'static, str>> {
-    tracing::enabled!(target: AGENT_COMMUNICATION_TARGET, tracing::Level::INFO).then(|| {
-        match &communication.encrypted_content {
-            Some(content) => Cow::Owned(content.clone()),
-            None => Cow::Borrowed("[plaintext]"),
-        }
-    })
+pub(crate) fn logging_enabled() -> bool {
+    tracing::enabled!(target: AGENT_COMMUNICATION_TARGET, tracing::Level::INFO)
 }
 
 pub(crate) fn emit_agent_communication_send(
     communication_id: &str,
     context: &AgentCommunicationContext,
-    log_content: Option<&str>,
+    communication: &InterAgentCommunication,
     receiver_thread_id: ThreadId,
 ) {
-    let Some(content) = log_content else {
-        return;
-    };
     tracing::info!(
         target: AGENT_COMMUNICATION_TARGET,
         {
@@ -84,7 +82,8 @@ pub(crate) fn emit_agent_communication_send(
             state = "send",
             sender_thread_id = %context.sender_thread_id,
             receiver_thread_id = %receiver_thread_id,
-            content,
+            content = communication.content.as_str(),
+            encrypted_content_present = communication.encrypted_content.is_some(),
         },
         "agent communication"
     );

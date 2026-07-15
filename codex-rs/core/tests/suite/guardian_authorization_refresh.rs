@@ -71,7 +71,11 @@ async fn guardian_refreshes_subagent_authorization(change: Change) -> Result<()>
                 ev_response_created("root-spawn"),
                 ev_function_call_with_namespace(
                     "spawn-worker", "collaboration", "spawn_agent",
-                    &json!({"task_name": "worker", "message": "Write the requested marker once."}).to_string(),
+                    &json!({
+                        "task_name": "worker",
+                        "message": "Write the requested marker once.",
+                        "task_message": "Write the requested marker once.",
+                    }).to_string(),
                 ),
             ]),
         },

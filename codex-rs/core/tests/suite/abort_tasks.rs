@@ -121,6 +121,8 @@ async fn root_turn_suspension_preserves_unfinished_turn_history(fail_child_write
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("enable multi-agent v2 for the suspension test");
+            config.multi_agent_v2.message_delivery =
+                codex_core::config::MultiAgentMessageDelivery::Encrypted;
         })
         .build_with_auto_env(&server)
         .await
