@@ -227,7 +227,12 @@ async fn heartbeat_root_projection_uses_latest_turn_skills(
                     SPAWN_CALL_ID,
                     "collaboration",
                     "spawn_agent",
-                    &json!({"task_name": "worker", "message": INITIAL_TASK}).to_string(),
+                    &json!({
+                        "task_name": "worker",
+                        "message": INITIAL_TASK,
+                        "task_message": INITIAL_TASK,
+                    })
+                    .to_string(),
                 ),
                 ev_completed("spawn-worker"),
             ]

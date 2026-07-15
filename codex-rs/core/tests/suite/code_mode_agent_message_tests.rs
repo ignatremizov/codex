@@ -45,6 +45,9 @@ async fn code_mode_spawn_delivers_plaintext() -> Result<()> {
                     .expect("enable test feature");
             }
             config.multi_agent_v2.non_code_mode_only = false;
+            config.multi_agent_v2.message_delivery =
+                codex_core::config::MultiAgentMessageDelivery::Plaintext;
+            config.agent_allow_history_forks = true;
         })
         .build_with_auto_env(&server)
         .await?;

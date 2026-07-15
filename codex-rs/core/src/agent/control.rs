@@ -9,7 +9,6 @@ use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
-use crate::agent_communication::MessageDelivery;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
 use crate::context::ContextualUserFragment;
@@ -26,7 +25,6 @@ use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_protocol::AgentPath;
-use codex_protocol::ResponseItemId;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -144,7 +142,24 @@ impl LocalAgentControl {
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
+        let submission = self.runtime.registry.mailbox_submission(agent_id);
         let thread = state.get_thread(agent_id).await?;
+        let _submission_permit = Arc::clone(&submission.semaphore)
+            .acquire_owned()
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!("mailbox submission semaphore closed: {err}"))
+            })?;
+        let current_thread = state.get_thread(agent_id).await?;
+        if !Arc::ptr_eq(&thread, &current_thread)
+            || !self
+                .runtime
+                .registry
+                .submission_is_current(agent_id, &submission)
+        {
+            return Err(CodexErr::ThreadNotFound(agent_id));
+        }
+        let last_task_message = non_empty_task_message(render_input_preview(&input));
         let result = match thread
             .start_or_steer_turn(TurnInputRequest::user_input(input).on_start(start_options))
             .await
@@ -162,32 +177,17 @@ impl LocalAgentControl {
             )),
             Err(err) => Err(err),
         };
-        self.handle_thread_request_result(agent_id, &state, result)
-            .await
-    }
-
-    pub(crate) async fn send_inter_agent_communication(
-        &self,
-        agent_id: ThreadId,
-        communication: InterAgentCommunication,
-        agent_communication_context: AgentCommunicationContext,
-        start_options: TurnStartOptions,
-    ) -> CodexResult<String> {
-        let state = self.runtime.upgrade()?;
-        if communication.trigger_turn {
-            let thread = state.get_thread(agent_id).await?;
-            thread
-                .ensure_execution_capacity_for_turn_start(self)
-                .await?;
+        let result = self
+            .handle_thread_request_result(agent_id, &state, &thread, result)
+            .await;
+        if result.is_ok() {
+            self.runtime.registry.update_last_task_message(
+                agent_id,
+                &submission,
+                last_task_message,
+            );
         }
-        self.send_inter_agent_communication_after_capacity_check(
-            agent_id,
-            &state,
-            communication,
-            agent_communication_context,
-            start_options,
-        )
-        .await
+        result
     }
 
     pub(crate) async fn emit_sub_agent_activity(
@@ -239,116 +239,17 @@ impl LocalAgentControl {
         Ok(())
     }
 
-    async fn send_inter_agent_communication_after_capacity_check(
-        &self,
-        agent_id: ThreadId,
-        state: &Arc<ThreadManagerState>,
-        communication: InterAgentCommunication,
-        context: AgentCommunicationContext,
-        start_options: TurnStartOptions,
-    ) -> CodexResult<String> {
-        self.submit_inter_agent_communication(
-            agent_id,
-            state,
-            communication,
-            context,
-            start_options,
-        )
-        .await
-    }
-
-    async fn submit_inter_agent_communication(
-        &self,
-        agent_id: ThreadId,
-        state: &Arc<ThreadManagerState>,
-        mut communication: InterAgentCommunication,
-        context: AgentCommunicationContext,
-        start_options: TurnStartOptions,
-    ) -> CodexResult<String> {
-        let observers = state.extensions.message_lifecycle_contributors();
-        let delivery = (!observers.is_empty()).then(|| {
-            let message_id = communication
-                .id
-                .take()
-                .filter(|id| !id.is_empty())
-                .unwrap_or_else(|| ResponseItemId::new("amsg"));
-            communication.id = Some(message_id.clone());
-            MessageDelivery::publish(context.sender_thread_id, message_id, observers)
-        });
-        let communication_for_log =
-            crate::agent_communication::logging_enabled().then(|| communication.clone());
-        {
-            // Keep unloaded delivery atomic with publication of a reloaded session.
-            let threads = state.threads.read().await;
-            if !communication.trigger_turn && !threads.contains_key(&agent_id) {
-                let _membership = self.runtime.admit_start()?;
-                self.runtime.ensure_agent_known(agent_id)?;
-                let submission_id = uuid::Uuid::now_v7().to_string();
-                self.runtime.mailboxes.enqueue(
-                    agent_id,
-                    Some(submission_id.clone()),
-                    vec![crate::PendingAgentMessage::new(communication, delivery)],
-                )?;
-                if let Some(communication) = communication_for_log {
-                    crate::agent_communication::emit_agent_communication_send(
-                        &submission_id,
-                        &context,
-                        &communication,
-                        agent_id,
-                    );
-                }
-                return Ok(submission_id);
-            }
-        }
-        // Loaded recipients retain submission ordering with follow-ups and interrupts.
-        let (parent_turn_id, root_turn_id) = if communication.trigger_turn {
-            (
-                start_options.parent_turn_id.clone(),
-                start_options.root_turn_id.clone(),
-            )
-        } else {
-            (None, None)
-        };
-        let result = self
-            .handle_thread_request_result(
-                agent_id,
-                state,
-                state
-                    .send_op(
-                        agent_id,
-                        Op::InterAgentCommunication {
-                            communication,
-                            start_options,
-                        },
-                        parent_turn_id,
-                        root_turn_id,
-                        delivery,
-                    )
-                    .await,
-            )
-            .await;
-        if let (Some(communication), Ok(communication_id)) =
-            (communication_for_log, result.as_ref())
-        {
-            crate::agent_communication::emit_agent_communication_send(
-                communication_id,
-                &context,
-                &communication,
-                agent_id,
-            );
-        }
-        result
-    }
-
     /// Interrupt the current task for an existing agent thread.
     pub(crate) async fn interrupt_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
+        let thread = state.get_thread(agent_id).await?;
         self.handle_thread_request_result(
             agent_id,
             &state,
+            &thread,
             state
-                .send_op(
-                    agent_id,
+                .send_op_to_thread(
+                    &thread,
                     Op::Interrupt,
                     /*parent_turn_id*/ None,
                     /*root_turn_id*/ None,
@@ -363,13 +264,17 @@ impl LocalAgentControl {
         &self,
         agent_id: ThreadId,
         state: &Arc<ThreadManagerState>,
+        thread: &Arc<crate::codex_thread::CodexThread>,
         result: CodexResult<String>,
     ) -> CodexResult<String> {
         if result
             .as_ref()
             .is_err_and(|err| matches!(err.details(), CodexErrorDetails::InternalAgentDied))
+            && state
+                .remove_thread_if_matches(&agent_id, thread)
+                .await
+                .is_some()
         {
-            let _ = state.remove_thread(&agent_id).await;
             self.forget_v2_residency(agent_id);
             self.runtime.registry.release_spawned_thread(agent_id);
         }
@@ -619,6 +524,7 @@ impl LocalAgentControl {
             agent_path,
             agent_nickname,
             agent_role,
+            last_task_message: None,
         })
     }
 
@@ -758,6 +664,10 @@ pub(crate) fn render_input_preview(input: &[UserInput]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn non_empty_task_message(message: String) -> Option<String> {
+    (!message.is_empty()).then_some(message)
 }
 
 fn thread_spawn_depth(session_source: &SessionSource) -> Option<i32> {

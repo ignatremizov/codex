@@ -100,12 +100,19 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     ));
     assert!(!description.contains("hidden-model"));
     assert!(properties.contains_key("task_name"));
+    assert!(properties.contains_key("task_message"));
     assert!(properties.contains_key("message"));
     assert_eq!(
         properties
             .get("message")
             .and_then(|schema| schema.encrypted),
         Some(true)
+    );
+    assert_eq!(
+        properties
+            .get("task_message")
+            .and_then(|schema| schema.encrypted),
+        None
     );
     assert!(properties.contains_key("fork_turns"));
     assert!(!properties.contains_key("items"));
@@ -125,7 +132,14 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert!(!properties.contains_key("service_tier"));
     assert_eq!(
         parameters.required.as_deref(),
-        Some(["task_name".to_string(), "message".to_string()].as_slice())
+        Some(
+            [
+                "task_name".to_string(),
+                "task_message".to_string(),
+                "message".to_string()
+            ]
+            .as_slice()
+        )
     );
     assert_eq!(
         output_schema.expect("spawn_agent output schema").to_value()["required"],
@@ -357,12 +371,12 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
 }
 
 #[test]
-fn send_message_tool_requires_message_and_has_no_output_schema() {
+fn send_message_tool_requires_encrypted_message_and_plaintext_audit_copy() {
     let ToolSpec::Function(ResponsesApiTool {
         parameters,
         output_schema,
         ..
-    }) = create_send_message_tool()
+    }) = create_send_message_tool(MultiAgentMessageDelivery::default())
     else {
         panic!("send_message should be a function tool");
     };
@@ -376,11 +390,18 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
         .expect("send_message should use object params");
     assert!(properties.contains_key("target"));
     assert!(properties.contains_key("message"));
+    assert!(properties.contains_key("task_message"));
     assert_eq!(
         properties
             .get("message")
             .and_then(|schema| schema.encrypted),
         Some(true)
+    );
+    assert_eq!(
+        properties
+            .get("task_message")
+            .and_then(|schema| schema.encrypted),
+        None
     );
     assert!(!properties.contains_key("interrupt"));
     assert!(!properties.contains_key("items"));
@@ -392,20 +413,27 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
     );
     assert_eq!(
         parameters.required.as_deref(),
-        Some(["target".to_string(), "message".to_string()].as_slice())
+        Some(
+            [
+                "target".to_string(),
+                "task_message".to_string(),
+                "message".to_string(),
+            ]
+            .as_slice()
+        )
     );
     assert_eq!(output_schema, None);
 }
 
 #[test]
-fn followup_task_tool_requires_message_and_has_no_output_schema() {
+fn followup_task_tool_requires_encrypted_message_and_plaintext_audit_copy() {
     let ToolSpec::Function(ResponsesApiTool {
         name,
         description,
         parameters,
         output_schema,
         ..
-    }) = create_followup_task_tool()
+    }) = create_followup_task_tool(MultiAgentMessageDelivery::default())
     else {
         panic!("followup_task should be a function tool");
     };
@@ -424,16 +452,30 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
         .expect("followup_task should use object params");
     assert!(properties.contains_key("target"));
     assert!(properties.contains_key("message"));
+    assert!(properties.contains_key("task_message"));
     assert_eq!(
         properties
             .get("message")
             .and_then(|schema| schema.encrypted),
         Some(true)
     );
+    assert_eq!(
+        properties
+            .get("task_message")
+            .and_then(|schema| schema.encrypted),
+        None
+    );
     assert!(!properties.contains_key("items"));
     assert_eq!(
         parameters.required.as_deref(),
-        Some(["target".to_string(), "message".to_string()].as_slice())
+        Some(
+            [
+                "target".to_string(),
+                "task_message".to_string(),
+                "message".to_string(),
+            ]
+            .as_slice()
+        )
     );
     assert_eq!(output_schema, None);
 }
@@ -509,7 +551,7 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
     assert_eq!(
         output_schema.expect("list_agents output schema").to_value()["properties"]["agents"]["items"]
             ["required"],
-        json!(["agent_name", "agent_status"])
+        json!(["agent_name", "agent_status", "last_task_message"])
     );
 }
 
