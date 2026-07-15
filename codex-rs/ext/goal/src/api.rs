@@ -291,7 +291,7 @@ impl GoalService {
             .await
             .map_err(GoalServiceError::Internal)?;
         runtime
-            .prepare_external_goal_mutation()
+            .prepare_external_goal_mutation_locked()
             .await
             .map_err(GoalServiceError::Internal)
     }

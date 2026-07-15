@@ -107,7 +107,9 @@ WHERE thread_id = ?
     pub async fn replace_thread_goal_snapshot(
         &self,
         goal: &crate::ThreadGoal,
+        skill_selections: &[codex_protocol::protocol::GoalSkillSelection],
     ) -> anyhow::Result<()> {
+        let skill_selections_json = serde_json::to_string(skill_selections)?;
         let mut transaction = self.pool.begin().await?;
         sqlx::query(
             r#"
@@ -120,8 +122,9 @@ INSERT INTO thread_goals (
     tokens_used,
     time_used_seconds,
     created_at_ms,
-    updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    updated_at_ms,
+    skill_selections_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     goal_id = excluded.goal_id,
     objective = excluded.objective,
@@ -130,7 +133,8 @@ ON CONFLICT(thread_id) DO UPDATE SET
     tokens_used = excluded.tokens_used,
     time_used_seconds = excluded.time_used_seconds,
     created_at_ms = excluded.created_at_ms,
-    updated_at_ms = excluded.updated_at_ms
+    updated_at_ms = excluded.updated_at_ms,
+    skill_selections_json = excluded.skill_selections_json
             "#,
         )
         .bind(goal.thread_id.to_string())
@@ -142,6 +146,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .bind(goal.time_used_seconds)
         .bind(datetime_to_epoch_millis(goal.created_at))
         .bind(datetime_to_epoch_millis(goal.updated_at))
+        .bind(skill_selections_json)
         .execute(&mut *transaction)
         .await?;
 
