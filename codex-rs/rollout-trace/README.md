@@ -165,7 +165,9 @@ The reducer keeps those facts separate:
 - `ToolCall`, `CodeCell`, `TerminalOperation`, `InferenceCall`, and
   `Compaction` record runtime/debug boundaries.
 - `InteractionEdge` records information flow between objects, such as a
-  `spawn_agent` tool call delivering a task into a child thread.
+  `spawn_agent` tool call delivering a task into a child thread. When available,
+  it keeps the carried task/message text inline as structured plaintext so audit
+  tooling does not need to decode provider ciphertext.
 - `RawPayloadRef` points back to exact evidence when a viewer needs more detail
   than the reduced graph stores inline.
 
