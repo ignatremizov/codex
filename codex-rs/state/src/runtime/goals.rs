@@ -192,65 +192,6 @@ SELECT EXISTS(
         Ok(())
     }
 
-    /// Copies a source thread's goal into an independent paused goal for a persistent fork.
-    pub async fn fork_thread_goal(
-        &self,
-        source_thread_id: ThreadId,
-        fork_thread_id: ThreadId,
-    ) -> anyhow::Result<Option<crate::ThreadGoal>> {
-        let goal_id = Uuid::new_v4().to_string();
-        let now_ms = datetime_to_epoch_millis(Utc::now());
-        let row = sqlx::query(
-            r#"
-INSERT INTO thread_goals (
-    thread_id,
-    goal_id,
-    objective,
-    status,
-    token_budget,
-    tokens_used,
-    time_used_seconds,
-    created_at_ms,
-    updated_at_ms,
-    skill_selections_json
-)
-SELECT
-    ?,
-    ?,
-    objective,
-    'paused',
-    token_budget,
-    tokens_used,
-    time_used_seconds,
-    ?,
-    ?,
-    skill_selections_json
-FROM thread_goals
-WHERE thread_id = ?
-ON CONFLICT(thread_id) DO NOTHING
-RETURNING
-    thread_id,
-    goal_id,
-    objective,
-    status,
-    token_budget,
-    tokens_used,
-    time_used_seconds,
-    created_at_ms,
-    updated_at_ms
-            "#,
-        )
-        .bind(fork_thread_id.to_string())
-        .bind(goal_id)
-        .bind(now_ms)
-        .bind(now_ms)
-        .bind(source_thread_id.to_string())
-        .fetch_optional(self.pool.as_ref())
-        .await?;
-
-        row.map(|row| thread_goal_from_row(&row)).transpose()
-    }
-
     pub async fn replace_thread_goal(
         &self,
         thread_id: ThreadId,
@@ -2026,58 +1967,6 @@ mod tests {
             .expect("goal should exist");
         assert_eq!(100, goal.tokens_used);
         assert_eq!(10, goal.time_used_seconds);
-    }
-
-    #[tokio::test]
-    async fn fork_thread_goal_copies_progress_into_an_independent_paused_goal() {
-        let runtime = test_runtime().await;
-        let source_thread_id = test_thread_id();
-        let fork_thread_id =
-            ThreadId::from_string("00000000-0000-0000-0000-000000000124").expect("valid thread id");
-        upsert_test_thread(&runtime, source_thread_id).await;
-        upsert_test_thread(&runtime, fork_thread_id).await;
-        runtime
-            .thread_goals()
-            .replace_thread_goal(
-                source_thread_id,
-                "continue the branch",
-                crate::ThreadGoalStatus::Active,
-                /*token_budget*/ Some(1_000),
-            )
-            .await
-            .expect("source goal should be created");
-        runtime
-            .thread_goals()
-            .account_thread_goal_usage(
-                source_thread_id,
-                /*time_delta_seconds*/ 7,
-                /*token_delta*/ 70,
-                GoalAccountingMode::ActiveOnly,
-                /*expected_goal_id*/ None,
-            )
-            .await
-            .expect("source progress should be recorded");
-
-        let source = runtime
-            .thread_goals()
-            .get_thread_goal(source_thread_id)
-            .await
-            .expect("source goal should load")
-            .expect("source goal should exist");
-        let fork = runtime
-            .thread_goals()
-            .fork_thread_goal(source_thread_id, fork_thread_id)
-            .await
-            .expect("fork goal copy should succeed")
-            .expect("fork goal should be copied");
-
-        assert_ne!(source.goal_id, fork.goal_id);
-        assert_eq!(crate::ThreadGoalStatus::Active, source.status);
-        assert_eq!(crate::ThreadGoalStatus::Paused, fork.status);
-        assert_eq!(source.objective, fork.objective);
-        assert_eq!(source.token_budget, fork.token_budget);
-        assert_eq!(source.tokens_used, fork.tokens_used);
-        assert_eq!(source.time_used_seconds, fork.time_used_seconds);
     }
 
     #[tokio::test]

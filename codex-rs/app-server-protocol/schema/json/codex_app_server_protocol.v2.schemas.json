@@ -15898,6 +15898,15 @@
             "null"
           ]
         },
+        "skills": {
+          "items": {
+            "$ref": "#/definitions/GoalSkillSelection"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "status": {
           "anyOf": [
             {
@@ -15906,15 +15915,6 @@
             {
               "type": "null"
             }
-          ]
-        },
-        "skills": {
-          "items": {
-            "$ref": "#/definitions/GoalSkillSelection"
-          },
-          "type": [
-            "array",
-            "null"
           ]
         },
         "threadId": {

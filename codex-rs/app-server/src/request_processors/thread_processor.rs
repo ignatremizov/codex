@@ -3925,18 +3925,6 @@ impl ThreadRequestProcessor {
             app_server_client_version,
         )
         .await?;
-        if session_configured.rollout_path.is_some() {
-            let state_db = forked_thread.state_db().or_else(|| self.state_db.clone());
-            if let Some(state_db) = state_db {
-                state_db
-                    .thread_goals()
-                    .fork_thread_goal(source_thread_id, thread_id)
-                    .await
-                    .map_err(|err| {
-                        internal_error(format!("failed to copy goal for fork: {err}"))
-                    })?;
-            }
-        }
         if session_configured.rollout_path.is_some()
             && let Some(name) = source_thread_name.clone()
         {

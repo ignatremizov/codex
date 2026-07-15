@@ -1246,6 +1246,21 @@
       },
       "type": "object"
     },
+    "GoalSkillSelection": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
     "HookMigration": {
       "properties": {
         "name": {
@@ -3771,21 +3786,6 @@
       ],
       "type": "object"
     },
-    "GoalSkillSelection": {
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "path"
-      ],
-      "type": "object"
-    },
     "ThreadGoalClearParams": {
       "properties": {
         "threadId": {
@@ -3816,6 +3816,15 @@
             "null"
           ]
         },
+        "skills": {
+          "items": {
+            "$ref": "#/definitions/GoalSkillSelection"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "status": {
           "anyOf": [
             {
@@ -3824,15 +3833,6 @@
             {
               "type": "null"
             }
-          ]
-        },
-        "skills": {
-          "items": {
-            "$ref": "#/definitions/GoalSkillSelection"
-          },
-          "type": [
-            "array",
-            "null"
           ]
         },
         "threadId": {
