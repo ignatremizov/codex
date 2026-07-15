@@ -456,12 +456,21 @@ async fn collaboration_tools_dispatch_to_the_host_controller() -> anyhow::Result
         (
             "spawn",
             "spawn_agent",
-            serde_json::json!({"task_name": "worker", "message": "hello", "fork_turns": "none"}),
+            serde_json::json!({
+                "task_name": "worker",
+                "message": "hello",
+                "task_message": "hello",
+                "fork_turns": "none"
+            }),
         ),
         (
             "send",
             "send_message",
-            serde_json::json!({"target": ThreadId::new().to_string(), "message": "hello"}),
+            serde_json::json!({
+                "target": ThreadId::new().to_string(),
+                "message": "hello",
+                "task_message": "hello"
+            }),
         ),
         ("list", "list_agents", serde_json::json!({})),
     ] {
@@ -485,11 +494,10 @@ async fn collaboration_tools_dispatch_to_the_host_controller() -> anyhow::Result
     let requests = calls.requests();
     assert_eq!(requests.len(), 2);
     for call in ["spawn", "send", "list"] {
+        let output = requests[1].function_call_output(call).to_string();
         assert!(
-            requests[1]
-                .function_call_output(call)
-                .to_string()
-                .contains(&format!("host {call} rejection"))
+            output.contains(&format!("host {call} rejection")),
+            "{call} did not reach the host controller: {output}"
         );
     }
     test.codex.shutdown_and_wait().await?;

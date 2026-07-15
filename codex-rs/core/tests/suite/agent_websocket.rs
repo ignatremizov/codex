@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use codex_core::TurnInputRequest;
 use codex_core::X_CODEX_ROUTING_HINT_HEADER;
@@ -66,8 +67,13 @@ async fn spawned_agent_prewarm_handshake_inherits_effective_root_service_tier(
                     "spawn-worker",
                     "collaboration",
                     "spawn_agent",
-                    &json!({ "message": "hello", "task_name": "worker", "fork_turns": "none" })
-                        .to_string(),
+                    &json!({
+                        "message": "hello",
+                        "task_message": "hello",
+                        "task_name": "worker",
+                        "fork_turns": "none",
+                    })
+                    .to_string(),
                 ),
                 ev_completed("root-spawn"),
             ],
@@ -133,6 +139,23 @@ async fn spawned_agent_prewarm_handshake_inherits_effective_root_service_tier(
             }),
         )
         .await?;
+    let after_spawn = tokio::time::timeout(
+        Duration::from_secs(5),
+        server.wait_for_request(/*connection_index*/ 0, /*request_index*/ 2),
+    )
+    .await
+    .context("root should receive the spawn result")?
+    .body_json();
+    let output = after_spawn["input"]
+        .as_array()
+        .context("root follow-up input")?
+        .iter()
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == "spawn-worker")
+        .and_then(|item| item["output"].as_str())
+        .context("worker spawn output")?;
+    let receipt: Value = serde_json::from_str(output)
+        .with_context(|| format!("worker spawn was not accepted: {output}"))?;
+    assert_eq!(receipt, json!({"task_name": "/root/worker"}));
     let child_thread_id =
         tokio::time::timeout(Duration::from_secs(5), created_threads.recv()).await??;
     let child = test.thread_manager.get_thread(child_thread_id).await?;

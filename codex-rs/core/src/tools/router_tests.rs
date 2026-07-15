@@ -45,16 +45,69 @@ use super::tool_log_payload;
 struct ExtensionEchoContributor;
 
 #[test]
-fn tool_log_payload_redacts_plaintext_multi_agent_messages() {
+fn tool_log_payload_redacts_resolved_agent_messages_across_namespaces() {
+    use crate::tools::handlers::multi_agents_v2::ListAgentsHandler;
+    use crate::tools::handlers::multi_agents_v2::SendMessageHandler;
+    use crate::tools::multi_agent_tool::multi_agent_v2_handler;
     let payload = ToolPayload::Function {
         arguments: json!({"target": "/root/worker", "message": "secret message"}).to_string(),
     };
+    for namespace in [None, Some("collaboration"), Some("delegation")] {
+        let runtime = multi_agent_v2_handler(
+            SendMessageHandler::default(),
+            namespace,
+            Some("catalog description"),
+        );
+        for source in [
+            ToolCallSource::Direct,
+            ToolCallSource::DirectPlaintextMessage,
+        ] {
+            assert_eq!(
+                tool_log_payload(
+                    &runtime.tool_name(),
+                    Some(runtime.as_ref()),
+                    &payload,
+                    &source
+                ),
+                "[message arguments]"
+            );
+        }
+        let call = ToolCall {
+            tool_name: runtime.tool_name(),
+            call_id: "message".to_string(),
+            payload: payload.clone(),
+            encrypted_function_args: Some(Vec::new()),
+        };
+        assert_eq!(
+            call.direct_source(Some(runtime.as_ref())),
+            ToolCallSource::DirectPlaintextMessage,
+        );
+    }
     assert_eq!(
-        tool_log_payload(&payload, &ToolCallSource::DirectPlaintextMessage),
-        "[plaintext arguments]"
+        tool_log_payload(
+            &ToolName::plain("list_agents"),
+            Some(&ListAgentsHandler),
+            &payload,
+            &ToolCallSource::Direct
+        ),
+        payload.log_payload()
     );
     assert_eq!(
-        tool_log_payload(&payload, &ToolCallSource::Direct),
+        tool_log_payload(
+            &ToolName::namespaced("unknown", "send_message"),
+            /*runtime*/ None,
+            &payload,
+            &ToolCallSource::Direct
+        ),
+        "[message arguments]"
+    );
+    assert_eq!(
+        tool_log_payload(
+            &ToolName::plain("unknown"),
+            /*runtime*/ None,
+            &payload,
+            &ToolCallSource::Direct
+        ),
         payload.log_payload()
     );
 }
@@ -228,7 +281,7 @@ async fn build_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()
     );
     assert_eq!(call.call_id, "call-namespace");
     assert_eq!(call.encrypted_function_args, Some(Vec::new()));
-    assert_eq!(call.direct_source(), ToolCallSource::Direct);
+    assert_eq!(call.direct_source(None), ToolCallSource::Direct);
     match call.payload {
         ToolPayload::Function { arguments } => {
             assert_eq!(arguments, "{}");

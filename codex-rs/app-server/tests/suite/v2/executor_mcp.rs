@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
@@ -699,6 +700,7 @@ async fn cached_executor_mcp_cannot_read_host_token_after_capability_downgrade()
     )
     .await??;
 
+    let mut parent_done = None;
     for (marker, events) in [
         (
             PARENT_PROMPT,
@@ -706,8 +708,13 @@ async fn cached_executor_mcp_cannot_read_host_token_after_capability_downgrade()
                 "spawn-credential-worker",
                 "collaboration",
                 "spawn_agent",
-                &json!({"task_name": "worker", "message": CHILD_PROMPT, "fork_turns": "none"})
-                    .to_string(),
+                &json!({
+                    "task_name": "worker",
+                    "message": CHILD_PROMPT,
+                    "task_message": CHILD_PROMPT,
+                    "fork_turns": "none",
+                })
+                .to_string(),
             )],
         ),
         (
@@ -739,7 +746,7 @@ async fn cached_executor_mcp_cannot_read_host_token_after_capability_downgrade()
             vec![responses::ev_assistant_message("parent-done", "Done")],
         ),
     ] {
-        responses::mount_sse_once_match(
+        let response = responses::mount_sse_once_match(
             &responses_server,
             move |request: &wiremock::Request| {
                 let body = String::from_utf8_lossy(&request.body);
@@ -754,6 +761,9 @@ async fn cached_executor_mcp_cannot_read_host_token_after_capability_downgrade()
             ),
         )
         .await;
+        if marker == "spawn-credential-worker" {
+            parent_done = Some(response);
+        }
     }
     let child_done = responses::mount_sse_once_match(
         &responses_server,
@@ -776,6 +786,23 @@ async fn cached_executor_mcp_cannot_read_host_token_after_capability_downgrade()
         .await?;
     let _: TurnStartResponse =
         timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(request_id)).await??;
+    let parent_done = parent_done.context("parent spawn-result capture")?;
+    let spawn_request = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            if let Some(request) = parent_done.requests().into_iter().next() {
+                break request;
+            }
+            tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+        }
+    })
+    .await
+    .context("parent did not receive the credential-worker spawn result")?;
+    let spawn_output = spawn_request
+        .function_call_output_text("spawn-credential-worker")
+        .context("credential-worker spawn output")?;
+    let spawn_receipt: Value = serde_json::from_str(&spawn_output)
+        .with_context(|| format!("credential-worker spawn was rejected: {spawn_output}"))?;
+    assert_eq!(spawn_receipt, json!({"task_name": "/root/worker"}));
     let request = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             if let Some(request) = child_done.requests().into_iter().next() {

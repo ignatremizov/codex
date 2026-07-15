@@ -111,7 +111,7 @@ pub(crate) async fn handoff_scenario() -> Result<Vec<ResponsesRequest>> {
                 "spawn-leaf",
                 "collaboration",
                 "spawn_agent",
-                &json!({"fork_turns":"none", "message":"Inspect.", "task_name":"leaf"}).to_string(),
+                &json!({"fork_turns":"none", "message":"Inspect.", "task_message":"Inspect.", "task_name":"leaf"}).to_string(),
             ),
             ev_completed("spawn-leaf"),
         ]),
@@ -123,7 +123,7 @@ pub(crate) async fn handoff_scenario() -> Result<Vec<ResponsesRequest>> {
         "Inspect the deployment.",
         "spawn-alpha",
         "spawn_agent",
-        json!({"task_name":"alpha", "message":"Delegate to leaf.", "fork_turns":"none"}),
+        json!({"task_name":"alpha", "message":"Delegate to leaf.", "task_message":"Delegate to leaf.", "fork_turns":"none"}),
     )
     .await?;
     let alpha = test
@@ -154,7 +154,7 @@ pub(crate) async fn handoff_scenario() -> Result<Vec<ResponsesRequest>> {
         "Inspect the metrics.",
         "spawn-beta",
         "spawn_agent",
-        json!({"task_name":"beta", "message":"Inspect.", "fork_turns":"none"}),
+        json!({"task_name":"beta", "message":"Inspect.", "task_message":"Inspect.", "fork_turns":"none"}),
     )
     .await?;
     let beta = test
@@ -183,7 +183,7 @@ pub(crate) async fn handoff_scenario() -> Result<Vec<ResponsesRequest>> {
         "Keep the deployment private.",
         "send-alpha",
         "send_message",
-        json!({"target":"alpha", "message":"Keep it private."}),
+        json!({"target":"alpha", "message":"Keep it private.", "task_message":"Keep it private."}),
     )
     .await?;
     expected.extend([
@@ -230,7 +230,7 @@ pub(crate) async fn handoff_scenario() -> Result<Vec<ResponsesRequest>> {
         "Apply the cancellation.",
         "followup-alpha",
         "followup_task",
-        json!({"target":"alpha", "message":"Check."}),
+        json!({"target":"alpha", "message":"Check.", "task_message":"Check."}),
     )
     .await?;
     wait_for_event(&alpha, |event| matches!(event, EventMsg::TurnComplete(_))).await;

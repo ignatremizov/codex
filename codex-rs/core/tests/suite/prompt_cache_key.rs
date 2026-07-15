@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use anyhow::anyhow;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use core_test_support::responses::ev_assistant_message;
@@ -96,6 +97,7 @@ async fn api_key_subagent_uses_session_id_as_prompt_cache_key() -> Result<()> {
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow feature update");
+            config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
         });
     let test = builder.build(&server).await?;
     let expected_session_id = test.session_configured.session_id.to_string();
