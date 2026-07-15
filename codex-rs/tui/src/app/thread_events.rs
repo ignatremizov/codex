@@ -6,6 +6,7 @@
 //! together with the replay behavior that consumes them.
 
 use super::*;
+use codex_app_server_protocol::ThreadRollbackResponse;
 
 #[derive(Debug, Clone)]
 pub(super) struct ThreadEventSnapshot {
@@ -59,6 +60,15 @@ impl ThreadEventStore {
                 | ThreadBufferedEvent::Notification(ServerNotification::McpServerStatusUpdated(_))
                 | ThreadBufferedEvent::FeedbackSubmission(_)
         )
+    }
+
+    pub(super) fn event_survives_thread_rollback(event: &ThreadBufferedEvent) -> bool {
+        Self::event_survives_session_refresh(event)
+            || matches!(
+                event,
+                ThreadBufferedEvent::Notification(ServerNotification::ThreadSettingsUpdated(_))
+                    | ThreadBufferedEvent::HistoryEntryResponse(_)
+            )
     }
 
     pub(super) fn new(capacity: usize) -> Self {
@@ -196,6 +206,12 @@ impl ThreadEventStore {
                     .flat_map(|turn| turn.items.iter().rev())
                     .find_map(|item| file_change_item_changes(item, item_id))
             })
+    }
+
+    pub(super) fn apply_thread_rollback(&mut self, response: &ThreadRollbackResponse) {
+        self.turns = response.thread.turns.clone();
+        self.buffer.retain(Self::event_survives_thread_rollback);
+        self.active_turn_id = None;
     }
 
     pub(super) fn snapshot(&self) -> ThreadEventSnapshot {

@@ -4,14 +4,15 @@
 //! mediates a key rendering boundary for the transcript overlay.
 //!
 //! Overall goal: keep the main chat view and the transcript overlay in sync while allowing users
-//! to edit an earlier prompt on a source-preserving branch. Confirming a selection forks before
-//! the selected turn and restores its prompt in the new composer.
+//! to edit an earlier prompt. By default, confirming a selection rolls the current thread back in
+//! place. When `fork_prompt_edits` is enabled, it instead forks before the selected turn and
+//! restores the prompt in the new composer.
 //!
 //! Backtrack operates as a small state machine:
 //! - The first `Esc` in the main view "primes" the feature and captures a base thread id.
 //! - A subsequent `Esc` opens the transcript overlay (`Ctrl+T`) and highlights a user message when
 //!   there is a prompt to reuse.
-//! - `Enter` requests a fork before the selected prompt and reopens it for editing.
+//! - `Enter` requests either an in-place rollback or an opt-in source-preserving fork.
 //!
 //! The transcript overlay (`Ctrl+T`) renders committed transcript cells plus a render-only live
 //! tail derived from the current in-flight `ChatWidget.active_cell`.
@@ -40,10 +41,12 @@ use crate::tui::TuiEvent;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnStatus;
+use codex_features::Feature;
 use codex_protocol::ThreadId;
 use codex_protocol::models::local_image_label_text;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::bail;
+use color_eyre::eyre::eyre;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -68,15 +71,22 @@ pub(crate) struct BacktrackState {
     pub(crate) nth_user_message: usize,
     /// True when the transcript overlay is showing a backtrack preview.
     pub(crate) overlay_preview_active: bool,
+    /// Pending in-place rollback awaiting confirmation from app-server.
+    pub(crate) pending_rollback: Option<PendingBacktrackRollback>,
 }
 
-/// A user-visible backtrack choice that can be reopened on a source-preserving branch.
+/// A user-visible backtrack choice that can be reopened after rollback or on a new branch.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BacktrackSelection {
     pub(crate) thread_id: ThreadId,
     /// The selected user message, counted from the most recent session start.
     pub(crate) nth_user_message: usize,
     pub(crate) prompt: UserMessage,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingBacktrackRollback {
+    pub(crate) selection: BacktrackSelection,
 }
 
 impl App {
@@ -160,7 +170,7 @@ impl App {
         }
     }
 
-    /// Request a source-preserving branch before the selected prompt.
+    /// Edit the selected prompt using the configured rollback or fork behavior.
     pub(crate) fn apply_backtrack_selection(&mut self, selection: BacktrackSelection) {
         if self.chat_widget.side_conversation_active() {
             self.reset_backtrack_state();
@@ -173,11 +183,33 @@ impl App {
             return;
         }
 
-        self.app_event_tx.send(AppEvent::ForkSessionForPromptEdit {
-            thread_id: selection.thread_id,
-            nth_user_message: selection.nth_user_message,
-            prompt: selection.prompt,
+        if self.config.features.enabled(Feature::ForkPromptEdits) {
+            self.app_event_tx.send(AppEvent::ForkSessionForPromptEdit {
+                thread_id: selection.thread_id,
+                nth_user_message: selection.nth_user_message,
+                prompt: selection.prompt,
+            });
+        } else {
+            self.apply_backtrack_rollback(selection);
+        }
+    }
+
+    fn apply_backtrack_rollback(&mut self, selection: BacktrackSelection) {
+        if self.backtrack.pending_rollback.is_some() {
+            self.chat_widget
+                .add_error_message("Backtrack rollback already in progress.".to_string());
+            return;
+        }
+
+        self.backtrack.pending_rollback = Some(PendingBacktrackRollback {
+            selection: selection.clone(),
         });
+        self.app_event_tx
+            .send(AppEvent::RollbackSessionForPromptEdit {
+                thread_id: selection.thread_id,
+                nth_user_message: selection.nth_user_message,
+                prompt: selection.prompt,
+            });
     }
 
     pub(crate) fn restore_backtrack_prompt_after_branch_error(
@@ -430,6 +462,36 @@ impl App {
         self.chat_widget.clear_esc_backtrack_hint();
     }
 
+    pub(crate) fn handle_backtrack_rollback_succeeded(&mut self) {
+        self.finish_pending_backtrack();
+    }
+
+    pub(crate) fn handle_backtrack_rollback_failed(&mut self) {
+        self.backtrack.pending_rollback = None;
+    }
+
+    /// Finish a pending rollback by applying the local trim and scheduling a scrollback refresh.
+    ///
+    /// Ignore responses for a thread that is no longer active so a late rollback cannot alter the
+    /// transcript shown after a thread switch.
+    fn finish_pending_backtrack(&mut self) {
+        let Some(pending) = self.backtrack.pending_rollback.take() else {
+            return;
+        };
+        if self.chat_widget.thread_id() != Some(pending.selection.thread_id) {
+            return;
+        }
+        if trim_transcript_cells_to_nth_user(
+            &mut self.transcript_cells,
+            pending.selection.nth_user_message,
+        ) {
+            self.chat_widget
+                .reset_transient_state_after_thread_rollback();
+            self.sync_overlay_after_transcript_trim();
+            self.backtrack_render_pending = true;
+        }
+    }
+
     fn backtrack_selection(&self, nth_user_message: usize) -> Option<BacktrackSelection> {
         let base_id = self.backtrack.base_id?;
         if self.chat_widget.thread_id() != Some(base_id) {
@@ -461,6 +523,43 @@ impl App {
             },
         })
     }
+
+    /// Keep transcript-related UI state aligned after `transcript_cells` was trimmed.
+    fn sync_overlay_after_transcript_trim(&mut self) {
+        if let Some(Overlay::Transcript(transcript)) = &mut self.overlay {
+            transcript.replace_cells(self.transcript_cells.clone());
+        }
+        if self.backtrack.overlay_preview_active {
+            let total_users = user_count(&self.transcript_cells);
+            let next_selection = if total_users == 0 {
+                usize::MAX
+            } else {
+                self.backtrack
+                    .nth_user_message
+                    .min(total_users.saturating_sub(1))
+            };
+            self.apply_backtrack_selection_internal(next_selection);
+        }
+        // While the overlay is open, rendered history lines are buffered until close. A rollback
+        // can remove the cells those lines describe, so do not flush stale lines afterward.
+        self.deferred_history_lines.clear();
+    }
+}
+
+fn trim_transcript_cells_to_nth_user(
+    transcript_cells: &mut Vec<Arc<dyn crate::history_cell::HistoryCell>>,
+    nth_user_message: usize,
+) -> bool {
+    if nth_user_message == usize::MAX {
+        return false;
+    }
+
+    if let Some(cut_idx) = nth_user_position(transcript_cells, nth_user_message) {
+        let original_len = transcript_cells.len();
+        transcript_cells.truncate(cut_idx);
+        return transcript_cells.len() != original_len;
+    }
+    false
 }
 
 /// Find the persisted turn that contains a selected transcript prompt.
@@ -469,13 +568,35 @@ impl App {
 /// resolved against the same visible projection before restoring its canonical mention bindings.
 ///
 /// A turn can contain multiple user messages when it was steered. Only its initial prompt can be
-/// reopened independently because app-server cannot fork in the middle of a turn.
+/// reopened independently because app-server cannot branch or roll back in the middle of a turn.
 pub(crate) fn backtrack_fork_before_turn_id(
     turns: &[Turn],
     nth_user_message: usize,
     prompt: &mut UserMessage,
 ) -> Result<Option<String>> {
+    let turn_index = backtrack_prompt_turn_index(turns, nth_user_message, prompt)?;
+    Ok((turn_index > 0).then(|| turns[turn_index].id.clone()))
+}
+
+/// Resolve a visible prompt and return the number of persisted turns to remove.
+pub(crate) fn backtrack_rollback_turn_count(
+    turns: &[Turn],
+    nth_user_message: usize,
+    prompt: &mut UserMessage,
+) -> Result<u32> {
+    let turn_index = backtrack_prompt_turn_index(turns, nth_user_message, prompt)?;
+    u32::try_from(turns.len().saturating_sub(turn_index))
+        .map_err(|_| eyre!("the thread contains too many turns to roll back"))
+}
+
+fn backtrack_prompt_turn_index(
+    turns: &[Turn],
+    nth_user_message: usize,
+    prompt: &mut UserMessage,
+) -> Result<usize> {
     let mut visible_user_messages_seen = 0_usize;
+    let mut ordinal_candidate_present = false;
+    let mut nearest_matching_candidate: Option<(usize, bool, usize, usize, bool)> = None;
     let mut review_mode = false;
     for (turn_index, turn) in turns.iter().enumerate() {
         let hidden_nested_review_turn = turn_index
@@ -483,7 +604,7 @@ pub(crate) fn backtrack_fork_before_turn_id(
             .and_then(|index| turns.get(index))
             .is_some_and(|previous| is_hidden_nested_review_turn(previous, turn));
         let mut user_messages_in_turn = 0_usize;
-        for item in &turn.items {
+        for (item_index, item) in turn.items.iter().enumerate() {
             let content = match item {
                 ThreadItem::EnteredReviewMode { .. } => {
                     review_mode = true;
@@ -513,34 +634,74 @@ pub(crate) fn backtrack_fork_before_turn_id(
             {
                 continue;
             }
-            if visible_user_messages_seen != nth_user_message {
-                visible_user_messages_seen =
-                    visible_user_messages_seen.saturating_add(/*rhs*/ 1);
+            let persisted_ordinal = visible_user_messages_seen;
+            visible_user_messages_seen = visible_user_messages_seen.saturating_add(/*rhs*/ 1);
+            ordinal_candidate_present |= persisted_ordinal == nth_user_message;
+            let selected_local_images = prompt.local_images.iter().map(|image| &image.path);
+            let prompt_matches = prompt.text == display.message
+                && prompt.text_elements == display.text_elements
+                && prompt.remote_image_urls == display.remote_image_urls
+                && selected_local_images.eq(display.local_images.iter());
+            if !prompt_matches {
                 continue;
             }
 
-            if is_steer {
-                bail!("the selected prompt is a steer and cannot be branched independently");
+            // The TUI renders a submitted prompt before turn/start completes. If that turn is
+            // interrupted before its user-message event is persisted, the transcript keeps a
+            // visible prompt with no matching ThreadItem and later ordinals shift. Prefer the
+            // nearest exact persisted prompt so one such optimistic entry does not break editing.
+            let distance = persisted_ordinal.abs_diff(nth_user_message);
+            let candidate_is_after_selection = persisted_ordinal > nth_user_message;
+            let should_replace = nearest_matching_candidate.as_ref().is_none_or(
+                |(best_distance, best_is_after_selection, ..)| {
+                    distance < *best_distance
+                        || (distance == *best_distance
+                            && !candidate_is_after_selection
+                            && *best_is_after_selection)
+                },
+            );
+            if should_replace {
+                nearest_matching_candidate = Some((
+                    distance,
+                    candidate_is_after_selection,
+                    turn_index,
+                    item_index,
+                    is_steer,
+                ));
             }
-            if matches!(turn.status, TurnStatus::InProgress) {
-                bail!("the selected prompt belongs to a turn that is still in progress");
+            if distance == 0 {
+                break;
             }
-
-            let selected_local_images = prompt.local_images.iter().map(|image| &image.path);
-            if prompt.text != display.message
-                || prompt.text_elements != display.text_elements
-                || prompt.remote_image_urls != display.remote_image_urls
-                || !selected_local_images.eq(display.local_images.iter())
-            {
-                bail!("the selected transcript prompt no longer matches the persisted thread");
-            }
-            prompt.mention_bindings = mention_bindings_from_user_inputs(content, &display.message);
-
-            return Ok((turn_index > 0).then(|| turn.id.clone()));
         }
     }
 
-    bail!("the selected prompt was not found in the persisted thread")
+    let Some((_, _, turn_index, item_index, is_steer)) = nearest_matching_candidate else {
+        if ordinal_candidate_present {
+            bail!("the selected transcript prompt no longer matches the persisted thread");
+        }
+        bail!("the selected prompt was not found in the persisted thread");
+    };
+    let turn = &turns[turn_index];
+    if is_steer {
+        bail!("the selected prompt is a steer and cannot be edited independently");
+    }
+    if matches!(turn.status, TurnStatus::InProgress) {
+        bail!("the selected prompt belongs to a turn that is still in progress");
+    }
+    let Some(ThreadItem::UserMessage { content, .. }) = turn.items.get(item_index) else {
+        bail!("the selected prompt was not found in the persisted thread");
+    };
+    let display = ChatWidget::user_message_display_from_inputs(content);
+    let selected_local_images = prompt.local_images.iter().map(|image| &image.path);
+    if prompt.text != display.message
+        || prompt.text_elements != display.text_elements
+        || prompt.remote_image_urls != display.remote_image_urls
+        || !selected_local_images.eq(display.local_images.iter())
+    {
+        bail!("the selected transcript prompt no longer matches the persisted thread");
+    }
+    prompt.mention_bindings = mention_bindings_from_user_inputs(content, &display.message);
+    Ok(turn_index)
 }
 
 /// Returns whether a turn is the reconstructed inline-review child with duplicated prompt inputs.
@@ -724,6 +885,52 @@ mod tests {
             .expect("later prompt should resolve"),
             Some("turn-2".to_string())
         );
+        assert_eq!(
+            backtrack_rollback_turn_count(
+                &turns,
+                /*nth_user_message*/ 0,
+                &mut prompt("turn-1-prompt-0"),
+            )
+            .expect("first prompt should resolve"),
+            3
+        );
+        assert_eq!(
+            backtrack_rollback_turn_count(
+                &turns,
+                /*nth_user_message*/ 1,
+                &mut prompt("turn-2-prompt-0"),
+            )
+            .expect("later prompt should resolve"),
+            1
+        );
+    }
+
+    #[test]
+    fn backtrack_resolves_prompt_after_unpersisted_transcript_entry() {
+        let turns = vec![
+            turn("turn-1", TurnStatus::Completed, /*user_messages*/ 1),
+            turn("turn-2", TurnStatus::Completed, /*user_messages*/ 1),
+            turn("turn-3", TurnStatus::Completed, /*user_messages*/ 1),
+        ];
+
+        assert_eq!(
+            backtrack_fork_before_turn_id(
+                &turns,
+                /*nth_user_message*/ 2,
+                &mut prompt("turn-2-prompt-0"),
+            )
+            .expect("shifted prompt should resolve by persisted identity"),
+            Some("turn-2".to_string())
+        );
+        assert_eq!(
+            backtrack_rollback_turn_count(
+                &turns,
+                /*nth_user_message*/ 3,
+                &mut prompt("turn-3-prompt-0"),
+            )
+            .expect("out-of-range ordinal should resolve by persisted identity"),
+            1
+        );
     }
 
     #[test]
@@ -743,7 +950,17 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "the selected prompt is a steer and cannot be branched independently"
+            "the selected prompt is a steer and cannot be edited independently"
+        );
+        assert_eq!(
+            backtrack_rollback_turn_count(
+                &turns,
+                /*nth_user_message*/ 1,
+                &mut prompt("turn-1-prompt-1"),
+            )
+            .expect_err("a steer cannot be rolled back independently")
+            .to_string(),
+            "the selected prompt is a steer and cannot be edited independently"
         );
     }
 
@@ -929,13 +1146,13 @@ mod tests {
         let mut selected_prompt = prompt("use $skill @sample $google-calendar");
 
         assert_eq!(
-            backtrack_fork_before_turn_id(
+            backtrack_rollback_turn_count(
                 &turns,
                 /*nth_user_message*/ 1,
                 &mut selected_prompt,
             )
             .expect("the selected prompt should resolve"),
-            Some("turn-2".to_string())
+            1
         );
         assert_eq!(
             selected_prompt.mention_bindings,
