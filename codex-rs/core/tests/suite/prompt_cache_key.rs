@@ -41,6 +41,7 @@ async fn api_key_subagent_uses_session_id_as_prompt_cache_key() -> Result<()> {
     let server = start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_TASK,
+        "task_message": CHILD_TASK,
         "task_name": "worker",
     }))?;
     let root_request = mount_sse_once_match(

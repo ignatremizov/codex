@@ -61,11 +61,22 @@ impl ToolCall {
 }
 
 pub(crate) fn tool_log_payload<'a>(
+    tool_name: &ToolName,
     payload: &'a ToolPayload,
     source: &ToolCallSource,
 ) -> Cow<'a, str> {
+    // The structured communication event is the audit record for collaboration messages. Keep
+    // their raw payload out of generic tool logs in both plaintext and encrypted delivery modes.
+    if tool_name.namespace.as_deref() == Some("collaboration")
+        && matches!(
+            tool_name.name.as_str(),
+            "spawn_agent" | "send_message" | "followup_task"
+        )
+    {
+        return Cow::Borrowed("[message arguments]");
+    }
     if matches!(source, ToolCallSource::DirectPlaintextMessage) {
-        return Cow::Borrowed("[plaintext arguments]");
+        return Cow::Borrowed("[redacted arguments]");
     }
     payload.log_payload()
 }

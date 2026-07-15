@@ -10,7 +10,8 @@ use crate::session::multi_agents::resolve_usage_hints;
 use crate::tools::handlers::multi_agents::collab_tool_call_status;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
-use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
+use crate::tools::handlers::multi_agents_v2::message_tool::MessageDeliveryMode;
+use crate::tools::handlers::multi_agents_v2::message_tool::PreparedAgentMessage;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -41,13 +42,14 @@ impl ToolExecutor<ToolInvocation> for Handler {
     where
         ToolInvocation: 'a,
     {
+        let message_delivery = self.options.message_delivery;
         Box::pin(async move {
             let analytics = invocation.session.services.analytics_events_client.clone();
             let sender_thread_id = invocation.session.thread_id;
             let turn_id = invocation.step_context.turn.sub_id.clone();
             let call_id = invocation.call_id.clone();
             let started_at_ms = now_unix_timestamp_ms();
-            let result = handle_spawn_agent(invocation).await;
+            let result = handle_spawn_agent(invocation, message_delivery).await;
             let completed_at_ms = now_unix_timestamp_ms();
             let (status, receiver_thread_ids, agents_states) = match &result {
                 Ok((_, thread_id, agent_status, _)) => (
@@ -92,6 +94,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
 
 async fn handle_spawn_agent(
     invocation: ToolInvocation,
+    message_delivery: crate::config::MultiAgentMessageDelivery,
 ) -> Result<
     (
         SpawnAgentResult,
@@ -106,14 +109,14 @@ async fn handle_spawn_agent(
         step_context,
         payload,
         call_id,
-        source,
         ..
     } = invocation;
     let turn = &step_context.turn;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     let fork_mode = args.fork_mode()?;
-    let message = message_content(args.message)?;
+    let prepared_message =
+        PreparedAgentMessage::from_tool_args(args.message, args.task_message, message_delivery)?;
     let role_name = args
         .agent_type
         .as_deref()
@@ -169,13 +172,8 @@ async fn handle_spawn_agent(
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let communication = communication_from_tool_message(
-        author,
-        new_agent_path.clone(),
-        message,
-        &source,
-        /*trigger_turn*/ true,
-    );
+    let communication = MessageDeliveryMode::TriggerTurn
+        .apply(prepared_message.into_communication(author, new_agent_path.clone()));
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
     let multi_agent_v2_usage_hints =
         if is_full_history_fork && turn.multi_agent_version == MultiAgentVersion::V2 {
@@ -280,6 +278,7 @@ impl CoreToolRuntime for Handler {
 struct SpawnAgentArgs {
     message: String,
     task_name: String,
+    task_message: Option<String>,
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
