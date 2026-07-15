@@ -140,7 +140,9 @@ async fn spawned_child_accepts_direct_steering_and_queued_input(
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(server.uri())
         .with_model("gpt-5.4")
-        .enable_feature(Feature::MultiAgentV2)
+        .with_extra_config(
+            "[features.multi_agent_v2]\nenabled = true\nmessage_delivery = \"encrypted\"",
+        )
         .disable_feature(Feature::EnableRequestCompression)
         .write(codex_home.path())?;
     write_models_cache(codex_home.path()).await?;

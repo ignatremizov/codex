@@ -34,6 +34,20 @@ impl AgentMessage {
                 message,
                 trigger_turn,
             ),
+            Self::EncryptedWithAudit {
+                encrypted_content,
+                audit_content,
+            } => {
+                let mut communication = InterAgentCommunication::new_encrypted(
+                    author,
+                    recipient,
+                    Vec::new(),
+                    encrypted_content,
+                    trigger_turn,
+                );
+                communication.content = audit_content;
+                communication
+            }
             Self::Plaintext(message) => {
                 let message_type = match mode {
                     MessageDeliveryMode::QueueOnly => InterAgentMessageType::Message,

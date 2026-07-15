@@ -15,6 +15,74 @@ fn agent_metadata(thread_id: ThreadId) -> AgentMetadata {
     }
 }
 
+#[tokio::test]
+async fn reregistered_recipient_reuses_live_gate_but_rejects_stale_assignment_updates() {
+    let registry = Arc::new(AgentRegistry::default());
+    let thread_id = ThreadId::new();
+    registry
+        .reserve_spawn_slot(Some(1))
+        .expect("reserve")
+        .commit(agent_metadata(thread_id));
+    let old = registry.mailbox_submission(thread_id);
+    let permit = Arc::clone(&old.semaphore)
+        .acquire_owned()
+        .await
+        .expect("gate");
+    registry.release_spawned_thread(thread_id);
+    registry
+        .reserve_spawn_slot(Some(1))
+        .expect("reserve again")
+        .commit(agent_metadata(thread_id));
+    let current = registry.mailbox_submission(thread_id);
+    assert!(Arc::ptr_eq(&old.semaphore, &current.semaphore));
+    assert!(!Arc::ptr_eq(&old, &current));
+    assert!(!registry.submission_is_current(thread_id, &old));
+    assert!(registry.submission_is_current(thread_id, &current));
+    assert!(current.semaphore.try_acquire().is_err());
+    registry.update_last_task_message(thread_id, &old, Some("stale".to_string()));
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(thread_id)
+            .and_then(|metadata| metadata.last_task_message),
+        None,
+    );
+    drop(permit);
+    let _permit = tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 1),
+        Arc::clone(&current.semaphore).acquire_owned(),
+    )
+    .await
+    .expect("shared gate released")
+    .expect("gate");
+    registry.update_last_task_message(thread_id, &current, Some("current".to_string()));
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(thread_id)
+            .and_then(|metadata| metadata.last_task_message),
+        Some("current".to_string()),
+    );
+}
+
+#[test]
+fn repeated_root_registration_preserves_submission_identity_and_assignment() {
+    let registry = AgentRegistry::default();
+    let root_id = ThreadId::new();
+    registry.register_root_thread(root_id);
+    let submission = registry.mailbox_submission(root_id);
+    registry.update_last_task_message(root_id, &submission, Some("accepted".to_string()));
+    registry.register_root_thread(root_id);
+    assert!(Arc::ptr_eq(
+        &submission,
+        &registry.mailbox_submission(root_id)
+    ));
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(root_id)
+            .and_then(|metadata| metadata.last_task_message),
+        Some("accepted".to_string()),
+    );
+}
+
 #[test]
 fn format_agent_nickname_adds_ordinals_after_reset() {
     assert_eq!(

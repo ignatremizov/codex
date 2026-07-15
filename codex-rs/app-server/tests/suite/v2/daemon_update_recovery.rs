@@ -393,7 +393,9 @@ async fn managed_force_shutdown_exits_with_blocked_rollout_writer() -> Result<()
     let config = std::fs::read_to_string(&config_path)?;
     std::fs::write(
         config_path,
-        format!("{config}\n[features.multi_agent_v2]\nenabled = true\n"),
+        format!(
+            "{config}\n[features.multi_agent_v2]\nenabled = true\nmessage_delivery = \"encrypted\"\n"
+        ),
     )?;
     let socket_path = home.path().join("control/server.sock");
     let mut server = spawn_server(home.path(), &socket_path)?;

@@ -19,6 +19,12 @@ The accepted values are `encrypted` (provider-opaque payload only), `encrypted_w
 
 This setting does not itself enable a different multi-agent runtime or change the selected model. Delivery validation and rendering use the resolved thread policy; existing persisted messages retain their recorded representation rather than being converted on resume.
 
+For model-authored V2 `spawn_agent`, `send_message`, and `followup_task` calls, audit mode requires both a nonempty `message` and a nonempty readable `task_message`. The audit copy is not substituted into the recipient's encrypted model input. The other two modes reject `task_message`; plaintext receives the normal attributed context wrapper once. A host-supplied message explicitly marked as plaintext retains that provenance independently of the configured model-authored delivery mode.
+
+The combined `message` and `task_message` payload is limited to 8192 UTF-8 bytes. Invalid or oversized payloads are rejected before target lookup, restoration, or spawning, rather than silently truncated. Generic tool-argument logs redact message payloads; intentionally readable communication audit records remain available.
+
+For children, `list_agents` exposes the latest accepted readable assignment as `last_task_message`, or `null` when unavailable; the root entry uses `"Main thread"`. A rejected send does not replace the child's assignment; an accepted opaque assignment clears it, and a completion result does not overwrite it. This is current registry metadata, not a promise that the field itself survives a process restart.
+
 ## Unified exec yield windows
 
 The optional `unified_exec_yield_time_ms` and `unified_exec_write_stdin_yield_time_ms` settings control the default time before unified-exec returns an output snapshot when the individual tool call does not provide `yield_time_ms`:

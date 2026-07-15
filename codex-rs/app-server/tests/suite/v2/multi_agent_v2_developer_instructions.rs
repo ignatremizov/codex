@@ -174,7 +174,8 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     )
     .await;
 
-    let mut feature_config = "[features.multi_agent_v2]\nenabled = true".to_string();
+    let mut feature_config =
+        "[features.multi_agent_v2]\nenabled = true\nmessage_delivery = \"encrypted\"".to_string();
     if let Some(configured_override) = configured_override {
         feature_config.push_str(&format!(
             "\nsubagent_developer_instructions = {configured_override:?}"
@@ -377,7 +378,7 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
             "developer_instructions = {PARENT_INSTRUCTIONS:?}\nmodel_context_window = 10000\nmodel_auto_compact_token_limit = 9000\ncompact_prompt = {COMPACT_PROMPT:?}"
         ))
         .with_extra_config(&format!(
-            "[features.multi_agent_v2]\nenabled = true\nsubagent_developer_instructions = {CHILD_INSTRUCTIONS:?}"
+            "[features.multi_agent_v2]\nenabled = true\nmessage_delivery = \"encrypted\"\nsubagent_developer_instructions = {CHILD_INSTRUCTIONS:?}"
         ))
         .write(codex_home.path())?;
     write_models_cache(codex_home.path()).await?;
@@ -638,9 +639,10 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
 
     let mut feature_config = match configured_subagent_developer_instructions {
         Some(instructions) => format!(
-            "[features.multi_agent_v2]\nenabled = true\nsubagent_developer_instructions = {instructions:?}"
+            "[features.multi_agent_v2]\nenabled = true\nmessage_delivery = \"encrypted\"\nsubagent_developer_instructions = {instructions:?}"
         ),
-        None => "[features.multi_agent_v2]\nenabled = true".to_string(),
+        None => "[features.multi_agent_v2]\nenabled = true\nmessage_delivery = \"encrypted\""
+            .to_string(),
     };
     let codex_home = TempDir::new()?;
     let role_path = codex_home.path().join("worker.toml");

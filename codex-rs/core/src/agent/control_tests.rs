@@ -1523,6 +1523,330 @@ async fn resumed_root_reuses_or_freezes_surviving_shared_instructions() {
 }
 
 #[tokio::test]
+async fn encrypted_inter_agent_communication_clears_existing_last_task_message() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    let agent_path = AgentPath::try_from("/root/worker").expect("agent path");
+    let spawned_agent = harness
+        .control
+        .spawn_agent_with_metadata(
+            harness.config.clone(),
+            text_input("old plaintext task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(agent_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("spawn_agent should succeed");
+    assert_eq!(
+        harness
+            .control
+            .state
+            .agent_metadata_for_thread(spawned_agent.thread_id)
+            .and_then(|metadata| metadata.last_task_message),
+        Some("old plaintext task".to_string())
+    );
+
+    let communication = InterAgentCommunication::new_encrypted(
+        AgentPath::root(),
+        agent_path,
+        Vec::new(),
+        "encrypted-task".to_string(),
+        /*trigger_turn*/ true,
+    );
+    harness
+        .control
+        .send_inter_agent_communication(
+            spawned_agent.thread_id,
+            communication,
+            AgentCommunicationContext::new(AgentCommunicationKind::Followup, ThreadId::new()),
+            TurnStartOptions::default(),
+        )
+        .await
+        .expect("send_inter_agent_communication should succeed");
+
+    assert_eq!(
+        harness
+            .control
+            .state
+            .agent_metadata_for_thread(spawned_agent.thread_id)
+            .and_then(|metadata| metadata.last_task_message),
+        None
+    );
+}
+
+#[tokio::test]
+async fn accepted_mail_order_controls_assignment_and_rejected_input_preserves_it() {
+    let harness = AgentControlHarness::new().await;
+    let (root_id, _) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_id, /*current_parent_thread_id*/ None);
+    let messages = ["first assignment", "second assignment"].map(|text| {
+        InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("worker path"),
+            AgentPath::root(),
+            Vec::new(),
+            text.to_string(),
+            /*trigger_turn*/ false,
+        )
+    });
+    let [first, second] = messages;
+    let (first, second) = timeout(Duration::from_secs(/*secs*/ 5), async {
+        tokio::join!(
+            harness.control.send_inter_agent_communication(
+                root_id,
+                first,
+                AgentCommunicationContext::new(AgentCommunicationKind::Message, root_id),
+                TurnStartOptions::default(),
+            ),
+            harness.control.send_inter_agent_communication(
+                root_id,
+                second,
+                AgentCommunicationContext::new(AgentCommunicationKind::Message, root_id),
+                TurnStartOptions::default(),
+            ),
+        )
+    })
+    .await
+    .expect("concurrent mail submissions complete");
+    first.expect("first enqueue");
+    second.expect("second enqueue");
+    let accepted = harness
+        .manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(id, op)| match op {
+            Op::InterAgentCommunication { communication, .. } if id == root_id => {
+                Some(communication.content)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(accepted.len(), 2);
+    let expected = accepted.last().cloned();
+    assert_eq!(
+        harness
+            .control
+            .get_agent_metadata(root_id)
+            .and_then(|metadata| metadata.last_task_message),
+        expected,
+    );
+    assert!(harness.manager.remove_thread(&root_id).await.is_some());
+    harness
+        .control
+        .send_input(root_id, text_input("rejected"), TurnStartOptions::default())
+        .await
+        .expect_err("missing recipient rejects input");
+    harness
+        .control
+        .send_inter_agent_communication(
+            root_id,
+            InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::root(),
+                Vec::new(),
+                "rejected mail".to_string(),
+                /*trigger_turn*/ false,
+            ),
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, root_id),
+            TurnStartOptions::default(),
+        )
+        .await
+        .expect_err("missing recipient rejects mail");
+    assert_eq!(
+        harness
+            .control
+            .get_agent_metadata(root_id)
+            .and_then(|metadata| metadata.last_task_message),
+        expected,
+    );
+}
+
+#[tokio::test]
+async fn gate_waiters_cannot_deliver_to_a_replacement_runtime_with_the_same_id() {
+    let harness = AgentControlHarness::new().await;
+    let (root_id, original) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_id, /*current_parent_thread_id*/ None);
+    original.ensure_rollout_materialized().await;
+    original.flush_rollout().await.expect("flush original");
+    let history = crate::rollout::recorder::RolloutRecorder::get_rollout_history(
+        &original.rollout_path().expect("original rollout"),
+    )
+    .await
+    .expect("read original");
+    let submission = harness.control.state.mailbox_submission(root_id);
+    let permit = Arc::clone(&submission.semaphore)
+        .acquire_owned()
+        .await
+        .expect("hold gate");
+    let mut user_input = Box::pin(harness.control.send_input(
+        root_id,
+        text_input("stale user input"),
+        TurnStartOptions::default(),
+    ));
+    let mut mail = Box::pin(harness.control.send_inter_agent_communication(
+        root_id,
+        InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root(),
+            Vec::new(),
+            "stale mail".to_string(),
+            /*trigger_turn*/ false,
+        ),
+        AgentCommunicationContext::new(AgentCommunicationKind::Message, root_id),
+        TurnStartOptions::default(),
+    ));
+    // Poll both operations into the held gate before replacing the runtime.
+    assert!(futures::poll!(user_input.as_mut()).is_pending());
+    assert!(futures::poll!(mail.as_mut()).is_pending());
+    assert!(harness.manager.remove_thread(&root_id).await.is_some());
+    // Release the LocalThreadStore writer while retaining the captured endpoint identity.
+    timeout(
+        Duration::from_secs(/*secs*/ 5),
+        original.shutdown_and_wait(),
+    )
+    .await
+    .expect("original shutdown completes")
+    .expect("stop original");
+    let replacement = timeout(
+        Duration::from_secs(/*secs*/ 5),
+        harness.manager.start_thread(StartThreadOptions {
+            initial_history: history,
+            ..StartThreadOptions::new(harness.config.clone())
+        }),
+    )
+    .await
+    .expect("replacement starts")
+    .expect("resume replacement");
+    assert_eq!(replacement.thread_id, root_id);
+    assert!(!Arc::ptr_eq(&original, &replacement.thread));
+    drop(permit);
+    let (input_result, mail_result) = timeout(Duration::from_secs(/*secs*/ 5), async {
+        tokio::join!(user_input, mail)
+    })
+    .await
+    .expect("stale waiters finish");
+    for result in [input_result, mail_result] {
+        assert_matches!(
+            result.expect_err("stale endpoint must be rejected").details(),
+            CodexErrorDetails::ThreadNotFound(id) if *id == root_id
+        );
+    }
+    assert!(harness.manager.captured_ops().is_empty());
+    assert_eq!(
+        harness
+            .control
+            .get_agent_metadata(root_id)
+            .and_then(|metadata| metadata.last_task_message),
+        None,
+    );
+    assert!(Arc::ptr_eq(
+        &harness
+            .manager
+            .get_thread(root_id)
+            .await
+            .expect("replacement survives"),
+        &replacement.thread,
+    ));
+    replacement
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("stop replacement");
+}
+
+#[tokio::test]
+async fn encrypted_inter_agent_communication_uses_audit_and_ignores_results_for_last_task() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    let agent_path = AgentPath::try_from("/root/worker").expect("agent path");
+    let spawned_agent = harness
+        .control
+        .spawn_agent_with_metadata(
+            harness.config.clone(),
+            text_input("old plaintext task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(agent_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("spawn_agent should succeed");
+
+    let mut communication = InterAgentCommunication::new_encrypted(
+        AgentPath::root(),
+        agent_path.clone(),
+        Vec::new(),
+        "encrypted-task".to_string(),
+        /*trigger_turn*/ true,
+    );
+    communication.content = "audit-visible task".to_string();
+    harness
+        .control
+        .send_inter_agent_communication(
+            spawned_agent.thread_id,
+            communication,
+            AgentCommunicationContext::new(AgentCommunicationKind::Followup, parent_thread_id),
+            TurnStartOptions::default(),
+        )
+        .await
+        .expect("send_inter_agent_communication should succeed");
+
+    assert_eq!(
+        harness
+            .control
+            .state
+            .agent_metadata_for_thread(spawned_agent.thread_id)
+            .and_then(|metadata| metadata.last_task_message),
+        Some("audit-visible task".to_string())
+    );
+
+    harness
+        .control
+        .send_inter_agent_communication(
+            spawned_agent.thread_id,
+            InterAgentCommunication::new(
+                AgentPath::root(),
+                agent_path,
+                Vec::new(),
+                "final result".to_string(),
+                /*trigger_turn*/ false,
+            ),
+            AgentCommunicationContext::new(AgentCommunicationKind::Result, parent_thread_id),
+            TurnStartOptions::default(),
+        )
+        .await
+        .expect("result communication should succeed");
+
+    assert_eq!(
+        harness
+            .control
+            .state
+            .agent_metadata_for_thread(spawned_agent.thread_id)
+            .and_then(|metadata| metadata.last_task_message),
+        Some("audit-visible task".to_string())
+    );
+}
+
+#[tokio::test]
 async fn spawn_agent_creates_thread_and_sends_prompt() {
     let harness = AgentControlHarness::new().await;
     let thread_id = harness

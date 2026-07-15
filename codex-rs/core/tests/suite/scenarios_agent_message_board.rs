@@ -217,13 +217,18 @@ async fn board_is_shared_with_children_survives_resume_and_skips_idle_notices() 
     .await;
     root.submit_turn("Create the design channel and subscribe.")
         .await?;
-    responses::mount_sse_sequence(
+    let spawn_responses = responses::mount_sse_sequence(
         &server,
         vec![
             tool(
                 "spawn-worker",
                 "spawn_agent",
-                json!({"task_name":"worker","message":"Say ready.","fork_turns":"none"}),
+                json!({
+                    "task_name": "worker",
+                    "message": "Say ready.",
+                    "task_message": "Say ready.",
+                    "fork_turns": "none",
+                }),
             ),
             done(),
             done(),
@@ -232,6 +237,17 @@ async fn board_is_shared_with_children_survives_resume_and_skips_idle_notices() 
     .await;
     root.submit_turn("Spawn a worker and finish your turn.")
         .await?;
+    let spawn_output = spawn_responses
+        .function_call_output_text("spawn-worker")
+        .context("the parent should receive the worker spawn result")?;
+    let spawn_result: Value = serde_json::from_str(&spawn_output)
+        .with_context(|| format!("worker spawn did not return a receipt: {spawn_output}"))?;
+    anyhow::ensure!(
+        spawn_result["task_name"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty()),
+        "worker spawn did not publish a task identity: {spawn_output}"
+    );
     let child_id = root
         .thread_manager
         .list_thread_ids()

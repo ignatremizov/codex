@@ -815,6 +815,7 @@ impl LocalAgentControl {
                 self.send_inter_agent_communication_after_capacity_check(
                     new_thread.thread_id,
                     &state,
+                    &new_thread.thread,
                     communication,
                     context,
                     start_options,

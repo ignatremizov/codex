@@ -4,6 +4,7 @@ use codex_core::StartIfIdleSubmission;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
 use codex_core::TurnStartOptions;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::protocol::EventMsg;
@@ -297,6 +298,7 @@ async fn cyber_access_program_is_inherited_by_child_turns() -> Result<()> {
                         .features
                         .enable(Feature::MultiAgentV2)
                         .expect("enable v2 tools");
+                    config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Encrypted;
                 }
             })
             .build_with_auto_env(&server)

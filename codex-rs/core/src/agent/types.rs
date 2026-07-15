@@ -16,6 +16,8 @@ pub struct AgentMetadata {
     pub agent_path: Option<AgentPath>,
     pub agent_nickname: Option<String>,
     pub agent_role: Option<String>,
+    /// Latest accepted readable assignment; volatile and not reconstructed from rollouts.
+    pub last_task_message: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,10 +62,15 @@ pub enum MessageDeliveryMode {
     TriggerTurn,
 }
 
-/// Keeps model-provided encrypted content distinct from text that needs a context wrapper.
+/// Keeps ciphertext, its optional readable audit, and text needing a context wrapper distinct.
+#[derive(Debug)]
 pub enum AgentMessage {
     Plaintext(String),
     Encrypted(String),
+    EncryptedWithAudit {
+        encrypted_content: String,
+        audit_content: String,
+    },
 }
 
 /// Holds a backend-owned reservation until the turn ends or is cancelled.

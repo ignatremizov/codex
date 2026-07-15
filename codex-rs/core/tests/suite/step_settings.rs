@@ -2243,7 +2243,7 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
         "list_agents",
     ];
 
-    let parameters = |model: &str| {
+    let catalog_parameters = |model: &str| {
         json!({
             "type": "object",
             "properties": {
@@ -2282,7 +2282,7 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
                 let tool_message = |name| {
                     Some(ToolMessage {
                         description: Some(format!("{name} description for {}.", model.slug)),
-                        parameters: Some(parameters(&model.slug).to_string()),
+                        parameters: Some(catalog_parameters(&model.slug).to_string()),
                     })
                 };
                 model
@@ -2325,9 +2325,39 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
     })
     .await;
 
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let first_body = requests[0].body_json();
+    let resolved_parameters = MULTI_AGENT_TOOLS
+        .map(|name| {
+            let tool = namespace_child_tool(&first_body, "collaboration", name).expect(name);
+            let parameters = tool["parameters"].clone();
+            assert_eq!(parameters["type"], "object");
+            assert_ne!(parameters, catalog_parameters(MODEL_A));
+            if matches!(name, "spawn_agent" | "send_message" | "followup_task") {
+                let target_field = if name == "spawn_agent" {
+                    "task_name"
+                } else {
+                    "target"
+                };
+                assert_eq!(
+                    parameters["required"],
+                    json!([target_field, "task_message", "message"])
+                );
+                assert_eq!(parameters["properties"]["message"]["encrypted"], true);
+                assert_eq!(
+                    parameters["properties"]["task_message"]["encrypted"],
+                    Value::Null
+                );
+            }
+            (name, parameters)
+        })
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+    // Model changes replace descriptions, not the runtime-owned delivery contract.
     assert_eq!(
-        response_mock
-            .requests()
+        requests
             .iter()
             .map(|request| {
                 let body = request.body_json();
@@ -2358,7 +2388,7 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
                 "multi_agent_messages": MULTI_AGENT_TOOLS
                     .map(|name| (name.to_string(), json!({
                         "description": format!("{name} description for {model}."),
-                        "parameters": parameters(model),
+                        "parameters": resolved_parameters[name],
                     })))
                     .into_iter()
                     .collect::<serde_json::Map<String, Value>>(),
