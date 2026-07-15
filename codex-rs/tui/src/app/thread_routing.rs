@@ -8,9 +8,11 @@ use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
 use crate::chatwidget::ThreadInputStateRestoreMode;
 use crate::session_resume::read_session_model;
+use codex_app_server_protocol::ThreadRollbackResponse;
 
 impl App {
     pub(super) async fn shutdown_current_thread(&mut self, app_server: &mut AppServerSession) {
+        self.backtrack.pending_rollback = None;
         if let Some(thread_id) = self.chat_widget.thread_id() {
             if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
                 tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
@@ -1325,6 +1327,69 @@ impl App {
         snapshot
             .events
             .retain(ThreadEventStore::event_survives_session_refresh);
+    }
+
+    pub(super) async fn handle_backtrack_thread_rollback_response(
+        &mut self,
+        thread_id: ThreadId,
+        response: &ThreadRollbackResponse,
+    ) {
+        let is_active = self.active_thread_id == Some(thread_id);
+        let old_receiver = if is_active {
+            self.active_thread_rx.take()
+        } else {
+            self.thread_event_channels
+                .get_mut(&thread_id)
+                .and_then(|channel| channel.receiver.take())
+        };
+        let mut retained_events = Vec::new();
+        if let Some(mut receiver) = old_receiver {
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) if ThreadEventStore::event_survives_thread_rollback(&event) => {
+                        retained_events.push(event);
+                    }
+                    Ok(_) => {}
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                }
+            }
+        }
+
+        let store = self
+            .thread_event_channels
+            .get(&thread_id)
+            .map(|channel| Arc::clone(&channel.store));
+        if let Some(store) = store {
+            let mut store = store.lock().await;
+            store.apply_thread_rollback(response);
+        }
+
+        let replacement_receiver = self
+            .thread_event_channels
+            .get_mut(&thread_id)
+            .map(|channel| {
+                let (sender, receiver) = mpsc::channel(channel.sender.max_capacity());
+                channel.sender = sender;
+                channel.receiver = None;
+                for event in retained_events {
+                    if let Err(err) = channel.sender.try_send(event) {
+                        tracing::warn!(
+                            "failed to retain thread {thread_id} event after rollback: {err}"
+                        );
+                    }
+                }
+                receiver
+            });
+        if let Some(receiver) = replacement_receiver {
+            if is_active {
+                self.active_thread_rx = Some(receiver);
+            } else if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+                channel.receiver = Some(receiver);
+            }
+        } else if is_active {
+            self.clear_active_thread().await;
+        }
+        self.handle_backtrack_rollback_succeeded();
     }
 
     /// Opens the `/agent` picker after refreshing cached labels for known threads.
