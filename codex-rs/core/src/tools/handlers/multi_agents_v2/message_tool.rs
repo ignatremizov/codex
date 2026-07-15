@@ -6,7 +6,9 @@
 use super::*;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::config::MultiAgentMessageDelivery;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::handlers::multi_agents_spec::MAX_AGENT_MESSAGE_PAYLOAD_BYTES;
 use codex_protocol::protocol::InterAgentCommunication;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -37,6 +39,7 @@ impl MessageDeliveryMode {
 pub(crate) struct SendMessageArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+    pub(crate) task_message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,15 +48,134 @@ pub(crate) struct SendMessageArgs {
 pub(crate) struct FollowupTaskArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+    pub(crate) task_message: Option<String>,
 }
 
-pub(super) fn message_content(message: String) -> Result<String, FunctionCallError> {
-    if message.trim().is_empty() {
-        return Err(FunctionCallError::RespondToModel(
-            "Empty message can't be sent to an agent".to_string(),
-        ));
+#[derive(Debug)]
+pub(super) enum PreparedAgentMessage {
+    Encrypted {
+        encrypted_content: String,
+    },
+    EncryptedWithAudit {
+        encrypted_content: String,
+        audit_content: String,
+    },
+    Plaintext {
+        content: String,
+    },
+}
+
+impl PreparedAgentMessage {
+    pub(super) fn from_tool_args(
+        message: String,
+        task_message: Option<String>,
+        message_delivery: MultiAgentMessageDelivery,
+    ) -> Result<Self, FunctionCallError> {
+        if message.trim().is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "Empty message can't be sent to an agent".to_string(),
+            ));
+        }
+        match message_delivery {
+            MultiAgentMessageDelivery::Encrypted => {
+                if task_message.is_some() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "task_message is only supported when message_delivery is encrypted_with_audit"
+                            .to_string(),
+                    ));
+                }
+                validate_message_payload_size(&message, /*task_message*/ None)?;
+                Ok(Self::Encrypted {
+                    encrypted_content: message,
+                })
+            }
+            MultiAgentMessageDelivery::EncryptedWithAudit => {
+                let Some(task_message) = task_message else {
+                    return Err(FunctionCallError::RespondToModel(
+                        "task_message is required when message_delivery is encrypted_with_audit"
+                            .to_string(),
+                    ));
+                };
+                if task_message.trim().is_empty() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "task_message must not be empty".to_string(),
+                    ));
+                }
+                validate_message_payload_size(&message, Some(&task_message))?;
+                Ok(Self::EncryptedWithAudit {
+                    encrypted_content: message,
+                    audit_content: task_message,
+                })
+            }
+            MultiAgentMessageDelivery::Plaintext => {
+                if task_message.is_some() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "task_message is only supported when message_delivery is encrypted_with_audit"
+                            .to_string(),
+                    ));
+                }
+                validate_message_payload_size(&message, /*task_message*/ None)?;
+                Ok(Self::Plaintext { content: message })
+            }
+        }
     }
-    Ok(message)
+
+    pub(super) fn into_communication(
+        self,
+        author: AgentPath,
+        recipient: AgentPath,
+    ) -> InterAgentCommunication {
+        match self {
+            Self::Encrypted { encrypted_content } => InterAgentCommunication::new_encrypted(
+                author,
+                recipient,
+                Vec::new(),
+                encrypted_content,
+                /*trigger_turn*/ true,
+            ),
+            Self::EncryptedWithAudit {
+                encrypted_content,
+                audit_content,
+            } => {
+                let mut communication = InterAgentCommunication::new_encrypted(
+                    author,
+                    recipient,
+                    Vec::new(),
+                    encrypted_content,
+                    /*trigger_turn*/ true,
+                );
+                communication.content = audit_content;
+                communication
+            }
+            Self::Plaintext { content } => InterAgentCommunication::new(
+                author,
+                recipient,
+                Vec::new(),
+                content,
+                /*trigger_turn*/ true,
+            ),
+        }
+    }
+}
+
+fn validate_message_payload_size(
+    message: &str,
+    task_message: Option<&str>,
+) -> Result<(), FunctionCallError> {
+    let payload_bytes = message
+        .len()
+        .saturating_add(task_message.map_or(0, str::len));
+    if payload_bytes > MAX_AGENT_MESSAGE_PAYLOAD_BYTES {
+        let fields = if task_message.is_some() {
+            "combined message and task_message"
+        } else {
+            "message"
+        };
+        return Err(FunctionCallError::RespondToModel(format!(
+            "{fields} payload must not exceed {MAX_AGENT_MESSAGE_PAYLOAD_BYTES} bytes"
+        )));
+    }
+    Ok(())
 }
 
 /// Handles the shared MultiAgentV2 message flow for both `send_message` and `followup_task`.
@@ -62,8 +184,11 @@ pub(crate) async fn handle_message_string_tool(
     mode: MessageDeliveryMode,
     target: String,
     message: String,
+    task_message: Option<String>,
+    message_delivery: MultiAgentMessageDelivery,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
-    let message = message_content(message)?;
+    let prepared_message =
+        PreparedAgentMessage::from_tool_args(message, task_message, message_delivery)?;
     let ToolInvocation {
         session,
         turn,
@@ -100,8 +225,7 @@ pub(crate) async fn handle_message_string_tool(
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let communication =
-        communication_from_tool_message(author, receiver_agent_path.clone(), message);
+    let communication = prepared_message.into_communication(author, receiver_agent_path.clone());
     let kind = match mode {
         MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
         MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
@@ -128,3 +252,7 @@ pub(crate) async fn handle_message_string_tool(
 
     Ok(FunctionToolOutput::from_text(String::new(), Some(true)))
 }
+
+#[cfg(test)]
+#[path = "message_tool_tests.rs"]
+mod tests;

@@ -8,7 +8,7 @@ use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
-use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
+use crate::tools::handlers::multi_agents_v2::message_tool::PreparedAgentMessage;
 use codex_protocol::AgentPath;
 use codex_tools::ToolSpec;
 
@@ -33,12 +33,18 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(async move { handle_spawn_agent(invocation).await.map(boxed_tool_output) })
+        let message_delivery = self.options.message_delivery;
+        Box::pin(async move {
+            handle_spawn_agent(invocation, message_delivery)
+                .await
+                .map(boxed_tool_output)
+        })
     }
 }
 
 async fn handle_spawn_agent(
     invocation: ToolInvocation,
+    message_delivery: crate::config::MultiAgentMessageDelivery,
 ) -> Result<SpawnAgentResult, FunctionCallError> {
     let ToolInvocation {
         session,
@@ -50,13 +56,14 @@ async fn handle_spawn_agent(
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     let fork_mode = args.fork_mode()?;
+    let prepared_message =
+        PreparedAgentMessage::from_tool_args(args.message, args.task_message, message_delivery)?;
     let role_name = args
         .agent_type
         .as_deref()
         .map(str::trim)
         .filter(|role| !role.is_empty());
 
-    let message = message_content(args.message)?;
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
     let mut config =
@@ -110,7 +117,7 @@ async fn handle_spawn_agent(
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
+    let communication = prepared_message.into_communication(author, new_agent_path.clone());
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
     let spawned_agent = Box::pin(
         session
@@ -182,6 +189,7 @@ impl CoreToolRuntime for Handler {
 struct SpawnAgentArgs {
     message: String,
     task_name: String,
+    task_message: Option<String>,
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
