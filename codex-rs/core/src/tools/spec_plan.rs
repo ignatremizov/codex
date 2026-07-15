@@ -1342,17 +1342,24 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                             .multi_agent_v2
                             .expose_spawn_agent_model_overrides,
                         usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                        message_delivery: turn_context.config.multi_agent_v2.message_delivery,
                     }),
                     tool_namespace,
                 ),
                 exposure,
             );
             registry.register_trusted_with_exposure(
-                multi_agent_v2_handler(SendMessageHandlerV2, tool_namespace),
+                multi_agent_v2_handler(
+                    SendMessageHandlerV2::new(turn_context.config.multi_agent_v2.message_delivery),
+                    tool_namespace,
+                ),
                 exposure,
             );
             registry.register_trusted_with_exposure(
-                multi_agent_v2_handler(FollowupTaskHandlerV2, tool_namespace),
+                multi_agent_v2_handler(
+                    FollowupTaskHandlerV2::new(turn_context.config.multi_agent_v2.message_delivery),
+                    tool_namespace,
+                ),
                 exposure,
             );
             if turn_context.config.multi_agent_v2.wait_agent_enabled {
@@ -1390,6 +1397,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     hide_agent_type_model_reasoning: false,
                     expose_spawn_agent_model_overrides: true,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                    message_delivery: turn_context.config.multi_agent_v2.message_delivery,
                 }),
                 exposure,
             );
