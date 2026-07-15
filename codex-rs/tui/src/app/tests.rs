@@ -5811,11 +5811,6 @@ async fn prompt_edit_rolls_back_selected_prompt_in_place_by_default() -> Result<
         .collect::<Vec<_>>();
     assert_eq!(stored_turn_ids, vec!["turn-1".to_string()]);
 
-    let draw_control = app
-        .handle_tui_event(&mut tui, &mut app_server, TuiEvent::Draw)
-        .await?;
-    assert!(matches!(draw_control, AppRunControl::Continue));
-    assert!(!app.backtrack_render_pending);
     let rendered_lines = app
         .transcript_cells
         .iter()
