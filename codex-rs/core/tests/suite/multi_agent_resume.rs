@@ -1,5 +1,6 @@
 use anyhow::Result;
 use codex_core::config::AgentRoleConfig;
+use codex_core::config::MultiAgentMessageDelivery;
 use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -93,6 +94,7 @@ fn configure_multi_agent_v2_with_role(
             nickname_candidates: None,
         },
     );
+    config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Plaintext;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
