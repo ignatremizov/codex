@@ -196,14 +196,20 @@ impl InputQueue {
             return;
         };
         let mut turn_state = turn_state.lock().await;
-        // Explicit same-turn work still needs a follow-up. Queue-only child mail does not: keep
-        // it pending so task completion records it for the next turn without sampling again.
-        if turn_state.pending_input.items.iter().any(|input| {
-            !matches!(
-                input,
-                TurnInput::InterAgentCommunication(communication) if !communication.trigger_turn
-            )
-        }) {
+        // Explicit same-turn work still needs a follow-up. Queue-only child mail and MCP-use
+        // context do not: task completion persists them for the next turn without sampling again.
+        if turn_state
+            .pending_input
+            .items
+            .iter()
+            .any(|input| match input {
+                TurnInput::InterAgentCommunication(communication) => communication.trigger_turn,
+                TurnInput::ResponseItem(item) => {
+                    !crate::context::McpServerUseInstructions::matches_response_item(item)
+                }
+                TurnInput::UserInput { .. } => true,
+            })
+        {
             return;
         }
         turn_state.set_mailbox_delivery_phase(MailboxDeliveryPhase::NextTurn);
