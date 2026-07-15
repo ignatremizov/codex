@@ -242,6 +242,7 @@ where
 mod tests {
     use super::*;
     use codex_config::test_support::CloudConfigBundleFixture;
+    use codex_features::MultiAgentMessageDelivery;
     use codex_models_manager::bundled_models_response;
     use pretty_assertions::assert_eq;
     use std::path::Path;
@@ -275,6 +276,7 @@ mod tests {
             .features
             .enable(Feature::TokenBudget)
             .expect("token_budget should be enableable in tests");
+        config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Plaintext;
         config.rollout_budget = Some(crate::config::RolloutBudgetConfig {
             limit_tokens: 100_000,
             reminder_at_remaining_tokens: vec![50_000, 25_000, 10_000],
@@ -350,6 +352,7 @@ mod tests {
                 default_wait_timeout_ms: Some(_),
                 subagent_developer_instructions: Some(instructions),
                 hide_spawn_agent_metadata: Some(_),
+                message_delivery: Some(MultiAgentMessageDelivery::Plaintext),
                 ..
             }) if instructions == "Locked subagent developer instructions."
         ));
