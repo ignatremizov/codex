@@ -768,6 +768,7 @@ async fn tool_catalog_cache_sanitizes_tools_and_tracks_environment_generation() 
         McpRuntimeContext::new(Arc::clone(&environment_manager), PathBuf::from("/tmp"));
     let config: McpServerConfig = serde_json::from_value(serde_json::json!({
         "command": "docs-mcp",
+        "cwd": "/tmp",
         "environment_id": "remote"
     }))
     .expect("MCP config");
