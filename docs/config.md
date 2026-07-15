@@ -80,6 +80,23 @@ When Codex knows which client started the turn, the legacy notify JSON payload a
 
 The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.
 
+## Multi-agent message delivery
+
+MultiAgentV2 can preserve provider-opaque encrypted delivery, add a model-authored plaintext audit
+record, or use one plaintext message:
+
+```toml
+[features.multi_agent_v2]
+message_delivery = "plaintext" # encrypted | encrypted_with_audit | plaintext
+```
+
+`encrypted_with_audit` is the default. It keeps encrypted delivery while exposing a required
+`task_message` audit field on `spawn_agent`, `send_message`, and `followup_task`. `encrypted` omits
+the readable audit field. `plaintext` uses one readable `message` field and avoids duplicate model
+output. The setting governs newly emitted messages; resumed and forked history retains each
+persisted agent message's encrypted or plaintext representation. Config-lock exports include the
+resolved setting.
+
 ## SQLite State DB
 
 Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the

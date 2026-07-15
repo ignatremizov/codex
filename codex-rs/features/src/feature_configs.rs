@@ -29,6 +29,19 @@ impl FeatureConfig for CodeModeConfigToml {
     }
 }
 
+/// Controls how MultiAgentV2 task and message payloads are delivered and audited.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MultiAgentMessageDelivery {
+    /// Preserve the provider-opaque encrypted payload without a local plaintext copy.
+    Encrypted,
+    /// Preserve encrypted delivery and request a separate human-readable audit copy.
+    #[default]
+    EncryptedWithAudit,
+    /// Deliver and persist one plaintext message without an encrypted payload.
+    Plaintext,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MultiAgentV2ConfigToml {
@@ -68,6 +81,10 @@ pub struct MultiAgentV2ConfigToml {
     pub expose_spawn_agent_model_overrides: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub non_code_mode_only: Option<bool>,
+    /// Selects encrypted delivery, encrypted delivery with a plaintext audit copy, or plaintext
+    /// delivery for MultiAgentV2 tasks and messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_delivery: Option<MultiAgentMessageDelivery>,
 }
 
 impl FeatureConfig for MultiAgentV2ConfigToml {
