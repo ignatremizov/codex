@@ -1331,13 +1331,12 @@ async fn thread_start_does_not_wait_for_optional_http_mcp_auth_discovery() -> Re
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
-        .without_auto_env()
         .build()
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let req_id = mcp
-        .send_thread_start_request(ThreadStartParams::default())
+        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
         .await?;
 
     timeout(DEFAULT_READ_TIMEOUT, connection_started_rx)
