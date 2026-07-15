@@ -65,6 +65,12 @@ use tokio::io::AsyncWriteExt;
 const NETWORK_TEST_HOST: &str = "codex-network-test.invalid";
 const NETWORK_TEST_TARGET: &str = "http://codex-network-test.invalid:80";
 
+#[derive(Clone, Copy)]
+enum ManagedNetworkEnvironment {
+    Local,
+    RemoteAndLocal,
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg_attr(
     not(target_os = "linux"),
@@ -77,7 +83,7 @@ async fn guardian_network_approval_preserves_action_and_outcome_routing() -> Res
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let first_call_id = "guardian-network-approved";
     let second_call_id = "guardian-network-denied";
     let first_command = network_fetch_args(LOCAL_ENVIRONMENT_ID)["cmd"]
@@ -216,7 +222,7 @@ async fn cancelled_guardian_network_review_fails_closed_without_rewriting_turn_s
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let call_id = "guardian-network-cancelled";
     let marker = "guardian cancellation must preserve this turn marker";
     mount_sse_once_match(
@@ -301,7 +307,7 @@ async fn timed_out_guardian_network_review_uses_timeout_outcome_without_user_fal
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let call_id = "guardian-network-timeout";
     let poll_call_id = "guardian-network-timeout-poll";
     mount_sse_once_match(
@@ -409,7 +415,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let environments = vec![local(test.cwd.abs())];
 
     mount_exec_network_turn(
@@ -592,7 +598,7 @@ async fn allowing_network_policy_amendment_persists_context_and_bypasses_prompt(
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let environments = vec![local(test.cwd.abs())];
     let first_responses = mount_exec_network_turn(
         &server,
@@ -680,7 +686,7 @@ async fn unattributed_network_request_uses_active_turn_environment_fallback() ->
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let pending_model = mount_response_once_match(
         &server,
         |request: &wiremock::Request| request_body_contains(request, "hold the active turn"),
@@ -746,7 +752,7 @@ async fn ambiguous_unattributed_network_request_is_not_assigned_to_active_calls(
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let first_marker = test.cwd.path().join("ambiguous-network-first");
     let second_marker = test.cwd.path().join("ambiguous-network-second");
     let wait_command = |marker: &std::path::Path| {
@@ -843,7 +849,7 @@ async fn guardian_receives_exact_triggers_for_concurrent_network_requests() -> R
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let barrier_dir = TempDir::new_in(test.cwd.path())?;
     let first_marker = barrier_dir.path().join("first");
     let second_marker = barrier_dir.path().join("second");
@@ -993,7 +999,7 @@ async fn guardian_receives_exact_trigger_for_single_network_request() -> Result<
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let command = "python3 -c \"import urllib.request; opener = urllib.request.build_opener(urllib.request.ProxyHandler()); print('OK:' + opener.open('http://1.1.1.1', timeout=10).read().decode(errors='replace'))\"".to_string();
     let responses = mount_sse_sequence(
         &server,
@@ -1048,7 +1054,9 @@ async fn approved_network_host_for_one_environment_still_prompts_in_another() ->
     skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test =
+        managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::RemoteAndLocal)
+            .await?;
     let local_cwd = TempDir::new()?;
     let remote_cwd = PathBuf::from(format!(
         "/tmp/codex-network-approval-{}",
@@ -1147,7 +1155,10 @@ async fn approved_network_host_for_one_environment_still_prompts_in_another() ->
     Ok(())
 }
 
-async fn managed_network_unified_exec_test(server: &wiremock::MockServer) -> Result<TestCodex> {
+async fn managed_network_unified_exec_test(
+    server: &wiremock::MockServer,
+    environment: ManagedNetworkEnvironment,
+) -> Result<TestCodex> {
     let home = Arc::new(TempDir::new()?);
     fs::write(
         home.path().join("config.toml"),
@@ -1185,7 +1196,12 @@ allow_local_binding = true
                 .set_permission_profile(permission_profile_for_config)
                 .expect("set permission profile");
         });
-    let test = builder.build_with_remote_and_local_env(server).await?;
+    let test = match environment {
+        ManagedNetworkEnvironment::Local => builder.build(server).await?,
+        ManagedNetworkEnvironment::RemoteAndLocal => {
+            builder.build_with_remote_and_local_env(server).await?
+        }
+    };
     assert!(
         test.config.managed_network_requirements_enabled(),
         "expected managed network requirements to be enabled"
