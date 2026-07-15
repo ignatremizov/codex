@@ -1820,66 +1820,86 @@ async fn record_response_item_and_emit_turn_item_emits_hook_prompt_lifecycle() {
 
 #[tokio::test]
 async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
-    let (mut session, turn_context) = make_session_and_context().await;
-    let rollout_path = attach_thread_persistence(&mut session).await;
-    let communication = InterAgentCommunication::new(
-        AgentPath::root().join("worker").expect("worker path"),
-        AgentPath::root(),
+    let author = AgentPath::root().join("worker").expect("worker path");
+    let recipient = AgentPath::root();
+    let plaintext = InterAgentCommunication::new(
+        author.clone(),
+        recipient.clone(),
         Vec::new(),
         "child done".to_string(),
         /*trigger_turn*/ false,
     );
-    let mut expected_item = communication.to_model_input_item();
-    expected_item.set_turn_id_if_missing(&turn_context.sub_id);
-
-    session
-        .record_inter_agent_communication(&turn_context, communication)
-        .await;
-
-    assert_eq!(
-        session.clone_history().await.raw_items(),
-        std::slice::from_ref(&expected_item)
+    let encrypted = InterAgentCommunication::new_encrypted(
+        author.clone(),
+        recipient.clone(),
+        Vec::new(),
+        "opaque child result".to_string(),
+        /*trigger_turn*/ false,
     );
-
-    session.flush_rollout().await.expect("rollout should flush");
-    let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
-        .await
-        .expect("read rollout history")
-    else {
-        panic!("expected resumed rollout history");
-    };
-    let persisted_items = resumed
-        .history
-        .iter()
-        .filter(|item| {
-            matches!(
-                item,
-                RolloutItem::ResponseItem(_)
-                    | RolloutItem::InterAgentCommunication(_)
-                    | RolloutItem::InterAgentCommunicationMetadata { .. }
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let expected_persisted_items = vec![
-        RolloutItem::InterAgentCommunicationMetadata {
-            trigger_turn: false,
-        },
-        RolloutItem::ResponseItem(expected_item.clone()),
-    ];
-    assert_eq!(
-        serde_json::to_value(persisted_items).unwrap(),
-        serde_json::to_value(expected_persisted_items).unwrap()
+    let mut encrypted_with_audit = InterAgentCommunication::new_encrypted(
+        author,
+        recipient,
+        Vec::new(),
+        "opaque audited result".to_string(),
+        /*trigger_turn*/ false,
     );
+    encrypted_with_audit.content = "audit-visible child result".to_string();
 
-    let (resumed_session, _resumed_turn_context) = make_session_and_context().await;
-    resumed_session
-        .record_initial_history(InitialHistory::Resumed(resumed))
-        .await;
-    assert_eq!(
-        resumed_session.clone_history().await.raw_items(),
-        std::slice::from_ref(&expected_item)
-    );
+    for communication in [plaintext, encrypted, encrypted_with_audit] {
+        let (mut session, turn_context) = make_session_and_context().await;
+        let rollout_path = attach_thread_persistence(&mut session).await;
+        let mut expected_item = communication.to_model_input_item();
+        expected_item.set_turn_id_if_missing(&turn_context.sub_id);
+
+        session
+            .record_inter_agent_communication(&turn_context, communication)
+            .await;
+
+        assert_eq!(
+            session.clone_history().await.raw_items(),
+            std::slice::from_ref(&expected_item)
+        );
+
+        session.flush_rollout().await.expect("rollout should flush");
+        let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
+            .await
+            .expect("read rollout history")
+        else {
+            panic!("expected resumed rollout history");
+        };
+        let persisted_items = resumed
+            .history
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::ResponseItem(_)
+                        | RolloutItem::InterAgentCommunication(_)
+                        | RolloutItem::InterAgentCommunicationMetadata { .. }
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let expected_persisted_items = vec![
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: false,
+            },
+            RolloutItem::ResponseItem(expected_item.clone()),
+        ];
+        assert_eq!(
+            serde_json::to_value(persisted_items).unwrap(),
+            serde_json::to_value(expected_persisted_items).unwrap()
+        );
+
+        let (resumed_session, _resumed_turn_context) = make_session_and_context().await;
+        resumed_session
+            .record_initial_history(InitialHistory::Resumed(resumed))
+            .await;
+        assert_eq!(
+            resumed_session.clone_history().await.raw_items(),
+            std::slice::from_ref(&expected_item)
+        );
+    }
 }
 
 #[tokio::test]

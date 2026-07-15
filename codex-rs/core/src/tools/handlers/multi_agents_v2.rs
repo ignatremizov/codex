@@ -19,7 +19,6 @@ use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SubAgentActivityKind;
 use codex_tools::ToolName;
 use serde::Deserialize;
@@ -49,18 +48,4 @@ pub(crate) async fn emit_sub_agent_activity(
     session
         .emit_turn_item_completed(turn, TurnItem::SubAgentActivity(item))
         .await;
-}
-
-pub(super) fn communication_from_tool_message(
-    author: AgentPath,
-    recipient: AgentPath,
-    message: String,
-) -> InterAgentCommunication {
-    InterAgentCommunication::new_encrypted(
-        author,
-        recipient,
-        Vec::new(),
-        message,
-        /*trigger_turn*/ true,
-    )
 }
