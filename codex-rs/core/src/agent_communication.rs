@@ -35,6 +35,15 @@ impl AgentCommunicationContext {
             sender_thread_id,
         }
     }
+
+    pub(crate) fn updates_last_task_message(&self) -> bool {
+        matches!(
+            self.kind,
+            AgentCommunicationKind::Spawn
+                | AgentCommunicationKind::Message
+                | AgentCommunicationKind::Followup
+        )
+    }
 }
 
 pub(crate) fn logging_enabled() -> bool {
@@ -56,11 +65,8 @@ pub(crate) fn emit_agent_communication_send(
             state = "send",
             sender_thread_id = %context.sender_thread_id,
             receiver_thread_id = %receiver_thread_id,
-            content = if communication.content.is_empty() {
-                communication.encrypted_content.as_deref().unwrap_or_default()
-            } else {
-                communication.content.as_str()
-            },
+            content = communication.content.as_str(),
+            encrypted_content_present = communication.encrypted_content.is_some(),
         },
         "agent communication"
     );

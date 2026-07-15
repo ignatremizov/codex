@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use tokio::sync::Semaphore;
 
 /// This structure is used to add some limits on the multi-agent capabilities for Codex. In
 /// the current implementation, it limits:
@@ -22,6 +23,8 @@ use std::sync::atomic::Ordering;
 #[derive(Default)]
 pub(crate) struct AgentRegistry {
     active_agents: Mutex<ActiveAgents>,
+    /// Keeps mailbox enqueue order and `last_task_message` updates aligned per recipient.
+    mailbox_submission_semaphores: Mutex<HashMap<ThreadId, Arc<Semaphore>>>,
     total_count: AtomicUsize,
 }
 
@@ -38,6 +41,7 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_path: Option<AgentPath>,
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
+    pub(crate) last_task_message: Option<String>,
 }
 
 fn format_agent_nickname(name: &str, nickname_reset_count: usize) -> String {
@@ -115,6 +119,10 @@ impl AgentRegistry {
         if removed_counted_agent {
             self.total_count.fetch_sub(1, Ordering::AcqRel);
         }
+        self.mailbox_submission_semaphores
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&thread_id);
     }
 
     pub(crate) fn register_root_thread(&self, thread_id: ThreadId) {
@@ -163,6 +171,55 @@ impl AgentRegistry {
             })
             .cloned()
             .collect()
+    }
+
+    pub(crate) fn mailbox_submission_semaphore(&self, thread_id: ThreadId) -> Arc<Semaphore> {
+        let active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !active_agents
+            .agent_tree
+            .values()
+            .any(|metadata| metadata.agent_id == Some(thread_id))
+        {
+            return Arc::new(Semaphore::new(1));
+        }
+        Arc::clone(
+            self.mailbox_submission_semaphores
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(thread_id)
+                .or_insert_with(|| Arc::new(Semaphore::new(1))),
+        )
+    }
+
+    pub(crate) fn update_last_task_message(&self, thread_id: ThreadId, last_task_message: String) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(metadata) = active_agents
+            .agent_tree
+            .values_mut()
+            .find(|metadata| metadata.agent_id == Some(thread_id))
+        {
+            metadata.last_task_message = Some(last_task_message);
+        }
+    }
+
+    pub(crate) fn clear_last_task_message(&self, thread_id: ThreadId) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(metadata) = active_agents
+            .agent_tree
+            .values_mut()
+            .find(|metadata| metadata.agent_id == Some(thread_id))
+        {
+            metadata.last_task_message = None;
+        }
     }
 
     fn register_spawned_thread(&self, agent_metadata: AgentMetadata) {
