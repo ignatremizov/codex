@@ -66,6 +66,16 @@ disabled_tools = [
 ]
 ```
 
+## Editing earlier prompts
+
+The TUI edits an earlier prompt by rolling the current conversation back in place. To preserve the
+source conversation and continue the edit on a new branch instead, enable:
+
+```toml
+[features]
+fork_prompt_edits = true
+```
+
 ## Notify
 
 `notify` is deprecated and will be removed in a future release. Existing configurations still work for compatibility, but new automation should use lifecycle hooks instead.

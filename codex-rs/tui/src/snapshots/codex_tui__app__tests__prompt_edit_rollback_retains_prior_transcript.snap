@@ -1,0 +1,7 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered
+---
+› first prompt
+
+• first response
