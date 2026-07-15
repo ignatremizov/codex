@@ -40,6 +40,15 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android /usr/share/dotnet
+          docker system prune -af >/dev/null 2>&1 || true
+          df -h /
+
       - uses: ./.github/actions/setup-ci
 
       - name: Install Linux build dependencies
@@ -130,18 +139,40 @@ jobs:
             fi
           done
 
+      - name: Stage Linux release binaries and reclaim build space
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/linux-release"
+          timings_dir="${RUNNER_TEMP}/cargo-timings"
+          mkdir -p "${release_dir}" "${timings_dir}"
+          for binary in codex codex-code-mode-host codex-app-server codex-responses-api-proxy; do
+            cp "${CARGO_TARGET_DIR}/release/${binary}" "${release_dir}/${binary}"
+            chmod 0755 "${release_dir}/${binary}"
+          done
+          find "${CARGO_TARGET_DIR}" \
+            -path '*/cargo-timings/cargo-timing.html' \
+            -type f \
+            -exec cp '{}' "${timings_dir}/cargo-timing.html" ';' \
+            -quit
+          echo "RELEASE_DIR=${release_dir}" >> "$GITHUB_ENV"
+          echo "CARGO_TIMINGS_DIR=${timings_dir}" >> "$GITHUB_ENV"
+          cargo clean --profile release
+          df -h /
+
       - name: Package Linux artifact
         shell: bash
         run: |
           set -euo pipefail
           artifact="codex-x86_64-unknown-linux-gnu"
           mkdir -p dist/"${artifact}"
-          cp "${CARGO_TARGET_DIR}/release/codex" dist/"${artifact}"/codex
-          cp "${CARGO_TARGET_DIR}/release/codex-code-mode-host" dist/"${artifact}"/codex-code-mode-host
-          cp "${CARGO_TARGET_DIR}/release/codex-app-server" dist/"${artifact}"/codex-app-server
-          cp "${CARGO_TARGET_DIR}/release/codex-responses-api-proxy" dist/"${artifact}"/codex-responses-api-proxy
+          cp "${RELEASE_DIR}/codex" dist/"${artifact}"/codex
+          cp "${RELEASE_DIR}/codex-code-mode-host" dist/"${artifact}"/codex-code-mode-host
+          cp "${RELEASE_DIR}/codex-app-server" dist/"${artifact}"/codex-app-server
+          cp "${RELEASE_DIR}/codex-responses-api-proxy" dist/"${artifact}"/codex-responses-api-proxy
           tar -C dist -czf "${artifact}.tar.gz" "${artifact}"
           sha256sum "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256"
+          rm -rf "dist/${artifact}"
 
       - name: Download packaged zsh manifest
         shell: bash
@@ -161,7 +192,7 @@ jobs:
             bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
               --target "${target}" \
               --bundle "${bundle}" \
-              --entrypoint-dir "${CARGO_TARGET_DIR}/release" \
+              --entrypoint-dir "${RELEASE_DIR}" \
               --archive-dir "${archive_dir}" \
               --zsh-manifest "${RUNNER_TEMP}/codex-zsh"
           done
@@ -204,7 +235,7 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: cargo-timings-manual-release-x86_64-unknown-linux-gnu
-          path: ${{ env.CARGO_TARGET_DIR }}/**/cargo-timings/cargo-timing.html
+          path: ${{ env.CARGO_TIMINGS_DIR }}/cargo-timing.html
           if-no-files-found: warn
           retention-days: 14
 
