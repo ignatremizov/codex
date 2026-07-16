@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::path::Path;
 
-use crate::SkillLoadOutcome;
 use codex_skills::SkillMetadata;
 use codex_utils_path_uri::PathUri;
 
+use crate::SkillLoadOutcome;
 use crate::catalog::SkillAuthority;
 use crate::catalog::SkillCatalog;
 use crate::catalog::SkillCatalogEntry;
@@ -121,16 +122,13 @@ fn catalog_from_outcome(outcome: &SkillLoadOutcome) -> SkillCatalog {
 
     for (skill, enabled) in outcome.skills_with_enabled() {
         let mut entry = catalog_entry_from_skill(skill, enabled);
-        if let Some(discovery_path) =
-            outcome.skill_discovery_path_for_path(&skill.path_to_skills_md)
-        {
-            // Keep the catalog's existing forward-slash display on Windows; lookups use PathUri.
-            entry = entry.with_display_path(
-                discovery_path
-                    .inferred_native_path_string()
-                    .replace('\\', "/"),
-            );
-        }
+        let display_path = outcome
+            .skill_discovery_path_for_path(&skill.path_to_skills_md)
+            .unwrap_or(&skill.path_to_skills_md);
+        entry = entry.with_display_path(compact_model_visible_path(
+            display_path,
+            dirs::home_dir().as_deref(),
+        ));
         if let Some(root) = outcome.skill_root_for_path(&skill.path_to_skills_md) {
             // Alias labels share the display path's separators so catalog rendering stays stable.
             entry = entry.with_alias_root(root.to_string_lossy().replace('\\', "/"));
@@ -146,8 +144,6 @@ fn catalog_from_outcome(outcome: &SkillLoadOutcome) -> SkillCatalog {
 
 fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalogEntry {
     let skill_path = skill.path_to_skills_md.inferred_native_path_string();
-    // Preserve model-visible paths while resource IDs retain the native spelling used by clients.
-    let display_path = skill_path.replace('\\', "/");
     let mut entry = SkillCatalogEntry::new(
         SkillPackageId(skill_path.clone()),
         SkillAuthority::new(SkillSourceKind::Host, HOST_AUTHORITY_ID),
@@ -156,7 +152,6 @@ fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalo
         SkillResourceId::new(skill_path),
     )
     .with_short_description(skill.short_description.clone())
-    .with_display_path(display_path)
     .with_prompt_scope(skill.scope)
     .with_dependencies(skill.dependencies.clone());
 
@@ -168,6 +163,17 @@ fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalo
     }
 
     entry
+}
+
+fn compact_model_visible_path(path: &PathUri, home_dir: Option<&Path>) -> String {
+    // Only this explicit host boundary can use the local home directory. Foreign URIs
+    // keep their inferred spelling rather than becoming unrelated local paths.
+    let host_path = path.to_abs_path().ok();
+    let rendered = home_dir
+        .and_then(|home| host_path.as_ref()?.as_path().strip_prefix(home).ok())
+        .map(|relative| format!("~/{}", relative.to_string_lossy()))
+        .unwrap_or_else(|| path.inferred_native_path_string());
+    rendered.replace('\\', "/")
 }
 
 #[cfg(test)]
