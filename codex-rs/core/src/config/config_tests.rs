@@ -40,6 +40,7 @@ use codex_config::permissions_toml::WorkspaceRootsToml;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::BundledSkillsConfig;
+use codex_config::types::DiffBackgroundMode;
 use codex_config::types::FeedbackConfigToml;
 use codex_config::types::HistoryPersistence;
 use codex_config::types::McpServerEnvVar;
@@ -1050,6 +1051,9 @@ fn config_toml_deserializes_model_availability_nux() {
             session_picker_view: None,
             resume_cwd: None,
             keymap: TuiKeymap::default(),
+            diff_background: DiffBackgroundMode::Auto,
+            diff_add_bg: None,
+            diff_del_bg: None,
             model_availability_nux: ModelAvailabilityNuxConfig {
                 shown_count: HashMap::from([
                     ("gpt-bar".to_string(), 4),
@@ -4154,6 +4158,9 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             session_picker_view: None,
             resume_cwd: None,
             keymap: TuiKeymap::default(),
+            diff_background: DiffBackgroundMode::Auto,
+            diff_add_bg: None,
+            diff_del_bg: None,
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
             terminal_resize_reflow_max_rows: None,
         }
