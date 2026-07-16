@@ -933,6 +933,15 @@
       },
       "type": "object"
     },
+    "DiffBackgroundMode": {
+      "enum": [
+        "auto",
+        "off",
+        "theme",
+        "custom"
+      ],
+      "type": "string"
+    },
     "ExperimentalRequestUserInput": {
       "additionalProperties": false,
       "properties": {
@@ -3151,6 +3160,25 @@
           "format": "uint",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "diff_add_bg": {
+          "default": null,
+          "description": "Custom insert-line background color (`#RRGGBB`).\n\nUsed when `diff_background = \"custom\"`.",
+          "type": "string"
+        },
+        "diff_background": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DiffBackgroundMode"
+            }
+          ],
+          "default": "auto",
+          "description": "Controls how diff add/remove backgrounds are rendered in the TUI.\n\n- `auto` (default): Use built-in adaptive add/remove backgrounds. - `off`: Disable add/remove line backgrounds. - `theme`: Derive add/remove backgrounds from the active syntax theme (`markup.inserted`/`markup.deleted` with diff fallbacks). - `custom`: Use user-provided custom colors from `diff_add_bg` / `diff_del_bg`."
+        },
+        "diff_del_bg": {
+          "default": null,
+          "description": "Custom delete-line background color (`#RRGGBB`).\n\nUsed when `diff_background = \"custom\"`.",
+          "type": "string"
         },
         "keymap": {
           "allOf": [
