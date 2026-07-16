@@ -1937,6 +1937,7 @@ async fn run_ratatui_app(
     }
 
     let local_settings = crate::local_settings::LocalSettings::for_tui(&config, &tui);
+    crate::diff_render::set_diff_background_settings(&local_settings.tui);
     crate::markdown_render::preferences::init(local_settings.tui.rendering);
     // Configure syntax highlighting theme from the final config — onboarding
     // and resume/fork can both reload config with a different tui_theme, so

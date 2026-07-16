@@ -205,6 +205,19 @@ Remote V2 rollout checkpoints retain the service's reported output-token count a
 
 Set either value to `0` to display all retained output. These are client-local presentation settings: they do not change command execution, captured output, or the existing bounded live-output storage. The detailed transcript retains all available output and reports any storage-level omissions separately from omitted display rows.
 
+## Diff backgrounds
+
+The `[tui]` `diff_background` setting controls insert/delete line backgrounds: `auto` (the default) uses adaptive palette colors with active syntax-theme scope overrides, `off` disables content backgrounds, `theme` uses the same adaptive/theme-scope behavior, and `custom` uses the configured `diff_add_bg`/`diff_del_bg` colors when each value is valid.
+
+```toml
+[tui]
+diff_background = "custom"
+diff_add_bg = "#213A2B"
+diff_del_bg = "#4A221D"
+```
+
+Custom colors must be six-digit `#RRGGBB` values. Invalid or omitted colors fall back independently to the adaptive palette. These are client-local presentation settings: they follow TUI preference reloads, do not alter stored diff content, and ANSI-16 terminals continue to use foreground-only styling. Existing light-theme line-number gutter styling is separate; when a line has no content fill, its gutter also stays unfilled.
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.

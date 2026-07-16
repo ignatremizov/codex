@@ -272,6 +272,11 @@ pub(crate) fn set_syntax_theme(theme: Theme) {
         Err(poisoned) => poisoned.into_inner(),
     };
     *guard = theme;
+    invalidate_render_cache();
+}
+
+/// Invalidate cached rendered rows after a palette-affecting preference changes.
+pub(crate) fn invalidate_render_cache() {
     #[cfg(not(test))]
     THEME_REVISION.fetch_add(1, Ordering::Release);
     #[cfg(test)]
@@ -312,8 +317,8 @@ pub(crate) enum DiffScopeBackground {
 /// emit truecolor or quantized ANSI-256.
 ///
 /// Both fields are `None` when the active theme defines no relevant scope
-/// backgrounds, in which case the diff renderer falls back to its hardcoded
-/// palette.
+/// backgrounds, in which case the diff renderer falls back to its configured
+/// settings or fallback default.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DiffScopeBackgrounds {
     pub inserted: Option<DiffScopeBackground>,
