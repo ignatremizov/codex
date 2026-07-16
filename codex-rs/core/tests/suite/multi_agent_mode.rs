@@ -165,7 +165,7 @@ async fn ultra_reasoning_uses_highest_non_ultra_and_proactive_mode() -> Result<(
 }
 
 #[test_case(ModeHintSource::ConfiguredHint; "configured hint overrides catalog")]
-#[test_case(ModeHintSource::CatalogHint; "catalog hint overrides reasoning effort")]
+#[test_case(ModeHintSource::CatalogHint; "catalog hint cannot override user policy")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mode_hints_override_reasoning_effort(source: ModeHintSource) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -208,86 +208,42 @@ async fn mode_hints_override_reasoning_effort(source: ModeHintSource) -> Result<
     let first_texts = developer_texts(&first_input);
     let second_input = requests[1].input();
     let second_texts = developer_texts(&second_input);
-    let (expected_hint, suppressed_hint) = match source {
-        ModeHintSource::ConfiguredHint => (CUSTOM_MODE_HINT_TEXT, CATALOG_MODE_HINT_TEXT),
-        ModeHintSource::CatalogHint => (CATALOG_MODE_HINT_TEXT, CATALOG_EXPLICIT_TEXT),
-    };
-    for texts in [&first_texts, &second_texts] {
-        assert_eq!(
-            (
-                count_containing(texts, expected_hint),
-                count_containing(texts, NO_SPAWN_TEXT),
-                count_containing(texts, PROACTIVE_TEXT),
-                count_containing(texts, CATALOG_PROACTIVE_TEXT),
-            ),
-            (1, 0, 0, 0)
-        );
-        assert_eq!(count_containing(texts, suppressed_hint), 0);
+    for (request_index, texts) in [&first_texts, &second_texts].into_iter().enumerate() {
+        match source {
+            ModeHintSource::ConfiguredHint => {
+                assert_eq!(
+                    (
+                        count_containing(texts, CUSTOM_MODE_HINT_TEXT),
+                        count_containing(texts, NO_SPAWN_TEXT),
+                        count_containing(texts, PROACTIVE_TEXT),
+                    ),
+                    (1, 0, 0)
+                );
+            }
+            ModeHintSource::CatalogHint => {
+                let expected = if request_index == 0 {
+                    (0, 0, 1, 0)
+                } else {
+                    (0, 0, 1, 1)
+                };
+                assert_eq!(
+                    (
+                        count_containing(texts, CATALOG_MODE_HINT_TEXT),
+                        count_containing(texts, CATALOG_EXPLICIT_TEXT),
+                        count_containing(texts, NO_SPAWN_TEXT),
+                        count_containing(texts, PROACTIVE_TEXT),
+                    ),
+                    expected
+                );
+            }
+        }
     }
 
     Ok(())
 }
 
-#[test_case(ReasoningEffort::Ultra, Some(CATALOG_PROACTIVE_TEXT), Some(CATALOG_PROACTIVE_TEXT); "ultra uses proactive override")]
-#[test_case(ReasoningEffort::High, Some(CATALOG_PROACTIVE_TEXT), Some(CATALOG_EXPLICIT_TEXT); "non ultra ignores proactive override")]
-#[test_case(ReasoningEffort::Ultra, None, Some(PROACTIVE_TEXT); "ultra falls back to built in")]
-#[test_case(ReasoningEffort::Ultra, Some(""), None; "empty proactive suppresses ultra mode")]
-#[test_case(ReasoningEffort::High, Some(""), Some(CATALOG_EXPLICIT_TEXT); "empty proactive leaves non ultra unchanged")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn catalog_proactive_mode_is_ultra_only(
-    effort: ReasoningEffort,
-    proactive: Option<&'static str>,
-    expected_hint: Option<&str>,
-) -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let response = mount_sse_once(
-        &server,
-        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
-    )
-    .await;
-    let test = test_codex()
-        .with_model_info_override("gpt-5.4", move |model_info| {
-            add_ultra_reasoning(model_info);
-            set_multi_agent_mode(
-                model_info,
-                CATALOG_EXPLICIT_TEXT,
-                proactive,
-                /*hint_text*/ None,
-                /*root_role*/ None,
-            );
-        })
-        .with_config(configure_multi_agent_v2)
-        .build_with_auto_env(&server)
-        .await?;
-
-    submit_turn(&test.codex, "hello", Some(effort)).await?;
-
-    let input = response.single_request().input();
-    let texts = developer_texts(&input);
-    assert_eq!(
-        count_containing(&texts, MULTI_AGENT_MODE_OPEN_TAG),
-        usize::from(expected_hint.is_some())
-    );
-    if let Some(expected_hint) = expected_hint {
-        assert_eq!(count_containing(&texts, expected_hint), 1);
-    }
-    assert_eq!(
-        count_containing(&texts, CATALOG_PROACTIVE_TEXT),
-        usize::from(expected_hint == Some(CATALOG_PROACTIVE_TEXT))
-    );
-
-    Ok(())
-}
-
-#[test_case(ReasoningEffort::High, [CATALOG_EXPLICIT_TEXT, SECOND_MODEL_EXPLICIT_TEXT]; "explicit mode")]
-#[test_case(ReasoningEffort::Ultra, [CATALOG_PROACTIVE_TEXT, SECOND_MODEL_PROACTIVE_TEXT]; "proactive mode")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn model_switch_refreshes_catalog_role_and_mode(
-    effort: ReasoningEffort,
-    expected_hints: [&str; 2],
-) -> Result<()> {
+async fn model_switch_refreshes_catalog_role_without_replacing_explicit_mode() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -327,7 +283,7 @@ async fn model_switch_refreshes_catalog_role_and_mode(
         .with_config(configure_multi_agent_v2)
         .build_with_auto_env(&server)
         .await?;
-    submit_turn(&test.codex, "first model", Some(effort.clone())).await?;
+    submit_turn(&test.codex, "first model", Some(ReasoningEffort::High)).await?;
     core_test_support::submit_thread_settings(
         &test.codex,
         ThreadSettingsOverrides {
@@ -336,20 +292,22 @@ async fn model_switch_refreshes_catalog_role_and_mode(
         },
     )
     .await?;
-    submit_turn(&test.codex, "second model", Some(effort)).await?;
+    submit_turn(&test.codex, "second model", Some(ReasoningEffort::High)).await?;
 
     let requests = responses.requests();
-    for (index, request) in requests.iter().enumerate() {
+    for (request_index, request) in requests.iter().enumerate() {
         let input = request.input();
         let texts = developer_texts(&input);
         assert_eq!(
             (
-                count_containing(&texts, expected_hints[0]),
-                count_containing(&texts, expected_hints[1]),
+                count_containing(&texts, CATALOG_EXPLICIT_TEXT),
+                count_containing(&texts, SECOND_MODEL_EXPLICIT_TEXT),
+                count_containing(&texts, CATALOG_PROACTIVE_TEXT),
+                count_containing(&texts, SECOND_MODEL_PROACTIVE_TEXT),
                 count_containing(&texts, NO_SPAWN_TEXT),
                 count_containing(&texts, PROACTIVE_TEXT),
             ),
-            (1, usize::from(index == 1), 0, 0)
+            (0, 0, 0, 0, request_index + 1, 0)
         );
     }
 

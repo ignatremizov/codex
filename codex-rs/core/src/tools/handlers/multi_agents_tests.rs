@@ -407,6 +407,115 @@ async fn multi_agent_v2_spawn_fork_turns_all_applies_agent_type_override() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_allows_child_model_without_v2_catalog_tag() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        task_name: String,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "catalog_model_without_v2_tag",
+                "model": "gpt-5.4",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("model without a v2 multi-agent catalog tag should be accepted");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(
+            session.thread_id,
+            &turn.session_source,
+            result.task_name.as_str(),
+        )
+        .await
+        .expect("spawned task name should resolve");
+    let snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5.4");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_model_missing_from_catalog() {
+    let (session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let available_models = session
+        .services
+        .models_manager
+        .list_models(
+            codex_models_manager::manager::RefreshStrategy::Offline,
+            turn.config.http_client_factory(),
+        )
+        .await;
+    let available_model_names = available_models
+        .iter()
+        .map(|model| model.model.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let requested_model = "not-a-catalog-model";
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "unknown_model",
+                "model": requested_model,
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .err()
+        .expect("model missing from the catalog should be rejected");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(format!(
+            "Unknown model `{requested_model}` for spawn_agent. Available models: {available_model_names}"
+        ))
+    );
+}
+
+#[tokio::test]
 async fn spawn_agent_service_tier_uses_root_preference_when_root_model_cannot_support_it() {
     let (_session, turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
