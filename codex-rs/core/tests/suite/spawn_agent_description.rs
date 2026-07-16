@@ -17,6 +17,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::default_input_modalities;
+use codex_protocol::protocol::MultiAgentVersion;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_models_once;
@@ -252,7 +253,7 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
     Ok(())
 }
 
-#[test_case(false, false, MULTI_AGENT_V1_NAMESPACE; "v1 hides agent type without roles")]
+#[test_case(false, false, MULTI_AGENT_V1_NAMESPACE; "v1 exposes built-in agent types without custom roles")]
 #[test_case(true, true, "collaboration"; "v2 exposes agent type with a role")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn configured_agent_roles_control_spawn_agent_type(
@@ -267,6 +268,11 @@ async fn configured_agent_roles_control_spawn_agent_type(
     )
     .await;
     let test = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model_info_override("gpt-5.5", |model_info| {
+            model_info.multi_agent_version = Some(MultiAgentVersion::V1);
+            model_info.supports_search_tool = false;
+        })
         .with_config(move |config| {
             config
                 .features
@@ -299,10 +305,10 @@ async fn configured_agent_roles_control_spawn_agent_type(
 
     test.submit_turn("hello").await?;
 
-    assert_eq!(
-        spawn_agent_exposes_agent_type(&response.single_request().body_json(), namespace),
-        has_agent_role
-    );
+    assert!(spawn_agent_exposes_agent_type(
+        &response.single_request().body_json(),
+        namespace
+    ));
     Ok(())
 }
 
