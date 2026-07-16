@@ -635,7 +635,6 @@ mod tests {
             crate::tools::handlers::multi_agents_v2::WaitAgentHandler::default(),
             Some("custom_collaboration"),
             /*description_override*/ None,
-            /*parameters_override*/ None,
         );
         let registry = ToolRegistry::from_tools([handler]);
         let registered = registry
