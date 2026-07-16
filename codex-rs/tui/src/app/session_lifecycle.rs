@@ -1004,7 +1004,7 @@ impl App {
                         tracing::warn!("failed to unsubscribe tracked thread {thread_id}: {err}");
                     }
                 }
-                self.local_settings = self.local_settings.reloaded(&config);
+                self.adopt_local_settings(self.local_settings.reloaded(&config));
                 self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
                 self.config = config;
 
@@ -1333,7 +1333,7 @@ impl App {
         } else {
             self.shutdown_current_thread(app_server).await;
         }
-        self.local_settings = local_settings;
+        self.adopt_local_settings(local_settings);
         self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
         self.config = resume_config;
         tui.set_notification_settings(
