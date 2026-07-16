@@ -410,10 +410,7 @@ impl Session {
                     .features
                     .enabled(Feature::ModelCatalogInContext)
             {
-                ModelCatalogState::new(
-                    &turn_context.available_models,
-                    turn_context.multi_agent_version,
-                )
+                ModelCatalogState::new(&turn_context.available_models)
             } else {
                 ModelCatalogState::default()
             }
