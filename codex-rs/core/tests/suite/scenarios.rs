@@ -62,6 +62,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_mcp_server;
+use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -586,11 +587,39 @@ async fn multi_agent_catalog_parameters() -> Result<()> {
     .await;
     test.submit_turn("Check which agents are working under /root before delegating more work.")
         .await?;
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2, "expected initial and follow-up requests");
+    let request = requests[0].body_json();
+    let additional_tools = request["input"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["type"] == "additional_tools"))
+        .expect("additional_tools input");
+    let collaboration = additional_tools["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|tool| tool["name"] == "collaboration"))
+        .expect("collaboration namespace");
+    let list_agents = collaboration["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|tool| tool["name"] == "list_agents"))
+        .expect("list_agents tool");
+    assert_eq!(
+        list_agents["parameters"],
+        json!({
+            "type": "object",
+            "properties": {
+                "path_prefix": {
+                    "type": "string",
+                    "description": "Task-path prefix filter without a trailing slash. Omit to list all live agents."
+                }
+            },
+            "additionalProperties": false
+        })
+    );
     insta::assert_snapshot!(
         "multi_agent_catalog_parameters",
         context_snapshot::format_request_history_snapshot(
-            "Astra calls list_agents using the selected catalog parameter schema.",
-            &mock.requests(),
+            "Astra calls list_agents using the fork-owned parameter schema.",
+            &requests,
             &ContextSnapshotOptions::default().include_request_settings(),
         )
     );

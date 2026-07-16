@@ -12,6 +12,16 @@ Use exact semantic commit subjects as ownership anchors rather than commit hashe
 
 Capability checkpoints are added as the fork develops; this foundation does not claim that later features already exist.
 
+### Built-in collaboration role schemas
+
+The collaboration tool plan exposes `agent_type` whenever built-in or configured roles are
+resolvable. V2 collaboration tools retain their fork-owned bundled parameter schemas, encrypted
+argument markers, namespaces, and runtime forwarding even when model catalogs provide incompatible
+parameter overrides; catalog descriptions remain independently overridable where supported.
+Entrypoints are `core/src/agent/role.rs`, `core/src/tools/spec_plan.rs`, and
+`core/src/tools/multi_agent_tool.rs`. Focused schema and request-level coverage lives in the
+corresponding core tool tests and scenario fixtures.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.
