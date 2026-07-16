@@ -102,7 +102,9 @@ pub async fn build_skill_injections(
                 });
                 result.items.push(SkillInjection {
                     name: skill.name.clone(),
-                    path: skill.path_to_skills_md.to_string_lossy().into_owned(),
+                    path: loaded_skills
+                        .map(|outcome| outcome.model_visible_path(skill))
+                        .unwrap_or_else(|| skill.path_to_skills_md.to_string_lossy().into_owned()),
                     contents,
                 });
             }
