@@ -251,7 +251,7 @@ async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() ->
     Ok(())
 }
 
-#[test_case(false, false, MULTI_AGENT_V1_NAMESPACE; "v1 hides agent type without roles")]
+#[test_case(false, false, MULTI_AGENT_V1_NAMESPACE; "v1 exposes built-in agent types without custom roles")]
 #[test_case(true, true, "collaboration"; "v2 exposes agent type with a role")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn configured_agent_roles_control_spawn_agent_type(
@@ -298,9 +298,9 @@ async fn configured_agent_roles_control_spawn_agent_type(
 
     test.submit_turn("hello").await?;
 
-    assert_eq!(
-        spawn_agent_exposes_agent_type(&response.single_request().body_json(), namespace),
-        has_agent_role
-    );
+    assert!(spawn_agent_exposes_agent_type(
+        &response.single_request().body_json(),
+        namespace
+    ));
     Ok(())
 }
