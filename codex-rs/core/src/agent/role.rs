@@ -230,6 +230,13 @@ mod reload {
 pub(crate) mod spawn_tool_spec {
     use super::*;
 
+    /// Returns whether the spawn tool can offer at least one resolvable role.
+    pub(crate) fn has_available_roles(
+        user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>,
+    ) -> bool {
+        !user_defined_agent_roles.is_empty() || !built_in::configs().is_empty()
+    }
+
     /// Builds the spawn-agent tool description text from built-in and configured roles.
     pub(crate) fn build(user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>) -> String {
         let built_in_roles = built_in::configs();
