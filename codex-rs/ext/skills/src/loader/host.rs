@@ -283,12 +283,19 @@ async fn load_skills_under_root(
     let skill_results = futures::stream::iter(resolved_skills)
         .map(|skill| {
             let plugin_root = plugin_root.as_ref();
+            let display_root = &skill_root.path;
             async move {
-                let discovery_path = skill
+                let discovered_path = skill
                     .skill
                     .path
                     .to_abs_path()
                     .unwrap_or_else(|_| skill.path.clone());
+                let discovery_path = discovered_path
+                    .as_path()
+                    .strip_prefix(root.as_path())
+                    .ok()
+                    .map(|relative| display_root.join(relative))
+                    .unwrap_or(discovered_path);
                 let result = parse_skill_file(
                     file_system,
                     &skill.skill,
