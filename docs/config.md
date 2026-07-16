@@ -206,6 +206,27 @@ Set any value to `0` to show all retained output for that category in the main T
 previews apply to rendered rows from subagent spawn/input prompts, and agent response previews apply
 to rendered rows from subagent output shown after a multi-agent wait completes.
 
+Configure diff add/remove line backgrounds:
+
+```toml
+[tui]
+# auto (default), off, theme, custom
+diff_background = "theme"
+```
+
+- `auto`: existing adaptive backgrounds (with syntax-theme diff-scope overrides when available).
+- `off`: disable add/remove line backgrounds.
+- `theme`: use syntax-theme scope backgrounds (`markup.inserted`/`markup.deleted`, then
+  `diff.inserted`/`diff.deleted` fallback).
+- `custom`: use explicit colors below (invalid/missing values fall back to `auto` colors):
+
+```toml
+[tui]
+diff_background = "custom"
+diff_add_bg = "#213A2B"
+diff_del_bg = "#4A221D"
+```
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.
