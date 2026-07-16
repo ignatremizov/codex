@@ -14,11 +14,13 @@
 //! palettes for truecolor / 256-color / 16-color terminals so add/delete lines
 //! remain visually distinct even when quantizing to limited palettes.
 //!
-//! **Syntax-theme scope backgrounds:** when the active syntax theme defines
+//! **Syntax-theme scope backgrounds:** in Auto and Theme modes, when the active syntax theme defines
 //! background colors for `markup.inserted` / `markup.deleted` (or fallback
 //! `diff.inserted` / `diff.deleted`) scopes, those colors override the
 //! hardcoded palette for rich color levels.  ANSI-16 mode always uses
-//! foreground-only styling regardless of theme scope backgrounds.
+//! foreground-only styling regardless of theme scope backgrounds. Custom mode
+//! replaces valid per-side colors, while Off omits content fills. Client-local
+//! preference adoption invalidates the shared rendered-row revision.
 //!
 //! **Highlighting strategy for `Update` diffs:** the renderer highlights each
 //! hunk as a single concatenated block rather than line-by-line.  This
@@ -83,9 +85,6 @@ use crate::color::perceptual_distance;
 use crate::diff_model::FileChange;
 use crate::exec_command::relativize_to_home;
 use crate::render::Insets;
-use crate::render::highlight::DiffScopeBackground;
-use crate::render::highlight::DiffScopeBackgrounds;
-use crate::render::highlight::diff_scope_backgrounds;
 use crate::render::highlight::exceeds_highlight_limits;
 use crate::render::highlight::highlight_code_to_styled_spans;
 use crate::render::renderable::ColumnRenderable;
@@ -103,9 +102,12 @@ use crate::terminal_palette::indexed_color;
 use crate::terminal_palette::rgb_color;
 use crate::terminal_palette::stdout_color_level;
 use crate::width::display_width;
+use codex_config::types::Tui;
 use codex_git_utils::get_git_repo_root;
 use codex_terminal_detection::TerminalName;
 use codex_terminal_detection::terminal_info;
+
+mod backgrounds;
 
 /// Classifies a diff line for gutter sign rendering and style selection.
 ///
@@ -201,15 +203,16 @@ pub(crate) struct DiffRenderStyleContext {
     diff_backgrounds: ResolvedDiffBackgrounds,
 }
 
-/// Resolve diff backgrounds for production rendering.
-///
-/// Queries the active syntax theme for `markup.inserted` / `markup.deleted`
-/// (and `diff.*` fallbacks), then delegates to [`resolve_diff_backgrounds_for`].
+/// Adopt client-local diff preferences and invalidate cached rows when they change.
+pub(crate) fn set_diff_background_settings(tui: &Tui) {
+    backgrounds::set(tui);
+}
+
 fn resolve_diff_backgrounds(
     theme: DiffTheme,
     color_level: DiffColorLevel,
 ) -> ResolvedDiffBackgrounds {
-    resolve_diff_backgrounds_for(theme, color_level, diff_scope_backgrounds())
+    backgrounds::resolve(theme, color_level)
 }
 
 /// Snapshot the current terminal environment into a reusable style context.
@@ -230,37 +233,6 @@ pub(crate) fn current_diff_render_style_context() -> DiffRenderStyleContext {
         color_level,
         diff_backgrounds,
     }
-}
-
-/// Core background-resolution logic, kept pure for testability.
-///
-/// Starts from the hardcoded fallback palette and then overrides with theme
-/// scope backgrounds when both (a) the color level is rich enough and (b) the
-/// theme defines a matching scope.  This means the fallback palette is always
-/// the baseline. An explicit terminal-default marker disables that scope's fill.
-fn resolve_diff_backgrounds_for(
-    theme: DiffTheme,
-    color_level: DiffColorLevel,
-    scope_backgrounds: DiffScopeBackgrounds,
-) -> ResolvedDiffBackgrounds {
-    let mut resolved = fallback_diff_backgrounds(theme, color_level);
-    let Some(level) = RichDiffColorLevel::from_diff_color_level(color_level) else {
-        return resolved;
-    };
-
-    for (target, background) in [
-        (&mut resolved.add, scope_backgrounds.inserted),
-        (&mut resolved.del, scope_backgrounds.deleted),
-    ] {
-        match background {
-            Some(DiffScopeBackground::Rgb(rgb)) => {
-                *target = Some(color_from_rgb_for_level(rgb, level))
-            }
-            Some(DiffScopeBackground::TerminalDefault) => *target = None,
-            None => {}
-        }
-    }
-    resolved
 }
 
 /// Hardcoded palette backgrounds, used when the syntax theme provides no
@@ -1365,6 +1337,8 @@ fn style_gutter_dim() -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::highlight::DiffScopeBackground;
+    use crate::render::highlight::DiffScopeBackgrounds;
     use insta::assert_debug_snapshot;
     use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
@@ -1374,6 +1348,19 @@ mod tests {
     use ratatui::widgets::Paragraph;
     use ratatui::widgets::Wrap;
     use unicode_width::UnicodeWidthChar;
+
+    fn resolve_diff_backgrounds_for(
+        theme: DiffTheme,
+        color_level: DiffColorLevel,
+        scope_backgrounds: DiffScopeBackgrounds,
+    ) -> ResolvedDiffBackgrounds {
+        backgrounds::resolve_for(
+            theme,
+            color_level,
+            scope_backgrounds,
+            backgrounds::DiffBackgroundSettings::default(),
+        )
+    }
 
     #[test]
     fn syntax_colors_follow_the_actual_diff_background() {
@@ -2544,8 +2531,9 @@ mod tests {
     }
 
     #[test]
-    fn wrap_styled_spans_tabs_have_visible_width() {
-        // A tab should count as TAB_WIDTH columns, not zero.
+    fn wrap_styled_spans_expands_tabs_before_rendering() {
+        // A tab should count as TAB_WIDTH columns and must not reach the
+        // terminal backend as a control character.
         // With max_cols=8, a tab (4 cols) + "abcde" (5 cols) = 9 cols → must wrap.
         let style = Style::default().fg(Color::Green);
         let spans = vec![RtSpan::styled("\tabcde", style)];

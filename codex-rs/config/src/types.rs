@@ -1033,6 +1033,30 @@ pub struct Tui {
     /// Saved inputs keyed by a single digit (`0` through `9`).
     #[serde(default, rename = "presets")]
     pub quick_dials: BTreeMap<String, QuickDial>,
+    /// Controls how diff add/remove backgrounds are rendered in the TUI.
+    ///
+    /// - `auto` (default) and `theme`: Use adaptive colors with active syntax-theme
+    ///   scope overrides (`markup.inserted`/`markup.deleted` with diff fallbacks).
+    /// - `off`: Disable add/remove content backgrounds.
+    /// - `custom`: Use valid `diff_add_bg` / `diff_del_bg` colors, falling back
+    ///   independently to the adaptive palette for missing or invalid values.
+    ///
+    /// ANSI-16 remains foreground-only. Light-theme line-number gutter styling
+    /// is separate from the content fill.
+    #[serde(default)]
+    pub diff_background: DiffBackgroundMode,
+
+    /// Custom insert-line background color (`#RRGGBB`).
+    ///
+    /// Used when `diff_background = "custom"`.
+    #[serde(default)]
+    pub diff_add_bg: Option<String>,
+
+    /// Custom delete-line background color (`#RRGGBB`).
+    ///
+    /// Used when `diff_background = "custom"`.
+    #[serde(default)]
+    pub diff_del_bg: Option<String>,
 
     /// Startup tooltip availability NUX state persisted by the TUI.
     #[serde(default)]
@@ -1081,10 +1105,23 @@ impl Default for Tui {
             resume_cwd: None,
             keymap: Default::default(),
             quick_dials: Default::default(),
+            diff_background: DiffBackgroundMode::Auto,
+            diff_add_bg: None,
+            diff_del_bg: None,
             model_availability_nux: Default::default(),
             terminal_resize_reflow_max_rows: None,
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffBackgroundMode {
+    #[default]
+    Auto,
+    Off,
+    Theme,
+    Custom,
 }
 
 const fn default_true() -> bool {
