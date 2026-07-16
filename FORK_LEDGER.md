@@ -16,6 +16,8 @@ Capability checkpoints are added as the fork develops; this foundation does not 
 
 The collaboration tool plan exposes `agent_type` whenever built-in or configured roles are resolvable. V2 collaboration tools retain their fork-owned bundled parameter schemas, encrypted argument markers, namespaces, and runtime forwarding even when model catalogs provide incompatible parameter overrides; catalog descriptions remain independently overridable where supported. Entrypoints are `core/src/agent/role.rs`, `core/src/tools/spec_plan.rs`, and `core/src/tools/multi_agent_tool.rs`. Focused schema and request-level coverage lives in the corresponding core tool tests and scenario fixtures. Ownership anchor: `fix(multi-agent): expose built-in roles and retain authoritative runtime schemas`. Upstream's independent direct-message disablement and wait-tool gates remain authoritative.
 
+Explicit child model overrides resolve against the loaded catalog regardless of the selected multi-agent runtime tag; only the concise picker description is limited to five visible models. Unknown models remain rejected with the complete loaded catalog listed, while child runtime exposure continues to follow the resolved turn version. Ownership anchor: `fix(multi-agent): resolve child model overrides across catalog runtime tags`. The selection/validation owner is `codex-rs/core/src/agent/child_config.rs`; resolved runtime exposure stays in `codex-rs/core/src/tools/spec_plan.rs`, independently of the description's display cap.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.
