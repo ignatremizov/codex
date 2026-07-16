@@ -44,6 +44,7 @@ use futures::FutureExt;
 use futures::StreamExt;
 use namespace::SkillNamespaceResolver;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
@@ -218,7 +219,13 @@ pub(crate) struct SkillRootSnapshot {
     pub(crate) root: AbsolutePathBuf,
     pub(crate) skills: Vec<SkillMetadata>,
     pub(crate) errors: Vec<SkillError>,
+    pub(crate) display_path_by_skill_path: HashMap<AbsolutePathBuf, AbsolutePathBuf>,
     pub(crate) file_system: Arc<dyn ExecutorFileSystem>,
+}
+
+struct SkillRootPaths<'a> {
+    identity: &'a AbsolutePathBuf,
+    display: &'a AbsolutePathBuf,
 }
 
 pub(crate) async fn load_skill_root(root: SkillRoot) -> SkillRootSnapshot {
@@ -230,11 +237,15 @@ pub(crate) async fn load_skill_root(root: SkillRoot) -> SkillRootSnapshot {
         plugin_namespace,
         plugin_root,
     } = root;
+    let display_root = path.clone();
     let root = canonicalize_for_skill_identity(file_system.as_ref(), &path).await;
     let mut outcome = SkillLoadOutcome::default();
     load_skills_under_root(
         file_system.as_ref(),
-        &root,
+        SkillRootPaths {
+            identity: &root,
+            display: &display_root,
+        },
         scope,
         plugin_id.as_deref(),
         plugin_namespace.as_deref(),
@@ -246,6 +257,7 @@ pub(crate) async fn load_skill_root(root: SkillRoot) -> SkillRootSnapshot {
         root,
         skills: outcome.skills,
         errors: outcome.errors,
+        display_path_by_skill_path: Arc::unwrap_or_clone(outcome.display_path_by_skill_path),
         file_system,
     }
 }
@@ -532,13 +544,17 @@ async fn canonicalize_for_skill_identity(
 
 async fn load_skills_under_root(
     fs: &dyn ExecutorFileSystem,
-    root: &AbsolutePathBuf,
+    root_paths: SkillRootPaths<'_>,
     scope: SkillScope,
     plugin_id: Option<&str>,
     plugin_namespace: Option<&str>,
     plugin_root: Option<&AbsolutePathBuf>,
     outcome: &mut SkillLoadOutcome,
 ) {
+    let SkillRootPaths {
+        identity: root,
+        display: display_root,
+    } = root_paths;
     let plugin_root = match plugin_root {
         Some(plugin_root) => Some(canonicalize_for_skill_identity(fs, plugin_root).await),
         None => None,
@@ -621,6 +637,18 @@ async fn load_skills_under_root(
     let skill_results = futures::stream::iter(resolved_skills)
         .map(|skill| {
             let plugin_root = plugin_root.as_ref();
+            let display_path = skill
+                .skill
+                .path
+                .to_abs_path()
+                .unwrap_or_else(|_| skill.path.clone());
+            let display_path = skill
+                .path
+                .as_path()
+                .strip_prefix(root.as_path())
+                .ok()
+                .map(|relative| display_root.join(relative))
+                .unwrap_or(display_path);
             async move {
                 let result = parse_skill_file(
                     fs,
@@ -633,14 +661,14 @@ async fn load_skills_under_root(
                 )
                 .await
                 .map_err(|err| err.to_string());
-                (skill.path, skill.path_uri, result)
+                (skill.path, skill.path_uri, display_path, result)
             }
         })
         .buffered(MAX_CONCURRENT_SKILL_LOADS)
         .collect::<Vec<_>>()
         .boxed();
     let (namespace_resolver, skill_results) = tokio::join!(namespace_resolver, skill_results);
-    for (path, path_uri, result) in skill_results {
+    for (path, path_uri, display_path, result) in skill_results {
         let result = result.and_then(|mut skill| {
             skill.name = namespace_resolver
                 .for_skill(&root_uri, &path_uri)
@@ -650,7 +678,11 @@ async fn load_skills_under_root(
             Ok(skill)
         });
         match result {
-            Ok(skill) => outcome.skills.push(skill),
+            Ok(skill) => {
+                Arc::make_mut(&mut outcome.display_path_by_skill_path)
+                    .insert(skill.path_to_skills_md.clone(), display_path);
+                outcome.skills.push(skill);
+            }
             Err(err) if scope != SkillScope::System => {
                 outcome.errors.push(SkillError { path, message: err })
             }
