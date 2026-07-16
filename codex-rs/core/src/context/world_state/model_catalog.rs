@@ -7,17 +7,15 @@ use super::SectionTransition;
 use super::WorldStateHash;
 use super::WorldStateSection;
 use super::WorldStateUpdate;
-use crate::agent::child_config::MAX_SPAWN_AGENT_MODEL_OVERRIDES;
-use crate::agent::child_config::model_supports_multi_agent_backend;
 use crate::context::ContextualUserFragment;
 use crate::context::environment_context::push_xml_escaped_text;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::openai_models::ModelPreset;
-use codex_protocol::protocol::MultiAgentVersion;
 
 // Includes XML escaping and markers; at most 1,000 tokens even with byte fallback.
 const MAX_RENDERED_BYTES: usize = 1_000;
 const MAX_DESCRIPTION_CHARS: usize = 250;
+const MAX_DISPLAYED_MODELS: usize = 5;
 const OMITTED_NOTICE: &str = "Additional model choices omitted.\n";
 
 /// The current model choices, or an empty catalog to invalidate a retained listing.
@@ -27,13 +25,12 @@ pub(crate) struct ModelCatalogState {
 }
 
 impl ModelCatalogState {
-    pub(crate) fn new(models: &[ModelPreset], multi_agent_version: MultiAgentVersion) -> Self {
+    pub(crate) fn new(models: &[ModelPreset]) -> Self {
         let mut catalog = String::new();
         let mut models = models
             .iter()
             .filter(|model| model.show_in_picker)
-            .filter(|model| model_supports_multi_agent_backend(model, multi_agent_version))
-            .take(MAX_SPAWN_AGENT_MODEL_OVERRIDES)
+            .take(MAX_DISPLAYED_MODELS)
             .collect::<Vec<_>>();
         // Stabilize the selected choices independently of their picker ordering.
         models.sort_by(|left, right| left.model.cmp(&right.model));
@@ -85,6 +82,10 @@ impl ModelCatalogState {
         Self { catalog }
     }
 }
+
+#[cfg(test)]
+#[path = "model_catalog_tests.rs"]
+mod tests;
 
 impl ContextualUserFragment for ModelCatalogState {
     fn content_kind(&self) -> ContentItemKind {

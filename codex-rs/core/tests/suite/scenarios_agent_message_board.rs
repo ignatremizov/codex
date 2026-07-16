@@ -89,7 +89,7 @@ fn configure(config: &mut codex_core::config::Config) {
 #[test_case::test_case(true, false, false; "legacy_agents")]
 #[test_case::test_case(true, true, true; "ephemeral")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unavailable_board_calls_return_model_errors(
+async fn unavailable_board_preserves_tool_and_admission_errors(
     board_enabled: bool,
     multi_agent_v2: bool,
     ephemeral: bool,
@@ -127,21 +127,40 @@ async fn unavailable_board_calls_return_model_errors(
         })
         .build_with_auto_env(&server)
         .await?;
-    test.submit_turn("Try posting the decision on the board.")
-        .await?;
-    let requests = mock.requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(
-        requests[1]
-            .function_call_output_text("missing-board")
-            .as_deref(),
-        Some("unsupported call: collaborationpost")
-    );
-    for name in ["post", "send_message", "followup_task"] {
-        assert!(
-            responses::namespace_child_tool(&requests[0].body_json(), "collaboration", name)
-                .is_none()
+    if multi_agent_v2 {
+        test.codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "Try posting the decision on the board.".to_string(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
+        let message = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::Error(error) => Some(error.message.clone()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(
+            message,
+            "disable_direct_message requires an available agent message board in this session"
         );
+        assert!(mock.requests().is_empty());
+    } else {
+        test.submit_turn("Try posting the decision on the board.")
+            .await?;
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1]
+                .function_call_output_text("missing-board")
+                .as_deref(),
+            Some("unsupported call: collaborationpost")
+        );
+        for name in ["post", "send_message", "followup_task"] {
+            assert!(
+                responses::namespace_child_tool(&requests[0].body_json(), "collaboration", name)
+                    .is_none()
+            );
+        }
     }
     assert!(
         !test
