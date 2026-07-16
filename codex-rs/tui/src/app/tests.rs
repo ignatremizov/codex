@@ -29,6 +29,8 @@ mod browsing_pagination_tests;
 mod buffered_replay;
 #[path = "tests/connector_policy.rs"]
 mod connector_policy;
+#[path = "tests/diff_background_settings_tests.rs"]
+mod diff_background_settings_tests;
 #[path = "tests/disconnect_tests.rs"]
 mod disconnect;
 #[path = "tests/external_writer_fork_tests.rs"]
