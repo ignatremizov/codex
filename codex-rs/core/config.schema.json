@@ -1557,6 +1557,15 @@
       ],
       "type": "string"
     },
+    "DiffBackgroundMode": {
+      "enum": [
+        "auto",
+        "off",
+        "theme",
+        "custom"
+      ],
+      "type": "string"
+    },
     "ExperimentalRequestUserInput": {
       "additionalProperties": false,
       "properties": {
@@ -4706,6 +4715,25 @@
           "default": false,
           "description": "Deselect transcript text after Copy on select confirms clipboard delivery. Defaults to `false` and has no effect when Copy on select is off.",
           "type": "boolean"
+        },
+        "diff_add_bg": {
+          "default": null,
+          "description": "Custom insert-line background color (`#RRGGBB`).\n\nUsed when `diff_background = \"custom\"`.",
+          "type": "string"
+        },
+        "diff_background": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DiffBackgroundMode"
+            }
+          ],
+          "default": "auto",
+          "description": "Controls how diff add/remove backgrounds are rendered in the TUI.\n\n- `auto` (default) and `theme`: Use adaptive colors with active syntax-theme scope overrides (`markup.inserted`/`markup.deleted` with diff fallbacks). - `off`: Disable add/remove content backgrounds. - `custom`: Use valid `diff_add_bg` / `diff_del_bg` colors, falling back independently to the adaptive palette for missing or invalid values.\n\nANSI-16 remains foreground-only. Light-theme line-number gutter styling is separate from the content fill."
+        },
+        "diff_del_bg": {
+          "default": null,
+          "description": "Custom delete-line background color (`#RRGGBB`).\n\nUsed when `diff_background = \"custom\"`.",
+          "type": "string"
         },
         "disable_paste_burst": {
           "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts. Overrides the legacy top-level `disable_paste_burst` setting. Defaults to `false`.",
