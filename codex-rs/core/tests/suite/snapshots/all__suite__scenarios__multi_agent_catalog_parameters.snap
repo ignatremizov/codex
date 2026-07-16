@@ -1,8 +1,8 @@
 ---
 source: core/tests/suite/scenarios.rs
-expression: "context_snapshot::format_request_history_snapshot(\"Astra calls list_agents using the selected catalog parameter schema.\",\n&mock.requests(),\n&ContextSnapshotOptions::default().include_request_settings(),)"
+expression: "context_snapshot::format_request_history_snapshot(\"Astra calls list_agents using the fork-owned parameter schema.\",\n&requests,\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
-Scenario: Astra calls list_agents using the selected catalog parameter schema.
+Scenario: Astra calls list_agents using the fork-owned parameter schema.
 
 ## Window 1
 Settings:
