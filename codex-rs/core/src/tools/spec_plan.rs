@@ -531,7 +531,7 @@ pub(crate) fn finalize_tool_router(
             collect_tool_namespaces_info(&registry, &code_mode_tool_names, &model_visible_specs)
         })
         .filter(|info| !info.is_empty());
-    let child_management_tools = required_child_management_tool_names(turn_context, model_info);
+    let child_management_tools = required_child_management_tool_names(turn_context);
 
     Ok(ToolRouter::from_parts(
         registry,
@@ -692,25 +692,19 @@ fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
     turn_context.multi_agent_version == MultiAgentVersion::V2
 }
 
-fn collab_tools_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
+fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
     match turn_context.multi_agent_version {
         MultiAgentVersion::Disabled => false,
         MultiAgentVersion::V1 => !exceeds_thread_spawn_depth_limit(
             next_thread_spawn_depth(&turn_context.session_source),
             turn_context.config.agent_max_depth,
         ),
-        MultiAgentVersion::V2 => {
-            turn_context.session_source.get_agent_path().is_none()
-                || model_info.multi_agent_version == Some(MultiAgentVersion::V2)
-        }
+        MultiAgentVersion::V2 => true,
     }
 }
 
-fn required_child_management_tool_names(
-    turn_context: &TurnContext,
-    model_info: &ModelInfo,
-) -> Vec<ToolName> {
-    if !collab_tools_enabled(turn_context, model_info) {
+fn required_child_management_tool_names(turn_context: &TurnContext) -> Vec<ToolName> {
+    if !collab_tools_enabled(turn_context) {
         return Vec::new();
     }
 
@@ -1306,7 +1300,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
 #[instrument(level = "trace", skip_all)]
 fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistry) {
     let turn_context = context.turn_context;
-    if collab_tools_enabled(turn_context, context.model_info) {
+    if collab_tools_enabled(turn_context) {
         if multi_agent_v2_enabled(turn_context) {
             let model_messages = ResolvedModelMessages::from_model(context.model_info);
             let spawn_agent_description =
@@ -1338,7 +1332,6 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                                 .config
                                 .multi_agent_v2
                                 .expose_spawn_agent_model_overrides,
-                            multi_agent_version: turn_context.multi_agent_version,
                             usage_hint_text: turn_context
                                 .config
                                 .multi_agent_v2
@@ -1413,7 +1406,6 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     ),
                     hide_agent_type_model_reasoning: false,
                     expose_spawn_agent_model_overrides: true,
-                    multi_agent_version: turn_context.multi_agent_version,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
                 }),
                 exposure,

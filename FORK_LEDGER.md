@@ -22,6 +22,11 @@ Entrypoints are `core/src/agent/role.rs`, `core/src/tools/spec_plan.rs`, and
 `core/src/tools/multi_agent_tool.rs`. Focused schema and request-level coverage lives in the
 corresponding core tool tests and scenario fixtures.
 
+Explicit child model overrides resolve against the loaded catalog regardless of the selected
+multi-agent runtime tag; only the concise picker description is limited to five visible models.
+Unknown models remain rejected with the complete loaded catalog listed, while child runtime exposure
+continues to follow the resolved turn version.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.
