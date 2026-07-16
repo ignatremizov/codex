@@ -98,15 +98,19 @@ fn catalog_from_outcome(outcome: &SkillLoadOutcome) -> SkillCatalog {
     };
 
     for (skill, enabled) in outcome.skills_with_enabled() {
-        catalog.push_entry(catalog_entry_from_skill(skill, enabled));
+        catalog.push_entry(catalog_entry_from_skill(outcome, skill, enabled));
     }
 
     catalog
 }
 
-fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalogEntry {
+fn catalog_entry_from_skill(
+    outcome: &SkillLoadOutcome,
+    skill: &SkillMetadata,
+    enabled: bool,
+) -> SkillCatalogEntry {
     let skill_path = skill.path_to_skills_md.to_string_lossy().into_owned();
-    let display_path = skill_path.replace('\\', "/");
+    let display_path = outcome.model_visible_path(skill);
     let mut entry = SkillCatalogEntry::new(
         SkillPackageId(skill_path.clone()),
         SkillAuthority::new(SkillSourceKind::Host, HOST_AUTHORITY_ID),

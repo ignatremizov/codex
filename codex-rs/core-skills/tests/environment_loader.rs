@@ -419,10 +419,13 @@ async fn host_loading_reuses_walk_inventory_for_symlinked_skill_pack() {
     use std::sync::Arc;
 
     use codex_core_skills::SkillMetadata;
+    use codex_core_skills::SkillMetadataBudget;
     use codex_core_skills::SkillPolicy;
+    use codex_core_skills::build_available_skills;
     use codex_core_skills::loader::MAX_CONCURRENT_ROOT_SCANS;
     use codex_core_skills::loader::SkillRoot;
     use codex_core_skills::loader::load_skills_from_roots;
+    use codex_core_skills::render::SkillRenderSideEffects;
     use codex_protocol::protocol::SkillScope;
     use codex_utils_absolute_path::test_support::PathBufExt;
 
@@ -513,6 +516,37 @@ async fn host_loading_reuses_walk_inventory_for_symlinked_skill_pack() {
             },
         ]
     );
+    assert_eq!(
+        outcome
+            .skills
+            .iter()
+            .map(|skill| outcome.model_visible_path(skill))
+            .collect::<Vec<_>>(),
+        vec![
+            linked_root
+                .join("first/SKILL.md")
+                .to_string_lossy()
+                .replace('\\', "/"),
+            linked_root
+                .join("second/SKILL.md")
+                .to_string_lossy()
+                .replace('\\', "/"),
+        ]
+    );
+    let available = build_available_skills(
+        &outcome,
+        SkillMetadataBudget::Characters(usize::MAX),
+        SkillRenderSideEffects::None,
+    )
+    .expect("available skills");
+    assert!(available.skill_lines.iter().any(|line| {
+        line.contains(
+            &linked_root
+                .join("second/SKILL.md")
+                .to_string_lossy()
+                .replace('\\', "/"),
+        )
+    }));
 
     let calls = recording.calls();
     assert_eq!(calls.walks, 1);
