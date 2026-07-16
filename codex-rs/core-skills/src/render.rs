@@ -169,7 +169,7 @@ pub fn build_available_skills(
         return None;
     }
 
-    let absolute_lines = ordered_absolute_skill_lines(&skills);
+    let absolute_lines = ordered_absolute_skill_lines(outcome, &skills);
     let absolute = build_available_skills_from_lines(
         absolute_lines,
         skills.len(),
@@ -472,6 +472,7 @@ fn sum_description_truncation(rendered: &[RenderedSkillLine]) -> (usize, usize) 
 }
 
 impl<'a> SkillLine<'a> {
+    #[cfg(test)]
     fn new(skill: &'a SkillMetadata) -> Self {
         Self::with_path(
             skill,
@@ -891,10 +892,13 @@ fn available_skills_cost(budget: SkillMetadataBudget, available: &AvailableSkill
     metadata_cost.saturating_add(lines_cost(budget, &available.skill_lines))
 }
 
-fn ordered_absolute_skill_lines(skills: &[SkillMetadata]) -> Vec<SkillLine<'_>> {
+fn ordered_absolute_skill_lines<'a>(
+    outcome: &SkillLoadOutcome,
+    skills: &'a [SkillMetadata],
+) -> Vec<SkillLine<'a>> {
     ordered_skills_for_budget(skills)
         .into_iter()
-        .map(SkillLine::new)
+        .map(|skill| SkillLine::with_path(skill, outcome.model_visible_path(skill)))
         .collect()
 }
 
@@ -990,8 +994,9 @@ mod tests {
         skills: &[SkillMetadata],
         budget: SkillMetadataBudget,
     ) -> Option<AvailableSkills> {
+        let outcome = SkillLoadOutcome::default();
         build_available_skills_from_lines(
-            ordered_absolute_skill_lines(skills),
+            ordered_absolute_skill_lines(&outcome, skills),
             skills.len(),
             budget,
             SkillPathAliases::default(),
