@@ -314,6 +314,7 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
 
 struct TestNamespaceExtensionTool {
     namespace: &'static str,
+    namespace_description: &'static str,
     tool_name: &'static str,
 }
 
@@ -325,7 +326,7 @@ impl<'call> ToolExecutor<ExtensionToolCall<'call>> for TestNamespaceExtensionToo
     fn spec(&self) -> ToolSpec {
         ToolSpec::Namespace(codex_tools::ResponsesApiNamespace {
             name: self.namespace.to_string(),
-            description: "Test namespace.".to_string(),
+            description: self.namespace_description.to_string(),
             tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
                 name: self.tool_name.to_string(),
                 description: "Test namespace tool.".to_string(),
@@ -1838,10 +1839,12 @@ async fn unified_tool_runtimes_preserve_source_order_and_collision_priority() {
             extension_tool_executors: vec![
                 Arc::new(TestNamespaceExtensionTool {
                     namespace: "mcp__registry",
+                    namespace_description: "Test namespace.",
                     tool_name: "lookup",
                 }),
                 Arc::new(TestNamespaceExtensionTool {
                     namespace: "registry_extension",
+                    namespace_description: "Test namespace.",
                     tool_name: "lookup",
                 }),
             ],
@@ -1906,6 +1909,7 @@ async fn strict_tool_collisions_reject_external_and_synthetic_duplicates() {
                 )],
                 extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
                     namespace: "mcp__registry",
+                    namespace_description: "Test namespace.",
                     tool_name: "lookup",
                 })],
                 ..ToolPlanInputs::default()
@@ -2831,13 +2835,12 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         .properties
         .as_ref()
         .expect("spawn_agent should use object params");
-    for property in ["model", "reasoning_effort"] {
+    for property in ["agent_type", "model", "reasoning_effort"] {
         assert!(
             properties.contains_key(property),
             "expected v1 spawn_agent to expose `{property}`"
         );
     }
-    assert!(!properties.contains_key("agent_type"));
 
     let v2 = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
@@ -2893,12 +2896,10 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         .properties
         .as_ref()
         .expect("spawn_agent should use object params");
-    for property in ["model", "reasoning_effort"] {
+    for property in ["agent_type", "model", "reasoning_effort"] {
         assert!(spawn_agent_properties.contains_key(property));
     }
-    for property in ["agent_type", "service_tier"] {
-        assert!(!spawn_agent_properties.contains_key(property));
-    }
+    assert!(!spawn_agent_properties.contains_key("service_tier"));
     let spawn_agent_description = spawn_agent.description.as_str();
     assert!(!spawn_agent_description.contains("max_concurrent_threads_per_session"));
     assert!(spawn_agent_description.contains(
@@ -2983,6 +2984,48 @@ async fn multi_agent_v2_can_disable_wait_agent() {
     plan.assert_visible_lacks(&["clock"]);
     plan.assert_registered_lacks(&["collaboration.wait_agent", "clock.sleep"]);
     assert!(plan.can_manage_children);
+}
+
+#[tokio::test]
+async fn bundled_v2_schemas_preserve_direct_message_disablement() {
+    for disabled in [false, true] {
+        let plan = probe_with(
+            |turn| {
+                set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+                update_config(turn, |config| {
+                    config.multi_agent_v2.disable_direct_message = disabled;
+                });
+            },
+            ToolPlanInputs {
+                extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
+                    namespace: MULTI_AGENT_V2_NAMESPACE,
+                    namespace_description:
+                        crate::tools::multi_agent_tool::MULTI_AGENT_V2_NAMESPACE_DESCRIPTION,
+                    tool_name: "post",
+                })],
+                ..ToolPlanInputs::default()
+            },
+        )
+        .await;
+        let expected = [
+            "followup_task",
+            "interrupt_agent",
+            "list_agents",
+            "post",
+            "send_message",
+            "spawn_agent",
+            "wait_agent",
+        ]
+        .into_iter()
+        .filter(|name| !disabled || !matches!(*name, "followup_task" | "send_message"))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        assert_eq!(
+            plan.namespace_function_names(MULTI_AGENT_V2_NAMESPACE),
+            &expected
+        );
+        assert!(plan.can_manage_children);
+    }
 }
 
 #[tokio::test]
@@ -3250,6 +3293,7 @@ async fn hosted_web_search_fallback_follows_winning_browser_runtime() {
             )],
             extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
                 namespace: "web",
+                namespace_description: "Test namespace.",
                 tool_name: "run",
             })],
             ..ToolPlanInputs::default()
@@ -3268,6 +3312,7 @@ async fn hosted_web_search_fallback_follows_winning_browser_runtime() {
 async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates() {
     let image_generation_tool = Arc::new(TestNamespaceExtensionTool {
         namespace: "image_gen",
+        namespace_description: "Test namespace.",
         tool_name: "imagegen",
     });
     let image_generation = probe_with(
@@ -3427,6 +3472,7 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
         ToolPlanInputs {
             extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
                 namespace: "web",
+                namespace_description: "Test namespace.",
                 tool_name: "run",
             })],
             ..Default::default()
