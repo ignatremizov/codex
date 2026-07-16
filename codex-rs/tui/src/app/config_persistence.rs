@@ -95,6 +95,14 @@ impl App {
         permission_overrides
     }
 
+    pub(super) fn adopt_local_settings(
+        &mut self,
+        local_settings: crate::local_settings::LocalSettings,
+    ) {
+        crate::diff_render::set_diff_background_settings(&local_settings.tui);
+        self.local_settings = local_settings;
+    }
+
     pub(super) async fn rebuild_config_for_cwd(&self, cwd: PathBuf) -> Result<Config> {
         let mut overrides = self.harness_overrides.clone();
         overrides.cwd = Some(cwd.clone());
@@ -419,7 +427,7 @@ impl App {
             .rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
             .await?;
         self.apply_runtime_policy_overrides(&mut config, RuntimePolicyOverrideScope::All)?;
-        self.local_settings = self.local_settings.reloaded(&config);
+        self.adopt_local_settings(self.local_settings.reloaded(&config));
         self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
         // Other preferences have runtime caches and are adopted when the widget is replaced.
         self.chat_widget

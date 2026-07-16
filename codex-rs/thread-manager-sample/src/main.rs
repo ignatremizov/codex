@@ -25,6 +25,7 @@ use codex_core_api::ConfigLoadOptions;
 use codex_core_api::ConfigRequirements;
 use codex_core_api::ConfigRequirementsToml;
 use codex_core_api::Constrained;
+use codex_core_api::DiffBackgroundMode;
 use codex_core_api::EnvironmentManager;
 use codex_core_api::EventMsg;
 use codex_core_api::ExecServerRuntimeOptions;
@@ -307,6 +308,9 @@ async fn new_config(
         tui_pet: None,
         tui_pet_anchor: TuiPetAnchor::Composer,
         show_compact_summary: true,
+        tui_diff_background: DiffBackgroundMode::Auto,
+        tui_diff_add_bg: None,
+        tui_diff_del_bg: None,
         terminal_resize_reflow: TerminalResizeReflowConfig::default(),
         tui_keymap: TuiKeymap::default(),
         tui_session_picker_view: SessionPickerViewMode::Dense,

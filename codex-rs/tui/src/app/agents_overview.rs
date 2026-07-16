@@ -729,7 +729,7 @@ impl App {
                         && profile.turn_override
                             == RuntimePermissionProfileTurnOverride::LegacySandbox
                 });
-            self.local_settings = local_settings;
+            self.adopt_local_settings(local_settings);
             self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
             self.config = resume_config;
             tui.set_notification_settings(
