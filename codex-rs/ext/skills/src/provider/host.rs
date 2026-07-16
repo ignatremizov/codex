@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::path::Path;
+
+use codex_skills::SkillMetadata;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 use crate::SkillLoadOutcome;
-use codex_skills::SkillMetadata;
-
 use crate::catalog::SkillAuthority;
 use crate::catalog::SkillCatalog;
 use crate::catalog::SkillCatalogEntry;
@@ -109,11 +111,13 @@ fn catalog_from_outcome(outcome: &SkillLoadOutcome) -> SkillCatalog {
 
     for (skill, enabled) in outcome.skills_with_enabled() {
         let mut entry = catalog_entry_from_skill(skill, enabled);
-        if let Some(discovery_path) =
-            outcome.skill_discovery_path_for_path(&skill.path_to_skills_md)
-        {
-            entry = entry.with_display_path(discovery_path.to_string_lossy().replace('\\', "/"));
-        }
+        let display_path = outcome
+            .skill_discovery_path_for_path(&skill.path_to_skills_md)
+            .unwrap_or(&skill.path_to_skills_md);
+        entry = entry.with_display_path(compact_model_visible_path(
+            display_path,
+            dirs::home_dir().as_deref(),
+        ));
         if let Some(root) = outcome.skill_root_for_path(&skill.path_to_skills_md) {
             entry = entry.with_alias_root(root.to_string_lossy().replace('\\', "/"));
             if let Some(root_order) = root_order_by_path.get(root.as_path()) {
@@ -128,7 +132,6 @@ fn catalog_from_outcome(outcome: &SkillLoadOutcome) -> SkillCatalog {
 
 fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalogEntry {
     let skill_path = skill.path_to_skills_md.to_string_lossy().into_owned();
-    let display_path = skill_path.replace('\\', "/");
     let mut entry = SkillCatalogEntry::new(
         SkillPackageId(skill_path.clone()),
         SkillAuthority::new(SkillSourceKind::Host, HOST_AUTHORITY_ID),
@@ -137,7 +140,6 @@ fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalo
         SkillResourceId::new(skill_path),
     )
     .with_short_description(skill.short_description.clone())
-    .with_display_path(display_path)
     .with_prompt_scope(skill.scope)
     .with_dependencies(skill.dependencies.clone());
 
@@ -149,6 +151,14 @@ fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalo
     }
 
     entry
+}
+
+fn compact_model_visible_path(path: &AbsolutePathBuf, home_dir: Option<&Path>) -> String {
+    let rendered = home_dir
+        .and_then(|home| path.as_path().strip_prefix(home).ok())
+        .map(|relative| format!("~/{}", relative.to_string_lossy()))
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    rendered.replace('\\', "/")
 }
 
 #[cfg(test)]
