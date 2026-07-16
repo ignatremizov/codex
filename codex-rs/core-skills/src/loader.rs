@@ -46,6 +46,7 @@ use futures::FutureExt;
 use futures::StreamExt;
 use namespace::SkillNamespaceResolver;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
@@ -221,18 +222,34 @@ pub(crate) struct SkillRootSnapshot {
     pub(crate) root: AbsolutePathBuf,
     pub(crate) skills: Vec<SkillMetadata>,
     pub(crate) errors: Vec<SkillError>,
+    pub(crate) display_path_by_skill_path: HashMap<AbsolutePathBuf, AbsolutePathBuf>,
     pub(crate) file_system: Arc<dyn ExecutorFileSystem>,
 }
 
+struct SkillRootPaths<'a> {
+    identity: &'a AbsolutePathBuf,
+    display: &'a AbsolutePathBuf,
+}
+
 pub(crate) async fn load_skill_root(root: SkillRoot) -> SkillRootSnapshot {
+    let display_root = root.path.clone();
     let canonical_root =
         canonicalize_for_skill_identity(root.file_system.as_ref(), &root.path).await;
     let mut outcome = SkillLoadOutcome::default();
-    load_skills_under_root(&root, &canonical_root, &mut outcome).await;
+    load_skills_under_root(
+        &root,
+        SkillRootPaths {
+            identity: &canonical_root,
+            display: &display_root,
+        },
+        &mut outcome,
+    )
+    .await;
     SkillRootSnapshot {
         root: canonical_root,
         skills: outcome.skills,
         errors: outcome.errors,
+        display_path_by_skill_path: Arc::unwrap_or_clone(outcome.display_path_by_skill_path),
         file_system: root.file_system,
     }
 }
@@ -527,10 +544,14 @@ async fn canonicalize_for_skill_identity(
 
 async fn load_skills_under_root(
     skill_root: &SkillRoot,
-    root: &AbsolutePathBuf,
+    root_paths: SkillRootPaths<'_>,
     outcome: &mut SkillLoadOutcome,
 ) {
     let fs = skill_root.file_system.as_ref();
+    let SkillRootPaths {
+        identity: root,
+        display: display_root,
+    } = root_paths;
     let plugin_identity = skill_root.plugin_identity.as_ref();
     let plugin_root = match skill_root.plugin_root.as_ref() {
         Some(plugin_root) => Some(canonicalize_for_skill_identity(fs, plugin_root).await),
@@ -654,6 +675,18 @@ async fn load_skills_under_root(
     let skill_results = futures::stream::iter(resolved_skills)
         .map(|skill| {
             let plugin_root = plugin_root.as_ref();
+            let display_path = skill
+                .skill
+                .path
+                .to_abs_path()
+                .unwrap_or_else(|_| skill.path.clone());
+            let display_path = skill
+                .path
+                .as_path()
+                .strip_prefix(root.as_path())
+                .ok()
+                .map(|relative| display_root.join(relative))
+                .unwrap_or(display_path);
             async move {
                 let result = parse_skill_file(
                     fs,
@@ -666,14 +699,14 @@ async fn load_skills_under_root(
                 )
                 .await
                 .map_err(|err| err.to_string());
-                (skill.path, skill.path_uri, result)
+                (skill.path, skill.path_uri, display_path, result)
             }
         })
         .buffered(MAX_CONCURRENT_SKILL_LOADS)
         .collect::<Vec<_>>()
         .boxed();
     let (namespace_resolver, skill_results) = tokio::join!(namespace_resolver, skill_results);
-    for (path, path_uri, result) in skill_results {
+    for (path, path_uri, display_path, result) in skill_results {
         let result = result.and_then(|mut skill| {
             skill.name = namespace_resolver
                 .for_skill(&root_uri, &path_uri)
@@ -683,7 +716,11 @@ async fn load_skills_under_root(
             Ok(skill)
         });
         match result {
-            Ok(skill) => outcome.skills.push(skill),
+            Ok(skill) => {
+                Arc::make_mut(&mut outcome.display_path_by_skill_path)
+                    .insert(skill.path_to_skills_md.clone(), display_path);
+                outcome.skills.push(skill);
+            }
             Err(err) if skill_root.scope != SkillScope::System => {
                 outcome.errors.push(SkillError { path, message: err })
             }

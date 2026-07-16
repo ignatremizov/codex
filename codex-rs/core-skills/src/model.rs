@@ -28,6 +28,7 @@ pub struct SkillLoadOutcome {
     pub disabled_paths: HashSet<AbsolutePathBuf>,
     pub(crate) skill_roots: Vec<AbsolutePathBuf>,
     pub(crate) skill_root_by_path: Arc<HashMap<AbsolutePathBuf, AbsolutePathBuf>>,
+    pub(crate) display_path_by_skill_path: Arc<HashMap<AbsolutePathBuf, AbsolutePathBuf>>,
     pub(crate) file_systems_by_skill_path: SkillFileSystemsByPath,
     pub(crate) implicit_skills_by_scripts_dir: Arc<HashMap<AbsolutePathBuf, SkillMetadata>>,
     pub(crate) implicit_skills_by_doc_path: Arc<HashMap<AbsolutePathBuf, SkillMetadata>>,
@@ -61,6 +62,19 @@ impl SkillLoadOutcome {
         self.skill_root_by_path.get(path)
     }
 
+    /// Returns the compact model-visible locator for a host skill.
+    ///
+    /// Skill identity and reads continue to use the canonical path. Rendering prefers the
+    /// discovered path so symlink-based user locations remain visible, then shortens paths under
+    /// the current home directory to `~/...` for shell-backed skill hydration.
+    pub fn model_visible_path(&self, skill: &SkillMetadata) -> String {
+        let path = self
+            .display_path_by_skill_path
+            .get(&skill.path_to_skills_md)
+            .unwrap_or(&skill.path_to_skills_md);
+        compact_model_visible_path(path, dirs::home_dir().as_deref())
+    }
+
     pub(crate) fn file_system_for_skill(
         &self,
         skill: &SkillMetadata,
@@ -68,6 +82,17 @@ impl SkillLoadOutcome {
         self.file_systems_by_skill_path
             .get(&skill.path_to_skills_md)
     }
+}
+
+fn compact_model_visible_path(
+    path: &AbsolutePathBuf,
+    home_dir: Option<&std::path::Path>,
+) -> String {
+    let rendered = home_dir
+        .and_then(|home| path.as_path().strip_prefix(home).ok())
+        .map(|relative| format!("~/{}", relative.to_string_lossy()))
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    rendered.replace('\\', "/")
 }
 
 /// Immutable snapshot of host-owned skills and the filesystem mapping needed
@@ -131,6 +156,10 @@ impl fmt::Debug for SkillFileSystemsByPath {
     }
 }
 
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;
+
 pub fn filter_skill_load_outcome_for_product(
     mut outcome: SkillLoadOutcome,
     restriction_product: Option<Product>,
@@ -152,6 +181,14 @@ pub fn filter_skill_load_outcome_for_product(
             .iter()
             .filter(|(path, _)| retained_paths.contains(*path))
             .map(|(path, root)| (path.clone(), root.clone()))
+            .collect(),
+    );
+    outcome.display_path_by_skill_path = Arc::new(
+        outcome
+            .display_path_by_skill_path
+            .iter()
+            .filter(|(path, _)| retained_paths.contains(*path))
+            .map(|(path, display_path)| (path.clone(), display_path.clone()))
             .collect(),
     );
     let retained_roots: HashSet<AbsolutePathBuf> =
