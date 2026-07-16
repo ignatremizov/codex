@@ -3,7 +3,7 @@ source: core/tests/suite/scenarios.rs
 assertion_line: 1713
 expression: "context_snapshot::format_request_history_snapshot(description, &requests,\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
-Scenario: Astra calls list_agents using the selected catalog parameter schema.
+Scenario: Astra calls list_agents using the fork-owned parameter schema.
 
 ## Window 1
 Settings:

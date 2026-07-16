@@ -394,12 +394,14 @@ pub(super) async fn model_catalog_refresh_requests(
     Ok(requests)
 }
 
-#[test_case(false, false, MULTI_AGENT_V1_NAMESPACE; "v1 hides agent type without roles")]
-#[test_case(true, true, "collaboration"; "v2 exposes agent type with a role")]
+#[test_case(false, false, MULTI_AGENT_V1_NAMESPACE; "v1 exposes built-in agent types")]
+#[test_case(true, false, MULTI_AGENT_V2_NAMESPACE; "v2 exposes built-in agent types")]
+#[test_case(false, true, MULTI_AGENT_V1_NAMESPACE; "v1 preserves configured agent types")]
+#[test_case(true, true, MULTI_AGENT_V2_NAMESPACE; "v2 preserves configured agent types")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn configured_agent_roles_control_spawn_agent_type(
+async fn built_in_and_configured_agent_roles_are_discoverable(
     multi_agent_v2: bool,
-    has_agent_role: bool,
+    configure_custom_role: bool,
     namespace: &str,
 ) -> Result<()> {
     let server = start_mock_server().await;
@@ -425,7 +427,7 @@ async fn configured_agent_roles_control_spawn_agent_type(
                     .disable(Feature::MultiAgentV2)
                     .expect("test config should allow feature update");
             }
-            if has_agent_role {
+            if configure_custom_role {
                 config.agent_roles.insert(
                     "researcher".to_string(),
                     AgentRoleConfig {
@@ -441,10 +443,10 @@ async fn configured_agent_roles_control_spawn_agent_type(
 
     test.submit_turn("hello").await?;
 
-    assert_eq!(
-        spawn_agent_exposes_agent_type(&response.single_request().body_json(), namespace),
-        has_agent_role
-    );
+    assert!(spawn_agent_exposes_agent_type(
+        &response.single_request().body_json(),
+        namespace
+    ));
     Ok(())
 }
 

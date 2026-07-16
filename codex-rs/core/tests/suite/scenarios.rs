@@ -1734,14 +1734,45 @@ async fn multi_agent_catalog_parameters(disable_native_tools: bool) -> Result<()
     } else {
         (
             "multi_agent_catalog_parameters",
-            "Astra calls list_agents using the selected catalog parameter schema.",
+            "Astra calls list_agents using the fork-owned parameter schema.",
         )
     };
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2, "expected initial and follow-up requests");
+    let request = requests[0].body_json();
+    let additional_tools = request["input"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["type"] == "additional_tools"))
+        .expect("additional_tools input");
+    let collaboration = additional_tools["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|tool| tool["name"] == "collaboration"));
+    if disable_native_tools {
+        assert!(collaboration.is_none());
+    } else {
+        let list_agents = collaboration.expect("collaboration namespace")["tools"]
+            .as_array()
+            .and_then(|tools| tools.iter().find(|tool| tool["name"] == "list_agents"))
+            .expect("list_agents tool");
+        assert_eq!(
+            list_agents["parameters"],
+            json!({
+                "type": "object",
+                "properties": {
+                    "path_prefix": {
+                        "type": "string",
+                        "description": "Task-path prefix filter without a trailing slash. Omit to list all live agents."
+                    }
+                },
+                "additionalProperties": false
+            })
+        );
+    }
     insta::assert_snapshot!(
         name,
         context_snapshot::format_request_history_snapshot(
             description,
-            &mock.requests(),
+            &requests,
             &ContextSnapshotOptions::default().include_request_settings(),
         )
     );
