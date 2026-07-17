@@ -1,4 +1,3 @@
-use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use codex_agent_extension::AgentInvocation;
 use codex_agent_extension::AgentRun;
@@ -207,8 +206,6 @@ impl TurnRequestProcessor {
         params: TurnSettingsUpdateParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
         let (reply, outcome) = oneshot::channel();
         self.submit_core_op(
             request_id,
@@ -367,19 +364,6 @@ impl TurnRequestProcessor {
 
         Ok((thread_id, thread))
     }
-
-    async fn ensure_direct_input_allowed(
-        &self,
-        request_id: &ConnectionRequestId,
-        thread: &CodexThread,
-    ) -> Result<(), JSONRPCErrorError> {
-        ensure_direct_input_allowed(thread)
-            .await
-            .inspect_err(|error| {
-                self.track_error_response(request_id, error, /*error_type*/ None);
-            })
-    }
-
     fn normalize_collaboration_mode(
         &self,
         mut collaboration_mode: CollaborationMode,
@@ -506,14 +490,6 @@ impl TurnRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<TurnStartResponse, JSONRPCErrorError> {
-        let (thread_id, thread) =
-            self.load_thread(&params.thread_id)
-                .await
-                .inspect_err(|error| {
-                    self.track_error_response(&request_id, error, /*error_type*/ None);
-                })?;
-        self.ensure_direct_input_allowed(&request_id, thread.as_ref())
-            .await?;
         if let Some(tool_output) = &params.tool_output {
             if !params.input.is_empty() {
                 return Err(invalid_request(
@@ -553,6 +529,12 @@ impl TurnRequestProcessor {
             );
             return Err(error);
         }
+        let (thread_id, thread) =
+            self.load_thread(&params.thread_id)
+                .await
+                .inspect_err(|error| {
+                    self.track_error_response(&request_id, error, /*error_type*/ None);
+                })?;
         Self::set_app_server_client_info(
             thread.as_ref(),
             app_server_client_name,
@@ -897,8 +879,6 @@ impl TurnRequestProcessor {
         params: ThreadSettingsUpdateParams,
     ) -> Result<ThreadSettingsUpdateResponse, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
         let cwd = resolve_request_cwd(params.cwd)?;
         let environments = self
             .build_environment_override(
@@ -947,8 +927,6 @@ impl TurnRequestProcessor {
         params: ThreadInjectItemsParams,
     ) -> Result<ThreadInjectItemsResponse, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
 
         let items = params
             .items
@@ -1002,9 +980,6 @@ impl TurnRequestProcessor {
             .inspect_err(|error| {
                 self.track_error_response(request_id, error, /*error_type*/ None);
             })?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
-
         if params.expected_turn_id.is_empty() {
             return Err(invalid_request("expectedTurnId must not be empty"));
         }
@@ -1129,8 +1104,6 @@ impl TurnRequestProcessor {
         thread_id: &str,
     ) -> Result<Option<(ThreadId, Arc<CodexThread>)>, JSONRPCErrorError> {
         let (thread_id, thread) = self.load_thread(thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
 
         match self
             .ensure_conversation_listener(
@@ -1523,8 +1496,6 @@ impl TurnRequestProcessor {
         } = params;
 
         let (_, parent_thread) = self.load_thread(&thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, parent_thread.as_ref())
-            .await?;
         let (review_request, display_text, target_prompt) =
             Self::review_request_from_target(target)?;
         match delivery.unwrap_or(ApiReviewDelivery::Inline).to_core() {

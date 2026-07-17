@@ -1,17 +1,11 @@
-use super::thread_input::DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR;
-use super::thread_input::can_accept_direct_input;
-use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalService;
 use codex_goal_extension::GoalServiceError;
 use codex_goal_extension::GoalSetRequest;
 use codex_goal_extension::GoalTokenBudgetUpdate;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
-use codex_rollout::RolloutRecorder;
 
 enum GoalAccess {
     Read,
@@ -285,9 +279,6 @@ impl ThreadGoalRequestProcessor {
         access: GoalAccess,
     ) -> Result<StateDbHandle, JSONRPCErrorError> {
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
-            if matches!(access, GoalAccess::Mutate) {
-                ensure_direct_input_allowed(thread.as_ref()).await?;
-            }
             if thread.rollout_path().is_none() {
                 return Err(invalid_request(format!(
                     "ephemeral thread does not support goals: {thread_id}"
@@ -317,26 +308,6 @@ impl ThreadGoalRequestProcessor {
                     return Err(invalid_request(
                         "thread metadata does not match requested id",
                     ));
-                }
-                if matches!(
-                    session_meta.meta.source,
-                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-                ) {
-                    // Match resume's latest version metadata, including legacy TurnContext
-                    // fallback, rather than trusting only the initial session header.
-                    let history = RolloutRecorder::get_rollout_history(&rollout_path)
-                        .await
-                        .map_err(|err| {
-                            internal_error(format!("failed to read thread ownership: {err}"))
-                        })?;
-                    if !can_accept_direct_input(
-                        history.get_multi_agent_version(),
-                        &session_meta.meta.source,
-                    ) {
-                        return Err(invalid_request(
-                            DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR,
-                        ));
-                    }
                 }
             }
         }

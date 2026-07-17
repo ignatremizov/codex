@@ -29,7 +29,6 @@ use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
-use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::McpToolCallAppContext;
 use codex_app_server_protocol::PatchApplyStatus;
@@ -45,8 +44,6 @@ use codex_app_server_protocol::ThreadActiveFlag;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadGoalClearResponse;
-use codex_app_server_protocol::ThreadGoalGetParams;
-use codex_app_server_protocol::ThreadGoalGetResponse;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadHistoryMode;
@@ -1621,7 +1618,7 @@ async fn thread_goal_get_rejects_unmaterialized_thread() -> Result<()> {
 }
 
 #[tokio::test]
-async fn unloaded_thread_goal_mutations_respect_parent_ownership() -> Result<()> {
+async fn unloaded_thread_goal_mutations_accept_all_agent_versions() -> Result<()> {
     const TIMESTAMP: &str = "2026-08-20T12-00-00";
     let server = responses::start_mock_server().await;
     let codex_home = TempDir::new()?;
@@ -1647,8 +1644,6 @@ async fn unloaded_thread_goal_mutations_respect_parent_ownership() -> Result<()>
         (child_source, None),
         (RolloutSessionSource::Cli, Some(MultiAgentVersion::V2)),
     ] {
-        let rejects_mutation = matches!(source, RolloutSessionSource::SubAgent(_))
-            && version == Some(MultiAgentVersion::V2);
         let thread_id = create_fake_rollout_with_source(
             codex_home.path(),
             TIMESTAMP,
@@ -1667,7 +1662,7 @@ async fn unloaded_thread_goal_mutations_respect_parent_ownership() -> Result<()>
         let request_id = app
             .send_raw_request("thread/goal/set", Some(params))
             .await?;
-        let original: ThreadGoalSetResponse =
+        let _: ThreadGoalSetResponse =
             timeout(DEFAULT_READ_TIMEOUT, app.read_response(request_id)).await??;
 
         // The initial header has no version, as in older rollouts. Later metadata
@@ -1684,37 +1679,7 @@ async fn unloaded_thread_goal_mutations_respect_parent_ownership() -> Result<()>
             ("thread/goal/clear", json!({"threadId": thread_id})),
         ] {
             let request_id = app.send_raw_request(method, Some(params)).await?;
-            if rejects_mutation {
-                let error = timeout(
-                    DEFAULT_READ_TIMEOUT,
-                    app.read_stream_until_error_message(RequestId::Integer(request_id)),
-                )
-                .await??;
-                assert_eq!(
-                    error.error,
-                    JSONRPCErrorError {
-                        code: -32600,
-                        message:
-                            "direct app-server input is not allowed for multi-agent v2 sub-agents"
-                                .to_string(),
-                        data: None,
-                    },
-                );
-                let retained: ThreadGoalGetResponse = app
-                    .request(|request_id| ClientRequest::ThreadGoalGet {
-                        request_id,
-                        params: ThreadGoalGetParams {
-                            thread_id: thread_id.clone(),
-                        },
-                    })
-                    .await?;
-                assert_eq!(
-                    retained,
-                    ThreadGoalGetResponse {
-                        goal: Some(original.goal.clone()),
-                    },
-                );
-            } else if method == "thread/goal/set" {
+            if method == "thread/goal/set" {
                 let _: ThreadGoalSetResponse =
                     timeout(DEFAULT_READ_TIMEOUT, app.read_response(request_id)).await??;
             } else {

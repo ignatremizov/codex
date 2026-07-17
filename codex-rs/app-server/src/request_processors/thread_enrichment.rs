@@ -1,5 +1,4 @@
 use super::apply_live_model_settings;
-use super::thread_input::can_accept_direct_input;
 use crate::thread_status::ThreadWatchManager;
 use crate::thread_status::resolve_thread_status;
 use codex_app_server_protocol::SessionSource;
@@ -73,10 +72,7 @@ pub(super) async fn enrich_loaded_threads<T>(
                     return;
                 }
             }
-            thread.can_accept_direct_input = Some(can_accept_direct_input(
-                loaded_thread.multi_agent_version(),
-                &config_snapshot.session_source,
-            ));
+            thread.can_accept_direct_input = Some(true);
         }
     }))
     .await;
