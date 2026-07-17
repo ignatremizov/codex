@@ -21,6 +21,10 @@ fn continuation_prompt_allows_complete_and_strict_blocked_updates() {
     assert!(prompt.contains("Token budget: 10000"));
     assert!(prompt.contains("call update_goal with status \"complete\""));
     assert!(prompt.contains("status \"blocked\""));
+    assert!(prompt.contains("sources that are authoritative for the current objective"));
+    assert!(prompt.contains("their authority depends on their relevance"));
+    assert!(prompt.contains("call get_goal to re-ground on the active objective"));
+    assert!(!prompt.contains("current worktree and external state as authoritative"));
     assert!(prompt.contains("at least three consecutive goal turns"));
     assert!(prompt.contains("same blocking condition"));
     assert!(prompt.contains("original/user-triggered turn"));
@@ -48,6 +52,7 @@ fn budget_limit_prompt_steers_model_to_wrap_up_without_pausing() {
     assert!(prompt.contains("Token budget: 10000"));
     assert!(prompt.contains("Tokens used: 10100"));
     assert!(prompt.to_lowercase().contains("wrap up this turn soon"));
+    assert!(prompt.contains("without letting recent local artifacts redefine it"));
     assert!(!prompt.contains("status \"paused\""));
 }
 
@@ -72,6 +77,10 @@ fn objective_updated_prompt_supersedes_previous_goal_context() {
     );
     assert!(prompt.contains("Token budget: 10000"));
     assert!(prompt.contains("Tokens remaining: 8766"));
+    assert!(prompt.contains("sources that are authoritative for the updated objective"));
+    assert!(prompt.contains("their authority depends on their relevance"));
+    assert!(prompt.contains("call get_goal to re-ground on the updated objective"));
+    assert!(prompt.contains("without letting proximity, concreteness, or recency preserve"));
     assert!(
         prompt.contains("Do not call update_goal unless the updated goal is actually complete.")
     );
