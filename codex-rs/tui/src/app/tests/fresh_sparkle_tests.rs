@@ -14,7 +14,7 @@ fn started(model: &str) -> AppServerStartedThread {
     AppServerStartedThread {
         session,
         turns: Vec::new(),
-        blocks_direct_input: false,
+        is_subagent: false,
         task_tools_available: false,
     }
 }
@@ -91,7 +91,7 @@ async fn only_a_confirmed_empty_new_task_shows_the_sparkle() -> Result<()> {
         "fork",
         "replay",
         "initial_prompt",
-        "parent_owned",
+        "subagent",
     ] {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         app.local_settings.tui.animations = true;
@@ -111,8 +111,8 @@ async fn only_a_confirmed_empty_new_task_shows_the_sparkle() -> Result<()> {
                 .turns
                 .push(test_turn("existing", TurnStatus::Completed, Vec::new()));
         }
-        if scenario == "parent_owned" {
-            thread.blocks_direct_input = true;
+        if scenario == "subagent" {
+            thread.is_subagent = true;
         }
         let initial_message = (scenario == "initial_prompt")
             .then(|| create_initial_user_message(Some("hello".into()), Vec::new(), Vec::new()))

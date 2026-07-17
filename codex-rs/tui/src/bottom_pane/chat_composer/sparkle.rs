@@ -243,9 +243,7 @@ impl ChatComposer {
                     self.sparkle.command_input.borrow_mut().clear();
                 }
             }
-            InputResult::Submitted { .. }
-            | InputResult::Queued { .. }
-            | InputResult::ParentOwnedInputBlocked => self.dismiss_sparkle(),
+            InputResult::Submitted { .. } | InputResult::Queued { .. } => self.dismiss_sparkle(),
             InputResult::CommandWithArgs(_, _, _) | InputResult::None => {
                 if self.history_search.is_none() && self.draft.textarea.vim_query().is_none() {
                     let draft = self.current_text();

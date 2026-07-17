@@ -1552,7 +1552,6 @@ impl ThreadRequestProcessor {
         let mut thread = build_thread_from_snapshot(
             thread_id,
             session_configured.session_id.to_string(),
-            thread.multi_agent_version(),
             &config_snapshot,
             session_configured.rollout_path.clone(),
         );
@@ -2828,52 +2827,20 @@ impl ThreadRequestProcessor {
             })?
             .and_then(|metadata| metadata.daybreak_enabled);
         let loaded_thread = self.thread_manager.get_thread(thread_id).await.ok();
-        let mut thread = if include_turns {
-            if let Some(loaded_thread) = loaded_thread.as_ref() {
-                // Loaded thread with turns: use persisted metadata when it exists,
-                // but reconstruct turns from the live ThreadStore history.
-                let persisted_thread = self
-                    .load_persisted_thread_for_read(thread_id, /*include_turns*/ false)
-                    .await?;
-                self.load_live_thread_view(
-                    thread_id,
-                    include_turns,
-                    loaded_thread,
-                    persisted_thread,
-                )
+        let mut thread = if let Some(loaded_thread) = loaded_thread.as_ref() {
+            // Loaded threads expose their live settings and direct-input capability while using
+            // persisted metadata when it is already available.
+            let persisted_thread = self
+                .load_persisted_thread_for_read(thread_id, /*include_turns*/ false)
+                .await?;
+            self.load_live_thread_view(thread_id, include_turns, loaded_thread, persisted_thread)
                 .await?
-            } else if let Some(thread) = self
-                .load_persisted_thread_for_read(thread_id, include_turns)
-                .await?
-            {
-                // Unloaded thread with turns: load metadata and history together
-                // from the ThreadStore.
-                thread
-            } else {
-                return Err(ThreadReadViewError::InvalidRequest(format!(
-                    "thread not loaded: {thread_id}"
-                )));
-            }
         } else if let Some(thread) = self
             .load_persisted_thread_for_read(thread_id, include_turns)
             .await?
         {
-            if let Some(loaded_thread) = loaded_thread.as_ref() {
-                self.load_live_thread_view(thread_id, include_turns, loaded_thread, Some(thread))
-                    .await?
-            } else {
-                thread
-            }
-        } else if let Some(loaded_thread) = loaded_thread.as_ref() {
-            // Loaded metadata-only read before persistence is materialized: build
-            // the response from the live thread snapshot.
-            self.load_live_thread_view(
-                thread_id,
-                include_turns,
-                loaded_thread,
-                /*persisted_thread*/ None,
-            )
-            .await?
+            // Unloaded threads are reconstructed from persisted metadata and optional history.
+            thread
         } else {
             return Err(ThreadReadViewError::InvalidRequest(format!(
                 "thread not loaded: {thread_id}"
@@ -2995,12 +2962,12 @@ impl ThreadRequestProcessor {
             }
             thread.session_id.clone_from(&fallback_thread.session_id);
             thread.ephemeral = fallback_thread.ephemeral;
-            thread.can_accept_direct_input = fallback_thread.can_accept_direct_input;
             thread
         } else {
             fallback_thread
         };
         apply_live_thread_settings(&mut thread, &config_snapshot);
+        thread.can_accept_direct_input = Some(true);
         self.apply_thread_read_store_fields(thread_id, &mut thread, include_turns, loaded_thread)
             .await?;
         Ok(thread)
@@ -4400,10 +4367,7 @@ impl ThreadRequestProcessor {
             thread_summary.session_id = existing_thread.startup_metadata().session_id.to_string();
             thread_summary.thread_source = config_snapshot.thread_source.clone().map(Into::into);
             apply_live_thread_settings(&mut thread_summary, &config_snapshot);
-            thread_summary.can_accept_direct_input = Some(can_accept_direct_input(
-                existing_thread.multi_agent_version(),
-                &config_snapshot.session_source,
-            ));
+            thread_summary.can_accept_direct_input = Some(true);
             let instruction_sources = existing_thread.legacy_instruction_sources().await;
 
             let listener_command_tx = {
@@ -4688,10 +4652,6 @@ impl ThreadRequestProcessor {
     ) -> std::result::Result<Thread, String> {
         let config_snapshot = thread.config_snapshot().await;
         let session_id = thread.startup_metadata().session_id.to_string();
-        let can_accept_direct_input = can_accept_direct_input(
-            thread.multi_agent_version(),
-            &config_snapshot.session_source,
-        );
         let thread = match thread_history {
             InitialHistory::Resumed(resumed) => {
                 let fallback_provider = config_snapshot.model_provider_id.as_str();
@@ -4754,7 +4714,6 @@ impl ThreadRequestProcessor {
                 let mut thread = build_thread_from_snapshot(
                     thread_id,
                     session_id.clone(),
-                    thread.multi_agent_version(),
                     &config_snapshot,
                     Some(rollout_path.into()),
                 );
@@ -4767,7 +4726,7 @@ impl ThreadRequestProcessor {
         };
         let mut thread = thread?;
         apply_live_thread_settings(&mut thread, &config_snapshot);
-        thread.can_accept_direct_input = Some(can_accept_direct_input);
+        thread.can_accept_direct_input = Some(true);
         thread.id = thread_id.to_string();
         thread.session_id = session_id;
         thread.path = Some(rollout_path.to_path_buf());
@@ -5265,7 +5224,6 @@ impl ThreadRequestProcessor {
             let mut thread = build_thread_from_snapshot(
                 thread_id,
                 session_configured.session_id.to_string(),
-                forked_thread.multi_agent_version(),
                 &config_snapshot,
                 /*path*/ None,
             );
@@ -5286,13 +5244,10 @@ impl ThreadRequestProcessor {
         if let Some(name) = source_thread_name {
             set_thread_name_from_title(&mut thread, name);
         }
-        thread.can_accept_direct_input = Some(can_accept_direct_input(
-            forked_thread.multi_agent_version(),
-            &config_snapshot.session_source,
-        ));
         thread.session_id = session_configured.session_id.to_string();
         thread.thread_source = config_snapshot.thread_source.clone().map(Into::into);
         apply_live_thread_settings(&mut thread, &config_snapshot);
+        thread.can_accept_direct_input = Some(true);
         if thread.path.is_none() {
             thread.project_id = inherited_project_id.clone();
         }
@@ -6209,7 +6164,6 @@ fn preview_from_rollout_items(items: &[RolloutItem]) -> String {
 fn build_thread_from_snapshot(
     thread_id: ThreadId,
     session_id: String,
-    multi_agent_version: Option<codex_protocol::protocol::MultiAgentVersion>,
     config_snapshot: &ThreadConfigSnapshot,
     path: Option<PathBuf>,
 ) -> Thread {
@@ -6248,10 +6202,7 @@ fn build_thread_from_snapshot(
         agent_nickname: config_snapshot.session_source.get_nickname(),
         agent_role: config_snapshot.session_source.get_agent_role(),
         source: config_snapshot.session_source.clone().into(),
-        can_accept_direct_input: Some(can_accept_direct_input(
-            multi_agent_version,
-            &config_snapshot.session_source,
-        )),
+        can_accept_direct_input: Some(true),
         thread_source: config_snapshot.thread_source.clone().map(Into::into),
         git_info: None,
         name: None,
@@ -6296,7 +6247,6 @@ fn build_thread_from_loaded_snapshot(
     build_thread_from_snapshot(
         thread_id,
         loaded_thread.startup_metadata().session_id.to_string(),
-        loaded_thread.multi_agent_version(),
         config_snapshot,
         loaded_thread.rollout_path(),
     )

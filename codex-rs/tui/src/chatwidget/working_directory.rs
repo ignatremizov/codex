@@ -8,7 +8,7 @@ impl ChatWidget {
         let active = &self.transcript.active_cell;
         self.thread_id == Some(thread_id)
             && !self.active_side_conversation
-            && !self.blocks_direct_input
+            && !self.external_writer_view
             && !self.config.ephemeral
             && self.unified_exec_processes.is_empty()
             && !self.is_user_turn_pending_or_running()

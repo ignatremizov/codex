@@ -869,8 +869,8 @@ See the Codex keymap documentation for supported actions and examples."
             let thread_id = started.session.thread_id;
             app.chat_widget
                 .set_task_mentions_enabled(started.task_tools_available);
-            if started.blocks_direct_input {
-                app.mark_primary_thread_parent_owned(thread_id);
+            if started.is_subagent {
+                app.agent_navigation.mark_subagent(thread_id);
             }
             if read_only_thread {
                 app.chat_widget.show_external_writer_thread();

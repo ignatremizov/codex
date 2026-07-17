@@ -225,7 +225,7 @@ async fn viewing_thread_reads_history_without_resuming_it() -> Result<()> {
     assert_eq!(notice, None);
     assert_eq!(viewed.session.thread_id, thread_id);
     assert!(!viewed.turns.is_empty());
-    assert!(!viewed.blocks_direct_input);
+    assert!(!viewed.is_subagent);
     assert!(app_server.next_request_id > next_request_id);
     app_server.shutdown().await?;
     Ok(())

@@ -12,12 +12,6 @@ use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
 
 impl ChatWidget {
-    pub(crate) fn set_parent_owned_thread(&mut self) {
-        self.cancel_image_submission();
-        self.blocks_direct_input = true;
-        self.bottom_pane.set_parent_owned_thread();
-    }
-
     pub(super) fn handle_composer_input_result(
         &mut self,
         input_result: InputResult,
@@ -37,10 +31,7 @@ impl ChatWidget {
             InputResult::Command(_)
             | InputResult::ServiceTierCommand(_)
             | InputResult::CommandWithArgs(..) => true,
-            InputResult::Submitted { .. }
-            | InputResult::Queued { .. }
-            | InputResult::ParentOwnedInputBlocked
-            | InputResult::None => false,
+            InputResult::Submitted { .. } | InputResult::Queued { .. } | InputResult::None => false,
         };
         if follow_transcript {
             self.app_event_tx.send(AppEvent::FollowTranscript);
@@ -105,9 +96,6 @@ impl ChatWidget {
             }
             InputResult::CommandWithArgs(cmd, args, text_elements) => {
                 self.handle_slash_command_with_args_dispatch(cmd, args, text_elements);
-            }
-            InputResult::ParentOwnedInputBlocked => {
-                self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
             }
             InputResult::None => {}
         }
@@ -233,15 +221,13 @@ impl ChatWidget {
 
     /// If idle and there are queued inputs, submit exactly one to start the next turn.
     pub(crate) fn maybe_send_next_queued_input(&mut self) -> bool {
-        if !self.is_session_configured()
+        if self.external_writer_view
+            || !self.is_session_configured()
             || self.has_misalignment_policy_violation()
             || self.input_queue.suppress_queue_autosend
             || self.input_queue.rate_limit_recovery_pending
             || self.input_queue.recovered_queue
         {
-            return false;
-        }
-        if self.blocks_direct_input {
             return false;
         }
         if self.is_user_turn_pending_or_running() {
@@ -373,13 +359,11 @@ impl ChatWidget {
         text: String,
         mut collaboration_mode: CollaborationModeMask,
     ) {
-        if self.blocks_direct_input {
-            self.add_error_message(if self.external_writer_view {
+        if self.external_writer_view {
+            self.add_error_message(
                 "This thread is open elsewhere. Close it there and retry resume to continue."
-                    .to_string()
-            } else {
-                PARENT_OWNED_INPUT_MESSAGE.to_string()
-            });
+                    .to_string(),
+            );
             return;
         }
         if collaboration_mode.mode == Some(ModeKind::Plan)

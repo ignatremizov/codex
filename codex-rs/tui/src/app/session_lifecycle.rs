@@ -12,7 +12,6 @@ use super::app_server_event_targets::server_notification_thread_target;
 use super::app_server_event_targets::server_request_thread_id;
 use super::*;
 use crate::app_server_session::source_agent_path;
-use crate::app_server_session::thread_blocks_direct_input;
 use crate::chatwidget::ThreadInputStateRestoreMode;
 use std::collections::HashSet;
 
@@ -265,12 +264,6 @@ impl App {
         self.sync_active_agent_label();
     }
 
-    /// Persists the app-server's authoritative ownership flag and updates the active composer.
-    pub(super) fn mark_primary_thread_parent_owned(&mut self, thread_id: ThreadId) {
-        self.agent_navigation.mark_parent_owned(thread_id);
-        self.chat_widget.set_parent_owned_thread();
-    }
-
     /// Marks a cached picker thread closed and recomputes the contextual footer label.
     ///
     /// Closing a thread is not the same as removing it: users can still inspect finished agent
@@ -292,8 +285,12 @@ impl App {
             .await
         {
             Ok(thread) => {
-                let is_parent_owned = thread_blocks_direct_input(&thread);
-                let agent_path = source_agent_path(&thread.source);
+                if matches!(
+                    thread.source,
+                    codex_app_server_protocol::SessionSource::SubAgent(_)
+                ) {
+                    self.agent_navigation.mark_subagent(thread_id);
+                }
                 let is_running = matches!(
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::Active { .. }
@@ -302,6 +299,7 @@ impl App {
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::NotLoaded
                 );
+                let agent_path = source_agent_path(&thread.source);
                 self.upsert_agent_picker_thread(
                     thread_id,
                     thread.agent_nickname.or_else(|| {
@@ -316,9 +314,6 @@ impl App {
                     }),
                     is_closed,
                 );
-                if is_parent_owned {
-                    self.agent_navigation.mark_parent_owned(thread_id);
-                }
                 self.agent_navigation.set_agent_path(thread_id, agent_path);
                 if is_running {
                     self.agent_navigation.mark_running(thread_id);
@@ -390,6 +385,9 @@ impl App {
             .await
         {
             Ok(started) => {
+                if started.is_subagent {
+                    self.agent_navigation.mark_subagent(thread_id);
+                }
                 if let Some(entry) = self.agent_navigation.get(&thread_id).cloned() {
                     self.upsert_agent_picker_thread(
                         thread_id,
@@ -397,9 +395,6 @@ impl App {
                         entry.agent_role,
                         /*is_closed*/ false,
                     );
-                }
-                if started.blocks_direct_input {
-                    self.agent_navigation.mark_parent_owned(thread_id);
                 }
                 (started.session, started.turns, true)
             }
@@ -412,6 +407,12 @@ impl App {
                 let mut thread = app_server
                     .thread_read(thread_id, /*include_turns*/ false)
                     .await?;
+                if matches!(
+                    thread.source,
+                    codex_app_server_protocol::SessionSource::SubAgent(_)
+                ) {
+                    self.agent_navigation.mark_subagent(thread_id);
+                }
                 match app_server
                     .hydrate_initial_thread_history(
                         &mut thread,
@@ -573,6 +574,7 @@ impl App {
             ));
             return Ok(());
         }
+
         let mut is_replay_only = self
             .agent_navigation
             .get(&thread_id)
@@ -604,6 +606,7 @@ impl App {
             ));
             return Ok(());
         }
+
         let previous_thread_id = self.active_thread_id;
         // Notifications already routed to the active channel must reach the old
         // widget before its transcript state is transferred. Events routed after
@@ -741,9 +744,6 @@ impl App {
         if external_writer {
             self.chat_widget.show_external_writer_thread();
         }
-        if self.agent_navigation.is_parent_owned(thread_id) {
-            self.chat_widget.set_parent_owned_thread();
-        }
         self.reset_for_thread_switch(tui)?;
         self.pending_thread_switch_resets += 1;
         self.app_event_tx
@@ -847,6 +847,9 @@ impl App {
                     app_server.remember_task_tool_thread(thread_id);
                     self.chat_widget.set_task_mentions_enabled(/*enabled*/ true);
                 }
+                if started.is_subagent {
+                    self.agent_navigation.mark_subagent(thread_id);
+                }
                 self.pending_primary_events.retain(|event| match event {
                     ThreadBufferedEvent::Notification(notification) => matches!(
                         server_notification_thread_target(notification),
@@ -885,9 +888,6 @@ impl App {
                     {
                         tracing::warn!("{error}");
                     }
-                }
-                if started.blocks_direct_input {
-                    self.mark_primary_thread_parent_owned(thread_id);
                 }
                 // A full usage read can finish before thread/start. Apply its cached fallback
                 // after attachment but before the initial prompt or queued draft is submitted.
@@ -1061,6 +1061,10 @@ impl App {
         self.app_event_tx
             .send(AppEvent::ResetTranscriptForThreadSwitch);
         self.reset_thread_event_state();
+        if started.is_subagent {
+            self.agent_navigation
+                .mark_subagent(started.session.thread_id);
+        }
         let init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,
             self.config.clone(),
@@ -1078,9 +1082,6 @@ impl App {
             .set_task_mentions_enabled(started.task_tools_available);
         self.chat_widget
             .note_rendered_width(tui.terminal.last_known_screen_size.width);
-        if started.blocks_direct_input {
-            self.mark_primary_thread_parent_owned(started.session.thread_id);
-        }
         self.enqueue_primary_thread_session_with_presentation(
             started.session,
             started.turns,
@@ -1149,15 +1150,13 @@ impl App {
 
         let mut refreshed_thread_ids = HashSet::new();
         for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
+            self.agent_navigation.mark_subagent(thread.thread_id);
             let agent_path = thread.agent_path;
             let has_live_channel = self
                 .thread_event_channels
                 .get(&thread.thread_id)
                 .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
             let is_closed = !has_live_channel && thread.is_closed;
-            if thread.blocks_direct_input {
-                self.agent_navigation.mark_parent_owned(thread.thread_id);
-            }
             self.upsert_agent_picker_thread(
                 thread.thread_id,
                 thread.agent_nickname,

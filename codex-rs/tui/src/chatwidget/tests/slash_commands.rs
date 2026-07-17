@@ -2129,10 +2129,9 @@ async fn slash_copy_picker_escape_dismisses_without_copying() {
 }
 
 #[tokio::test]
-async fn slash_copy_picker_remains_available_from_parent_owned_threads() {
+async fn slash_copy_picker_accepts_a_completed_prefix() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.transcript.last_agent_markdown = Some("Safe local copy".to_string());
-    chat.set_parent_owned_thread();
     chat.bottom_pane
         .set_composer_text("/cop".to_string(), Vec::new(), Vec::new());
 
@@ -3206,7 +3205,9 @@ async fn rejected_queued_cd_drains_following_input() {
 #[tokio::test]
 async fn slash_cd_rejects_pending_input_and_unsupported_session_ownership() {
     let mut errors = Vec::new();
-    for state in "new active pending queued steer side owned ephemeral mcp exec".split(' ') {
+    for state in
+        "new active pending queued steer side external_writer ephemeral mcp exec".split(' ')
+    {
         let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
         chat.thread_id = (state != "new").then(ThreadId::new);
         let (queued, steer) = (UserMessage::from("q").into(), pending_steer("s"));
@@ -3216,7 +3217,7 @@ async fn slash_cd_rejects_pending_input_and_unsupported_session_ownership() {
             "queued" => chat.input_queue.queued_user_messages.push_back(queued),
             "steer" => chat.input_queue.pending_steers.push_back(steer),
             "side" => chat.set_side_conversation_active(/*active*/ true),
-            "owned" => chat.set_parent_owned_thread(),
+            "external_writer" => chat.external_writer_view = true,
             "ephemeral" => chat.config.ephemeral = true,
             "exec" => chat.track_unified_exec_process_begin("call", Some("process"), "sleep"),
             "mcp" => {

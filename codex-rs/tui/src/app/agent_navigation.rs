@@ -6,7 +6,7 @@
 //!
 //! Responsibilities here are intentionally narrow:
 //! - remember picker entries and their first-seen order
-//! - remember which V2 child threads are owned by their parent agent
+//! - retain subagent source provenance for deferred MCP startup, independently of editability
 //! - answer traversal questions like "what is the next thread?"
 //! - derive user-facing picker/footer text from cached thread metadata
 //!
@@ -47,8 +47,8 @@ pub(crate) struct AgentNavigationState {
     order: Vec<ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
-    /// Spawned child threads whose instructions are owned by their parent agent.
-    parent_owned_threads: HashSet<ThreadId>,
+    /// Source provenance: cached MCP servers can remain deferred in subagent sessions.
+    subagent_threads: HashSet<ThreadId>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
     pub(super) picker_refresh: Option<(ThreadId, Uuid)>,
 }
@@ -63,6 +63,14 @@ pub(crate) enum AgentNavigationDirection {
 }
 
 impl AgentNavigationState {
+    pub(crate) fn mark_subagent(&mut self, thread_id: ThreadId) {
+        self.subagent_threads.insert(thread_id);
+    }
+
+    pub(crate) fn is_subagent(&self, thread_id: ThreadId) -> bool {
+        self.subagent_threads.contains(&thread_id)
+    }
+
     pub(crate) fn begin_picker_refresh(&mut self, thread_id: ThreadId) -> Option<Uuid> {
         if self.picker_refresh.is_some() {
             return None;
@@ -88,15 +96,6 @@ impl AgentNavigationState {
     /// this stays optional.
     pub(crate) fn get(&self, thread_id: &ThreadId) -> Option<&AgentPickerThreadEntry> {
         self.threads.get(thread_id)
-    }
-
-    pub(crate) fn is_parent_owned(&self, thread_id: ThreadId) -> bool {
-        self.parent_owned_threads.contains(&thread_id)
-    }
-
-    /// Marks a spawned child thread as view-only for direct user instructions.
-    pub(crate) fn mark_parent_owned(&mut self, thread_id: ThreadId) {
-        self.parent_owned_threads.insert(thread_id);
     }
 
     /// Returns whether the picker cache currently knows about any threads.
@@ -219,10 +218,10 @@ impl AgentNavigationState {
     /// This is used when `App` tears down thread event state and needs the picker cache to return
     /// to a pristine single-session state.
     pub(crate) fn clear(&mut self) {
+        self.subagent_threads.clear();
         self.threads.clear();
         self.order.clear();
         self.stopped_threads.clear();
-        self.parent_owned_threads.clear();
         self.picker_refresh = None;
     }
 
@@ -232,10 +231,10 @@ impl AgentNavigationState {
     /// replayable local threads. Keeping those around after the backend confirms they are gone
     /// would leave ghost rows in `/subagents`.
     pub(crate) fn remove(&mut self, thread_id: ThreadId) {
+        self.subagent_threads.remove(&thread_id);
         self.threads.remove(&thread_id);
         self.order.retain(|candidate| *candidate != thread_id);
         self.stopped_threads.remove(&thread_id);
-        self.parent_owned_threads.remove(&thread_id);
     }
 
     /// Returns whether there is at least one tracked thread other than the primary one.
@@ -441,17 +440,22 @@ mod tests {
     }
 
     #[test]
-    fn parent_owned_state_is_removed_with_thread_metadata() {
-        let (mut state, _main_thread_id, first_agent_id, second_agent_id) = populated_state();
-
-        state.mark_parent_owned(first_agent_id);
-        assert!(state.is_parent_owned(first_agent_id));
+    fn subagent_source_metadata_survives_updates_and_is_removed_with_the_thread() {
+        let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
+        state.mark_subagent(first_agent_id);
+        state.mark_subagent(second_agent_id);
+        state.mark_closed(first_agent_id);
+        assert_eq!(
+            [main_thread_id, first_agent_id, second_agent_id].map(|id| state.is_subagent(id)),
+            [false, true, true]
+        );
         state.remove(first_agent_id);
-        assert!(!state.is_parent_owned(first_agent_id));
-
-        state.mark_parent_owned(second_agent_id);
+        assert_eq!(
+            [first_agent_id, second_agent_id].map(|id| state.is_subagent(id)),
+            [false, true]
+        );
         state.clear();
-        assert!(!state.is_parent_owned(second_agent_id));
+        assert!(!state.is_subagent(second_agent_id));
     }
 
     #[test]
