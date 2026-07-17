@@ -66,9 +66,9 @@ async fn mute_during_startup_is_saved_before_the_offer_handle_exists() {
 }
 
 #[tokio::test]
-async fn voice_cannot_start_on_a_parent_owned_thread() {
+async fn voice_cannot_start_on_an_external_writer_thread() {
     let (mut chat, _sender, mut events, _ops) = make_chatwidget_manual_with_sender().await;
-    chat.blocks_direct_input = true;
+    chat.external_writer_view = true;
 
     chat.toggle_realtime_conversation();
 

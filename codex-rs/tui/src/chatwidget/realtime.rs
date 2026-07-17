@@ -7,7 +7,6 @@ mod transcript_replay;
 
 use super::ChatWidget;
 use super::HistoryCell;
-use super::PARENT_OWNED_INPUT_MESSAGE;
 use super::realtime_split_flap::SplitFlapTranscriptCell;
 use super::realtime_split_flap::VoiceAmplitudeHistory;
 use crate::app_command::AppCommand;
@@ -280,8 +279,11 @@ impl ChatWidget {
             return;
         }
 
-        if self.blocks_direct_input {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+        if self.external_writer_view {
+            self.add_error_message(
+                "This thread is open elsewhere. Close it there and retry resume to continue."
+                    .to_string(),
+            );
             return;
         }
 

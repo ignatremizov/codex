@@ -24,7 +24,7 @@ impl ChatWidget {
         let destination_has_content = !self.bottom_pane.composer_is_empty()
             || !self.bottom_pane.composer_pending_pastes().is_empty();
         self.restore_startup_draft_when_ready(pending_draft);
-        if self.blocks_direct_input {
+        if self.external_writer_view {
             *pending_submission = false;
             self.cancel_startup_submission();
             return;

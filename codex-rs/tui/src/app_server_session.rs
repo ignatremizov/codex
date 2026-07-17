@@ -371,7 +371,8 @@ impl ThreadParamsMode {
 pub(crate) struct AppServerStartedThread {
     pub(crate) session: ThreadSessionState,
     pub(crate) turns: Vec<Turn>,
-    pub(crate) blocks_direct_input: bool,
+    /// Source provenance for deferred MCP startup and root-only presentation, not editability.
+    pub(crate) is_subagent: bool,
     pub(crate) task_tools_available: bool,
 }
 
@@ -387,14 +388,6 @@ pub(crate) fn source_agent_path(source: &SessionSource) -> Option<String> {
         }
         _ => None,
     }
-}
-
-/// Uses the server capability when available and preserves compatibility with older servers.
-pub(crate) fn thread_blocks_direct_input(thread: &Thread) -> bool {
-    thread
-        .can_accept_direct_input
-        .map(|can_accept| !can_accept)
-        .unwrap_or_else(|| source_agent_path(&thread.source).is_some())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2250,7 +2243,7 @@ async fn started_thread_from_start_response(
     config: &Config,
     thread_params_mode: ThreadParamsMode,
 ) -> Result<AppServerStartedThread> {
-    let blocks_direct_input = thread_blocks_direct_input(&response.thread);
+    let is_subagent = matches!(response.thread.source, SessionSource::SubAgent(_));
     let session = thread_session_state_from_thread_start_response(
         &response,
         local_settings,
@@ -2262,7 +2255,7 @@ async fn started_thread_from_start_response(
     Ok(AppServerStartedThread {
         session,
         turns: response.thread.turns,
-        blocks_direct_input,
+        is_subagent,
         task_tools_available: false,
     })
 }
@@ -2273,7 +2266,7 @@ async fn started_thread_from_resume_response(
     config: &Config,
     thread_params_mode: ThreadParamsMode,
 ) -> Result<AppServerStartedThread> {
-    let blocks_direct_input = thread_blocks_direct_input(&response.thread);
+    let is_subagent = matches!(response.thread.source, SessionSource::SubAgent(_));
     let session = thread_session_state_from_thread_resume_response(
         &response,
         local_settings,
@@ -2285,7 +2278,7 @@ async fn started_thread_from_resume_response(
     Ok(AppServerStartedThread {
         session,
         turns: response.thread.turns,
-        blocks_direct_input,
+        is_subagent,
         task_tools_available: false,
     })
 }
@@ -2296,7 +2289,7 @@ async fn started_thread_from_fork_response(
     config: &Config,
     thread_params_mode: ThreadParamsMode,
 ) -> Result<AppServerStartedThread> {
-    let blocks_direct_input = thread_blocks_direct_input(&response.thread);
+    let is_subagent = matches!(response.thread.source, SessionSource::SubAgent(_));
     let session = thread_session_state_from_thread_fork_response(
         &response,
         local_settings,
@@ -2308,7 +2301,7 @@ async fn started_thread_from_fork_response(
     Ok(AppServerStartedThread {
         session,
         turns: response.thread.turns,
-        blocks_direct_input,
+        is_subagent,
         task_tools_available: false,
     })
 }
@@ -4094,7 +4087,60 @@ mod tests {
         assert_eq!(started.session.permission_profile, read_only_profile);
         assert_eq!(started.turns.len(), 1);
         assert_eq!(started.turns[0], response.thread.turns[0]);
-        assert!(!started.blocks_direct_input);
+        assert!(!started.is_subagent);
+
+        // Source, not an optional display path or an older server's capability flag, controls
+        // deferred MCP startup. It must not prevent direct input to the resumed child.
+        for capability in [None, Some(false), Some(true)] {
+            let mut child_response = response.clone();
+            child_response.thread.source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: forked_from_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            });
+            child_response.thread.can_accept_direct_input = capability;
+            let child = started_thread_from_resume_response(
+                child_response,
+                &LocalSettings::from(&config),
+                &config,
+                ThreadParamsMode::Remote,
+            )
+            .await
+            .expect("child resume response should map");
+            assert!(child.is_subagent);
+            let (mut chat, _sender, _events, mut commands) =
+                crate::chatwidget::tests::helpers::make_chatwidget_manual_with_sender().await;
+            chat.handle_thread_session(child.session);
+            insta::allow_duplicates! {
+                insta::assert_snapshot!(
+                    crate::chatwidget::tests::helpers::normalize_snapshot_paths(
+                        crate::chatwidget::tests::helpers::render_bottom_popup(&chat, /*width*/ 40),
+                    ),
+                    @"
+            › Ask Codex to do anything
+
+              GPT-5.4 default · /tmp/pr… Plan mode
+            "
+                );
+            }
+            chat.handle_paste("Continue the child".to_string());
+            chat.handle_key_event(crossterm::event::KeyCode::Enter.into());
+            assert_eq!(chat.thread_id(), Some(thread_id));
+            let submitted =
+                std::iter::from_fn(|| commands.try_recv().ok()).find_map(|command| match command {
+                    crate::app_command::AppCommand::UserTurn { items, .. } => Some(items),
+                    _ => None,
+                });
+            assert_eq!(
+                submitted,
+                Some(vec![codex_app_server_protocol::UserInput::Text {
+                    text: "Continue the child".to_string(),
+                    text_elements: Vec::new(),
+                }])
+            );
+        }
 
         // The first prompt after resume must preserve the server's restored mode.
         let (mut chat, _sender, _events, mut commands) =

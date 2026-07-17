@@ -128,13 +128,7 @@
 //! Commands requiring dispatch validation retain their draft and defer busy-state checks to
 //! `ChatWidget`, which has the thread state needed to accept or reject the command.
 //!
-//! # Parent-Owned Thread Mode
-//!
-//! Parent-owned subagent threads keep the draft editable while blocking agent-directed submission.
-//! On the `Enter` and `Tab` submission paths, normal prompts, disallowed slash commands, and `!`
-//! shell commands return `ParentOwnedInputBlocked` without clearing the draft. Bare local and
-//! navigation slash commands remain available so users can leave or manage the view. Transcript
-//! exports also remain available, including an explicit destination filename.
+//! # Unavailable Threads
 //!
 //! During reconnection, `handle_restricted_key` edits the draft directly without popup dispatch,
 //! composer shortcuts, or submission; `?` becomes literal input. Enter and Tab leave the draft
@@ -462,62 +456,7 @@ pub enum InputResult {
     /// command-history entry still represents the original command invocation that should be
     /// committed only if dispatch accepts it.
     CommandWithArgs(SlashCommand, String, Vec<TextElement>),
-    /// Agent-directed input was attempted while viewing a parent-owned spawned child thread.
-    ParentOwnedInputBlocked,
     None,
-}
-
-fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
-    if command == SlashCommand::Export {
-        return true;
-    }
-
-    args.is_empty()
-        && matches!(
-            command,
-            SlashCommand::Feedback
-                | SlashCommand::New
-                | SlashCommand::Clear
-                | SlashCommand::Resume
-                | SlashCommand::App
-                | SlashCommand::Side
-                | SlashCommand::Btw
-                | SlashCommand::Agents
-                | SlashCommand::MultiAgents
-                | SlashCommand::Vim
-                | SlashCommand::Keymap
-                | SlashCommand::ElevateSandbox
-                | SlashCommand::Experimental
-                | SlashCommand::Memories
-                | SlashCommand::Quit
-                | SlashCommand::Exit
-                | SlashCommand::Logout
-                | SlashCommand::Copy
-                | SlashCommand::Raw
-                | SlashCommand::Diff
-                | SlashCommand::Mention
-                | SlashCommand::Skills
-                | SlashCommand::Import
-                | SlashCommand::Hooks
-                | SlashCommand::Status
-                | SlashCommand::Warnings
-                | SlashCommand::Daemon
-                | SlashCommand::Usage
-                | SlashCommand::Ide
-                | SlashCommand::DebugConfig
-                | SlashCommand::Title
-                | SlashCommand::Statusline
-                | SlashCommand::Theme
-                | SlashCommand::Pets
-                | SlashCommand::Ps
-                | SlashCommand::Stop
-                | SlashCommand::MemoryDrop
-                | SlashCommand::MemoryUpdate
-                | SlashCommand::Mcp
-                | SlashCommand::Apps
-                | SlashCommand::Plugins
-                | SlashCommand::Rollout
-        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -601,7 +540,6 @@ pub(crate) struct ChatComposer {
     luna_reserve_active: bool,
     attachments: AttachmentState,
     placeholder_text: String,
-    blocks_direct_input: bool,
     is_task_running: bool,
     queue_submissions: bool,
     /// Slash-command draft staged for local recall after application-level dispatch.
@@ -774,7 +712,6 @@ impl ChatComposer {
             luna_reserve_active: false,
             attachments: AttachmentState::default(),
             placeholder_text,
-            blocks_direct_input: false,
             is_task_running: false,
             queue_submissions: false,
             pending_slash_command_history: None,
@@ -1624,11 +1561,6 @@ impl ChatComposer {
     /// Update the placeholder text without changing input enablement.
     pub(crate) fn set_placeholder_text(&mut self, placeholder: String) {
         self.placeholder_text = placeholder;
-    }
-
-    pub(crate) fn set_parent_owned_thread(&mut self) {
-        self.blocks_direct_input = true;
-        self.placeholder_text = "Viewing sub-agent — direct input is disabled".to_string();
     }
 
     /// Move the cursor to the end of the current text buffer.
@@ -3149,10 +3081,6 @@ impl ChatComposer {
         if !should_queue && self.handle_paste_enter(now) {
             return (InputResult::None, true);
         }
-
-        if let Some(result) = self.handle_parent_owned_submission() {
-            return result;
-        }
         if should_queue {
             if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
                 self.apply_paste(pasted);
@@ -3275,27 +3203,6 @@ impl ChatComposer {
             self.footer.flash = flash;
             (InputResult::None, true)
         }
-    }
-
-    fn handle_parent_owned_submission(&mut self) -> Option<(InputResult, bool)> {
-        if !self.blocks_direct_input {
-            return None;
-        }
-
-        let text = self.current_text();
-        let allowed_slash_command = parse_slash_name(&text).is_some_and(|(name, args, _)| {
-            matches!(
-                self.slash_input().command(name),
-                Some(SlashCommandItem::Builtin(command))
-                    if name == command.command()
-                        && parent_owned_command_is_allowed(command, args)
-            )
-        });
-        if text.starts_with('/') && allowed_slash_command {
-            return None;
-        }
-
-        Some((InputResult::ParentOwnedInputBlocked, true))
     }
 
     /// Check if the first line is a bare slash command (no args) and dispatch it.
@@ -5129,15 +5036,6 @@ mod tests {
                 composer.set_keymap_bindings(&keymap);
                 composer.footer.mode = FooterMode::ShortcutOverlay;
             },
-        );
-    }
-
-    #[test]
-    fn parent_owned_thread_placeholder_snapshot() {
-        snapshot_composer_state(
-            "parent_owned_thread_placeholder",
-            /*enhanced_keys_supported*/ false,
-            ChatComposer::set_parent_owned_thread,
         );
     }
 
@@ -8858,51 +8756,46 @@ mod tests {
     /// Behavior: while a paste-like burst is active, Enter should not submit; it should insert a
     /// newline into the buffered payload and flush as a single paste later.
     #[test]
-    fn ascii_burst_treats_enter_as_newline_even_when_parent_owned() {
+    fn ascii_burst_treats_enter_as_newline() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
 
-        for parent_owned in [false, true] {
-            let (mut composer, _rx) = new_test_composer();
-            if parent_owned {
-                composer.set_parent_owned_thread();
-            }
-            let mut now = Instant::now();
-            let step = Duration::from_millis(1);
+        let (mut composer, _rx) = new_test_composer();
 
-            let _ = composer.handle_input_basic_with_time(
-                KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
-                now,
-            );
+        let mut now = Instant::now();
+        let step = Duration::from_millis(1);
+
+        let _ = composer.handle_input_basic_with_time(
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+            now,
+        );
+        now += step;
+        let _ = composer.handle_input_basic_with_time(
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+            now,
+        );
+        now += step;
+
+        let (result, _) = composer.handle_submission_with_time(/*should_queue*/ false, now);
+        assert!(
+            matches!(result, InputResult::None),
+            "Enter during a burst should insert newline, not submit"
+        );
+
+        for ch in ['t', 'h', 'e', 'r', 'e'] {
             now += step;
             let _ = composer.handle_input_basic_with_time(
-                KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
                 now,
             );
-            now += step;
-
-            let (result, _) =
-                composer.handle_submission_with_time(/*should_queue*/ false, now);
-            assert!(
-                matches!(result, InputResult::None),
-                "Enter during a burst should insert newline, not submit"
-            );
-
-            for ch in ['t', 'h', 'e', 'r', 'e'] {
-                now += step;
-                let _ = composer.handle_input_basic_with_time(
-                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-                    now,
-                );
-            }
-
-            assert!(composer.draft.textarea.text().is_empty());
-            let flush_time = now + PasteBurst::recommended_active_flush_delay() + step;
-            let flushed = composer.handle_paste_burst_flush(flush_time);
-            assert!(flushed, "expected paste burst to flush");
-            assert_eq!(composer.draft.textarea.text(), "hi\nthere");
         }
+
+        assert!(composer.draft.textarea.text().is_empty());
+        let flush_time = now + PasteBurst::recommended_active_flush_delay() + step;
+        let flushed = composer.handle_paste_burst_flush(flush_time);
+        assert!(flushed, "expected paste burst to flush");
+        assert_eq!(composer.draft.textarea.text(), "hi\nthere");
     }
 
     /// Behavior: startup-pending submissions are queued immediately, so Enter should flush any
@@ -9824,9 +9717,6 @@ mod tests {
             InputResult::Queued { .. } => {
                 panic!("expected command dispatch, but composer queued literal text")
             }
-            InputResult::ParentOwnedInputBlocked => {
-                panic!("expected command dispatch, but parent-owned input was blocked")
-            }
             InputResult::None => panic!("expected Command result for '/init'"),
         }
         assert!(
@@ -10334,9 +10224,6 @@ mod tests {
             InputResult::Queued { .. } => {
                 panic!("expected command dispatch after Tab completion, got literal queue")
             }
-            InputResult::ParentOwnedInputBlocked => {
-                panic!("expected command dispatch, but parent-owned input was blocked")
-            }
             InputResult::None => panic!("expected Command result for '/diff'"),
         }
         assert!(composer.draft.textarea.is_empty());
@@ -10533,9 +10420,6 @@ mod tests {
             }
             InputResult::Queued { .. } => {
                 panic!("expected command dispatch, but composer queued literal text")
-            }
-            InputResult::ParentOwnedInputBlocked => {
-                panic!("expected command dispatch, but parent-owned input was blocked")
             }
             InputResult::None => panic!("expected Command result for '/mention'"),
         }

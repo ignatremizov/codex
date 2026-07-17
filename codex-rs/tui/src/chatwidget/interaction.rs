@@ -235,8 +235,8 @@ impl ChatWidget {
                 && !self.bottom_pane.is_task_running()
                 && self.bottom_pane.no_modal_or_popup_active() =>
             {
-                if self.blocks_direct_input {
-                    self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+                if self.external_writer_view {
+                    self.add_error_message("This thread is open elsewhere. Close it there and retry resume to continue.".to_string());
                 } else {
                     self.cycle_collaboration_mode();
                 }
@@ -246,10 +246,7 @@ impl ChatWidget {
                 let should_pause_active_goal =
                     self.bottom_pane.should_interrupt_running_task(key_event);
                 let input_result = self.bottom_pane.handle_key_event(key_event);
-                if matches!(
-                    input_result,
-                    InputResult::None | InputResult::ParentOwnedInputBlocked
-                ) {
+                if matches!(input_result, InputResult::None) {
                     self.refresh_startup_recovery();
                 }
                 crate::startup_recovery::submitted(&input_result);

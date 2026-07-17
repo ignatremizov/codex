@@ -6,7 +6,7 @@ use assert_matches::assert_matches;
 use pretty_assertions::assert_eq;
 
 #[test]
-fn parent_owned_thread_allows_bare_navigation_commands() {
+fn bare_navigation_commands_dispatch() {
     for (command, expected) in [
         ("/agents", SlashCommand::Agents),
         ("/subagents", SlashCommand::MultiAgents),
@@ -17,7 +17,6 @@ fn parent_owned_thread_allows_bare_navigation_commands() {
         ("/warnings", SlashCommand::Warnings),
     ] {
         let (mut composer, _rx) = new_test_composer();
-        composer.set_parent_owned_thread();
         composer.set_text_content(command.to_string(), Vec::new(), Vec::new());
 
         assert_eq!(
@@ -28,9 +27,8 @@ fn parent_owned_thread_allows_bare_navigation_commands() {
 }
 
 #[test]
-fn parent_owned_thread_allows_safe_command_selected_from_prefix() {
+fn navigation_command_dispatches_from_prefix() {
     let (mut composer, _rx) = new_test_composer();
-    composer.set_parent_owned_thread();
     type_chars_humanlike(&mut composer, &['/', 'a', 'g']);
 
     let result = composer

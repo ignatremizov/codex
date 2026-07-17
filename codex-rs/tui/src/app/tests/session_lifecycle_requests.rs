@@ -4439,7 +4439,6 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         .map(|(thread_id, _)| *thread_id),
                     Some(discovered_thread_id)
                 );
-                assert!(!app.agent_navigation.is_parent_owned(discovered_thread_id));
                 assert_eq!(
                     app.chat_widget.selected_index_for_present_view(
                         super::super::agent_picker::AGENT_PICKER_VIEW_ID

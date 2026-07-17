@@ -13,7 +13,7 @@ impl ChatWidget {
     ) {
         if started.turns.is_empty()
             && started.session.forked_from_id.is_none()
-            && !started.blocks_direct_input
+            && !started.is_subagent
             && self.initial_user_message.is_none()
             && !self.is_user_turn_pending_or_running()
         {

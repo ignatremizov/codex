@@ -379,6 +379,9 @@ impl App {
         }
         if let Some(mut started) = thread {
             let id = started.session.thread_id;
+            if started.is_subagent {
+                self.agent_navigation.mark_subagent(id);
+            }
             if !pending_displayed_profile
                 && let Some(channel) = self.thread_event_channels.get(&id)
                 && let Some(cached) = channel.store.lock().await.session.as_ref()
@@ -397,9 +400,6 @@ impl App {
             }
             if self.primary_thread_id == Some(id) {
                 self.primary_session_configured = Some(started.session.clone());
-            }
-            if started.blocks_direct_input {
-                self.agent_navigation.mark_parent_owned(id);
             }
             let channel = ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY);
             {

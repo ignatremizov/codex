@@ -89,14 +89,14 @@ async fn startup_submission_waits_for_protected_view_and_preserves_paste_provena
 
 #[tokio::test]
 async fn startup_submission_edit_or_disconnect_cancels_without_losing_draft() {
-    for action in ["edit", "disconnect", "parent-owned"] {
+    for action in ["edit", "disconnect", "external-writer"] {
         let (mut source, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
         source.bottom_pane.insert_str("confirmed draft");
         let mut draft = Some(source.bottom_pane.composer_draft_snapshot());
         let mut confirmed = true;
         let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-        if action == "parent-owned" {
-            chat.set_parent_owned_thread();
+        if action == "external-writer" {
+            chat.show_external_writer_thread();
         }
         chat.restore_startup_input_when_ready(&mut draft, &mut confirmed);
         if action == "disconnect" {

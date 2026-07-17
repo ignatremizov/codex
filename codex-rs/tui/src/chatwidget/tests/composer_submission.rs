@@ -232,110 +232,6 @@ async fn hidden_shell_paste_queued_before_session_submits_literal_prompt() {
 }
 
 #[tokio::test]
-async fn parent_owned_thread_blocks_all_direct_input_entry_points() {
-    let (mut chat, mut rx, mut op_rx) =
-        make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
-    chat.thread_id = Some(ThreadId::new());
-    drain_insert_history(&mut rx);
-    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
-    chat.set_parent_owned_thread();
-    chat.set_side_conversation_active(/*active*/ false);
-    chat.bottom_pane
-        .set_composer_text("keep this draft".to_string(), Vec::new(), Vec::new());
-    let before = chat.bottom_pane.composer_draft_snapshot();
-
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    let mut after = chat.bottom_pane.composer_draft_snapshot();
-    after.last_composer_activity_at = before.last_composer_activity_at;
-    assert_eq!(after, before);
-    assert_no_submit_op(&mut op_rx);
-    let rendered = drain_insert_history(&mut rx)
-        .into_iter()
-        .flatten()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_chatwidget_snapshot!("parent_owned_thread_rejects_input", rendered);
-
-    let collaboration_mode_before = chat.active_collaboration_mask.clone();
-    let plan_mode = collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::Plan)
-        .expect("expected plan collaboration mode");
-    chat.submit_user_message_with_mode("Implement the plan.".to_string(), plan_mode);
-    assert_eq!(chat.active_collaboration_mask, collaboration_mode_before);
-    assert_no_submit_op(&mut op_rx);
-
-    for command in [
-        "/init",
-        "/review check this",
-        "/side inspect this",
-        "/archive",
-        "/rename",
-        "/subagents parent",
-        "/diff now",
-        "!echo blocked",
-        " !echo blocked",
-    ] {
-        chat.bottom_pane
-            .set_composer_text(command.to_string(), Vec::new(), Vec::new());
-        let before = chat.bottom_pane.composer_draft_snapshot();
-        chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        let mut after = chat.bottom_pane.composer_draft_snapshot();
-        after.last_composer_activity_at = before.last_composer_activity_at;
-        assert_eq!(after, before);
-        assert_no_submit_op(&mut op_rx);
-    }
-
-    assert!(!chat.submit_op(AppCommand::compact()));
-    assert_no_submit_op(&mut op_rx);
-}
-
-#[tokio::test]
-async fn parent_owned_thread_blocks_settings_shortcuts() {
-    let (mut chat, mut rx, _op_rx) =
-        make_chatwidget_manual(/*model_override*/ Some("gpt-5.4")).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
-    chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
-    chat.set_parent_owned_thread();
-    drain_insert_history(&mut rx);
-
-    let collaboration_mode_before = chat.active_collaboration_mask.clone();
-    let reasoning_effort_before = chat.current_reasoning_effort();
-
-    for key_event in [
-        KeyEvent::from(KeyCode::BackTab),
-        KeyEvent::new(KeyCode::Char('.'), KeyModifiers::ALT),
-        KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT),
-    ] {
-        chat.handle_key_event(key_event);
-    }
-
-    assert_eq!(chat.active_collaboration_mask, collaboration_mode_before);
-    assert_eq!(chat.current_reasoning_effort(), reasoning_effort_before);
-    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(events.iter().all(|event| !matches!(
-        event,
-        AppEvent::SubmitThreadOp { .. }
-            | AppEvent::UpdateModel(_)
-            | AppEvent::UpdateReasoningEffort(_)
-            | AppEvent::UpdatePlanModeReasoningEffort(_)
-    )));
-
-    let rendered = events
-        .into_iter()
-        .filter_map(|event| match event {
-            AppEvent::InsertHistoryCell(cell) => Some(cell.display_lines(/*width*/ 80)),
-            _ => None,
-        })
-        .flatten()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_chatwidget_snapshot!("parent_owned_thread_rejects_settings_shortcuts", rendered);
-}
-
-#[tokio::test]
 async fn disconnect_restores_initial_prompt_without_submitting_it() {
     let (mut chat, _events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.initial_user_message = Some("CLI prompt".into());
@@ -347,11 +243,11 @@ async fn disconnect_restores_initial_prompt_without_submitting_it() {
 }
 
 #[tokio::test]
-async fn parent_owned_thread_restores_pending_initial_prompt() {
+async fn external_writer_thread_restores_pending_initial_prompt() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
     let pending_prompt = "keep this startup prompt".to_string();
     chat.initial_user_message = Some(pending_prompt.clone().into());
-    chat.set_parent_owned_thread();
+    chat.show_external_writer_thread();
 
     chat.submit_initial_user_message_if_pending();
 
@@ -377,7 +273,19 @@ async fn parent_owned_thread_restores_pending_initial_prompt() {
 }
 
 #[tokio::test]
-async fn parent_owned_thread_preserves_queued_input_before_draining() {
+async fn external_writer_blocks_compaction_but_preserves_interrupt_dispatch() {
+    let (mut chat, _events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.show_external_writer_thread();
+
+    assert!(!chat.submit_op(AppCommand::compact()));
+    assert_no_submit_op(&mut ops);
+    assert!(chat.submit_op(AppCommand::interrupt()));
+    next_interrupt_op(&mut ops);
+    assert_no_submit_op(&mut ops);
+}
+
+#[tokio::test]
+async fn external_writer_thread_preserves_queued_input_before_draining() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
     let queued_message = QueuedUserMessage {
         user_message: UserMessage::from("keep this queued prompt"),
@@ -392,7 +300,7 @@ async fn parent_owned_thread_preserves_queued_input_before_draining() {
     chat.input_queue
         .queued_user_message_history_records
         .push_back(history_record.clone());
-    chat.set_parent_owned_thread();
+    chat.show_external_writer_thread();
 
     assert!(!chat.maybe_send_next_queued_input());
     assert_eq!(
@@ -2730,7 +2638,6 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
         "model_change",
         "disconnect",
         "interrupt",
-        "parent_owned",
         "external_writer",
         "escape",
         "ctrl_c",
@@ -2826,13 +2733,9 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
                         assert_eq!(chat.input_queue.queued_user_messages.len(), 2);
                     }
                     chat.on_images_prepared(id);
-                } else if scenario == "parent_owned" || scenario == "external_writer" {
+                } else if scenario == "external_writer" {
                     chat.codex_op_target = CodexOpTarget::AppEvent;
-                    if scenario == "parent_owned" {
-                        chat.set_parent_owned_thread();
-                    } else {
-                        chat.show_external_writer_thread();
-                    }
+                    chat.show_external_writer_thread();
                     assert_eq!(chat.bottom_pane.composer_text(), "describe");
                     chat.on_images_prepared(id);
                     assert!(drain_insert_history(&mut rx).is_empty());

@@ -97,12 +97,24 @@ async fn subagent_mcp_startup_settles_while_cached_servers_remain_deferred() {
 
 #[tokio::test]
 async fn resumed_subagent_mcp_startup_settles_while_cached_servers_remain_deferred() {
-    let mut app = make_test_app().await;
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     configure_mcp_servers(&mut app);
     let subagent_thread_id = ThreadId::new();
-    app.primary_thread_id = Some(subagent_thread_id);
-    app.active_thread_id = Some(subagent_thread_id);
-    app.agent_navigation.mark_parent_owned(subagent_thread_id);
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test TUI");
+    app.replace_chat_widget_with_app_server_thread(
+        &mut tui,
+        AppServerStartedThread {
+            session: test_thread_session(subagent_thread_id, test_path_buf("/tmp/subagent")),
+            turns: Vec::new(),
+            is_subagent: true,
+            task_tools_available: false,
+        },
+        crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
+        /*initial_user_message*/ None,
+    )
+    .await
+    .expect("attach resumed child");
+    assert!(app.agent_navigation.is_subagent(subagent_thread_id));
     app.refresh_mcp_startup_expected_servers_from_config();
 
     for status in [
@@ -122,6 +134,14 @@ async fn resumed_subagent_mcp_startup_settles_while_cached_servers_remain_deferr
     }
 
     assert!(!app.chat_widget.is_task_running_for_test());
+    while events.try_recv().is_ok() {}
+    app.chat_widget.handle_paste("continue the child".into());
+    app.chat_widget.handle_key_event(KeyCode::Enter.into());
+    assert_eq!(app.chat_widget.thread_id(), Some(subagent_thread_id));
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+    );
 }
 
 #[tokio::test]

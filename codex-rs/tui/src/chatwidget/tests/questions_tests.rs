@@ -17,7 +17,7 @@ async fn unavailable_send_keeps_answer_and_skip_remains_available() {
     chat.add_async_questions("message", &questions());
     chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
     chat.bottom_pane.handle_paste("kept answer".into());
-    chat.blocks_direct_input = true;
+    chat.external_writer_view = true;
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
     assert_eq!(question_count(&chat), 2);
     chat.handle_key_event(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL));
@@ -277,7 +277,7 @@ async fn accepted_review_clears_questions_but_rejected_review_preserves_them() {
     assert_eq!(question_count(&chat), 0);
 
     chat.add_async_questions("new", &questions());
-    chat.blocks_direct_input = true;
+    chat.external_writer_view = true;
     chat.handle_composer_input_result(
         InputResult::CommandWithArgs(SlashCommand::Review, "try again".into(), Vec::new()),
         /*had_modal_or_popup*/ false,

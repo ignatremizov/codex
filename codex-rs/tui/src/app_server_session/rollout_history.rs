@@ -101,7 +101,10 @@ impl AppServerSession {
             AppServerStartedThread {
                 session,
                 turns: thread.turns,
-                blocks_direct_input: false,
+                is_subagent: matches!(
+                    thread.source,
+                    codex_app_server_protocol::SessionSource::SubAgent(_)
+                ),
                 task_tools_available: false,
             },
             history_notice,

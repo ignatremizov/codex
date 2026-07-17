@@ -19,7 +19,6 @@ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crossterm::event::KeyEvent;
 
 use super::ChatWidget;
-use super::PARENT_OWNED_INPUT_MESSAGE;
 use crate::app_event::AppEvent;
 use crate::key_hint::KeyBindingListExt;
 
@@ -73,11 +72,13 @@ impl ChatWidget {
             return false;
         }
 
-        if self.blocks_direct_input {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+        if self.external_writer_view {
+            self.add_error_message(
+                "This thread is open elsewhere. Close it there and retry resume to continue."
+                    .to_string(),
+            );
             return true;
         }
-
         if !self.is_session_configured() {
             self.add_info_message(
                 "Reasoning shortcuts are disabled until startup completes.".to_string(),
