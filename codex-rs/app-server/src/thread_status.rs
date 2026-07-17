@@ -907,7 +907,6 @@ mod tests {
             agent_nickname: None,
             agent_role: None,
             source,
-            can_accept_direct_input: None,
             thread_source: None,
             git_info: None,
             name: None,
