@@ -1352,7 +1352,7 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
             "2025-02-01T11-00-00",
             "2025-02-01T11:00:00Z",
             Some(MultiAgentVersion::V2),
-            Some(false),
+            Some(true),
             true,
         ),
         (
@@ -1573,6 +1573,14 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
         Some("mock_provider"),
         /*git_info*/ None,
     )?;
+    create_fake_rollout(
+        codex_home.path(),
+        "2025-02-01T10-30-00",
+        "2025-02-01T10:30:00Z",
+        "Other provider CLI",
+        Some("other_provider"),
+        /*git_info*/ None,
+    )?;
 
     let parent_thread_id = ThreadId::from_string(&Uuid::new_v4().to_string())?;
     let subagent_id = create_fake_rollout_with_source(
@@ -1580,7 +1588,7 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
         "2025-02-01T11-00-00",
         "2025-02-01T11:00:00Z",
         "SubAgent",
-        Some("mock_provider"),
+        Some("other_provider"),
         /*git_info*/ None,
         CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
@@ -1599,7 +1607,7 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
         &mut mcp,
         /*cursor*/ None,
         Some(10),
-        Some(vec!["mock_provider".to_string()]),
+        /*providers*/ None,
         Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
         /*archived*/ None,
     )
@@ -1611,6 +1619,35 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
     assert_ne!(cli_id, subagent_id);
     assert!(matches!(data[0].source, SessionSource::SubAgent(_)));
     assert_eq!(data[0].session_id, subagent_id);
+
+    // An explicit provider filter still takes precedence over source-kind discovery.
+    let filtered = list_threads(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        Some(vec!["mock_provider".to_string()]),
+        Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+        /*archived*/ None,
+    )
+    .await?;
+    assert!(filtered.data.is_empty());
+    let ordinary = list_threads(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        /*providers*/ None,
+        /*source_kinds*/ None,
+        /*archived*/ None,
+    )
+    .await?;
+    assert_eq!(
+        ordinary
+            .data
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect::<Vec<_>>(),
+        vec![cli_id]
+    );
 
     Ok(())
 }

@@ -8,6 +8,7 @@ use app_test_support::create_escalated_command_execution_sse_response;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
+use app_test_support::write_models_cache;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
@@ -17,7 +18,10 @@ use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::QueuedSubmission;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::SandboxMode;
+use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
@@ -45,23 +49,305 @@ use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
+use codex_app_server_protocol::ThreadUnsubscribeParams;
+use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
+use codex_features::Feature;
 use codex_protocol::openai_models::ReasoningEffort;
+use core_test_support::responses;
 use core_test_support::skip_if_remote;
+use core_test_support::streaming_sse::StreamingSseChunk;
+use core_test_support::streaming_sse::start_streaming_sse_server;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use tempfile::TempDir;
+use test_case::test_case;
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 use wiremock::MockServer;
 
 const READ_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test]
+async fn spawned_child_accepts_direct_steering_and_queued_input(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    const DIRECT: &str = "direct input to the actual child";
+    const STEER: &str = "steer the actual child";
+    const QUEUED: &str = "queued followup for the actual child";
+    let (release, gate) = oneshot::channel();
+    let completed = |id: &str| {
+        responses::sse(vec![
+            responses::ev_response_created(id),
+            responses::ev_assistant_message(&format!("{id}-message"), "done"),
+            responses::ev_completed(id),
+        ])
+    };
+    let (server, _completions) = start_streaming_sse_server(vec![
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![
+                responses::ev_response_created("spawn"),
+                responses::ev_function_call_with_namespace(
+                    "spawn-child",
+                    "collaboration",
+                    "spawn_agent",
+                    &json!({"message": "initial child task", "task_name": "worker"}).to_string(),
+                ),
+                responses::ev_completed("spawn"),
+            ]),
+        }],
+        // Child startup and parent tool completion may reach the model in either order.
+        vec![StreamingSseChunk {
+            gate: None,
+            body: completed("initial-one"),
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: completed("initial-two"),
+        }],
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![responses::ev_response_created("direct")]),
+            },
+            StreamingSseChunk {
+                gate: Some(gate),
+                body: responses::sse(vec![responses::ev_completed("direct")]),
+            },
+        ],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: completed("steered"),
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: completed("queued"),
+        }],
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(server.uri())
+        .with_model("gpt-5.4")
+        .enable_feature(Feature::MultiAgentV2)
+        .disable_feature(Feature::EnableRequestCompression)
+        .write(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let parent = app
+        .start_thread(ThreadStartParams {
+            history_mode: Some(history_mode),
+            ..Default::default()
+        })
+        .await?
+        .thread;
+    let _: TurnStartResponse = app
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: parent.id.clone(),
+                input: vec![text("spawn a worker")],
+                ..Default::default()
+            },
+        })
+        .await?;
+    let child_id = timeout(READ_TIMEOUT, async {
+        let mut parent_done = false;
+        let mut child_id = None;
+        while !parent_done || child_id.is_none() {
+            let event: TurnCompletedNotification = app.read_notification("turn/completed").await?;
+            assert_eq!(event.turn.status, TurnStatus::Completed);
+            if event.thread_id == parent.id {
+                parent_done = true;
+            } else {
+                child_id = Some(event.thread_id);
+            }
+        }
+        Ok::<_, anyhow::Error>(child_id.expect("completed spawned child"))
+    })
+    .await??;
+    let direct: TurnStartResponse = app
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: child_id.clone(),
+                input: vec![text(DIRECT)],
+                ..Default::default()
+            },
+        })
+        .await?;
+    // Wait for model admission, not merely the early turn/start acknowledgment.
+    timeout(READ_TIMEOUT, server.wait_for_request_count(/*count*/ 4)).await?;
+    let admitted = server.requests().await;
+    assert_eq!(
+        admitted.len(),
+        4,
+        "only the known child response may hold the gate"
+    );
+    let admitted: Value = serde_json::from_slice(&admitted[3])?;
+    let last_user_message = admitted["input"]
+        .as_array()
+        .context("direct child model input")?
+        .iter()
+        .rev()
+        .find(|item| item["role"] == "user")
+        .context("direct child user message")?;
+    assert_eq!(
+        last_user_message["content"],
+        json!([{"type": "input_text", "text": DIRECT}])
+    );
+    let _: ThreadUnsubscribeResponse = app
+        .request(|request_id| ClientRequest::ThreadUnsubscribe {
+            request_id,
+            params: ThreadUnsubscribeParams {
+                thread_id: child_id.clone(),
+            },
+        })
+        .await?;
+    let running: ThreadResumeResponse = app
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: child_id.clone(),
+                sandbox: Some(SandboxMode::DangerFullAccess),
+                exclude_turns: true,
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(running.thread.id, child_id);
+    assert!(matches!(running.sandbox, SandboxPolicy::ReadOnly { .. }));
+    let steered: TurnSteerResponse = app
+        .request(|request_id| ClientRequest::TurnSteer {
+            request_id,
+            params: TurnSteerParams {
+                thread_id: child_id.clone(),
+                expected_turn_id: direct.turn.id.clone(),
+                input: vec![text(STEER)],
+                client_user_message_id: None,
+                responsesapi_client_metadata: None,
+                additional_context: None,
+            },
+        })
+        .await?;
+    assert_eq!(steered.turn_id, direct.turn.id);
+    let queued = queue_item(&mut app, submission(&child_id, QUEUED)).await?;
+    let busy_id = app
+        .send_raw_request(
+            "thread/queue/start",
+            Some(json!({"threadId": child_id, "queuedSubmissionId": queued.id})),
+        )
+        .await?;
+    let busy = timeout(
+        READ_TIMEOUT,
+        app.read_stream_until_error_message(RequestId::Integer(busy_id)),
+    )
+    .await??;
+    assert_eq!(
+        busy.error.message,
+        "thread already has an active or pending turn"
+    );
+    assert_eq!(
+        list_queue(&mut app, &child_id).await?.data,
+        vec![queued.clone()]
+    );
+    assert!(list_queue(&mut app, &parent.id).await?.data.is_empty());
+    release
+        .send(())
+        .expect("release the admitted child response");
+    let finished = timeout(READ_TIMEOUT, async {
+        let mut turns = Vec::new();
+        while turns.len() < 2 {
+            let event: TurnCompletedNotification = app.read_notification("turn/completed").await?;
+            assert_eq!(event.thread_id, child_id);
+            assert_eq!(event.turn.status, TurnStatus::Completed);
+            turns.push(event.turn.id);
+        }
+        Ok::<_, anyhow::Error>(turns)
+    })
+    .await??;
+    assert_eq!(finished[0], direct.turn.id);
+    assert_ne!(finished[1], direct.turn.id);
+    assert!(list_queue(&mut app, &child_id).await?.data.is_empty());
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 6);
+    for (index, expected) in [(3, DIRECT), (4, STEER), (5, QUEUED)] {
+        let body: Value = serde_json::from_slice(&requests[index])?;
+        assert!(body["input"].to_string().contains(expected));
+    }
+    let read: ThreadReadResponse = app
+        .request(|request_id| ClientRequest::ThreadRead {
+            request_id,
+            params: ThreadReadParams {
+                thread_id: child_id.clone(),
+                include_turns: true,
+            },
+        })
+        .await?;
+    assert_eq!(read.thread.parent_thread_id, Some(parent.id));
+    assert_eq!(read.thread.history_mode, history_mode);
+    assert_eq!(
+        read.thread
+            .turns
+            .iter()
+            .rev()
+            .take(2)
+            .map(|turn| turn.id.clone())
+            .collect::<Vec<_>>(),
+        finished.into_iter().rev().collect::<Vec<_>>()
+    );
+    assert!(
+        timeout(READ_TIMEOUT, app.shutdown_gracefully())
+            .await??
+            .success()
+    );
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    for (method, params) in [
+        (
+            "thread/queue/add",
+            serde_json::to_value(submission(&child_id, "unloaded"))?,
+        ),
+        (
+            "thread/queue/update",
+            json!({
+                "threadId": child_id, "queuedSubmissionId": queued.id,
+                "input": [text("unloaded")],
+            }),
+        ),
+        ("thread/queue/start", json!({"threadId": child_id})),
+    ] {
+        let id = app.send_raw_request(method, Some(params)).await?;
+        let error = timeout(
+            READ_TIMEOUT,
+            app.read_stream_until_error_message(RequestId::Integer(id)),
+        )
+        .await??;
+        assert_eq!(error.error.code, -32600);
+        assert_eq!(
+            error.error.message,
+            "direct app-server input is not allowed for unloaded spawned sub-agents"
+        );
+    }
+    server.shutdown().await;
+    Ok(())
+}
 
 #[tokio::test]
 async fn queue_requires_experimental_handshake() -> Result<()> {
