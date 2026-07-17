@@ -11,6 +11,6 @@ Budget:
 - Tokens used: {{ tokens_used }}
 - Token budget: {{ token_budget }}
 
-The system has marked the goal as budget_limited, so do not start new substantive work for this goal. Wrap up this turn soon: summarize useful progress, identify remaining work or blockers, and leave the user with a clear next step.
+The system has marked the goal as budget_limited, so do not start new substantive work for this goal. Wrap up this turn soon: summarize useful progress, identify remaining work or blockers, and leave the user with a clear next step. Frame remaining work against the active objective without letting recent local artifacts redefine it.
 
 Do not call update_goal unless the goal is actually complete.
