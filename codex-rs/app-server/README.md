@@ -202,6 +202,16 @@ stored metadata. Start, read, resume, and fork responses for loaded threads repo
 `canAcceptDirectInput: true`, including spawned children. Unloaded stored threads report
 `null` because their live capability is unavailable. This field does not bypass ordinary
 turn validation, active-turn requirements for steering, or managed provider requirements.
+Loaded spawned-child list and search results expose the same capability. Parent ownership alone does
+not prohibit direct turns, steering, settings updates, or other thread input. Queueing
+input for an unloaded spawned child still requires resuming that child first.
+
+Stored children can be resumed directly without first loading their parent. Cold resume
+applies caller configuration overrides under the ordinary config and permission rules.
+Overrides do not replace a loaded session that has subscribers or is running. An idle
+session without subscribers can be replaced only after its shutdown completes.
+Parent-driven follow-up tasks retain their separate inherited-instruction and role
+configuration behavior.
 
 ## Stored thread attachments
 

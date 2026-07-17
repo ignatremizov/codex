@@ -8,8 +8,6 @@ use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_persisted_resume_settings;
 use super::thread_enrichment::enrich_loaded_threads;
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
-use super::thread_input::can_accept_direct_input;
-use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
@@ -2120,7 +2118,6 @@ impl ThreadRequestProcessor {
             before_turn_id,
         } = params;
         let (thread_id, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
         let config_snapshot = thread.config_snapshot().await;
         if !matches!(config_snapshot.history_mode, ThreadHistoryMode::Paginated) {
             return Err(invalid_request(
@@ -2342,7 +2339,6 @@ impl ThreadRequestProcessor {
         let ThreadCompactStartParams { thread_id } = params;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
@@ -2443,7 +2439,6 @@ impl ThreadRequestProcessor {
             .transpose()?;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
 
         // `thread/shellCommand` is app-server's local-host shell escape hatch,
         // not the normal turn-selected shell tool path.
@@ -2478,7 +2473,6 @@ impl ThreadRequestProcessor {
         let event = serde_json::from_value(event)
             .map_err(|err| invalid_request(format!("invalid Guardian denial event: {err}")))?;
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
 
         self.submit_core_op(
             request_id,
@@ -3692,58 +3686,6 @@ impl ThreadRequestProcessor {
             .await;
         }
 
-        // Parent-owned V2 children must resume through their owner, not caller configuration.
-        if let InitialHistory::Resumed(resumed_history) = &thread_history
-            && let Some((source, _)) = thread_history.get_resumed_session_sources()
-            && !can_accept_direct_input(thread_history.get_multi_agent_version(), &source)
-        {
-            let ThreadResumeTarget::Client(request_id) = target else {
-                return Ok(ControlFlow::Break(()));
-            };
-            let child_thread_id = resumed_history.conversation_id;
-            self.thread_manager
-                .ensure_multi_agent_v2_child_loaded(child_thread_id)
-                .await
-                .map_err(|err| {
-                    tracing::warn!(
-                        thread_id = %child_thread_id,
-                        error = %err,
-                        "failed to resume a multi-agent v2 child through its parent"
-                    );
-                    invalid_request(
-                        "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it",
-                    )
-                })?;
-
-            let cold_resume_history = paginated_resume.then(|| thread_history.get_rollout_items());
-            // Attach to the resolved child with only the caller's history-paging preferences.
-            let attach_params = ThreadResumeParams {
-                thread_id: child_thread_id.to_string(),
-                exclude_turns,
-                initial_turns_page,
-                ..Default::default()
-            };
-            return match self
-                .resume_running_thread(
-                    request_id,
-                    &attach_params,
-                    app_server_client_name,
-                    app_server_client_version,
-                    cold_resume_history,
-                )
-                .await?
-            {
-                RunningThreadResumeResult::Handled(completion) => {
-                    drop(_thread_list_state_permit);
-                    let _ = completion.await;
-                    Ok(ControlFlow::Break(()))
-                }
-                RunningThreadResumeResult::NotRunning(_) => Err(invalid_request(
-                    "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it",
-                )),
-            };
-        }
-
         // Copied or referenced history can contain another thread's settings. Only snapshots
         // explicitly owned by this thread can override its startup cwd and workspace folders.
         let history_settings = if let InitialHistory::Resumed(resumed) = &thread_history {
@@ -4263,14 +4205,7 @@ impl ThreadRequestProcessor {
                 let is_running =
                     matches!(existing_thread.agent_status().await, AgentStatus::Running);
 
-                // Parent-owned V2 children must not be rebuilt from public resume overrides.
-                if can_accept_direct_input(
-                    existing_thread.multi_agent_version(),
-                    &config_snapshot.session_source,
-                ) && !has_subscribers
-                    && matches!(loaded_status, ThreadStatus::Idle)
-                    && !is_running
-                {
+                if !has_subscribers && matches!(loaded_status, ThreadStatus::Idle) && !is_running {
                     // A loaded idle thread is only a cache entry. Shut it down
                     // before removing it so cold resume cannot duplicate a
                     // thread that timed out during shutdown.
@@ -5381,6 +5316,18 @@ impl ThreadRequestProcessor {
         let mut items = Vec::with_capacity(requested_page_size);
         let mut next_cursor: Option<String> = None;
 
+        let lists_subagents = source_kinds.as_ref().is_some_and(|source_kinds| {
+            source_kinds.iter().any(|kind| {
+                matches!(
+                    kind,
+                    ThreadSourceKind::SubAgent
+                        | ThreadSourceKind::SubAgentReview
+                        | ThreadSourceKind::SubAgentCompact
+                        | ThreadSourceKind::SubAgentThreadSpawn
+                        | ThreadSourceKind::SubAgentOther
+                )
+            })
+        });
         let model_provider_filter = match model_providers {
             Some(providers) => {
                 if providers.is_empty() {
@@ -5389,7 +5336,7 @@ impl ThreadRequestProcessor {
                     Some(providers)
                 }
             }
-            None if relation_filter.is_some() => None,
+            None if relation_filter.is_some() || lists_subagents => None,
             None => Some(vec![self.config.model_provider_id.clone()]),
         };
         let (allowed_sources_vec, source_kind_filter) =
