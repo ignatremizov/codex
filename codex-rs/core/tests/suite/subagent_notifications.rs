@@ -1152,6 +1152,7 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             .enable(Feature::MultiAgentV2)
             .expect("test config should allow feature update");
         config.multi_agent_v2.message_delivery = MultiAgentMessageDelivery::Plaintext;
+        config.multi_agent_v2.default_fork_turns = "all".to_string();
         config.model = Some(INHERITED_MODEL.to_string());
         config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
         config.agent_default_subagent_model = Some(V2_DEFAULT_MODEL.to_string());
