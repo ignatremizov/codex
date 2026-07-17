@@ -129,9 +129,6 @@ impl App {
             let agent_role = thread
                 .agent_role
                 .or_else(|| previous.and_then(|entry| entry.agent_role.clone()));
-            if thread.can_accept_direct_input == Some(false) {
-                self.agent_navigation.mark_parent_owned(thread_id);
-            }
             self.upsert_agent_picker_thread(thread_id, agent_nickname, agent_role, is_closed);
             self.agent_navigation.set_agent_path(thread_id, agent_path);
             if !live && update_liveness {

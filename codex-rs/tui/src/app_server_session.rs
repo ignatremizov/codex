@@ -47,7 +47,6 @@ use codex_app_server_protocol::ReviewDelivery;
 use codex_app_server_protocol::ReviewStartParams;
 use codex_app_server_protocol::ReviewStartResponse;
 use codex_app_server_protocol::ReviewTarget;
-use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::Thread;
@@ -120,7 +119,6 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffortPreset;
-use codex_protocol::protocol::SubAgentSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use color_eyre::eyre::ContextCompat;
@@ -223,24 +221,6 @@ impl ThreadParamsMode {
 pub(crate) struct AppServerStartedThread {
     pub(crate) session: ThreadSessionState,
     pub(crate) turns: Vec<Turn>,
-    pub(crate) blocks_direct_input: bool,
-}
-
-pub(crate) fn source_agent_path(source: &SessionSource) -> Option<String> {
-    match source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) => {
-            agent_path.clone().map(String::from)
-        }
-        _ => None,
-    }
-}
-
-/// Uses the server capability when available and preserves compatibility with older servers.
-pub(crate) fn thread_blocks_direct_input(thread: &Thread) -> bool {
-    thread
-        .can_accept_direct_input
-        .map(|can_accept| !can_accept)
-        .unwrap_or_else(|| source_agent_path(&thread.source).is_some())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1646,7 +1626,6 @@ async fn started_thread_from_start_response(
     config: &Config,
     thread_params_mode: ThreadParamsMode,
 ) -> Result<AppServerStartedThread> {
-    let blocks_direct_input = thread_blocks_direct_input(&response.thread);
     let session =
         thread_session_state_from_thread_start_response(&response, config, thread_params_mode)
             .await
@@ -1654,7 +1633,6 @@ async fn started_thread_from_start_response(
     Ok(AppServerStartedThread {
         session,
         turns: response.thread.turns,
-        blocks_direct_input,
     })
 }
 
@@ -1663,7 +1641,6 @@ async fn started_thread_from_resume_response(
     config: &Config,
     thread_params_mode: ThreadParamsMode,
 ) -> Result<AppServerStartedThread> {
-    let blocks_direct_input = thread_blocks_direct_input(&response.thread);
     let session =
         thread_session_state_from_thread_resume_response(&response, config, thread_params_mode)
             .await
@@ -1671,7 +1648,6 @@ async fn started_thread_from_resume_response(
     Ok(AppServerStartedThread {
         session,
         turns: response.thread.turns,
-        blocks_direct_input,
     })
 }
 
@@ -1680,7 +1656,6 @@ async fn started_thread_from_fork_response(
     config: &Config,
     thread_params_mode: ThreadParamsMode,
 ) -> Result<AppServerStartedThread> {
-    let blocks_direct_input = thread_blocks_direct_input(&response.thread);
     let session =
         thread_session_state_from_thread_fork_response(&response, config, thread_params_mode)
             .await
@@ -1688,7 +1663,6 @@ async fn started_thread_from_fork_response(
     Ok(AppServerStartedThread {
         session,
         turns: response.thread.turns,
-        blocks_direct_input,
     })
 }
 
@@ -2690,7 +2664,6 @@ mod tests {
                 cwd: test_path_buf("/tmp/project").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: codex_app_server_protocol::SessionSource::Cli,
-                can_accept_direct_input: None,
                 thread_source: None,
                 agent_nickname: None,
                 agent_role: None,
@@ -2766,7 +2739,6 @@ mod tests {
         assert_eq!(started.session.permission_profile, read_only_profile);
         assert_eq!(started.turns.len(), 1);
         assert_eq!(started.turns[0], response.thread.turns[0]);
-        assert!(!started.blocks_direct_input);
 
         let embedded_config = ConfigBuilder::default()
             .codex_home(temp_dir.path().join("embedded-codex-home"))

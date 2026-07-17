@@ -9,7 +9,6 @@ use std::io;
 use super::agent_picker::AGENT_PICKER_VIEW_ID;
 use super::*;
 use crate::app_server_session::source_agent_path;
-use crate::app_server_session::thread_blocks_direct_input;
 use codex_config::types::ResumeCwdMode;
 use std::collections::HashSet;
 
@@ -260,12 +259,6 @@ impl App {
         self.sync_active_agent_label();
     }
 
-    /// Persists the app-server's authoritative ownership flag and updates the active composer.
-    pub(super) fn mark_primary_thread_parent_owned(&mut self, thread_id: ThreadId) {
-        self.agent_navigation.mark_parent_owned(thread_id);
-        self.chat_widget.set_parent_owned_thread();
-    }
-
     /// Marks a cached picker thread closed and recomputes the contextual footer label.
     ///
     /// Closing a thread is not the same as removing it: users can still inspect finished agent
@@ -287,8 +280,6 @@ impl App {
             .await
         {
             Ok(thread) => {
-                let is_parent_owned = thread_blocks_direct_input(&thread);
-                let agent_path = source_agent_path(&thread.source);
                 let is_running = matches!(
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::Active { .. }
@@ -297,6 +288,7 @@ impl App {
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::NotLoaded
                 );
+                let agent_path = source_agent_path(&thread.source);
                 self.upsert_agent_picker_thread(
                     thread_id,
                     thread.agent_nickname.or_else(|| {
@@ -311,9 +303,6 @@ impl App {
                     }),
                     is_closed,
                 );
-                if is_parent_owned {
-                    self.agent_navigation.mark_parent_owned(thread_id);
-                }
                 self.agent_navigation.set_agent_path(thread_id, agent_path);
                 if is_running {
                     self.agent_navigation.mark_running(thread_id);
@@ -371,12 +360,7 @@ impl App {
             .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
             .await
         {
-            Ok(started) => {
-                if started.blocks_direct_input {
-                    self.agent_navigation.mark_parent_owned(thread_id);
-                }
-                (started.session, started.turns, true)
-            }
+            Ok(started) => (started.session, started.turns, true),
             Err(resume_err) => {
                 tracing::warn!(
                     thread_id = %thread_id,
@@ -471,6 +455,7 @@ impl App {
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
         }
+
         let mut is_replay_only = self
             .agent_navigation
             .get(&thread_id)
@@ -499,6 +484,7 @@ impl App {
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
         }
+
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
         self.active_thread_id = None;
@@ -519,7 +505,6 @@ impl App {
             &mut snapshot,
         )
         .await;
-        let blocks_direct_input = self.agent_navigation.is_parent_owned(thread_id);
 
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = Some(receiver);
@@ -530,9 +515,6 @@ impl App {
             /*initial_user_message*/ None,
         );
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-        if blocks_direct_input {
-            self.chat_widget.set_parent_owned_thread();
-        }
 
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, !is_replay_only);
@@ -623,9 +605,6 @@ impl App {
             .set_queue_submissions_until_session_configured(/*queue*/ false);
         match result {
             Ok(started) => {
-                if started.blocks_direct_input {
-                    self.mark_primary_thread_parent_owned(started.session.thread_id);
-                }
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
                 self.chat_widget.maybe_send_next_queued_input();
@@ -751,9 +730,6 @@ impl App {
             initial_user_message,
         );
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-        if started.blocks_direct_input {
-            self.mark_primary_thread_parent_owned(started.session.thread_id);
-        }
         self.enqueue_primary_thread_session_with_presentation(
             started.session,
             started.turns,
@@ -828,9 +804,6 @@ impl App {
                 .get(&thread.thread_id)
                 .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
             let is_closed = !has_live_channel && thread.is_closed;
-            if thread.blocks_direct_input {
-                self.agent_navigation.mark_parent_owned(thread.thread_id);
-            }
             self.upsert_agent_picker_thread(
                 thread.thread_id,
                 thread.agent_nickname,

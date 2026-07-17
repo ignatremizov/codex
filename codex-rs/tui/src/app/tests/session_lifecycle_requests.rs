@@ -493,7 +493,6 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         .expect("root-scoped response includes the cached child");
                     let mut discovered = child.clone();
                     discovered.id = discovered_thread_id.to_string();
-                    discovered.can_accept_direct_input = None;
                     child.status = ThreadStatus::Active {
                         active_flags: Vec::new(),
                     };
@@ -508,7 +507,6 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         .map(|(thread_id, _)| *thread_id),
                     Some(discovered_thread_id)
                 );
-                assert!(!app.agent_navigation.is_parent_owned(discovered_thread_id));
                 assert_eq!(
                     app.chat_widget.selected_index_for_present_view(
                         super::super::agent_picker::AGENT_PICKER_VIEW_ID

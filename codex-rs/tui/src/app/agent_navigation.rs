@@ -6,7 +6,6 @@
 //!
 //! Responsibilities here are intentionally narrow:
 //! - remember picker entries and their first-seen order
-//! - remember which V2 child threads are owned by their parent agent
 //! - answer traversal questions like "what is the next thread?"
 //! - derive user-facing picker/footer text from cached thread metadata
 //!
@@ -47,8 +46,6 @@ pub(crate) struct AgentNavigationState {
     order: Vec<ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
-    /// Spawned child threads whose instructions are owned by their parent agent.
-    parent_owned_threads: HashSet<ThreadId>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
     picker_refresh: Option<(ThreadId, Uuid)>,
 }
@@ -88,15 +85,6 @@ impl AgentNavigationState {
     /// this stays optional.
     pub(crate) fn get(&self, thread_id: &ThreadId) -> Option<&AgentPickerThreadEntry> {
         self.threads.get(thread_id)
-    }
-
-    pub(crate) fn is_parent_owned(&self, thread_id: ThreadId) -> bool {
-        self.parent_owned_threads.contains(&thread_id)
-    }
-
-    /// Marks a spawned child thread as view-only for direct user instructions.
-    pub(crate) fn mark_parent_owned(&mut self, thread_id: ThreadId) {
-        self.parent_owned_threads.insert(thread_id);
     }
 
     /// Returns whether the picker cache currently knows about any threads.
@@ -222,7 +210,6 @@ impl AgentNavigationState {
         self.threads.clear();
         self.order.clear();
         self.stopped_threads.clear();
-        self.parent_owned_threads.clear();
         self.picker_refresh = None;
     }
 
@@ -235,7 +222,6 @@ impl AgentNavigationState {
         self.threads.remove(&thread_id);
         self.order.retain(|candidate| *candidate != thread_id);
         self.stopped_threads.remove(&thread_id);
-        self.parent_owned_threads.remove(&thread_id);
     }
 
     /// Returns whether there is at least one tracked thread other than the primary one.
@@ -438,20 +424,6 @@ mod tests {
             state.ordered_thread_ids(),
             vec![main_thread_id, first_agent_id, second_agent_id]
         );
-    }
-
-    #[test]
-    fn parent_owned_state_is_removed_with_thread_metadata() {
-        let (mut state, _main_thread_id, first_agent_id, second_agent_id) = populated_state();
-
-        state.mark_parent_owned(first_agent_id);
-        assert!(state.is_parent_owned(first_agent_id));
-        state.remove(first_agent_id);
-        assert!(!state.is_parent_owned(first_agent_id));
-
-        state.mark_parent_owned(second_agent_id);
-        state.clear();
-        assert!(!state.is_parent_owned(second_agent_id));
     }
 
     #[test]
