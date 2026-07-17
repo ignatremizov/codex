@@ -38,7 +38,6 @@ use crate::tools::sandboxing::ToolError;
 use crate::turn_timing::now_unix_timestamp_ms;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
-use crate::unified_exec::MAX_YIELD_TIME_MS;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::unified_exec::MIN_YIELD_TIME_MS;
 use crate::unified_exec::ProcessEntry;
@@ -910,16 +909,14 @@ impl UnifiedExecProcessManager {
         input: &str,
         yield_time_ms: u64,
     ) -> u64 {
-        // Empty polls use configurable background timeout bounds. Non-empty
-        // writes keep a fixed max cap so interactive stdin remains responsive.
         let time_ms = yield_time_ms.max(MIN_YIELD_TIME_MS);
         if input.is_empty() {
             let time_ms = time_ms.max(MIN_EMPTY_YIELD_TIME_MS);
-            self.max_write_stdin_yield_time_ms
-                .map_or(time_ms, |max_timeout_ms| time_ms.min(max_timeout_ms))
-        } else {
-            time_ms.min(MAX_YIELD_TIME_MS)
+            return self
+                .max_write_stdin_yield_time_ms
+                .map_or(time_ms, |max_timeout_ms| time_ms.min(max_timeout_ms));
         }
+        time_ms
     }
 
     pub(crate) async fn process_event_metadata(

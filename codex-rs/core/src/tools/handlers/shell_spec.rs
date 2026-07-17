@@ -24,9 +24,9 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
     include_shell_parameter: bool,
 ) -> ToolSpec {
     let yield_time_ms_description = if cfg!(windows) {
-        "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use configured unified_exec_yield_time_ms (10000 ms when unset). Effective range on Windows is 2000-30000 ms. Set a shorter value only when intentionally starting a long-lived or interactive process and you want a session ID promptly."
+        "Initial wait for exec_command before returning a session ID for a still-running command. Commands that finish sooner return immediately. Effective range on Windows is 2000-30000 ms. Later waits use write_stdin."
     } else {
-        "Wait before yielding output. Defaults to configured unified_exec_yield_time_ms (10000 ms when unset); effective range is 250-30000 ms."
+        "Initial wait for exec_command before yielding output. Effective range is 250-30000 ms. Later waits use write_stdin."
     };
     let mut properties = BTreeMap::from([
         (
@@ -127,7 +127,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                "Wait before yielding output. Omit yield_time_ms for default; provide it for long waits. Non-empty writes cap yield_time_ms at 30000 ms; empty polls wait at least 5000 ms and are uncapped unless background_terminal_max_timeout is configured.".to_string(),
+                "Wait for an existing session. Independent of exec_command's initial wait. Omit yield_time_ms for default; provide it for long waits. yield_time_ms has no fixed cap; empty polls wait at least 5000 ms.".to_string(),
             )),
         ),
         (
