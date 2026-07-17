@@ -4539,6 +4539,18 @@ impl ThreadRequestProcessor {
         let mut items = Vec::with_capacity(requested_page_size);
         let mut next_cursor: Option<String> = None;
 
+        let lists_subagents = source_kinds.as_ref().is_some_and(|source_kinds| {
+            source_kinds.iter().any(|kind| {
+                matches!(
+                    kind,
+                    ThreadSourceKind::SubAgent
+                        | ThreadSourceKind::SubAgentReview
+                        | ThreadSourceKind::SubAgentCompact
+                        | ThreadSourceKind::SubAgentThreadSpawn
+                        | ThreadSourceKind::SubAgentOther
+                )
+            })
+        });
         let model_provider_filter = match model_providers {
             Some(providers) => {
                 if providers.is_empty() {
@@ -4547,7 +4559,7 @@ impl ThreadRequestProcessor {
                     Some(providers)
                 }
             }
-            None if relation_filter.is_some() => None,
+            None if relation_filter.is_some() || lists_subagents => None,
             None => Some(vec![self.config.model_provider_id.clone()]),
         };
         let (allowed_sources_vec, source_kind_filter) =

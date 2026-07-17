@@ -1287,7 +1287,7 @@ async fn thread_list_empty_source_kinds_defaults_to_interactive_only() -> Result
 }
 
 #[tokio::test]
-async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result<()> {
+async fn thread_list_reports_loaded_subagent_status() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
@@ -1300,29 +1300,26 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
         /*git_info*/ None,
     )?;
     let parent_thread_id = ThreadId::from_string(&cli_id)?;
-    let mut expected = vec![(cli_id.clone(), None, false)];
+    let mut expected = vec![(cli_id.clone(), false)];
     let mut threads_to_resume = vec![cli_id.clone()];
 
-    for (filename_ts, timestamp, version, capability, should_resume) in [
+    for (filename_ts, timestamp, version, should_resume) in [
         (
             "2025-02-01T10-00-00",
             "2025-02-01T10:00:00Z",
             MultiAgentVersion::V1,
-            Some(true),
             true,
         ),
         (
             "2025-02-01T11-00-00",
             "2025-02-01T11:00:00Z",
             MultiAgentVersion::V2,
-            Some(false),
             true,
         ),
         (
             "2025-02-01T12-00-00",
             "2025-02-01T12:00:00Z",
             MultiAgentVersion::V2,
-            None,
             false,
         ),
     ] {
@@ -1348,7 +1345,7 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
         if should_resume {
             threads_to_resume.push(thread_id.clone());
         }
-        expected.push((thread_id, capability, !should_resume));
+        expected.push((thread_id, !should_resume));
     }
 
     let mut mcp = init_mcp(codex_home.path()).await?;
@@ -1380,13 +1377,7 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
         response
             .data
             .into_iter()
-            .map(|thread| {
-                (
-                    thread.id,
-                    thread.can_accept_direct_input,
-                    matches!(thread.status, ThreadStatus::NotLoaded),
-                )
-            })
+            .map(|thread| (thread.id, matches!(thread.status, ThreadStatus::NotLoaded)))
             .collect::<Vec<_>>(),
         expected
     );
@@ -1407,7 +1398,7 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
     let expected_subagents: Vec<_> = expected
         .into_iter()
-        .filter(|(thread_id, _, _)| thread_id != &cli_id)
+        .filter(|(thread_id, _)| thread_id != &cli_id)
         .collect();
     assert_eq!(
         response
@@ -1415,11 +1406,7 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
             .into_iter()
             .map(|result| {
                 let thread = result.thread;
-                (
-                    thread.id,
-                    thread.can_accept_direct_input,
-                    matches!(thread.status, ThreadStatus::NotLoaded),
-                )
+                (thread.id, matches!(thread.status, ThreadStatus::NotLoaded))
             })
             .collect::<Vec<_>>(),
         expected_subagents
@@ -1430,7 +1417,7 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
         "mock_provider".to_string(),
     )
     .await?;
-    for (thread_id, _, _) in &expected_subagents {
+    for (thread_id, _) in &expected_subagents {
         state_db
             .upsert_thread_spawn_edge(
                 parent_thread_id,
@@ -1473,13 +1460,7 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
         response
             .data
             .into_iter()
-            .map(|thread| {
-                (
-                    thread.id,
-                    thread.can_accept_direct_input,
-                    matches!(thread.status, ThreadStatus::NotLoaded),
-                )
-            })
+            .map(|thread| (thread.id, matches!(thread.status, ThreadStatus::NotLoaded)))
             .collect::<Vec<_>>(),
         expected_subagents
     );

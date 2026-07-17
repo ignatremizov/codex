@@ -59,7 +59,6 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
-use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_app_server_protocol::WarningNotification;
 use codex_core::test_support::all_model_presets;
@@ -145,7 +144,7 @@ async fn run_local_image_turn(detail: Option<ImageDetail>) -> Result<Vec<Value>>
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
-                thread_id: thread.id.clone(),
+                thread_id: thread.id,
                 client_user_message_id: None,
                 input: vec![V2UserInput::LocalImage {
                     path: image_path,
@@ -312,7 +311,7 @@ async fn turn_start_additional_context_flows_to_model_input() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
-                thread_id: thread.id,
+                thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Text {
                     text: "inspect tab".to_string(),
@@ -3338,16 +3337,15 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
 }
 
 #[tokio::test]
-async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
+async fn thread_list_reports_multi_agent_v2_subagent_source() -> Result<()> {
     const CHILD_PROMPT: &str = "child: do work";
     const PARENT_PROMPT: &str = "spawn a child and continue";
-    const SPAWN_CALL_ID: &str = "spawn-call-direct-input-rejection";
-    const ERROR_MESSAGE: &str =
-        "direct app-server input is not allowed for multi-agent v2 sub-agents";
+    const SPAWN_CALL_ID: &str = "spawn-call-direct-input-capability";
 
     let server = responses::start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
+        "task_message": CHILD_PROMPT,
         "task_name": "worker",
     }))?;
     let _parent_turn = responses::mount_sse_once_match(
@@ -3362,6 +3360,28 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
                 &spawn_args,
             ),
             responses::ev_completed("resp-parent-1"),
+        ]),
+    )
+    .await;
+    let _child_turn = responses::mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, CHILD_PROMPT) && !body_contains(request, SPAWN_CALL_ID)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("resp-child-1"),
+            responses::ev_assistant_message("msg-child-1", "child done"),
+            responses::ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+    let _parent_follow_up = responses::mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, SPAWN_CALL_ID),
+        responses::sse(vec![
+            responses::ev_response_created("resp-parent-2"),
+            responses::ev_assistant_message("msg-parent-2", "parent done"),
+            responses::ev_completed("resp-parent-2"),
         ]),
     )
     .await;
@@ -3387,7 +3407,7 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
-                thread_id: thread.id,
+                thread_id: thread.id.clone(),
                 input: vec![V2UserInput::Text {
                     text: PARENT_PROMPT.to_string(),
                     text_elements: Vec::new(),
@@ -3415,35 +3435,42 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
     })
     .await??;
 
-    let listed: codex_app_server_protocol::ThreadListResponse = mcp
-        .request(|request_id| ClientRequest::ThreadList {
-            request_id,
-            params: codex_app_server_protocol::ThreadListParams {
-                cursor: None,
-                limit: Some(10),
-                sort_key: None,
-                sort_direction: None,
-                model_providers: None,
-                source_kinds: Some(vec![
-                    codex_app_server_protocol::ThreadSourceKind::SubAgentThreadSpawn,
-                ]),
-                archived: None,
-                section_id: None,
-                cwd: None,
-                use_state_db_only: true,
-                search_term: None,
-                parent_thread_id: None,
-                ancestor_thread_id: None,
-            },
-        })
-        .await?;
-    let listed_child = listed
-        .data
-        .iter()
-        .find(|listed| listed.id == child_thread_id)
-        .context("spawned child is missing from thread/list")?;
+    let listed_child_source = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let listed: codex_app_server_protocol::ThreadListResponse = mcp
+                .request(|request_id| ClientRequest::ThreadList {
+                    request_id,
+                    params: codex_app_server_protocol::ThreadListParams {
+                        cursor: None,
+                        limit: Some(10),
+                        sort_key: None,
+                        sort_direction: None,
+                        model_providers: None,
+                        source_kinds: None,
+                        archived: None,
+                        section_id: None,
+                        cwd: None,
+                        use_state_db_only: true,
+                        search_term: None,
+                        parent_thread_id: Some(thread.id.clone()),
+                        ancestor_thread_id: None,
+                    },
+                })
+                .await?;
+            if let Some(listed_child) = listed
+                .data
+                .iter()
+                .find(|listed| listed.id == child_thread_id)
+            {
+                return Ok::<_, anyhow::Error>(listed_child.source.clone());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .context("spawned child is missing from thread/list")??;
     assert!(matches!(
-        &listed_child.source,
+        &listed_child_source,
         codex_app_server_protocol::SessionSource::SubAgent(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
                 agent_path: Some(_),
@@ -3451,47 +3478,6 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
             }
         )
     ));
-    assert_eq!(listed_child.can_accept_direct_input, Some(false));
-
-    let direct_turn_req = mcp
-        .send_turn_start_request(TurnStartParams {
-            thread_id: child_thread_id.clone(),
-            input: vec![V2UserInput::Text {
-                text: "direct app-server turn".to_string(),
-                text_elements: Vec::new(),
-            }],
-            ..Default::default()
-        })
-        .await?;
-    let direct_turn_error: JSONRPCError = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(direct_turn_req)),
-    )
-    .await??;
-    assert_eq!(direct_turn_error.error.code, INVALID_REQUEST_ERROR_CODE);
-    assert_eq!(direct_turn_error.error.message, ERROR_MESSAGE);
-
-    let direct_steer_req = mcp
-        .send_turn_steer_request(TurnSteerParams {
-            thread_id: child_thread_id,
-            client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "direct app-server steer".to_string(),
-                text_elements: Vec::new(),
-            }],
-            responsesapi_client_metadata: None,
-            additional_context: None,
-            expected_turn_id: "any-active-turn".to_string(),
-        })
-        .await?;
-    let direct_steer_error: JSONRPCError = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(direct_steer_req)),
-    )
-    .await??;
-    assert_eq!(direct_steer_error.error.code, INVALID_REQUEST_ERROR_CODE);
-    assert_eq!(direct_steer_error.error.message, ERROR_MESSAGE);
-
     Ok(())
 }
 

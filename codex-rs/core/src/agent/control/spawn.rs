@@ -513,6 +513,13 @@ impl AgentControl {
             );
         }
 
+        if matches!(
+            notification_source.as_ref(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
+        ) {
+            new_thread.thread.ensure_rollout_materialized().await;
+        }
+
         // Notify a new thread has been created. This notification will be processed by clients
         // to subscribe or drain this newly created thread.
         // TODO(jif) add helper for drain
