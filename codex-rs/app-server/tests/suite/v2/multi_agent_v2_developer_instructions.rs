@@ -696,7 +696,7 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
             .await?;
         assert_eq!(baseline.thread.id, child_thread_id);
         assert_eq!(baseline.thread.status, ThreadStatus::Idle);
-        assert_eq!(baseline.thread.can_accept_direct_input, Some(false));
+        assert_eq!(baseline.thread.can_accept_direct_input, Some(true));
         assert_eq!(baseline.thread.agent_role.as_deref(), agent_type);
         assert_eq!(baseline.model_provider, "mock_provider");
         assert!(matches!(&baseline.sandbox, SandboxPolicy::ReadOnly { .. }));

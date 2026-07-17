@@ -2,8 +2,6 @@ use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_persisted_resume_settings;
 use super::thread_enrichment::enrich_loaded_threads;
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
-use super::thread_input::can_accept_direct_input;
-use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
@@ -2078,7 +2076,6 @@ impl ThreadRequestProcessor {
             before_turn_id,
         } = params;
         let (thread_id, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
         let config_snapshot = thread.config_snapshot().await;
         if !matches!(config_snapshot.history_mode, ThreadHistoryMode::Paginated) {
             return Err(invalid_request(
@@ -2297,7 +2294,6 @@ impl ThreadRequestProcessor {
         }
 
         let (thread_id, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
         if matches!(
             thread.config_snapshot().await.history_mode,
             ThreadHistoryMode::Paginated
@@ -2351,7 +2347,6 @@ impl ThreadRequestProcessor {
         let ThreadCompactStartParams { thread_id } = params;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
         self.submit_core_op(request_id, thread.as_ref(), Op::Compact)
             .await
             .map_err(|err| internal_error(format!("failed to start compaction: {err}")))?;
@@ -2448,7 +2443,6 @@ impl ThreadRequestProcessor {
             .transpose()?;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
 
         // `thread/shellCommand` is app-server's local-host shell escape hatch,
         // not the normal turn-selected shell tool path.
@@ -2483,7 +2477,6 @@ impl ThreadRequestProcessor {
         let event = serde_json::from_value(event)
             .map_err(|err| invalid_request(format!("invalid Guardian denial event: {err}")))?;
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
 
         self.submit_core_op(
             request_id,
@@ -2950,6 +2943,9 @@ impl ThreadRequestProcessor {
             }
             thread.session_id.clone_from(&fallback_thread.session_id);
             thread.ephemeral = fallback_thread.ephemeral;
+            thread
+                .can_accept_direct_input
+                .clone_from(&fallback_thread.can_accept_direct_input);
             thread
         } else {
             fallback_thread
@@ -3669,51 +3665,6 @@ impl ThreadRequestProcessor {
             .await;
         }
 
-        // Parent-owned V2 children must resume through their owner, not caller configuration.
-        if let InitialHistory::Resumed(resumed_history) = &thread_history
-            && let Some((source, _)) = thread_history.get_resumed_session_sources()
-            && !can_accept_direct_input(thread_history.get_multi_agent_version(), &source)
-        {
-            let child_thread_id = resumed_history.conversation_id;
-            self.thread_manager
-                .ensure_multi_agent_v2_child_loaded(child_thread_id)
-                .await
-                .map_err(|err| {
-                    tracing::warn!(
-                        thread_id = %child_thread_id,
-                        error = %err,
-                        "failed to resume a multi-agent v2 child through its parent"
-                    );
-                    invalid_request(
-                        "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it",
-                    )
-                })?;
-
-            let cold_resume_history = paginated_resume.then(|| thread_history.get_rollout_items());
-            // Attach to the resolved child with only the caller's history-paging preferences.
-            let attach_params = ThreadResumeParams {
-                thread_id: child_thread_id.to_string(),
-                exclude_turns,
-                initial_turns_page,
-                ..Default::default()
-            };
-            return match self
-                .resume_running_thread(
-                    &request_id,
-                    &attach_params,
-                    app_server_client_name,
-                    app_server_client_version,
-                    cold_resume_history,
-                )
-                .await?
-            {
-                RunningThreadResumeResult::Handled => Ok(()),
-                RunningThreadResumeResult::NotRunning(_) => Err(invalid_request(
-                    "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it",
-                )),
-            };
-        }
-
         // Copied or referenced history can contain another thread's settings. Only snapshots
         // explicitly owned by this thread can override its startup cwd.
         let history_cwd = if let InitialHistory::Resumed(resumed) = &thread_history {
@@ -4151,11 +4102,7 @@ impl ThreadRequestProcessor {
                 let is_running =
                     matches!(existing_thread.agent_status().await, AgentStatus::Running);
 
-                // Parent-owned V2 children must not be rebuilt from public resume overrides.
-                if can_accept_direct_input(
-                    existing_thread.multi_agent_version(),
-                    &config_snapshot.session_source,
-                ) && !has_subscribers
+                if !has_subscribers
                     && matches!(loaded_status, ThreadStatus::Idle)
                     && !is_running
                 {
@@ -5047,6 +4994,8 @@ impl ThreadRequestProcessor {
             "thread",
         );
 
+        let config_snapshot = forked_thread.config_snapshot().await;
+
         // Persistent forks materialize their own rollout immediately. Ephemeral forks stay
         // pathless, so their visible history is projected before the source history is consumed.
         let (mut thread, mut token_usage_turn_id) = if session_configured.rollout_path.is_some() {
@@ -5077,7 +5026,6 @@ impl ThreadRequestProcessor {
             });
             (thread, token_usage_turn_id)
         } else {
-            let config_snapshot = forked_thread.config_snapshot().await;
             let mut thread = build_thread_from_snapshot(
                 thread_id,
                 session_configured.session_id.to_string(),
@@ -5101,6 +5049,7 @@ impl ThreadRequestProcessor {
         if let Some(name) = source_thread_name {
             set_thread_name_from_title(&mut thread, name);
         }
+        thread.can_accept_direct_input = Some(true);
         thread.session_id = session_configured.session_id.to_string();
         thread.thread_source = config_snapshot.thread_source.clone().map(Into::into);
         apply_live_model_settings(&mut thread, &config_snapshot);
@@ -5119,7 +5068,6 @@ impl ThreadRequestProcessor {
                 .await,
             /*has_in_progress_turn*/ false,
         );
-        let config_snapshot = forked_thread.config_snapshot().await;
         let sandbox = config_snapshot.sandbox_policy().into();
         let active_permission_profile =
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
@@ -5238,6 +5186,18 @@ impl ThreadRequestProcessor {
         let mut items = Vec::with_capacity(requested_page_size);
         let mut next_cursor: Option<String> = None;
 
+        let lists_subagents = source_kinds.as_ref().is_some_and(|source_kinds| {
+            source_kinds.iter().any(|kind| {
+                matches!(
+                    kind,
+                    ThreadSourceKind::SubAgent
+                        | ThreadSourceKind::SubAgentReview
+                        | ThreadSourceKind::SubAgentCompact
+                        | ThreadSourceKind::SubAgentThreadSpawn
+                        | ThreadSourceKind::SubAgentOther
+                )
+            })
+        });
         let model_provider_filter = match model_providers {
             Some(providers) => {
                 if providers.is_empty() {
@@ -5246,7 +5206,7 @@ impl ThreadRequestProcessor {
                     Some(providers)
                 }
             }
-            None if relation_filter.is_some() => None,
+            None if relation_filter.is_some() || lists_subagents => None,
             None => Some(vec![self.config.model_provider_id.clone()]),
         };
         let (allowed_sources_vec, source_kind_filter) =
