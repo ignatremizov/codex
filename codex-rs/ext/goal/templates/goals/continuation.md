@@ -16,8 +16,8 @@ Budget:
 - Token budget: {{ token_budget }}
 - Tokens remaining: {{ remaining_tokens }}
 
-Work from evidence:
-Use the current worktree and external state as authoritative. Previous conversation context can help locate relevant work, but inspect the current state before relying on it. Improve, replace, or remove existing work as needed to satisfy the actual objective.
+Source authority:
+Work from the sources that are authoritative for the current objective. Nearby repository artifacts, examples, demos, tests, and existing callers are valuable context for current integration patterns and historical behavior, but their authority depends on their relevance to the active objective. Use them to inform the work without letting proximity, concreteness, or recency narrow the requested end state. When sources point in different directions, or after a long investigation through local artifacts, call get_goal to re-ground on the active objective before choosing the next implementation direction.
 
 No-progress check:
 - Classify the previous goal turn as progress, a verified wait, or no progress. Progress changes authoritative state, completes work, or yields evidence that changes the next action; status restatements and unexecuted plans are no progress.
