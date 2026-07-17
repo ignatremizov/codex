@@ -303,9 +303,6 @@ impl App {
             if self.primary_thread_id == Some(id) {
                 self.primary_session_configured = Some(started.session.clone());
             }
-            if started.blocks_direct_input {
-                self.agent_navigation.mark_parent_owned(id);
-            }
             let channel = ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY);
             {
                 let mut store = channel.store.lock().await;

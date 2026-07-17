@@ -563,9 +563,6 @@ See the Codex keymap documentation for supported actions and examples."
             let thread_id = started.session.thread_id;
             app.chat_widget
                 .set_task_mentions_enabled(started.task_tools_available);
-            if started.blocks_direct_input {
-                app.mark_primary_thread_parent_owned(thread_id);
-            }
             match startup_draft
                 .run_until(
                     tui,

@@ -31,13 +31,14 @@ impl App {
             .current_displayed_thread_id()
             .zip(self.primary_thread_id)
             .is_some_and(|(thread_id, primary_thread_id)| {
-                self.agent_navigation.is_parent_owned(thread_id)
-                    || (thread_id != primary_thread_id
-                        && !self.side_threads.contains_key(&thread_id))
+                !self.side_threads.contains_key(&thread_id)
+                    && (thread_id != primary_thread_id
+                        || self.agent_navigation.parent_thread_id(thread_id).is_some())
             })
         {
             // Subagents can defer cached servers indefinitely, so only servers
-            // that actually report startup should keep their status running.
+            // that actually report startup should keep their status running. Parent lineage
+            // identifies a resumed subagent here; it does not restrict direct user input.
             self.chat_widget
                 .set_mcp_startup_expected_servers(std::iter::empty());
             return;

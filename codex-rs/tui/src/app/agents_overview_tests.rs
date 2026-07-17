@@ -69,7 +69,7 @@ fn overview_thread(
                 agent_role: None,
             })
         }),
-        can_accept_direct_input: Some(parent_thread_id.is_none()),
+        can_accept_direct_input: Some(true),
         thread_source: None,
         agent_nickname: None,
         agent_role: None,

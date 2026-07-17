@@ -805,7 +805,6 @@ async fn fresh_startup_thread_drains_buffered_approval_before_draft_handoff() ->
             result: Ok(AppServerStartedThread {
                 session: test_thread_session(thread_id, test_path_buf("/tmp/project")),
                 turns: Vec::new(),
-                blocks_direct_input: false,
                 task_tools_available: false,
             }),
         },
@@ -1022,7 +1021,6 @@ async fn startup_thread_started_submits_queued_startup_input() {
         Ok(AppServerStartedThread {
             session: test_thread_session(thread_id, test_path_buf("/tmp/project")),
             turns: Vec::new(),
-            blocks_direct_input: false,
             task_tools_available: false,
         }),
     )
@@ -1112,7 +1110,6 @@ async fn startup_thread_started_discards_another_threads_buffered_events() {
         Ok(AppServerStartedThread {
             session: test_thread_session(thread_id, test_path_buf("/tmp/project")),
             turns: Vec::new(),
-            blocks_direct_input: false,
             task_tools_available: false,
         }),
     )
@@ -1161,7 +1158,6 @@ async fn startup_thread_started_does_not_replay_resolved_approval() -> Result<()
         Ok(AppServerStartedThread {
             session: test_thread_session(thread_id, test_path_buf("/tmp/project")),
             turns: Vec::new(),
-            blocks_direct_input: false,
             task_tools_available: false,
         }),
     )
@@ -1293,7 +1289,6 @@ fn stale_startup_thread_started_removes_local_routing_state() -> Result<()> {
                 Ok(AppServerStartedThread {
                     session: test_thread_session(stale_thread_id, test_path_buf("/tmp/project")),
                     turns: Vec::new(),
-                    blocks_direct_input: false,
                     task_tools_available: false,
                 }),
             )
