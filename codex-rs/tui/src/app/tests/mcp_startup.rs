@@ -97,10 +97,12 @@ async fn subagent_mcp_startup_settles_while_cached_servers_remain_deferred() {
 async fn resumed_subagent_mcp_startup_settles_while_cached_servers_remain_deferred() {
     let mut app = make_test_app().await;
     configure_mcp_servers(&mut app);
+    let parent_thread_id = ThreadId::new();
     let subagent_thread_id = ThreadId::new();
     app.primary_thread_id = Some(subagent_thread_id);
     app.active_thread_id = Some(subagent_thread_id);
-    app.agent_navigation.mark_parent_owned(subagent_thread_id);
+    app.agent_navigation
+        .set_parent_thread_id(subagent_thread_id, Some(parent_thread_id));
     app.refresh_mcp_startup_expected_servers_from_config();
 
     for status in [

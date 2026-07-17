@@ -197,8 +197,6 @@ const CONNECTORS_SELECTION_VIEW_ID: &str = "connectors-selection";
 const PET_SELECTION_LOADING_VIEW_ID: &str = "pet-selection-loading";
 const AMBIENT_PET_WRAP_GAP_COLUMNS: u16 = 2;
 const TUI_STUB_MESSAGE: &str = "Not available in TUI yet.";
-const PARENT_OWNED_INPUT_MESSAGE: &str =
-    "This sub-agent is controlled by its parent. Direct input is disabled.";
 
 /// Choose the keybinding used to edit the most-recently queued message.
 ///
@@ -678,7 +676,6 @@ pub(crate) struct ChatWidget {
     pending_automatic_thread_names: HashSet<String>,
     thread_rename_block_message: Option<String>,
     active_side_conversation: bool,
-    blocks_direct_input: bool,
     misalignment_policy_violation: bool,
     normal_placeholder_text: String,
     side_placeholder_text: String,
@@ -1783,15 +1780,6 @@ impl ChatWidget {
     {
         let op: AppCommand = op.into();
         if self.rejects_misalignment_policy_op(&op) {
-            return false;
-        }
-        if self.blocks_direct_input
-            && matches!(
-                &op,
-                AppCommand::UserTurn { .. } | AppCommand::Review { .. } | AppCommand::Compact
-            )
-        {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
             return false;
         }
         self.prepare_local_op_submission(&op);

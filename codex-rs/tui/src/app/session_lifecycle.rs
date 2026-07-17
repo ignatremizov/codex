@@ -12,7 +12,7 @@ use super::app_server_event_targets::server_notification_thread_target;
 use super::app_server_event_targets::server_request_thread_id;
 use super::*;
 use crate::app_server_session::source_agent_path;
-use crate::app_server_session::thread_blocks_direct_input;
+use codex_config::types::ResumeCwdMode;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
@@ -263,12 +263,6 @@ impl App {
         self.sync_active_agent_label();
     }
 
-    /// Persists the app-server's authoritative ownership flag and updates the active composer.
-    pub(super) fn mark_primary_thread_parent_owned(&mut self, thread_id: ThreadId) {
-        self.agent_navigation.mark_parent_owned(thread_id);
-        self.chat_widget.set_parent_owned_thread();
-    }
-
     /// Marks a cached picker thread closed and recomputes the contextual footer label.
     ///
     /// Closing a thread is not the same as removing it: users can still inspect finished agent
@@ -290,8 +284,6 @@ impl App {
             .await
         {
             Ok(thread) => {
-                let is_parent_owned = thread_blocks_direct_input(&thread);
-                let agent_path = source_agent_path(&thread.source);
                 let is_running = matches!(
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::Active { .. }
@@ -300,6 +292,7 @@ impl App {
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::NotLoaded
                 );
+                let agent_path = source_agent_path(&thread.source);
                 self.upsert_agent_picker_thread(
                     thread_id,
                     thread.agent_nickname.or_else(|| {
@@ -314,9 +307,6 @@ impl App {
                     }),
                     is_closed,
                 );
-                if is_parent_owned {
-                    self.agent_navigation.mark_parent_owned(thread_id);
-                }
                 self.agent_navigation.set_agent_path(thread_id, agent_path);
                 if is_running {
                     self.agent_navigation.mark_running(thread_id);
@@ -390,9 +380,6 @@ impl App {
                         entry.agent_role,
                         /*is_closed*/ false,
                     );
-                }
-                if started.blocks_direct_input {
-                    self.agent_navigation.mark_parent_owned(thread_id);
                 }
                 (started.session, started.turns, true)
             }
@@ -534,6 +521,7 @@ impl App {
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
         }
+
         let mut is_replay_only = self
             .agent_navigation
             .get(&thread_id)
@@ -564,6 +552,7 @@ impl App {
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
         }
+
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
         self.active_thread_id = None;
@@ -656,9 +645,6 @@ impl App {
             .set_task_mentions_enabled(app_server.task_tools_available(thread_id));
         self.chat_widget
             .note_rendered_width(tui.terminal.last_known_screen_size.width);
-        if self.agent_navigation.is_parent_owned(thread_id) {
-            self.chat_widget.set_parent_owned_thread();
-        }
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, resume_restored_queue);
         Ok(())
@@ -780,9 +766,6 @@ impl App {
                     {
                         tracing::warn!("{error}");
                     }
-                }
-                if started.blocks_direct_input {
-                    self.mark_primary_thread_parent_owned(thread_id);
                 }
                 // A full usage read can finish before thread/start. Apply its cached fallback
                 // after attachment but before the initial prompt or queued draft is submitted.
@@ -925,9 +908,6 @@ impl App {
             .set_task_mentions_enabled(started.task_tools_available);
         self.chat_widget
             .note_rendered_width(tui.terminal.last_known_screen_size.width);
-        if started.blocks_direct_input {
-            self.mark_primary_thread_parent_owned(started.session.thread_id);
-        }
         self.enqueue_primary_thread_session_with_presentation(
             started.session,
             started.turns,
@@ -1002,9 +982,6 @@ impl App {
                 .get(&thread.thread_id)
                 .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
             let is_closed = !has_live_channel && thread.is_closed;
-            if thread.blocks_direct_input {
-                self.agent_navigation.mark_parent_owned(thread.thread_id);
-            }
             self.upsert_agent_picker_thread(
                 thread.thread_id,
                 thread.agent_nickname,

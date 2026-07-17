@@ -7,11 +7,6 @@
 use super::*;
 
 impl ChatWidget {
-    pub(crate) fn set_parent_owned_thread(&mut self) {
-        self.blocks_direct_input = true;
-        self.bottom_pane.set_parent_owned_thread();
-    }
-
     pub(super) fn handle_composer_input_result(
         &mut self,
         input_result: InputResult,
@@ -70,9 +65,6 @@ impl ChatWidget {
             }
             InputResult::CommandWithArgs(cmd, args, text_elements) => {
                 self.handle_slash_command_with_args_dispatch(cmd, args, text_elements);
-            }
-            InputResult::ParentOwnedInputBlocked => {
-                self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
             }
             InputResult::None => {}
         }
@@ -145,9 +137,6 @@ impl ChatWidget {
             || self.input_queue.rate_limit_recovery_pending
             || self.input_queue.recovered_queue
         {
-            return false;
-        }
-        if self.blocks_direct_input {
             return false;
         }
         if self.is_user_turn_pending_or_running() {
@@ -260,10 +249,6 @@ impl ChatWidget {
         text: String,
         mut collaboration_mode: CollaborationModeMask,
     ) {
-        if self.blocks_direct_input {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
-            return;
-        }
         if collaboration_mode.mode == Some(ModeKind::Plan)
             && let Some(effort) = self.config.plan_mode_reasoning_effort.clone()
         {

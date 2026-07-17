@@ -2154,30 +2154,6 @@ async fn slash_copy_picker_escape_dismisses_without_copying() {
 }
 
 #[tokio::test]
-async fn slash_copy_picker_remains_available_from_parent_owned_threads() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.transcript.last_agent_markdown = Some("Safe local copy".to_string());
-    chat.set_parent_owned_thread();
-    chat.bottom_pane
-        .set_composer_text("/cop".to_string(), Vec::new(), Vec::new());
-
-    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(!render_bottom_popup(&chat, /*width*/ 80).contains("Whole response"));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Whole response"));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
-
-    assert_eq!(
-        next_copy_selection(&mut rx),
-        ("Safe local copy".to_string(), "Whole response".to_string())
-    );
-    assert!(
-        op_rx.try_recv().is_err(),
-        "copy must not submit an agent turn"
-    );
-}
-
-#[tokio::test]
 async fn slash_copy_reports_when_no_agent_response_exists() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -3153,7 +3129,7 @@ async fn rejected_queued_cd_drains_following_input() {
 #[tokio::test]
 async fn slash_cd_rejects_pending_input_and_unsupported_session_ownership() {
     let mut errors = Vec::new();
-    for state in "new active pending queued steer side owned ephemeral mcp exec".split(' ') {
+    for state in "new active pending queued steer side ephemeral mcp exec".split(' ') {
         let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
         chat.thread_id = (state != "new").then(ThreadId::new);
         let (queued, steer) = (UserMessage::from("q").into(), pending_steer("s"));
@@ -3163,7 +3139,6 @@ async fn slash_cd_rejects_pending_input_and_unsupported_session_ownership() {
             "queued" => chat.input_queue.queued_user_messages.push_back(queued),
             "steer" => chat.input_queue.pending_steers.push_back(steer),
             "side" => chat.set_side_conversation_active(/*active*/ true),
-            "owned" => chat.set_parent_owned_thread(),
             "ephemeral" => chat.config.ephemeral = true,
             "exec" => chat.track_unified_exec_process_begin("call", Some("process"), "sleep"),
             "mcp" => {
