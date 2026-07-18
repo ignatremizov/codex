@@ -97,20 +97,30 @@ fn summarize_interaction_input(input: &str) -> String {
 #[derive(Clone)]
 pub(crate) struct OutputLines {
     pub(crate) lines: Vec<Line<'static>>,
+    pub(crate) omitted: usize,
 }
 
 pub(crate) fn cap_output_preview_rows(
     lines: Vec<Line<'static>>,
     row_limit: usize,
 ) -> Vec<Line<'static>> {
-    if row_limit == 0 || lines.len() <= row_limit {
+    cap_output_preview_rows_with_prior_omission(lines, row_limit, 0)
+}
+
+fn cap_output_preview_rows_with_prior_omission(
+    lines: Vec<Line<'static>>,
+    row_limit: usize,
+    prior_omitted: usize,
+) -> Vec<Line<'static>> {
+    if row_limit == 0 || (prior_omitted == 0 && lines.len() <= row_limit) {
         return lines;
     }
 
     let visible_without_ellipsis = row_limit.saturating_sub(1);
-    let head_count = visible_without_ellipsis.div_ceil(2);
-    let tail_count = visible_without_ellipsis.saturating_sub(head_count);
-    let omitted = lines.len().saturating_sub(head_count + tail_count);
+    let retained = visible_without_ellipsis.min(lines.len());
+    let head_count = retained.div_ceil(2);
+    let tail_count = retained.saturating_sub(head_count);
+    let omitted = prior_omitted.saturating_add(lines.len().saturating_sub(retained));
 
     let mut out = Vec::with_capacity(row_limit);
     out.extend(lines.iter().take(head_count).cloned());
@@ -139,11 +149,17 @@ pub(crate) fn output_lines(
         aggregated_output, ..
     } = match output {
         Some(output) if only_err && output.exit_code == 0 => {
-            return OutputLines { lines: Vec::new() };
+            return OutputLines {
+                lines: Vec::new(),
+                omitted: 0,
+            };
         }
         Some(output) => output,
         None => {
-            return OutputLines { lines: Vec::new() };
+            return OutputLines {
+                lines: Vec::new(),
+                omitted: 0,
+            };
         }
     };
 
@@ -156,7 +172,10 @@ pub(crate) fn output_lines(
         for (i, raw) in lines.iter().enumerate() {
             push_output_line(&mut out, raw, i, include_prefix, include_angle_pipe);
         }
-        return OutputLines { lines: out };
+        return OutputLines {
+            lines: out,
+            omitted: 0,
+        };
     }
 
     let visible_without_ellipsis = line_limit.saturating_sub(1);
@@ -166,9 +185,6 @@ pub(crate) fn output_lines(
     for (i, raw) in lines[..head_count].iter().enumerate() {
         push_output_line(&mut out, raw, i, include_prefix, include_angle_pipe);
     }
-
-    let omitted = total.saturating_sub(head_count + tail_count);
-    out.push(ExecCell::output_ellipsis_line(omitted));
 
     let tail_start = total.saturating_sub(tail_count);
     for (i, raw) in lines[tail_start..].iter().enumerate() {
@@ -181,7 +197,10 @@ pub(crate) fn output_lines(
         );
     }
 
-    OutputLines { lines: out }
+    OutputLines {
+        lines: out,
+        omitted: total.saturating_sub(head_count + tail_count),
+    }
 }
 
 fn push_output_line(
@@ -469,7 +488,7 @@ impl ExecCell {
                     include_prefix: false,
                 },
             );
-            if raw_output.lines.is_empty() {
+            if raw_output.lines.is_empty() && raw_output.omitted == 0 {
                 if !call.is_unified_exec_interaction() {
                     lines.extend(prefix_lines(
                         vec![Line::from("(no output)".dim())],
@@ -488,7 +507,11 @@ impl ExecCell {
                         &mut wrapped_output,
                     );
                 }
-                let wrapped_output = cap_output_preview_rows(wrapped_output, line_limit);
+                let wrapped_output = cap_output_preview_rows_with_prior_omission(
+                    wrapped_output,
+                    line_limit,
+                    raw_output.omitted,
+                );
 
                 let prefixed_output = prefix_lines(
                     wrapped_output,
@@ -629,8 +652,8 @@ mod tests {
         let rendered_text = rendered.iter().map(render_line_text).join("\n");
 
         assert!(
-            rendered_text.contains("ctrl + t") && rendered_text.contains("… +"),
-            "expected wrapped output rows to be capped, got:\n{rendered_text}"
+            rendered_text.contains("… +17 lines (ctrl + t to view transcript)"),
+            "expected logical and wrapped omissions to be accumulated, got:\n{rendered_text}"
         );
         assert!(
             rendered.len() <= 7,
@@ -647,7 +670,7 @@ mod tests {
             formatted_output: String::new(),
         };
 
-        let rendered: Vec<String> = output_lines(
+        let OutputLines { lines, omitted } = output_lines(
             Some(&output),
             OutputLinesParams {
                 line_limit: 2,
@@ -655,11 +678,11 @@ mod tests {
                 include_angle_pipe: false,
                 include_prefix: false,
             },
-        )
-        .lines
-        .iter()
-        .map(render_line_text)
-        .collect();
+        );
+        let rendered: Vec<String> = cap_output_preview_rows_with_prior_omission(lines, 2, omitted)
+            .iter()
+            .map(render_line_text)
+            .collect();
 
         assert!(
             rendered
@@ -667,6 +690,25 @@ mod tests {
                 .any(|line| line.contains("… +6 lines (ctrl + t to view transcript)")),
             "expected logical truncation to include transcript hint, got: {rendered:?}"
         );
+    }
+
+    #[test]
+    fn output_preview_accumulates_prior_and_wrapped_omissions() {
+        let lines = (1..=8)
+            .map(|idx| Line::from(format!("row {idx}")))
+            .collect();
+        let rendered = cap_output_preview_rows_with_prior_omission(lines, 5, 97)
+            .iter()
+            .map(render_line_text)
+            .join("\n");
+
+        insta::assert_snapshot!(rendered, @r"
+        row 1
+        row 2
+        … +101 lines (ctrl + t to view transcript)
+        row 7
+        row 8
+        ");
     }
 
     #[test]
