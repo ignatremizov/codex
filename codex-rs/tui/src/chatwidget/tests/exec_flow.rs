@@ -992,6 +992,75 @@ async fn exec_history_shows_unified_exec_tool_calls() {
 }
 
 #[tokio::test]
+async fn skill_read_uses_directory_name_before_skills_list_loads() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+
+    let begin = begin_exec(
+        &mut chat,
+        "call-read-skill",
+        "cat /tmp/skills/frontend-coding/SKILL.md",
+    );
+    end_exec(&mut chat, begin, "", "", /*exit_code*/ 0);
+
+    assert_chatwidget_snapshot!(
+        "skill_read_uses_directory_name_before_skills_list_loads",
+        active_blob(&chat)
+    );
+}
+
+#[tokio::test]
+async fn skill_read_foreign_absolute_path_uses_uri_parent_name() {
+    let (chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let parsed = chat.annotate_skill_reads_in_parsed_cmd(vec![ParsedCommand::Read {
+        cmd: r"cat C:\workspace\skills\frontend-coding\SKILL.md".to_string(),
+        name: "SKILL.md".to_string(),
+        path: PathBuf::from(r"C:\workspace\skills\frontend-coding\SKILL.md"),
+    }]);
+
+    assert_eq!(
+        parsed,
+        vec![ParsedCommand::Read {
+            cmd: r"cat C:\workspace\skills\frontend-coding\SKILL.md".to_string(),
+            name: "SKILL.md (frontend-coding skill)".to_string(),
+            path: PathBuf::from(r"C:\workspace\skills\frontend-coding\SKILL.md"),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn skill_read_prefers_loaded_skill_name_over_directory_name() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let skill_path = test_path_buf("/tmp/skills/directory-name/SKILL.md").abs();
+    chat.skills_all = vec![SkillMetadata {
+        name: "loaded-name".to_string(),
+        description: "Test skill".to_string(),
+        short_description: None,
+        interface: None,
+        dependencies: None,
+        path: skill_path.clone(),
+        scope: crate::test_support::skill_scope_user(),
+        enabled: true,
+        plugin_id: None,
+    }];
+
+    let parsed = chat.annotate_skill_reads_in_parsed_cmd(vec![ParsedCommand::Read {
+        cmd: "cat /tmp/skills/directory-name/SKILL.md".to_string(),
+        name: "SKILL.md".to_string(),
+        path: skill_path.into_path_buf(),
+    }]);
+
+    assert_eq!(
+        parsed,
+        vec![ParsedCommand::Read {
+            cmd: "cat /tmp/skills/directory-name/SKILL.md".to_string(),
+            name: "SKILL.md (loaded-name skill)".to_string(),
+            path: test_path_buf("/tmp/skills/directory-name/SKILL.md"),
+        }]
+    );
+}
+
+#[tokio::test]
 async fn unified_exec_unknown_end_with_active_exploring_cell_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();
