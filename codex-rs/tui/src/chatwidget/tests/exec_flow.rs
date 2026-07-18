@@ -560,6 +560,24 @@ async fn exec_history_shows_unified_exec_tool_calls() {
 }
 
 #[tokio::test]
+async fn skill_read_uses_directory_name_before_skills_list_loads() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+
+    let begin = begin_exec(
+        &mut chat,
+        "call-read-skill",
+        "cat /tmp/skills/frontend-coding/SKILL.md",
+    );
+    end_exec(&mut chat, begin, "", "", /*exit_code*/ 0);
+
+    assert_chatwidget_snapshot!(
+        "skill_read_uses_directory_name_before_skills_list_loads",
+        active_blob(&chat)
+    );
+}
+
+#[tokio::test]
 async fn unified_exec_unknown_end_with_active_exploring_cell_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();

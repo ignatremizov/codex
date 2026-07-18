@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::OsStr;
+use std::path::Path;
 
 use super::ChatWidget;
 use crate::app_event::AppEvent;
@@ -161,10 +163,6 @@ impl ChatWidget {
         &self,
         mut parsed_cmd: Vec<ParsedCommand>,
     ) -> Vec<ParsedCommand> {
-        if self.skills_all.is_empty() {
-            return parsed_cmd;
-        }
-
         for parsed in &mut parsed_cmd {
             let ParsedCommand::Read { name, path, .. } = parsed else {
                 continue;
@@ -173,13 +171,18 @@ impl ChatWidget {
                 continue;
             }
 
-            // Best effort only: annotate exact SKILL.md path matches from the loaded skills list.
-            if let Some(skill) = self
+            let skill_name = self
                 .skills_all
                 .iter()
                 .find(|skill| skill.path.as_path() == path)
-            {
-                *name = format!("{name} ({} skill)", skill.name);
+                .map(|skill| skill.name.as_str())
+                .or_else(|| {
+                    path.parent()
+                        .and_then(Path::file_name)
+                        .and_then(OsStr::to_str)
+                });
+            if let Some(skill_name) = skill_name {
+                *name = format!("{name} ({skill_name} skill)");
             }
         }
 
