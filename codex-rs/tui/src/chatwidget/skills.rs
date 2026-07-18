@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::OsStr;
+use std::path::Path;
 
 use super::ChatWidget;
 use crate::app_event::AppEvent;
@@ -19,6 +21,8 @@ use codex_app_server_protocol::SkillsListResponse;
 use codex_connectors::AppInfo;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::LegacyAppPathString;
+use codex_utils_path_uri::PathUri;
 use codex_utils_plugins::mention_syntax::TOOL_MENTION_SIGIL;
 
 impl ChatWidget {
@@ -145,10 +149,6 @@ impl ChatWidget {
         &self,
         mut parsed_cmd: Vec<ParsedCommand>,
     ) -> Vec<ParsedCommand> {
-        if self.skills_all.is_empty() {
-            return parsed_cmd;
-        }
-
         for parsed in &mut parsed_cmd {
             let ParsedCommand::Read { name, path, .. } = parsed else {
                 continue;
@@ -157,13 +157,31 @@ impl ChatWidget {
                 continue;
             }
 
-            // Best effort only: annotate exact SKILL.md path matches from the loaded skills list.
-            if let Some(skill) = self
+            let path_uri = LegacyAppPathString::from_string(path.to_string_lossy().into_owned())
+                .to_inferred_path_uri();
+            let skill_name = self
                 .skills_all
                 .iter()
-                .find(|skill| skill.path.as_path() == path)
-            {
-                *name = format!("{name} ({} skill)", skill.name);
+                .find(|skill| {
+                    skill.path.as_path() == path
+                        || path_uri.as_ref().is_some_and(|path_uri| {
+                            PathUri::from_abs_path(&skill.path).eq(path_uri)
+                        })
+                })
+                .map(|skill| skill.name.clone())
+                .or_else(|| {
+                    path_uri
+                        .as_ref()
+                        .and_then(|path_uri| path_uri.parent()?.basename())
+                })
+                .or_else(|| {
+                    path.parent()
+                        .and_then(Path::file_name)
+                        .and_then(OsStr::to_str)
+                        .map(ToOwned::to_owned)
+                });
+            if let Some(skill_name) = skill_name {
+                *name = format!("{name} ({skill_name} skill)");
             }
         }
 
