@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::OsStr;
+use std::path::Path;
 
 use super::ChatWidget;
 use crate::app_event::AppEvent;
@@ -145,10 +147,6 @@ impl ChatWidget {
         &self,
         mut parsed_cmd: Vec<ParsedCommand>,
     ) -> Vec<ParsedCommand> {
-        if self.skills_all.is_empty() {
-            return parsed_cmd;
-        }
-
         for parsed in &mut parsed_cmd {
             let ParsedCommand::Read { name, path, .. } = parsed else {
                 continue;
@@ -157,14 +155,28 @@ impl ChatWidget {
                 continue;
             }
 
-            // Best effort only: annotate exact SKILL.md path matches from the loaded skills list.
-            if let Some(path) = LegacyAppPathString::from_path(path).to_inferred_path_uri()
-                && let Some(skill) = self
-                    .skills_all
-                    .iter()
-                    .find(|skill| skill.path.to_inferred_path_uri().as_ref() == Some(&path))
-            {
-                *name = format!("{name} ({} skill)", skill.name);
+            let path_uri = LegacyAppPathString::from_path(path).to_inferred_path_uri();
+            let skill_name = path_uri
+                .as_ref()
+                .and_then(|path_uri| {
+                    self.skills_all
+                        .iter()
+                        .find(|skill| skill.path.to_inferred_path_uri().as_ref() == Some(path_uri))
+                })
+                .map(|skill| skill.name.clone())
+                .or_else(|| {
+                    path_uri
+                        .as_ref()
+                        .and_then(|path_uri| path_uri.parent()?.basename())
+                })
+                .or_else(|| {
+                    path.parent()
+                        .and_then(Path::file_name)
+                        .and_then(OsStr::to_str)
+                        .map(ToOwned::to_owned)
+                });
+            if let Some(skill_name) = skill_name {
+                *name = format!("{name} ({skill_name} skill)");
             }
         }
 
