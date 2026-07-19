@@ -595,6 +595,8 @@ fn backtrack_prompt_turn_index(
     prompt: &mut UserMessage,
 ) -> Result<usize> {
     let mut visible_user_messages_seen = 0_usize;
+    let mut ordinal_candidate_present = false;
+    let mut nearest_matching_candidate = None;
     let mut review_mode = false;
     for (turn_index, turn) in turns.iter().enumerate() {
         let hidden_nested_review_turn = turn_index
@@ -602,7 +604,7 @@ fn backtrack_prompt_turn_index(
             .and_then(|index| turns.get(index))
             .is_some_and(|previous| is_hidden_nested_review_turn(previous, turn));
         let mut user_messages_in_turn = 0_usize;
-        for item in &turn.items {
+        for (item_index, item) in turn.items.iter().enumerate() {
             let content = match item {
                 ThreadItem::EnteredReviewMode { .. } => {
                     review_mode = true;
@@ -632,34 +634,74 @@ fn backtrack_prompt_turn_index(
             {
                 continue;
             }
-            if visible_user_messages_seen != nth_user_message {
-                visible_user_messages_seen =
-                    visible_user_messages_seen.saturating_add(/*rhs*/ 1);
+            let persisted_ordinal = visible_user_messages_seen;
+            visible_user_messages_seen = visible_user_messages_seen.saturating_add(/*rhs*/ 1);
+            ordinal_candidate_present |= persisted_ordinal == nth_user_message;
+            let selected_local_images = prompt.local_images.iter().map(|image| &image.path);
+            let prompt_matches = prompt.text == display.message
+                && prompt.text_elements == display.text_elements
+                && prompt.remote_image_urls == display.remote_image_urls
+                && selected_local_images.eq(display.local_images.iter());
+            if !prompt_matches {
                 continue;
             }
 
-            if is_steer {
-                bail!("the selected prompt is a steer and cannot be edited independently");
+            // The TUI renders a submitted prompt before turn/start completes. If that turn is
+            // interrupted before its user-message event is persisted, the transcript keeps a
+            // visible prompt with no matching ThreadItem and later ordinals shift. Prefer the
+            // nearest exact persisted prompt so one such optimistic entry does not break editing.
+            let distance = persisted_ordinal.abs_diff(nth_user_message);
+            let candidate_is_after_selection = persisted_ordinal > nth_user_message;
+            let should_replace = nearest_matching_candidate.as_ref().is_none_or(
+                |(best_distance, best_is_after_selection, ..)| {
+                    distance < *best_distance
+                        || (distance == *best_distance
+                            && !candidate_is_after_selection
+                            && *best_is_after_selection)
+                },
+            );
+            if should_replace {
+                nearest_matching_candidate = Some((
+                    distance,
+                    candidate_is_after_selection,
+                    turn_index,
+                    item_index,
+                    is_steer,
+                ));
             }
-            if matches!(turn.status, TurnStatus::InProgress) {
-                bail!("the selected prompt belongs to a turn that is still in progress");
+            if distance == 0 {
+                break;
             }
-
-            let selected_local_images = prompt.local_images.iter().map(|image| &image.path);
-            if prompt.text != display.message
-                || prompt.text_elements != display.text_elements
-                || prompt.remote_image_urls != display.remote_image_urls
-                || !selected_local_images.eq(display.local_images.iter())
-            {
-                bail!("the selected transcript prompt no longer matches the persisted thread");
-            }
-            prompt.mention_bindings = mention_bindings_from_user_inputs(content, &display.message);
-
-            return Ok(turn_index);
         }
     }
 
-    bail!("the selected prompt was not found in the persisted thread")
+    let Some((_, _, turn_index, item_index, is_steer)) = nearest_matching_candidate else {
+        if ordinal_candidate_present {
+            bail!("the selected transcript prompt no longer matches the persisted thread");
+        }
+        bail!("the selected prompt was not found in the persisted thread");
+    };
+    let turn = &turns[turn_index];
+    if is_steer {
+        bail!("the selected prompt is a steer and cannot be edited independently");
+    }
+    if matches!(turn.status, TurnStatus::InProgress) {
+        bail!("the selected prompt belongs to a turn that is still in progress");
+    }
+    let Some(ThreadItem::UserMessage { content, .. }) = turn.items.get(item_index) else {
+        bail!("the selected prompt was not found in the persisted thread");
+    };
+    let display = ChatWidget::user_message_display_from_inputs(content);
+    let selected_local_images = prompt.local_images.iter().map(|image| &image.path);
+    if prompt.text != display.message
+        || prompt.text_elements != display.text_elements
+        || prompt.remote_image_urls != display.remote_image_urls
+        || !selected_local_images.eq(display.local_images.iter())
+    {
+        bail!("the selected transcript prompt no longer matches the persisted thread");
+    }
+    prompt.mention_bindings = mention_bindings_from_user_inputs(content, &display.message);
+    Ok(turn_index)
 }
 
 /// Returns whether a turn is the reconstructed inline-review child with duplicated prompt inputs.
@@ -859,6 +901,34 @@ mod tests {
                 &mut prompt("turn-2-prompt-0"),
             )
             .expect("later prompt should resolve"),
+            1
+        );
+    }
+
+    #[test]
+    fn backtrack_resolves_prompt_after_unpersisted_transcript_entry() {
+        let turns = vec![
+            turn("turn-1", TurnStatus::Completed, /*user_messages*/ 1),
+            turn("turn-2", TurnStatus::Completed, /*user_messages*/ 1),
+            turn("turn-3", TurnStatus::Completed, /*user_messages*/ 1),
+        ];
+
+        assert_eq!(
+            backtrack_fork_before_turn_id(
+                &turns,
+                /*nth_user_message*/ 2,
+                &mut prompt("turn-2-prompt-0"),
+            )
+            .expect("shifted prompt should resolve by persisted identity"),
+            Some("turn-2".to_string())
+        );
+        assert_eq!(
+            backtrack_rollback_turn_count(
+                &turns,
+                /*nth_user_message*/ 3,
+                &mut prompt("turn-3-prompt-0"),
+            )
+            .expect("out-of-range ordinal should resolve by persisted identity"),
             1
         );
     }
