@@ -105,7 +105,11 @@ pub fn builder_from_items(
     ))
 }
 
-/// Returns the stable thread ID from a canonical filename, including a reverted rollout's name.
+/// Returns the stable thread ID encoded in a canonical plain or compressed rollout filename.
+///
+/// Unlike [`rollout_id_from_path`], this retains the original thread identity after a revert
+/// switches the thread to a different immutable rollout. Filename identity must still be
+/// checked against the persisted metadata before authorizing a mutation.
 pub fn thread_id_from_rollout_path(path: &Path) -> Option<ThreadId> {
     Some(RolloutFileName::parse(path.file_name()?.to_str()?)?.thread_id())
 }

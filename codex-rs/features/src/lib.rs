@@ -511,8 +511,6 @@ pub enum Feature {
     AsyncCompaction,
     /// Restrict background compaction to the root session.
     AsyncCompactionRootOnly,
-    /// Include retained images in the remote compaction context budget.
-    CompactionImageBudget,
     /// Retain client-authored developer messages across compacted context windows.
     RetainClientDeveloperMessages,
     /// Honor client-requested tool-output retention across context windows.
@@ -2425,12 +2423,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "async_compaction_root_only",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::CompactionImageBudget,
-        key: "compaction_image_budget",
-        stage: Stage::Stable,
-        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::RetainClientDeveloperMessages,

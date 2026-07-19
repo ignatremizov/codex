@@ -270,6 +270,7 @@ fn compacted(replacement_history: Vec<ResponseItem>) -> RolloutItem {
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: None,
+        ..Default::default()
     }))
 }
 
@@ -2270,6 +2271,7 @@ async fn assert_subagent_transcript_migration(scenario: SubagentMigrationScenari
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: None,
+                ..Default::default()
             })),
             started("removed-turn"),
             user_message("ROLLED_BACK_SENTINEL"),
@@ -2305,6 +2307,7 @@ async fn assert_subagent_transcript_migration(scenario: SubagentMigrationScenari
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: Some(resume_metadata.clone()),
+                ..Default::default()
             })),
             started("child-turn"),
             RolloutItem::TurnContext(TurnContextItem {

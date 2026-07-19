@@ -1,107 +1,149 @@
-//! Counts retained media tokens and truncates each media part together with its labels.
+//! Representation-only media retention for a remote compaction replacement.
 
-use super::RetainedImageBudget;
-use crate::context_manager::estimate_image_reference_bytes;
-use crate::session::FileAudioDurations;
-use codex_context_fragments::AnnotatedContent;
-use codex_context_fragments::set_annotated_content;
-use codex_context_fragments::to_annotated_content;
-use codex_history::ResponseItemEnvelope;
-use codex_protocol::models::AudioReference;
-use codex_protocol::models::ContentItem;
-use codex_protocol::models::is_closing_media_label;
-use codex_protocol::models::is_opening_media_label;
-use codex_protocol::protocol::TruncationPolicy;
-use codex_utils_output_truncation::approx_token_count;
-use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
-use codex_utils_output_truncation::truncate_text;
+use super::*;
 
-pub(super) fn content_item_token_count(
-    item: &ContentItem,
-    image_budget: RetainedImageBudget,
-    audio_durations: &FileAudioDurations,
-) -> usize {
-    match item {
-        ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
-            approx_token_count(text)
-        }
-        ContentItem::InputImage { .. } if image_budget == RetainedImageBudget::Disabled => 0,
-        ContentItem::InputImage { image, detail } => usize::try_from(
-            approx_tokens_from_byte_count_i64(estimate_image_reference_bytes(image, *detail)),
-        )
-        .unwrap_or(usize::MAX),
-        ContentItem::InputAudio {
-            audio: AudioReference::File { file_id },
-        } => audio_durations.tokens(file_id),
-        ContentItem::InputAudio {
-            audio: AudioReference::Inline { .. },
-        } => 0,
-    }
+#[cfg(test)]
+pub(super) fn build_v2_compacted_history(
+    input: &[ResponseItemEnvelope],
+    compacted_prefix_len: usize,
+    compaction_output: ResponseItem,
+    features: &Features,
+) -> (Vec<ResponseItemEnvelope>, CompactedMediaSanitization) {
+    build_v2_compacted_history_with_audio(
+        input,
+        compacted_prefix_len,
+        compaction_output,
+        features,
+        &FileAudioDurations::default(),
+    )
 }
 
-/// Find the trailing image or audio part together with its adjacent harness labels.
-fn trailing_media_start(content: &[AnnotatedContent]) -> Option<usize> {
-    let last = content.len().checked_sub(1)?;
-    let media = match content[last].content() {
-        ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => last,
-        ContentItem::InputText { text }
-            if last > 0 && is_closing_media_label(text, content[last - 1].content()) =>
-        {
-            last - 1
-        }
-        _ => return None,
-    };
-    let has_open_tag = media > 0
-        && matches!(content[media - 1].content(), ContentItem::InputText { text } if is_opening_media_label(text, content[media].content()));
-    Some(media - usize::from(has_open_tag))
-}
-
-/// Keep the newest suffix. A media part and its labels must fit together even
-/// when the media itself has zero cost.
-pub(super) fn truncate_message_to_token_budget(
-    mut envelope: ResponseItemEnvelope,
-    max_tokens: usize,
-    image_budget: RetainedImageBudget,
+pub(super) fn build_v2_compacted_history_with_audio(
+    replacement_history_input: &[ResponseItemEnvelope],
+    compacted_prefix_len: usize,
+    compaction_output: ResponseItem,
+    features: &Features,
     audio_durations: &FileAudioDurations,
-) -> Option<ResponseItemEnvelope> {
-    let mut content = to_annotated_content(&mut envelope.item)?;
-    let mut remaining = max_tokens;
-    let mut retained = Vec::with_capacity(content.len());
-    while remaining > 0 && !content.is_empty() {
-        if let Some(start) = trailing_media_start(&content) {
-            let tokens = content[start..]
-                .iter()
-                .map(|part| content_item_token_count(part.content(), image_budget, audio_durations))
-                .fold(0, usize::saturating_add);
-            if tokens > remaining {
-                break;
+) -> (Vec<ResponseItemEnvelope>, CompactedMediaSanitization) {
+    let no_file_error_sources =
+        crate::context_manager::rejected_audio::checkpoint_input_has_no_file_error_sources(
+            replacement_history_input,
+        );
+    let pending_sequence =
+        crate::compact_pending_input::pending_mail_sequence(replacement_history_input);
+    let compacted_prefix_len = compacted_prefix_len.min(replacement_history_input.len());
+    let mut inherited = replacement_history_input[..compacted_prefix_len].to_vec();
+    let mut current = replacement_history_input[compacted_prefix_len..].to_vec();
+    let mut media_sanitization = sanitize_annotated_compacted_media(&mut inherited);
+    expire_annotated_compacted_media_references(&mut inherited);
+    media_sanitization.accumulate(sanitize_annotated_compacted_media(&mut current));
+    let current_omission_text = compacted_image_omission_text_from_envelopes(&current);
+    inherited = retain_remote_compaction_v2_items(inherited, features, pending_sequence);
+    current = retain_remote_compaction_v2_items(current, features, pending_sequence);
+    if compacted_image_omission_text_from_envelopes(&current).is_none()
+        && let Some(omission_text) = current_omission_text.as_ref()
+    {
+        let target_message = current.iter_mut().rev().find_map(|envelope| {
+            if !is_retained_for_remote_compaction_v2(envelope, features) {
+                return None;
             }
-            remaining -= tokens;
-            retained.extend(content.drain(start..).rev());
-            continue;
-        }
-        let mut item = content.pop()?;
-        let (ContentItem::InputText { text } | ContentItem::OutputText { text, .. }) =
-            item.content_mut()
-        else {
-            unreachable!("media parts are handled above");
-        };
-        let tokens = approx_token_count(text);
-        if tokens > remaining {
-            *text = truncate_text(text, TruncationPolicy::Tokens(remaining));
-        }
-        remaining = remaining.saturating_sub(tokens);
-        if !text.is_empty() {
-            retained.push(item);
+            matches!(&envelope.item, ResponseItem::Message { .. }).then_some(envelope)
+        });
+        if let Some(envelope) = target_message {
+            let Some(mut content) =
+                codex_context_fragments::to_annotated_content(&mut envelope.item)
+            else {
+                unreachable!("target_message only returns message items");
+            };
+            content.push(annotated_compacted_image_omission(omission_text.clone()));
+            let _ = codex_context_fragments::set_annotated_content(&mut envelope.item, content);
+            if let Some(metadata) = &mut envelope.metadata {
+                metadata.mark_retained_sources_incomplete();
+            }
+        } else {
+            current.push(ResponseItemEnvelope::new(
+                standalone_compacted_image_omission_message(omission_text.clone()),
+            ));
         }
     }
-    if retained.is_empty() {
-        return None;
+    inherited.extend(current);
+    let mut retained = truncate_retained_messages_for_remote_compaction_with_audio(
+        inherited,
+        RETAINED_MESSAGE_TOKEN_BUDGET,
+        audio_durations,
+    );
+    if compacted_image_omission_text_from_envelopes(&retained).is_none()
+        && let Some(omission_text) = current_omission_text
+    {
+        retained.push(ResponseItemEnvelope::new(
+            standalone_compacted_image_omission_message(omission_text),
+        ));
+        retained = truncate_retained_messages_for_remote_compaction_with_audio(
+            retained,
+            RETAINED_MESSAGE_TOKEN_BUDGET,
+            audio_durations,
+        );
     }
-    retained.reverse();
-    set_annotated_content(&mut envelope.item, retained)?;
-    if let Some(metadata) = &mut envelope.metadata {
-        metadata.mark_retained_sources_incomplete();
+    let mut checkpoint = ResponseItemEnvelope::new(compaction_output);
+    if no_file_error_sources {
+        checkpoint
+            .metadata
+            .get_or_insert_default()
+            .compaction_without_file_error_sources = true;
     }
-    Some(envelope)
+    let retained =
+        crate::compact_pending_input::insert_summary(retained, checkpoint, pending_sequence);
+    (retained, media_sanitization)
+}
+
+fn sanitize_annotated_compacted_media(
+    items: &mut [ResponseItemEnvelope],
+) -> CompactedMediaSanitization {
+    let prefix_len = items.len();
+    crate::context::sanitize_compacted_media_envelopes(items, prefix_len)
+}
+
+fn expire_annotated_compacted_media_references(items: &mut [ResponseItemEnvelope]) {
+    let mut raw_items = items
+        .iter()
+        .map(|envelope| envelope.item.clone())
+        .collect::<Vec<_>>();
+    expire_compacted_media_references(&mut raw_items);
+    for (envelope, item) in items.iter_mut().zip(raw_items) {
+        if envelope.item != item {
+            if let Some(metadata) = &mut envelope.metadata {
+                metadata.mark_retained_sources_incomplete();
+            }
+            envelope.item = item;
+        }
+    }
+}
+
+fn compacted_image_omission_text_from_envelopes(items: &[ResponseItemEnvelope]) -> Option<String> {
+    let raw_items = items
+        .iter()
+        .map(|envelope| envelope.item.clone())
+        .collect::<Vec<_>>();
+    compacted_image_omission_text(&raw_items).map(str::to_owned)
+}
+
+fn retain_remote_compaction_v2_items(
+    items: Vec<ResponseItemEnvelope>,
+    features: &Features,
+    pending_sequence: Option<u64>,
+) -> Vec<ResponseItemEnvelope> {
+    v2_history_item_groups(items)
+        .filter(|group| {
+            is_retained_for_remote_compaction_v2(&group.source, features)
+                || pending_sequence
+                    .is_some_and(|first| is_retained_pending_mail(&group.source, first))
+        })
+        .filter(|group| {
+            !matches!(
+                &group.source.item,
+                ResponseItem::Message { content, .. } if content.is_empty()
+            )
+        })
+        .flat_map(HistoryItemGroup::into_items)
+        .collect()
 }

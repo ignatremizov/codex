@@ -64,6 +64,8 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
     let previous_window_id = ContextWindowId::new_uuid_v7();
     let window_id = ContextWindowId::new_uuid_v7();
     let rollout_items = vec![RolloutItem::Compacted(Box::new(CompactedItem {
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
         message: String::new(),
         replacement_history: Some(replacement_history.clone()),
         retained_context: None,

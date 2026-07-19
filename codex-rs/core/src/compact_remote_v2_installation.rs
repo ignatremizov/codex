@@ -180,8 +180,9 @@ async fn build_and_install_compaction(
         rejected_audio_file_ids,
         input_goal_ids,
         trace_input_history,
-        prompt_input,
-        prompt_input_metadata,
+        replacement_history_input,
+        compacted_prefix_len,
+        mut media_sanitization,
         compaction_output,
         compaction_response_id,
         token_usage,
@@ -195,18 +196,14 @@ async fn build_and_install_compaction(
             .await?;
         analytics_details.active_context_tokens_before = Some(token_usage.input_tokens);
     }
-    let (compacted_history, retained_images) = build_v2_compacted_history(
-        prompt_input,
-        prompt_input_metadata,
+    let (compacted_history, replacement_sanitization) = build_v2_compacted_history_with_audio(
+        &replacement_history_input,
+        compacted_prefix_len,
         compaction_output,
         sess.features().get(),
-        if sess.enabled(Feature::CompactionImageBudget) {
-            RetainedImageBudget::Enabled
-        } else {
-            RetainedImageBudget::Disabled
-        },
         crate::session::file_audio::snapshot(sess).await.as_ref(),
     );
+    media_sanitization.accumulate(replacement_sanitization);
     let reviewer_compaction_hash = reviewer_compaction_hash(sess, turn_context).await;
     let installed = if let Some((prefix, model_info, cutoff_world_state)) = prefix {
         let (initial_context, world_state_baseline) = sess
@@ -276,7 +273,19 @@ async fn build_and_install_compaction(
         analytics_details.cached_input_tokens = Some(token_usage.cached_input_tokens);
         analytics_details.cache_write_input_tokens = Some(token_usage.cache_write_input_tokens);
     }
-    analytics_details.retained_image_count = Some(retained_images);
+    analytics_details.retained_image_count = Some(0);
+    analytics_details.omitted_image_count = Some(
+        analytics_details
+            .omitted_image_count
+            .unwrap_or_default()
+            .saturating_add(media_sanitization.omitted_image_count),
+    );
+    analytics_details.omitted_inline_media_bytes = Some(
+        analytics_details
+            .omitted_inline_media_bytes
+            .unwrap_or_default()
+            .saturating_add(media_sanitization.omitted_inline_media_bytes),
+    );
     if let Some(trace_input_history) = trace_input_history.as_deref() {
         let replacement_history = installed_history
             .iter()

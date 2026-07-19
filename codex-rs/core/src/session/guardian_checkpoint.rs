@@ -24,8 +24,12 @@ impl Session {
             previous_window_id: window_ids.previous_window_id.clone(),
             window_id: Some(window_ids.window_id.clone()),
             compaction_response_id: None,
-            latest_token_usage_record: state.latest_token_usage_record.clone(),
+            latest_token_usage_record: state.latest_token_usage_record.clone().map(Box::new),
             resume_metadata: None,
+            replacement_history_media_sanitized_prefix_len: Some(
+                history.compacted_prefix_len().unwrap_or_default() as u64,
+            ),
+            replacement_history_media_repair: false,
         }))];
         if let Some(world_state) = history.world_state_checkpoint() {
             items.push(RolloutItem::WorldState(world_state));

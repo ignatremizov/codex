@@ -938,9 +938,6 @@
             "command_sessions_world_state": {
               "type": "boolean"
             },
-            "compaction_image_budget": {
-              "type": "boolean"
-            },
             "computer_use": {
               "type": "boolean"
             },
@@ -8097,9 +8094,6 @@
           "type": "boolean"
         },
         "command_sessions_world_state": {
-          "type": "boolean"
-        },
-        "compaction_image_budget": {
           "type": "boolean"
         },
         "computer_use": {

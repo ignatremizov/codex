@@ -76,7 +76,7 @@ fn image_only_boundary_is_atomic_and_does_not_backfill_older_messages() {
             message(vec![image.clone()]),
             newest.clone(),
         ];
-        let image_tokens = media::content_item_token_count(
+        let image_tokens = media_budget::content_item_token_count(
             &image,
             RetainedImageBudget::Enabled,
             &FileAudioDurations::default(),
@@ -97,7 +97,7 @@ fn image_only_boundary_is_atomic_and_does_not_backfill_older_messages() {
 #[test]
 fn file_audio_is_charged_and_atomic_in_both_image_budget_modes() {
     let audio = file_audio();
-    let audio_tokens = media::content_item_token_count(
+    let audio_tokens = media_budget::content_item_token_count(
         &audio,
         RetainedImageBudget::Enabled,
         &FileAudioDurations::default(),
@@ -133,7 +133,7 @@ fn file_audio_is_charged_and_atomic_in_both_image_budget_modes() {
         &FileAudioDurations::default(),
     )
     .max(1);
-    let after_tokens = media::content_item_token_count(
+    let after_tokens = media_budget::content_item_token_count(
         &text("after"),
         RetainedImageBudget::Enabled,
         &FileAudioDurations::default(),
@@ -199,11 +199,11 @@ fn file_audio_cutoff_does_not_backfill_older_uncharged_media() {
         file_audio(),
         trailing_text.clone(),
     ]);
-    let max_tokens = media::content_item_token_count(
+    let max_tokens = media_budget::content_item_token_count(
         &file_audio(),
         RetainedImageBudget::Enabled,
         &FileAudioDurations::default(),
-    ) + media::content_item_token_count(
+    ) + media_budget::content_item_token_count(
         &trailing_text,
         RetainedImageBudget::Enabled,
         &FileAudioDurations::default(),
@@ -229,7 +229,7 @@ fn file_audio_cutoff_does_not_backfill_older_uncharged_media() {
 #[test]
 fn older_media_keeps_both_labels_or_is_dropped_after_file_audio_fits() {
     let file = file_audio();
-    let file_tokens = media::content_item_token_count(
+    let file_tokens = media_budget::content_item_token_count(
         &file,
         RetainedImageBudget::Enabled,
         &FileAudioDurations::default(),
@@ -321,7 +321,7 @@ fn later_image_parts_preserve_labels_audio_and_annotations() {
     let image_tokens = parts[1..4]
         .iter()
         .map(|item| {
-            media::content_item_token_count(
+            media_budget::content_item_token_count(
                 item,
                 RetainedImageBudget::Enabled,
                 &FileAudioDurations::default(),
@@ -367,7 +367,7 @@ fn image_treatment_preserves_text_only_boundary_behavior() {
                 RetainedImageBudget::Enabled,
                 &FileAudioDurations::default()
             ),
-            truncate_retained_messages_for_remote_compaction(
+            truncate_retained_messages_for_remote_compaction_with_audio(
                 vec![source.clone()],
                 max_tokens,
                 &FileAudioDurations::default()
@@ -398,11 +398,73 @@ fn image_treatment_preserves_client_developer_boundary_behavior() {
                 RetainedImageBudget::Enabled,
                 &FileAudioDurations::default()
             ),
-            truncate_retained_messages_for_remote_compaction(
+            truncate_retained_messages_for_remote_compaction_with_audio(
                 vec![source.clone()],
                 max_tokens,
                 &FileAudioDurations::default()
             ),
+        );
+    }
+}
+
+#[test]
+fn file_audio_boundary_never_splits_a_sanitized_local_image_reference() {
+    use crate::context::ContextualUserFragment;
+    let omission = crate::context::CompactedImageOmission::reopenable_local_image()
+        .render()
+        .into_text()
+        .expect("image omission text");
+    let wrapper = vec![
+        text(&local_image_open_tag_text_with_path(
+            7,
+            std::path::Path::new("retained.png"),
+        )),
+        text(&omission),
+        text(&image_close_tag_text()),
+    ];
+    let durations = FileAudioDurations::default();
+    let audio_tokens = durations.tokens("file_audio");
+    let wrapper_tokens = wrapper
+        .iter()
+        .map(|part| {
+            media_budget::content_item_token_count(part, RetainedImageBudget::Disabled, &durations)
+        })
+        .sum::<usize>();
+    for (extra, keep_wrapper) in [(wrapper_tokens - 1, false), (wrapper_tokens, true)] {
+        let mut content = vec![text("older context")];
+        content.extend(wrapper.clone());
+        content.push(file_audio());
+        let retained = truncate_retained_messages_for_remote_compaction_with_audio(
+            vec![ResponseItemEnvelope::new(message(content))],
+            audio_tokens + extra,
+            &durations,
+        );
+        let mut expected = if keep_wrapper {
+            wrapper.clone()
+        } else {
+            Vec::new()
+        };
+        expected.push(file_audio());
+        let kinds = vec![ContentItemKind("unknown".to_string()); expected.len()];
+        let mut expected = message(expected);
+        let ResponseItem::Message {
+            internal_chat_message_metadata_passthrough,
+            ..
+        } = &mut expected
+        else {
+            unreachable!("message fixture must be a message");
+        };
+        *internal_chat_message_metadata_passthrough =
+            Some(InternalChatMessageMetadataPassthrough {
+                content_item_kinds: Some(kinds),
+                ..Default::default()
+            });
+        assert_eq!(
+            retained
+                .into_iter()
+                .map(ResponseItemEnvelope::into_item)
+                .collect::<Vec<_>>(),
+            vec![expected],
         );
     }
 }

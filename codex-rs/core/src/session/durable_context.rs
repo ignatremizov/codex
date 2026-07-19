@@ -239,19 +239,18 @@ impl HistoryPublicationHandle {
             if !items.is_empty()
                 && let Some(live_thread) = live_thread
             {
-                if let Err(error) = live_thread.append_items(&items).await {
-                    let _ = sender.send(Err(outcome.fail(error)));
-                    return;
-                }
                 if let Some(context) = persist_context {
+                    // Materialize goal-first threads before appending their batch. A later
+                    // projection failure must not turn a successful canonical append into
+                    // an apparent failure that callers could replay.
                     outcome.stage = "materialization";
                     if let Err(error) = live_thread.persist(context).await {
                         let _ = sender.send(Err(outcome.fail(error)));
                         return;
                     }
                 }
-                outcome.stage = "flush";
-                if let Err(error) = live_thread.flush().await {
+                outcome.stage = "append";
+                if let Err(error) = live_thread.append_items_and_flush_canonical(&items).await {
                     let _ = sender.send(Err(outcome.fail(error)));
                     return;
                 }

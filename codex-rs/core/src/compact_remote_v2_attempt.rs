@@ -15,6 +15,7 @@ use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::compact::CompactionAnalyticsDetails;
 use crate::compact_remote_history::trim_function_call_history_to_fit_context_window;
+use crate::context::CompactedMediaSanitization;
 use crate::context::world_state::WorldState;
 use crate::context_manager::ContextManager;
 use crate::context_manager::rejected_audio;
@@ -28,6 +29,7 @@ use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
 use codex_analytics::CompactionTrigger;
 use codex_history::CodexHarnessMetadata;
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructions;
@@ -42,8 +44,9 @@ pub(super) struct RemoteCompactV2Attempt {
     pub(super) rejected_audio_file_ids: BTreeSet<String>,
     pub(super) input_goal_ids: HashSet<ResponseItemId>,
     pub(super) trace_input_history: Option<Vec<ResponseItem>>,
-    pub(super) prompt_input: Vec<ResponseItem>,
-    pub(super) prompt_input_metadata: Vec<Option<CodexHarnessMetadata>>,
+    pub(super) replacement_history_input: Vec<ResponseItemEnvelope>,
+    pub(super) compacted_prefix_len: usize,
+    pub(super) media_sanitization: CompactedMediaSanitization,
     pub(super) compaction_output: ResponseItem,
     pub(super) compaction_response_id: String,
     pub(super) token_usage: Option<TokenUsage>,
@@ -53,7 +56,7 @@ pub(super) struct RemoteCompactV2Attempt {
 
 pub(super) enum RemoteCompactV2AttemptInput<'a> {
     Foreground(Option<&'a mut ModelClientSession>),
-    Background(BackgroundCompactionInput),
+    Background(Box<BackgroundCompactionInput>),
 }
 
 pub(crate) struct BackgroundCompactionCandidate {
@@ -70,6 +73,9 @@ pub(crate) struct BackgroundCompactionInput {
     base_instructions: BaseInstructions,
     input: Vec<ResponseItem>,
     metadata: Vec<Option<CodexHarnessMetadata>>,
+    replacement_history_input: Vec<ResponseItemEnvelope>,
+    compacted_prefix_len: usize,
+    media_sanitization: CompactedMediaSanitization,
 }
 
 pub(super) async fn run_remote_compact_v2_attempt(
@@ -91,12 +97,16 @@ pub(super) async fn run_remote_compact_v2_attempt(
         base_instructions,
         mut input,
         mut prompt_input_metadata,
+        mut replacement_history_input,
+        mut compacted_prefix_len,
+        media_sanitization,
         mut transport,
         captured_window,
     ) = match input {
         RemoteCompactV2AttemptInput::Foreground(client_session) => {
             let model_info = turn_context.model_info();
             let mut history = sess.clone_history().await;
+            let media_sanitization = history.sanitize_compacted_media_prefix();
             let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
             let tools_in_history = step_context.incremental_tools_feature().is_some()
                 && history.has_tool_declarations();
@@ -134,6 +144,8 @@ pub(super) async fn run_remote_compact_v2_attempt(
             let trace_input_history = compaction_trace
                 .is_enabled()
                 .then(|| history.raw_items().cloned().collect());
+            let compacted_prefix_len = history.compacted_prefix_len().unwrap_or_default();
+            let replacement_history_input = history.annotated_items().to_vec();
             let (mut input, metadata): (Vec<_>, Vec<_>) = history
                 .for_prompt_annotated(
                     &model_info.input_modalities,
@@ -156,23 +168,43 @@ pub(super) async fn run_remote_compact_v2_attempt(
                 base_instructions,
                 input,
                 metadata,
+                replacement_history_input,
+                compacted_prefix_len,
+                media_sanitization,
                 CompactionRequestTransport::Foreground(client_session),
                 None,
             )
         }
         RemoteCompactV2AttemptInput::Background(input) => (
             &step_context.settings.model_info,
-            UserGoalUpdate::message_ids(input.input.iter()),
+            UserGoalUpdate::message_ids(
+                input
+                    .replacement_history_input
+                    .iter()
+                    .map(|envelope| &envelope.item),
+            ),
             None,
             input.base_instructions,
             input.input,
             input.metadata,
+            input.replacement_history_input,
+            input.compacted_prefix_len,
+            input.media_sanitization,
             CompactionRequestTransport::Background(input.turn_state, input.prefix.auth_owner),
             Some(input.window),
         ),
     };
-    let mut unavailable =
-        rejected_audio::unavailable_file_audio(&input, sess.services.image_store.as_ref()).await;
+    // Canonical replacement input precedes prompt projection. Immutable rejection facts
+    // therefore have to reach it explicitly, including facts already applied to this prompt.
+    let mut unavailable = sess
+        .clone_history()
+        .await
+        .rejected_audio_file_ids()
+        .as_ref()
+        .clone();
+    unavailable.extend(
+        rejected_audio::unavailable_file_audio(&input, sess.services.image_store.as_ref()).await,
+    );
     rejected_audio::project_compaction_audio(&mut input, &mut prompt_input_metadata, &unavailable);
     let tools_in_history = step_context.incremental_tools_feature().is_some()
         && input
@@ -267,17 +299,51 @@ pub(super) async fn run_remote_compact_v2_attempt(
             }
         }
     };
+    project_replacement_file_audio(
+        &mut replacement_history_input,
+        &mut compacted_prefix_len,
+        &unavailable,
+    );
     Ok(RemoteCompactV2Attempt {
         rejected_audio_file_ids: unavailable,
         input_goal_ids,
         trace_input_history,
-        prompt_input: prompt.input,
-        prompt_input_metadata,
+        replacement_history_input,
+        compacted_prefix_len,
+        media_sanitization,
         compaction_output,
         compaction_response_id: response_id,
         token_usage,
         owned_client_session,
     })
+}
+
+/// Audio-only records can disappear. Project the two regions independently so the
+/// inherited compacted-prefix boundary still identifies the same surviving envelopes.
+fn project_replacement_file_audio(
+    input: &mut Vec<ResponseItemEnvelope>,
+    compacted_prefix_len: &mut usize,
+    rejected: &BTreeSet<String>,
+) {
+    if rejected.is_empty() {
+        return;
+    }
+    let mut current = input.split_off((*compacted_prefix_len).min(input.len()));
+    for region in [&mut *input, &mut current] {
+        let (mut items, mut metadata): (Vec<_>, Vec<_>) = region
+            .drain(..)
+            .map(|envelope| (envelope.item, envelope.metadata))
+            .unzip();
+        rejected_audio::project_compaction_audio(&mut items, &mut metadata, rejected);
+        region.extend(
+            items
+                .into_iter()
+                .zip(metadata)
+                .map(|(item, metadata)| ResponseItemEnvelope { item, metadata }),
+        );
+    }
+    *compacted_prefix_len = input.len();
+    input.extend(current);
 }
 
 // Defer normalization and attribution until the caller releases the session lock.
@@ -304,12 +370,17 @@ pub(crate) async fn capture_background_input(
         len: snapshot.annotated_items().len(),
         auth_owner,
     };
+    let media_sanitization = snapshot.sanitize_compacted_media_prefix();
     trim_function_call_history_to_fit_context_window(
         &mut snapshot,
         &step_context.turn,
         step_context.settings.model_info.usable_context_window(),
         &base_instructions,
     );
+    let compacted_prefix_len = snapshot.compacted_prefix_len().unwrap_or_default();
+    let replacement_history_input = snapshot.annotated_items().to_vec();
+    // Keep accepted envelopes before prompt normalization. File availability is checked later,
+    // outside session locks, with background shutdown cancellation.
     snapshot.normalize_history(&step_context.settings.model_info.input_modalities);
     snapshot.project_file_audio_for_prompt();
     let (mut input, metadata): (Vec<_>, Vec<_>) = snapshot
@@ -327,6 +398,9 @@ pub(crate) async fn capture_background_input(
         base_instructions,
         input,
         metadata,
+        replacement_history_input,
+        compacted_prefix_len,
+        media_sanitization,
     }
 }
 
@@ -358,7 +432,7 @@ pub(crate) async fn run_background_compaction(
         &CompactionTraceContext::disabled(),
         metadata,
         &mut CompactionAnalyticsDetails::default(),
-        RemoteCompactV2AttemptInput::Background(prepared_input),
+        RemoteCompactV2AttemptInput::Background(Box::new(prepared_input)),
     )
     .await?;
     Ok(BackgroundCompactionCandidate {
@@ -368,3 +442,7 @@ pub(crate) async fn run_background_compaction(
         attempt,
     })
 }
+
+#[cfg(test)]
+#[path = "compact_remote_v2_audio_projection_tests.rs"]
+mod audio_projection_tests;

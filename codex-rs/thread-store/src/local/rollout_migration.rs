@@ -621,7 +621,14 @@ impl LocalThreadStore {
         }
         let bytes_before = limiter.bytes_processed;
         let result = match self
-            .migrate_one_rollout(thread_id, &path, &journal_path, legacy_names, limiter, &locks)
+            .migrate_one_rollout(
+                thread_id,
+                &path,
+                &journal_path,
+                legacy_names,
+                limiter,
+                &locks,
+            )
             .await
         {
             Ok(()) => Ok(RolloutMigrationStatus::Migrated),
@@ -1193,6 +1200,7 @@ impl LocalThreadStore {
                     offset,
                     /*initial_ordinal*/ 0,
                     std::mem::take(&mut batch),
+                    thread_history::ProjectionMode::Append,
                 )
                 .await?;
                 batch_start = offset;
@@ -1207,6 +1215,7 @@ impl LocalThreadStore {
                 offset,
                 /*initial_ordinal*/ 0,
                 batch,
+                thread_history::ProjectionMode::Append,
             )
             .await?;
         }

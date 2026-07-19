@@ -18,6 +18,7 @@ use tracing::warn;
 use super::LocalThreadStore;
 use super::rollout_lineage::AncestorReads;
 use super::thread_history::ProjectedRolloutLine;
+use super::thread_history::ProjectionMode;
 use super::thread_history::RolloutProjectionStep;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
@@ -30,6 +31,7 @@ const SQLITE_PROJECTION_ANOMALY_METRIC: &str = "codex.thread_history.sqlite_proj
 const BATCH_SOURCE_BYTES: u64 = 1024 * 1024;
 const BATCH_STEPS: usize = 256;
 
+#[derive(Clone)]
 struct ProjectionRollout {
     path: PathBuf,
     reads: AncestorReads,
@@ -102,6 +104,39 @@ async fn materialize_to_sqlite_with_state_db(
     let initial_ordinal = session_meta
         .history_base
         .map_or(0, |base| base.end_ordinal_exclusive);
+    let offset_is_valid = if let Some(projection_state) = projection_state.as_ref() {
+        if start_offset == 0 {
+            projection_state.next_ordinal == initial_ordinal
+        } else if let Some(expected_previous_ordinal) = projection_state.next_ordinal.checked_sub(1)
+        {
+            let checkpoint_rollout = rollout.clone();
+            tokio::task::spawn_blocking(move || {
+                let reader = checkpoint_rollout
+                    .reads
+                    .open(&checkpoint_rollout.path, || false)?;
+                codex_rollout::last_rollout_ordinal_before_offset_in_reader(reader, start_offset)
+                    .inspect_err(|_| {
+                        checkpoint_rollout
+                            .reads
+                            .record_failure(&checkpoint_rollout.path)
+                    })
+            })
+            .await
+            .map_err(thread_history_error)?
+            .map_err(thread_store_io_error)?
+                == Some(expected_previous_ordinal)
+        } else {
+            false
+        }
+    } else {
+        true
+    };
+    if !offset_is_valid {
+        warn!(
+            "rebuilding paginated history projection after canonical rollout changed for {thread_id}"
+        );
+        return rebuild_projection(store, thread_id, rollout).await;
+    }
     let subagent_history_start_ordinal = session_meta.subagent_history_start_ordinal;
     let expected_ordinal = projection_state
         .as_ref()
@@ -114,6 +149,60 @@ async fn materialize_to_sqlite_with_state_db(
         expected_ordinal,
         initial_ordinal,
         subagent_history_start_ordinal,
+    )
+    .await
+}
+
+async fn rebuild_projection(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    rollout: ProjectionRollout,
+) -> ThreadStoreResult<()> {
+    if store.state_db.is_none() {
+        return Ok(());
+    }
+    let session_meta = codex_rollout::read_session_meta_line(&rollout.path)
+        .await
+        .map_err(|error| {
+            rollout.reads.record_failure(&rollout.path);
+            thread_store_io_error(error)
+        })?
+        .meta;
+    let initial_ordinal = session_meta
+        .history_base
+        .map_or(0, |base| base.end_ordinal_exclusive);
+    // Read the replacement before opening the transaction. A failed read or projection must
+    // leave the previous derived view available, and replacement rows publish atomically.
+    let (projections, next_offset) = tokio::task::spawn_blocking(move || {
+        // A repair replaces the derived view in one transaction. Ordinary appends
+        // continue to use the bounded pipeline and its per-batch checkpoints.
+        let mut projections = Vec::new();
+        let mut next_offset = 0;
+        read_projection_batches(
+            &rollout,
+            /*start_offset*/ 0,
+            initial_ordinal,
+            thread_id,
+            session_meta.subagent_history_start_ordinal,
+            || false,
+            |batch, offset| {
+                projections.extend(batch);
+                next_offset = offset;
+                Ok(())
+            },
+        )?;
+        Ok::<_, ThreadStoreError>((projections, next_offset))
+    })
+    .await
+    .map_err(thread_history_error)??;
+    super::thread_history::apply_projection(
+        store,
+        thread_id,
+        /*start_offset*/ 0,
+        next_offset,
+        initial_ordinal,
+        projections,
+        ProjectionMode::Rebuild,
     )
     .await
 }
@@ -419,6 +508,12 @@ fn record_projection_anomaly(anomaly: ProjectionAnomaly) {
         /*inc*/ 1,
         &[("kind", anomaly.tag())],
     );
+}
+
+fn thread_history_error(err: impl std::fmt::Display) -> ThreadStoreError {
+    ThreadStoreError::Internal {
+        message: format!("failed to project thread history: {err}"),
+    }
 }
 
 fn thread_store_io_error(err: std::io::Error) -> ThreadStoreError {

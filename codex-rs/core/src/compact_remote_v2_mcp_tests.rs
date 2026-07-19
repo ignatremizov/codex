@@ -88,21 +88,24 @@ fn repeated_remote_compaction_preserves_each_explicit_envelope_once(
     if retain_client_developer_messages {
         expected.insert(1, client);
     }
-    expected.push(ResponseItemEnvelope::new(checkpoint.clone()));
+    expected.push(ResponseItemEnvelope {
+        item: checkpoint.clone(),
+        metadata: Some(CodexHarnessMetadata {
+            compaction_without_file_error_sources: true,
+            ..Default::default()
+        }),
+    });
+    let mut compacted_prefix_len = 0;
     for _ in 0..2 {
-        let (items, metadata) = history
-            .into_iter()
-            .map(|envelope| (envelope.item, envelope.metadata))
-            .unzip();
-        let (compacted, retained_images) = build_v2_compacted_history(
-            items,
-            metadata,
+        let (compacted, sanitization) = build_v2_compacted_history(
+            &history,
+            compacted_prefix_len,
             checkpoint.clone(),
             &features,
-            RetainedImageBudget::Enabled,
         );
         assert_eq!(compacted, expected);
-        assert_eq!(retained_images, 0);
+        assert_eq!(sanitization, CompactedMediaSanitization::default());
+        compacted_prefix_len = compacted.len();
         history = compacted;
     }
 }
@@ -128,7 +131,11 @@ fn explicit_inventory_bypasses_budget_without_losing_attached_notice(max_tokens:
         expected.push(newest);
     }
     assert_eq!(
-        truncate_retained_messages(history, max_tokens, RetainedImageBudget::Enabled),
+        truncate_retained_messages_for_remote_compaction_with_audio(
+            history,
+            max_tokens,
+            &FileAudioDurations::default()
+        ),
         expected,
     );
 }
@@ -154,7 +161,7 @@ fn oversized_retained_output_preserves_older_explicit_inventory() {
         }),
     };
     assert_eq!(
-        truncate_retained_messages_for_remote_compaction(
+        truncate_retained_messages_for_remote_compaction_with_audio(
             vec![
                 inventory.clone(),
                 message("user", "older budgeted text"),
@@ -162,6 +169,7 @@ fn oversized_retained_output_preserves_older_explicit_inventory() {
                 newest.clone(),
             ],
             /*max_tokens*/ 64,
+            &FileAudioDurations::default()
         ),
         vec![inventory, newest],
     );
