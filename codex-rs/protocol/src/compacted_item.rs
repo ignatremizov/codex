@@ -27,6 +27,9 @@ impl<'de> Deserialize<'de> for CompactedItem {
             first_window_id: serialized.first_window_id,
             previous_window_id: serialized.previous_window_id,
             window_id,
+            replacement_history_media_sanitized_prefix_len: serialized
+                .replacement_history_media_sanitized_prefix_len,
+            replacement_history_media_repair: serialized.replacement_history_media_repair,
         })
     }
 }
@@ -46,6 +49,10 @@ struct SerializedCompactedItem {
     previous_window_id: Option<String>,
     #[serde(default)]
     window_id: Option<SerializedWindowId>,
+    #[serde(default)]
+    replacement_history_media_sanitized_prefix_len: Option<u64>,
+    #[serde(default)]
+    replacement_history_media_repair: bool,
 }
 
 #[derive(Deserialize)]
@@ -72,6 +79,8 @@ mod tests {
             first_window_id: Some("019b3f6e-0000-7000-8000-000000000001".to_string()),
             previous_window_id: Some("019b3f6e-0000-7000-8000-000000000002".to_string()),
             window_id: Some("019b3f6e-7a10-7cc3-8b6e-1d09e2f7a001".to_string()),
+            replacement_history_media_sanitized_prefix_len: Some(2),
+            replacement_history_media_repair: true,
         };
 
         assert_eq!(
@@ -83,6 +92,8 @@ mod tests {
                 "first_window_id": "019b3f6e-0000-7000-8000-000000000001",
                 "previous_window_id": "019b3f6e-0000-7000-8000-000000000002",
                 "window_id": "019b3f6e-7a10-7cc3-8b6e-1d09e2f7a001",
+                "replacement_history_media_sanitized_prefix_len": 2,
+                "replacement_history_media_repair": true,
             })
         );
         Ok(())
@@ -105,8 +116,36 @@ mod tests {
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
+                replacement_history_media_sanitized_prefix_len: None,
+                replacement_history_media_repair: false,
             }
         );
         Ok(())
+    }
+
+    #[test]
+    fn retaining_replacement_history_rebases_the_sanitized_prefix() {
+        let mut item = CompactedItem {
+            replacement_history: Some(vec![
+                crate::models::ResponseItem::Other,
+                crate::models::ResponseItem::Other,
+                crate::models::ResponseItem::Other,
+            ]),
+            replacement_history_media_sanitized_prefix_len: Some(2),
+            ..Default::default()
+        };
+        let mut index = 0usize;
+
+        item.retain_replacement_history_items(|_| {
+            let retain = index != 0;
+            index = index.saturating_add(1);
+            retain
+        });
+
+        assert_eq!(
+            item.replacement_history.map(|history| history.len()),
+            Some(2)
+        );
+        assert_eq!(item.replacement_history_media_sanitized_prefix_len, Some(1));
     }
 }

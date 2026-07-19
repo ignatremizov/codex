@@ -5,6 +5,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_rollout::CompactedMediaVacuumPolicy;
+use codex_rollout::CompactedMediaVacuumReport;
 use codex_rollout::RolloutPersistenceTelemetry;
 use codex_rollout::measure_and_filter_rollout_items;
 use codex_rollout::persisted_rollout_items;
@@ -248,6 +250,16 @@ impl LiveThread {
     pub async fn flush(&self) -> ThreadStoreResult<()> {
         self.thread_store.flush_thread(self.thread_id).await?;
         self.flush_pending_metadata_update_for_existing_history()
+            .await
+    }
+
+    /// Reclaims superseded compacted media when the backing store supports physical vacuuming.
+    pub async fn vacuum_compacted_media(
+        &self,
+        policy: CompactedMediaVacuumPolicy,
+    ) -> ThreadStoreResult<Option<CompactedMediaVacuumReport>> {
+        self.thread_store
+            .vacuum_compacted_media(self.thread_id, policy)
             .await
     }
 

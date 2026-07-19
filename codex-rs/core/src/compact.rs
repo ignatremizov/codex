@@ -421,6 +421,8 @@ async fn run_compact_task_inner_impl(
         first_window_id: Some(window_ids.first_window_id.to_string()),
         previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(window_ids.window_id.to_string()),
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
     sess.replace_compacted_history(
         Arc::clone(&turn_context),
@@ -464,6 +466,8 @@ pub(crate) struct CompactionAnalyticsAttempt {
 pub(crate) struct CompactionAnalyticsDetails {
     pub(crate) active_context_tokens_before: Option<i64>,
     pub(crate) retained_image_count: Option<usize>,
+    pub(crate) omitted_image_count: Option<usize>,
+    pub(crate) omitted_inline_media_bytes: Option<u64>,
     pub(crate) compaction_summary_tokens: Option<i64>,
     pub(crate) cached_input_tokens: Option<i64>,
     pub(crate) cache_write_input_tokens: Option<i64>,
@@ -502,6 +506,8 @@ impl CompactionAnalyticsAttempt {
         let CompactionAnalyticsDetails {
             active_context_tokens_before,
             retained_image_count,
+            omitted_image_count,
+            omitted_inline_media_bytes,
             compaction_summary_tokens,
             cached_input_tokens,
             cache_write_input_tokens,
@@ -526,6 +532,8 @@ impl CompactionAnalyticsAttempt {
                 active_context_tokens_before,
                 active_context_tokens_after,
                 retained_image_count,
+                omitted_image_count,
+                omitted_inline_media_bytes,
                 compaction_summary_tokens,
                 cached_input_tokens,
                 cache_write_input_tokens,

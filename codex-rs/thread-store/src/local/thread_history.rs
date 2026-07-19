@@ -162,7 +162,7 @@ pub(super) async fn delete_thread(
         .map_err(thread_history_delete_error)
 }
 
-async fn apply_change_set(
+pub(super) async fn apply_change_set(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     thread_id: &str,
     rollout_ordinal: i64,

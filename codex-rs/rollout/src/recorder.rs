@@ -53,6 +53,9 @@ use super::ordinal::RolloutOrdinalState;
 use super::ordinal::ordinal_state_for_rollout;
 use super::session_index::find_thread_names_by_ids;
 use crate::config::RolloutConfigView;
+use crate::media_vacuum::CompactedMediaVacuumPolicy;
+use crate::media_vacuum::CompactedMediaVacuumReport;
+use crate::media_vacuum::vacuum_compacted_media;
 use crate::state_db;
 use crate::state_db::StateDbHandle;
 use codex_git_utils::collect_git_info;
@@ -119,6 +122,10 @@ enum RolloutCmd {
     /// Ensure all prior writes are processed; respond when flushed.
     Flush {
         ack: oneshot::Sender<std::io::Result<()>>,
+    },
+    VacuumCompactedMedia {
+        policy: CompactedMediaVacuumPolicy,
+        ack: oneshot::Sender<std::io::Result<CompactedMediaVacuumReport>>,
     },
     Shutdown {
         ack: oneshot::Sender<std::io::Result<()>>,
@@ -956,6 +963,31 @@ impl RolloutRecorder {
         })?
     }
 
+    /// Atomically removes media from superseded compacted checkpoints and reopens the writer.
+    pub async fn vacuum_compacted_media(
+        &self,
+        policy: CompactedMediaVacuumPolicy,
+    ) -> std::io::Result<CompactedMediaVacuumReport> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(RolloutCmd::VacuumCompactedMedia { policy, ack: tx })
+            .await
+            .map_err(|err| {
+                self.writer_task.terminal_failure().unwrap_or_else(|| {
+                    IoError::other(format!(
+                        "failed to queue compacted-media rollout vacuum: {err}"
+                    ))
+                })
+            })?;
+        rx.await.map_err(|err| {
+            self.writer_task.terminal_failure().unwrap_or_else(|| {
+                IoError::other(format!(
+                    "failed waiting for compacted-media rollout vacuum: {err}"
+                ))
+            })
+        })?
+    }
+
     pub async fn load_rollout_items(
         path: &Path,
     ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
@@ -1619,6 +1651,39 @@ impl RolloutWriterState {
         self.write_pending_with_recovery("shutdown").await
     }
 
+    async fn vacuum_compacted_media(
+        &mut self,
+        policy: CompactedMediaVacuumPolicy,
+    ) -> std::io::Result<CompactedMediaVacuumReport> {
+        self.flush().await?;
+        if let Some(writer) = self.writer.as_mut() {
+            writer.file.sync_all().await?;
+        }
+        self.writer = None;
+        let rollout_path = self.rollout_path.clone();
+        let vacuum_result = tokio::task::spawn_blocking(move || {
+            vacuum_compacted_media(rollout_path.as_path(), &policy)
+        })
+        .await
+        .map_err(IoError::other)
+        .and_then(std::convert::identity);
+        let reopen_result = self.ensure_writer_open().await;
+        match (vacuum_result, reopen_result) {
+            (Ok(report), Ok(())) => Ok(report),
+            (Ok(report), Err(err)) => {
+                // The atomic replacement committed even though reopening failed. Preserve that
+                // outcome so derived projections rebuild against the selected canonical file;
+                // the next recorder operation will retry opening it.
+                self.enter_recovery_mode(&err);
+                Ok(report)
+            }
+            (Err(err), Ok(())) => Err(err),
+            (Err(vacuum_err), Err(reopen_err)) => Err(IoError::other(format!(
+                "compacted-media rollout vacuum failed: {vacuum_err}; reopening writer failed: {reopen_err}"
+            ))),
+        }
+    }
+
     async fn write_pending_with_recovery(&mut self, operation: &str) -> std::io::Result<()> {
         match self.write_pending_once().await {
             Ok(()) => {
@@ -1758,6 +1823,9 @@ async fn rollout_writer(
             }
             RolloutCmd::Flush { ack } => {
                 let _ = ack.send(state.flush().await);
+            }
+            RolloutCmd::VacuumCompactedMedia { policy, ack } => {
+                let _ = ack.send(state.vacuum_compacted_media(policy).await);
             }
             RolloutCmd::Shutdown { ack } => match state.shutdown().await {
                 Ok(()) => {

@@ -10,7 +10,10 @@ use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::RolloutItem;
@@ -20,6 +23,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_rollout::CompactedMediaVacuumPolicy;
 use codex_rollout::RolloutRecorder;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -159,6 +163,85 @@ WHERE thread_id = ?
     .await
     .expect("read projection state");
     assert_eq!(projection_state, (rollout_len, 5));
+}
+
+#[tokio::test]
+async fn compacted_media_vacuum_rebuilds_paginated_projection_before_later_appends() {
+    let home = TempDir::new().expect("temp dir");
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let thread_id = ThreadId::default();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .persist_thread(thread_id)
+        .await
+        .expect("persist session metadata");
+    let legacy_image = format!("data:image/png;base64,{}", "a".repeat(/*n*/ 4_096));
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![
+                RolloutItem::Compacted(CompactedItem {
+                    message: "legacy".to_string(),
+                    replacement_history: Some(vec![ResponseItem::Message {
+                        id: None,
+                        role: "user".to_string(),
+                        content: vec![ContentItem::InputImage {
+                            image_url: legacy_image,
+                            detail: None,
+                        }],
+                        phase: None,
+                        internal_chat_message_metadata_passthrough: None,
+                    }]),
+                    replacement_history_media_sanitized_prefix_len: None,
+                    ..Default::default()
+                }),
+                RolloutItem::Compacted(CompactedItem {
+                    message: "repair".to_string(),
+                    replacement_history: Some(Vec::new()),
+                    replacement_history_media_sanitized_prefix_len: Some(0),
+                    ..Default::default()
+                }),
+            ],
+        })
+        .await
+        .expect("append compacted checkpoints");
+
+    let report = store
+        .vacuum_compacted_media(
+            thread_id,
+            CompactedMediaVacuumPolicy {
+                reopenable_image_omission: "reopen image".to_string(),
+                unavailable_image_omission: "image unavailable".to_string(),
+            },
+        )
+        .await
+        .expect("vacuum compacted media")
+        .expect("local vacuum report");
+    assert_eq!(report.records_rewritten, 1);
+    assert!(report.bytes_after < report.bytes_before);
+
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![turn_started("turn-after-vacuum")],
+        })
+        .await
+        .expect("append after vacuum");
+    let rollout_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("rollout path");
+    let pool = codex_state::open_thread_history_db(home.path())
+        .await
+        .expect("open thread history db");
+    let expected_offset =
+        i64::try_from(fs::metadata(rollout_path).expect("rollout metadata").len())
+            .expect("rollout length");
+
+    assert_eq!(
+        projection_state(&pool, thread_id).await,
+        (expected_offset, 4)
+    );
 }
 
 #[tokio::test]

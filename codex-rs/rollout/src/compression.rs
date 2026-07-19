@@ -54,6 +54,12 @@ pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineRead
             Err(err) => return Err(err),
         }
     }
+    let recovery_path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::media_vacuum::recover_compacted_media_backup_if_needed(recovery_path.as_path())
+    })
+    .await
+    .map_err(io::Error::other)??;
     reader::open_once(path).await
 }
 
@@ -80,6 +86,11 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
     }
     let compressed_path = path::compressed_rollout_path(plain_path.as_path());
     if !compressed_path.exists() {
+        crate::media_vacuum::recover_compacted_media_backup_if_needed(plain_path.as_path())?;
+        if plain_path.exists() {
+            metrics::materialize("recovered_media_vacuum_backup");
+            return Ok(plain_path);
+        }
         metrics::materialize("missing");
         return Ok(plain_path);
     }

@@ -1018,6 +1018,167 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_v2_does_not_replay_prior_window_image_bytes() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+    let image_url = format!("data:image/png;base64,{}", "a".repeat(/*n*/ 1_048_576));
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REPLY"),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "FIRST_COMPACTION",
+                    }
+                }),
+                responses::ev_completed("resp-compact-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m2", "SECOND_REPLY"),
+                responses::ev_completed("resp-2"),
+            ]),
+            responses::sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "SECOND_COMPACTION",
+                    }
+                }),
+                responses::ev_completed("resp-compact-2"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "FINAL_REPLY"),
+                responses::ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![
+                UserInput::Image {
+                    image_url: image_url.clone(),
+                    detail: None,
+                },
+                UserInput::Text {
+                    text: "inspect this image".to_string(),
+                    text_elements: Vec::new(),
+                },
+            ],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "after first compaction".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "after second compaction".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    let requests = responses_mock.requests();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(
+        requests[1].message_input_image_urls("user"),
+        vec![image_url.clone()],
+        "the first compactor must see current-window media"
+    );
+    for request in &requests[2..] {
+        assert!(
+            request.message_input_image_urls("user").is_empty(),
+            "post-compaction requests must not replay prior-window image bytes"
+        );
+    }
+    assert!(
+        requests[2]
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains("no durable source reference is available")),
+        "pathless media should leave a bounded unavailable marker"
+    );
+    let rollout_path = codex.rollout_path().expect("rollout path");
+    let rollout = fs::read_to_string(rollout_path)?;
+    let compacted_lines = rollout
+        .lines()
+        .filter_map(|line| {
+            let parsed = serde_json::from_str::<RolloutLine>(line).ok()?;
+            matches!(&parsed.item, RolloutItem::Compacted(_)).then_some((line, parsed.item))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(compacted_lines.len(), 2);
+    for (line, item) in compacted_lines {
+        let RolloutItem::Compacted(compacted) = item else {
+            unreachable!("filtered to compacted rollout items");
+        };
+        let replacement_history = compacted
+            .replacement_history
+            .expect("compacted replacement history");
+        assert!(
+            replacement_history.iter().all(|item| {
+                !matches!(
+                    item,
+                    ResponseItem::Message { content, .. }
+                        if content
+                            .iter()
+                            .any(|item| matches!(item, ContentItem::InputImage { .. }))
+                )
+            }),
+            "persisted compacted history must not contain inline images"
+        );
+        assert!(
+            line.len() < image_url.len() / 2,
+            "checkpoint size must not scale with discarded image bytes"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_compact_v2_retries_failures_with_stream_retry_budget() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

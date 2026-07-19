@@ -1731,6 +1731,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
         first_window_id: Some(first_window_id.to_string()),
         previous_window_id: Some(previous_window_id.to_string()),
         window_id: Some(window_id.to_string()),
+        ..Default::default()
     })];
 
     let reconstructed = session
@@ -3479,6 +3480,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
             first_window_id: Some(first_window_id.to_string()),
             previous_window_id: Some(previous_window_id.to_string()),
             window_id: Some(compacted_window_id.to_string()),
+            ..Default::default()
         }),
         RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: compact_turn_id,
@@ -3686,6 +3688,106 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
         .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))))
         .count();
     assert_eq!(rollback_markers, 2);
+}
+
+#[tokio::test]
+async fn thread_rollback_persists_compacted_media_repair_after_the_rollback_marker() {
+    let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
+    let rollout_path = attach_thread_persistence(
+        Arc::get_mut(&mut sess).expect("session should not have additional references"),
+    )
+    .await;
+    let legacy_image = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputImage {
+            image_url: "data:image/png;base64,legacy".to_string(),
+            detail: None,
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    sess.persist_rollout_items(&[
+        RolloutItem::Compacted(CompactedItem {
+            message: "legacy checkpoint".to_string(),
+            replacement_history: Some(vec![legacy_image]),
+            window_number: Some(1),
+            ..Default::default()
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnStarted(
+            codex_protocol::protocol::TurnStartedEvent {
+                turn_id: "turn-after-checkpoint".to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: Some(128_000),
+                collaboration_mode_kind: ModeKind::Default,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
+            message: "roll this turn back".to_string(),
+            images: None,
+            local_images: Vec::new(),
+            text_elements: Vec::new(),
+            ..Default::default()
+        })),
+        RolloutItem::TurnContext(tc.to_turn_context_item()),
+        RolloutItem::ResponseItem(user_message("roll this turn back")),
+        RolloutItem::ResponseItem(assistant_message("rolled-back reply")),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-after-checkpoint".to_string(),
+            started_at: None,
+            last_agent_message: None,
+            error: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+    ])
+    .await;
+
+    handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
+    wait_for_thread_rolled_back(&rx).await;
+
+    let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
+        .await
+        .expect("read rollout history")
+    else {
+        panic!("expected resumed rollout history");
+    };
+    let rollback_position = resumed
+        .history
+        .iter()
+        .rposition(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))))
+        .expect("rollback marker");
+    let (repair_position, repair) = resumed
+        .history
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, item)| match item {
+            RolloutItem::Compacted(compacted) if compacted.replacement_history_media_repair => {
+                Some((index, compacted))
+            }
+            _ => None,
+        })
+        .expect("media repair checkpoint");
+
+    assert!(repair_position > rollback_position);
+    assert!(
+        repair
+            .replacement_history
+            .as_ref()
+            .is_some_and(|history| history.iter().all(|item| {
+                !matches!(
+                    item,
+                    ResponseItem::Message { content, .. }
+                        if content
+                            .iter()
+                            .any(|item| matches!(item, ContentItem::InputImage { .. }))
+                )
+            }))
+    );
 }
 
 #[tokio::test]
@@ -10941,6 +11043,7 @@ async fn sample_rollout(
         first_window_id: Some(window_ids.first_window_id.to_string()),
         previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(window_ids.window_id.to_string()),
+        ..Default::default()
     }));
 
     let user2 = ResponseItem::Message {
@@ -10989,6 +11092,7 @@ async fn sample_rollout(
         first_window_id: Some(window_ids.first_window_id.to_string()),
         previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(window_ids.window_id.to_string()),
+        ..Default::default()
     }));
 
     let user3 = ResponseItem::Message {

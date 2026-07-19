@@ -4,6 +4,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_rollout::CompactedMediaVacuumPolicy;
+use codex_rollout::CompactedMediaVacuumReport;
 use codex_rollout::RolloutConfig;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::RolloutRecorderParams;
@@ -137,6 +139,34 @@ pub(super) async fn flush_thread(
     thread_id: ThreadId,
 ) -> ThreadStoreResult<()> {
     write_and_project(store, thread_id, RolloutWriteOp::Flush).await
+}
+
+pub(super) async fn vacuum_compacted_media(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    policy: CompactedMediaVacuumPolicy,
+) -> ThreadStoreResult<CompactedMediaVacuumReport> {
+    // This lock intentionally coordinates one Codex process. Resuming the same rollout for
+    // mutation in multiple Codex processes is operator error; use `codex fork` when two live
+    // branches are needed.
+    let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
+    let (recorder, history_mode) = live_writer_parts(store, thread_id).await?;
+    let report = recorder
+        .vacuum_compacted_media(policy)
+        .await
+        .map_err(thread_store_io_error)?;
+    if matches!(history_mode, ThreadHistoryMode::Paginated) {
+        // Rebuild even after a no-op vacuum so a prior post-commit projection failure can recover
+        // on the next resume. The replacement stays transactional, so readers retain the previous
+        // projection until the complete bounded rebuild commits.
+        super::thread_history_materialization::rebuild_to_sqlite(
+            store,
+            thread_id,
+            recorder.rollout_path(),
+        )
+        .await?;
+    }
+    Ok(report)
 }
 
 pub(super) async fn shutdown_thread(

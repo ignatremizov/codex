@@ -9,6 +9,8 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub(super) struct RolloutReconstruction {
     pub(super) history: Vec<ResponseItem>,
+    pub(super) repair: Option<RolloutReconstructionRepair>,
+    pub(super) should_schedule_media_vacuum: bool,
     pub(super) previous_turn_settings: Option<PreviousTurnSettings>,
     pub(super) reference_context_item: Option<TurnContextItem>,
     pub(super) world_state_baseline: Option<WorldStateSnapshot>,
@@ -16,6 +18,20 @@ pub(super) struct RolloutReconstruction {
     pub(super) first_window_id: Option<Uuid>,
     pub(super) previous_window_id: Option<Uuid>,
     pub(super) window_id: Option<Uuid>,
+}
+
+#[derive(Debug)]
+pub(super) struct RolloutReconstructionRepair {
+    pub(super) checkpoint: CompactedItem,
+    pub(super) sanitization: crate::context::CompactedMediaSanitization,
+}
+
+#[derive(Debug)]
+pub(super) struct AppliedRolloutReconstruction {
+    pub(super) previous_turn_settings: Option<PreviousTurnSettings>,
+    pub(super) repair_items: Option<Vec<RolloutItem>>,
+    pub(super) sanitization: crate::context::CompactedMediaSanitization,
+    pub(super) should_schedule_media_vacuum: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -49,7 +65,7 @@ struct ActiveReplaySegment<'a> {
     previous_turn_settings: Option<PreviousTurnSettings>,
     reference_context_item: TurnReferenceContextItem,
     world_state_replay: Vec<&'a RolloutItem>,
-    base_replacement_history: Option<&'a [ResponseItem]>,
+    base_compacted_item: Option<&'a CompactedItem>,
     window: Option<ReconstructedWindow>,
 }
 
@@ -60,10 +76,11 @@ fn turn_ids_are_compatible(active_turn_id: Option<&str>, item_turn_id: Option<&s
 
 fn finalize_active_segment<'a>(
     active_segment: ActiveReplaySegment<'a>,
-    base_replacement_history: &mut Option<&'a [ResponseItem]>,
+    base_compacted_item: &mut Option<&'a CompactedItem>,
     previous_turn_settings: &mut Option<PreviousTurnSettings>,
     reference_context_item: &mut TurnReferenceContextItem,
     world_state_replay: &mut Vec<&'a RolloutItem>,
+    world_state_boundary_known: &mut bool,
     window: &mut Option<ReconstructedWindow>,
     pending_rollback_turns: &mut usize,
 ) {
@@ -77,14 +94,18 @@ fn finalize_active_segment<'a>(
         return;
     }
 
+    *world_state_boundary_known |= active_segment
+        .world_state_replay
+        .iter()
+        .any(|item| establishes_world_state_boundary(item));
     world_state_replay.extend(active_segment.world_state_replay);
 
     // A surviving replacement-history checkpoint is a complete history base. Once we
     // know the newest surviving one, older rollout items do not affect rebuilt history.
-    if base_replacement_history.is_none()
-        && let Some(segment_base_replacement_history) = active_segment.base_replacement_history
+    if base_compacted_item.is_none()
+        && let Some(segment_base_compacted_item) = active_segment.base_compacted_item
     {
-        *base_replacement_history = Some(segment_base_replacement_history);
+        *base_compacted_item = Some(segment_base_compacted_item);
     }
 
     if window.is_none() {
@@ -107,6 +128,13 @@ fn finalize_active_segment<'a>(
     {
         *reference_context_item = active_segment.reference_context_item;
     }
+}
+
+fn establishes_world_state_boundary(item: &RolloutItem) -> bool {
+    matches!(
+        item,
+        RolloutItem::Compacted(_) | RolloutItem::WorldState(WorldStateItem { full: true, .. })
+    )
 }
 
 impl Session {
@@ -136,10 +164,11 @@ impl Session {
                 _ => None,
             })
         };
-        let mut base_replacement_history: Option<&[ResponseItem]> = None;
+        let mut base_compacted_item: Option<&CompactedItem> = None;
         let mut previous_turn_settings = None;
         let mut reference_context_item = TurnReferenceContextItem::NeverSet;
         let mut world_state_replay = Vec::new();
+        let mut world_state_boundary_known = false;
         let mut window = None;
         // Rollback is "drop the newest N user turns". While scanning in reverse, that becomes
         // "skip the next N user-turn segments we finalize".
@@ -153,6 +182,71 @@ impl Session {
 
         for (index, item) in rollout_items.iter().enumerate().rev() {
             match item {
+                RolloutItem::Compacted(compacted) if compacted.replacement_history_media_repair => {
+                    // Representation repair is appended outside a model turn. Finalize any newer
+                    // turn before selecting it so an older rollback cannot consume the repair as
+                    // part of the preceding user-turn segment.
+                    if let Some(active_segment) = active_segment.take() {
+                        if pending_rollback_turns > 0 || active_segment.counts_as_user_turn {
+                            finalize_active_segment(
+                                active_segment,
+                                &mut base_compacted_item,
+                                &mut previous_turn_settings,
+                                &mut reference_context_item,
+                                &mut world_state_replay,
+                                &mut world_state_boundary_known,
+                                &mut window,
+                                &mut pending_rollback_turns,
+                            );
+                        } else {
+                            // A repair's immediately following companion records are also
+                            // out-of-band. Apply them without requiring a user-turn boundary.
+                            world_state_boundary_known |= active_segment
+                                .world_state_replay
+                                .iter()
+                                .any(|item| establishes_world_state_boundary(item));
+                            world_state_replay.extend(active_segment.world_state_replay);
+                            if base_compacted_item.is_none()
+                                && let Some(segment_base_compacted_item) =
+                                    active_segment.base_compacted_item
+                            {
+                                base_compacted_item = Some(segment_base_compacted_item);
+                            }
+                            if window.is_none() {
+                                window = active_segment.window;
+                            }
+                            if previous_turn_settings.is_none() {
+                                previous_turn_settings = active_segment.previous_turn_settings;
+                            }
+                            if matches!(reference_context_item, TurnReferenceContextItem::NeverSet)
+                                && !matches!(
+                                    active_segment.reference_context_item,
+                                    TurnReferenceContextItem::NeverSet
+                                )
+                            {
+                                reference_context_item = active_segment.reference_context_item;
+                            }
+                        }
+                    }
+                    if pending_rollback_turns == 0
+                        && window.is_none()
+                        && let Some(window_number) = compacted.window_number
+                    {
+                        window = Some(ReconstructedWindow {
+                            number: window_number,
+                            first_id: compacted.first_window_id.as_deref().and_then(parse_uuid_v7),
+                            previous_id: compacted
+                                .previous_window_id
+                                .as_deref()
+                                .and_then(parse_uuid_v7),
+                            id: compacted.window_id.as_deref().and_then(parse_uuid_v7),
+                        });
+                    }
+                    if base_compacted_item.is_none() && compacted.replacement_history.is_some() {
+                        base_compacted_item = Some(compacted);
+                        rollout_suffix = &rollout_items[index + 1..];
+                    }
+                }
                 RolloutItem::Compacted(compacted) => {
                     let active_segment =
                         active_segment.get_or_insert_with(ActiveReplaySegment::default);
@@ -178,10 +272,10 @@ impl Session {
                     ) {
                         active_segment.reference_context_item = TurnReferenceContextItem::Cleared;
                     }
-                    if active_segment.base_replacement_history.is_none()
-                        && let Some(replacement_history) = &compacted.replacement_history
+                    if active_segment.base_compacted_item.is_none()
+                        && compacted.replacement_history.is_some()
                     {
-                        active_segment.base_replacement_history = Some(replacement_history);
+                        active_segment.base_compacted_item = Some(compacted);
                         rollout_suffix = &rollout_items[index + 1..];
                     }
                 }
@@ -259,10 +353,11 @@ impl Session {
                     {
                         finalize_active_segment(
                             active_segment,
-                            &mut base_replacement_history,
+                            &mut base_compacted_item,
                             &mut previous_turn_settings,
                             &mut reference_context_item,
                             &mut world_state_replay,
+                            &mut world_state_boundary_known,
                             &mut window,
                             &mut pending_rollback_turns,
                         );
@@ -283,12 +378,14 @@ impl Session {
                 | RolloutItem::InterAgentCommunicationMetadata { .. } => {}
             }
 
-            if base_replacement_history.is_some()
+            if base_compacted_item.is_some()
                 && previous_turn_settings.is_some()
                 && !matches!(reference_context_item, TurnReferenceContextItem::NeverSet)
+                && pending_rollback_turns == 0
+                && world_state_boundary_known
             {
-                // At this point we have both eager resume metadata values and the replacement-
-                // history base for the surviving tail, so older rollout items cannot affect this
+                // At this point we have the replacement-history base, eager resume metadata, and
+                // a surviving world-state boundary, so older rollout items cannot affect this
                 // result.
                 break;
             }
@@ -297,10 +394,11 @@ impl Session {
         if let Some(active_segment) = active_segment.take() {
             finalize_active_segment(
                 active_segment,
-                &mut base_replacement_history,
+                &mut base_compacted_item,
                 &mut previous_turn_settings,
                 &mut reference_context_item,
                 &mut world_state_replay,
+                &mut world_state_boundary_known,
                 &mut window,
                 &mut pending_rollback_turns,
             );
@@ -309,15 +407,47 @@ impl Session {
         let fallback_window_number = u64::try_from(
             rollout_items
                 .iter()
-                .filter(|item| matches!(item, RolloutItem::Compacted(_)))
+                .filter(|item| {
+                    matches!(
+                        item,
+                        RolloutItem::Compacted(compacted)
+                            if !compacted.replacement_history_media_repair
+                    )
+                })
                 .count(),
         )
         .unwrap_or(u64::MAX);
 
         let mut history = ContextManager::new();
         let mut saw_legacy_compaction_without_replacement_history = false;
-        if let Some(base_replacement_history) = base_replacement_history {
-            history.replace(base_replacement_history.to_vec());
+        let mut repair_checkpoint_source = None;
+        let mut repair_sanitization = crate::context::CompactedMediaSanitization::default();
+        let mut repaired_prefix_len = 0usize;
+        let mut should_schedule_media_vacuum = false;
+        if let Some(base_compacted_item) = base_compacted_item
+            && let Some(base_replacement_history) = &base_compacted_item.replacement_history
+        {
+            should_schedule_media_vacuum = base_compacted_item
+                .replacement_history_media_sanitized_prefix_len
+                .is_some();
+            let mut base_replacement_history = base_replacement_history.clone();
+            let prefix_len = if let Some(prefix_len) =
+                base_compacted_item.replacement_history_media_sanitized_prefix_len
+            {
+                usize::try_from(prefix_len)
+                    .unwrap_or(usize::MAX)
+                    .min(base_replacement_history.len())
+            } else {
+                base_replacement_history.len()
+            };
+            repair_checkpoint_source = Some(base_compacted_item.clone());
+            repaired_prefix_len = prefix_len;
+            let sanitization = crate::context::sanitize_compacted_media_prefix(
+                base_replacement_history.as_mut_slice(),
+                prefix_len,
+            );
+            repair_sanitization.accumulate(sanitization);
+            history.replace(base_replacement_history);
         }
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
         // design should keep this same replay shape, but drive it from a resumable reverse source
@@ -340,8 +470,14 @@ impl Session {
                 RolloutItem::InterAgentCommunicationMetadata { .. } => {}
                 RolloutItem::Compacted(compacted) => {
                     if let Some(replacement_history) = &compacted.replacement_history {
-                        // This should actually never happen, because the reverse loop above (to build rollout_suffix)
-                        // should stop before any compaction that has Some replacement_history
+                        repaired_prefix_len = compacted
+                            .replacement_history_media_sanitized_prefix_len
+                            .map(|prefix_len| usize::try_from(prefix_len).unwrap_or(usize::MAX))
+                            .unwrap_or(replacement_history.len())
+                            .min(replacement_history.len());
+                        // A checkpoint from a rolled-back user turn can remain in the forward
+                        // suffix even though reverse selection chose an older surviving base.
+                        // Re-sanitize the surviving prefix after replay and rollback below.
                         history.replace(replacement_history.clone());
                     } else {
                         saw_legacy_compaction_without_replacement_history = true;
@@ -364,6 +500,7 @@ impl Session {
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
                     history.drop_last_n_user_turns(rollback.num_turns);
+                    repaired_prefix_len = repaired_prefix_len.min(history.raw_items().len());
                 }
                 RolloutItem::EventMsg(_)
                 | RolloutItem::TurnContext(_)
@@ -427,8 +564,31 @@ impl Session {
             previous_id: None,
             id: None,
         });
+        let mut history = history.into_raw_items();
+        if repair_checkpoint_source.is_some() {
+            let replay_sanitization = crate::context::sanitize_compacted_media_prefix(
+                history.as_mut_slice(),
+                repaired_prefix_len,
+            );
+            repair_sanitization.accumulate(replay_sanitization);
+        }
+        let repair = repair_checkpoint_source
+            .filter(|_| repair_sanitization.changed())
+            .map(|mut checkpoint| {
+                checkpoint.replacement_history = Some(history.clone());
+                checkpoint.window_number = Some(window.number);
+                checkpoint.replacement_history_media_sanitized_prefix_len =
+                    Some(u64::try_from(repaired_prefix_len).unwrap_or(u64::MAX));
+                checkpoint.replacement_history_media_repair = true;
+                RolloutReconstructionRepair {
+                    checkpoint,
+                    sanitization: repair_sanitization,
+                }
+            });
         RolloutReconstruction {
-            history: history.into_raw_items(),
+            history,
+            repair,
+            should_schedule_media_vacuum,
             previous_turn_settings,
             reference_context_item,
             world_state_baseline,

@@ -12,6 +12,9 @@ use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::compact_remote::process_compacted_history;
 use crate::compact_remote::should_keep_compacted_history_item;
+use crate::context::CompactedMediaSanitization;
+use crate::context::is_compacted_image_omission_text;
+use crate::context::sanitize_compacted_media;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -326,10 +329,22 @@ async fn run_remote_compact_task_inner_impl(
         analytics_details.cached_input_tokens = Some(token_usage.cached_input_tokens);
         analytics_details.cache_write_input_tokens = Some(token_usage.cache_write_input_tokens);
     }
-    let (compacted_history, retained_images) =
+    let (compacted_history, media_sanitization) =
         build_v2_compacted_history(&prompt_input, compaction_output);
     let explicit_mcp_context = crate::compact::collect_mcp_server_use_context_items(&prompt_input);
-    analytics_details.retained_image_count = Some(retained_images);
+    analytics_details.retained_image_count = Some(0);
+    analytics_details.omitted_image_count = Some(
+        analytics_details
+            .omitted_image_count
+            .unwrap_or_default()
+            .saturating_add(media_sanitization.omitted_image_count),
+    );
+    analytics_details.omitted_inline_media_bytes = Some(
+        analytics_details
+            .omitted_inline_media_bytes
+            .unwrap_or_default()
+            .saturating_add(media_sanitization.omitted_inline_media_bytes),
+    );
     let (new_window_number, new_window_ids) = sess.advance_auto_compact_window().await;
     let (mut new_history, world_state_baseline) = process_compacted_history(
         sess.as_ref(),
@@ -357,6 +372,8 @@ async fn run_remote_compact_task_inner_impl(
         first_window_id: Some(new_window_ids.first_window_id.to_string()),
         previous_window_id: new_window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(new_window_ids.window_id.to_string()),
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
     let final_history = sess
         .replace_compacted_history(
@@ -518,21 +535,18 @@ async fn collect_compaction_output(
 fn build_v2_compacted_history(
     prompt_input: &[ResponseItem],
     compaction_output: ResponseItem,
-) -> (Vec<ResponseItem>, usize) {
-    let retained = prompt_input
+) -> (Vec<ResponseItem>, CompactedMediaSanitization) {
+    let mut retained = prompt_input
         .iter()
         .filter(|item| is_retained_for_remote_compaction_v2(item))
         .filter(|item| should_keep_compacted_history_item(item))
         .cloned()
         .collect::<Vec<_>>();
+    let media_sanitization = sanitize_compacted_media(&mut retained);
     let mut retained =
         truncate_retained_messages_for_remote_compaction(retained, RETAINED_MESSAGE_TOKEN_BUDGET);
-    let retained_image_count = retained
-        .iter()
-        .map(retained_input_image_count)
-        .sum::<usize>();
     retained.push(compaction_output);
-    (retained, retained_image_count)
+    (retained, media_sanitization)
 }
 
 fn is_retained_for_remote_compaction_v2(item: &ResponseItem) -> bool {
@@ -541,17 +555,6 @@ fn is_retained_for_remote_compaction_v2(item: &ResponseItem) -> bool {
     };
 
     matches!(role.as_str(), "user" | "developer" | "system")
-}
-
-fn retained_input_image_count(item: &ResponseItem) -> usize {
-    let ResponseItem::Message { content, .. } = item else {
-        return 0;
-    };
-
-    content
-        .iter()
-        .filter(|item| matches!(item, ContentItem::InputImage { .. }))
-        .count()
 }
 
 fn truncate_retained_messages_for_remote_compaction(
@@ -569,11 +572,15 @@ fn truncate_retained_messages_for_remote_compaction(
         if token_count <= remaining {
             truncated_reversed.push(item);
             remaining = remaining.saturating_sub(token_count);
-        } else if let Some(truncated_item) =
-            truncate_message_text_to_token_budget(item, /*max_tokens*/ remaining)
-        {
-            truncated_reversed.push(truncated_item);
-            remaining = 0;
+        } else {
+            match truncate_message_text_to_token_budget(item, /*max_tokens*/ remaining) {
+                RetainedMessageTruncation::Retained(truncated_item) => {
+                    truncated_reversed.push(truncated_item);
+                    remaining = 0;
+                }
+                RetainedMessageTruncation::OmissionDidNotFit => remaining = 0,
+                RetainedMessageTruncation::Empty => {}
+            }
         }
     }
     truncated_reversed.reverse();
@@ -596,10 +603,16 @@ fn message_text_token_count(item: &ResponseItem) -> usize {
         .sum()
 }
 
+enum RetainedMessageTruncation {
+    Retained(ResponseItem),
+    OmissionDidNotFit,
+    Empty,
+}
+
 fn truncate_message_text_to_token_budget(
     item: ResponseItem,
     max_tokens: usize,
-) -> Option<ResponseItem> {
+) -> RetainedMessageTruncation {
     let ResponseItem::Message {
         id,
         role,
@@ -608,7 +621,7 @@ fn truncate_message_text_to_token_budget(
         internal_chat_message_metadata_passthrough: metadata,
     } = item
     else {
-        return Some(item);
+        return RetainedMessageTruncation::Retained(item);
     };
 
     let mut remaining = max_tokens;
@@ -623,6 +636,8 @@ fn truncate_message_text_to_token_budget(
                 let token_count = approx_token_count(text);
                 if token_count <= remaining {
                     remaining = remaining.saturating_sub(token_count);
+                } else if is_compacted_image_omission_text(text) {
+                    return RetainedMessageTruncation::OmissionDidNotFit;
                 } else {
                     *text = truncate_text(text, TruncationPolicy::Tokens(remaining));
                     remaining = 0;
@@ -636,10 +651,10 @@ fn truncate_message_text_to_token_budget(
     }
 
     if truncated_content.is_empty() {
-        return None;
+        return RetainedMessageTruncation::Empty;
     }
 
-    Some(ResponseItem::Message {
+    RetainedMessageTruncation::Retained(ResponseItem::Message {
         id,
         role,
         content: truncated_content,
@@ -651,6 +666,8 @@ fn truncate_message_text_to_token_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::CompactedImageOmission;
+    use crate::context::ContextualUserFragment;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::MessagePhase;
     use pretty_assertions::assert_eq;
@@ -746,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn build_v2_compacted_history_counts_retained_input_images() {
+    fn build_v2_compacted_history_sanitizes_retained_input_images() {
         let input = vec![ResponseItem::Message {
             id: None,
             role: "user".to_string(),
@@ -772,9 +789,22 @@ mod tests {
             internal_chat_message_metadata_passthrough: None,
         };
 
-        let (_, retained_image_count) = build_v2_compacted_history(&input, output);
+        let (history, sanitization) = build_v2_compacted_history(&input, output);
 
-        assert_eq!(retained_image_count, 2);
+        assert_eq!(sanitization.omitted_image_count, 2);
+        assert_eq!(sanitization.omitted_inline_media_bytes, 50);
+        assert!(
+            history.iter().all(|item| {
+                !matches!(
+                    item,
+                    ResponseItem::Message { content, .. }
+                        if content
+                            .iter()
+                            .any(|item| matches!(item, ContentItem::InputImage { .. }))
+                )
+            }),
+            "compacted history must not retain inline image payloads"
+        );
     }
 
     #[test]
@@ -797,6 +827,22 @@ mod tests {
                 new,
             ]
         );
+    }
+
+    #[test]
+    fn retained_history_truncation_keeps_omission_fragments_atomic() {
+        let omission = CompactedImageOmission::unavailable().render();
+        let newest = message("user", "new", /*phase*/ None);
+        let retained = vec![
+            message("user", "older", /*phase*/ None),
+            message("user", omission.as_str(), /*phase*/ None),
+            newest.clone(),
+        ];
+
+        let truncated =
+            truncate_retained_messages_for_remote_compaction(retained, /*max_tokens*/ 2);
+
+        assert_eq!(truncated, vec![newest]);
     }
 
     #[test]

@@ -204,6 +204,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::exec_output::StreamOutput;
 
 mod code_mode_warning;
+mod compacted_media_repair;
 mod config_lock;
 pub(crate) mod context_window;
 mod handlers;
@@ -1521,9 +1522,19 @@ impl Session {
             InitialHistory::Resumed(resumed_history) => {
                 let turn_context = self.new_default_turn().await;
                 let rollout_items = resumed_history.history;
-                let previous_turn_settings = self
+                let applied_reconstruction = self
                     .apply_rollout_reconstruction(&turn_context, &rollout_items)
                     .await;
+                let previous_turn_settings = applied_reconstruction.previous_turn_settings;
+                if let Some(repair_items) = applied_reconstruction.repair_items {
+                    self.persist_reconstruction_repair(
+                        repair_items.as_slice(),
+                        applied_reconstruction.sanitization,
+                    )
+                    .await;
+                } else if applied_reconstruction.should_schedule_media_vacuum {
+                    self.schedule_compacted_media_vacuum();
+                }
 
                 // If resuming, warn when the last recorded model differs from the current one.
                 let curr: &str = turn_context.model_info.slug.as_str();
@@ -1563,7 +1574,8 @@ impl Session {
                 if turn_context.item_ids_enabled() {
                     Self::assign_missing_rollout_response_item_ids(&mut rollout_items);
                 }
-                self.apply_rollout_reconstruction(&turn_context, &rollout_items)
+                let applied_reconstruction = self
+                    .apply_rollout_reconstruction(&turn_context, &rollout_items)
                     .await;
 
                 // Seed usage info from the recorded rollout so UIs can show token counts
@@ -1577,6 +1589,15 @@ impl Session {
                 // thread so the copied prefix is not observed as child-owned metadata.
                 if !rollout_items.is_empty() && !is_paginated_subagent {
                     self.persist_rollout_items(&rollout_items).await;
+                }
+                if let Some(repair_items) = applied_reconstruction.repair_items {
+                    self.persist_reconstruction_repair(
+                        repair_items.as_slice(),
+                        applied_reconstruction.sanitization,
+                    )
+                    .await;
+                } else if applied_reconstruction.should_schedule_media_vacuum {
+                    self.schedule_compacted_media_vacuum();
                 }
 
                 // Forked threads should remain file-backed immediately after startup.
@@ -1602,9 +1623,11 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         rollout_items: &[RolloutItem],
-    ) -> Option<PreviousTurnSettings> {
+    ) -> rollout_reconstruction::AppliedRolloutReconstruction {
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
+            mut repair,
+            should_schedule_media_vacuum,
             previous_turn_settings,
             reference_context_item,
             world_state_baseline,
@@ -1615,10 +1638,36 @@ impl Session {
         } = self
             .reconstruct_history_from_rollout(turn_context, rollout_items)
             .await;
-        // Keep the recorded rollout unchanged. Prepare its reconstructed history before
-        // installing it, so legacy images are processed once for this resume or fork and
-        // will be processed again if the rollout is reconstructed in a future session.
-        // This meets image resizing requirements without modifying persisted rollouts.
+        let fallback_ids = {
+            let state = self.state.lock().await;
+            state.auto_compact_window_ids()
+        };
+        let effective_window_id = window_id.unwrap_or(fallback_ids.window_id);
+        let effective_first_window_id = first_window_id.unwrap_or(effective_window_id);
+        if let Some(repair) = repair.as_mut() {
+            repair.checkpoint.window_number = Some(window_number);
+            repair.checkpoint.first_window_id = Some(effective_first_window_id.to_string());
+            repair.checkpoint.previous_window_id = previous_window_id.map(|id| id.to_string());
+            repair.checkpoint.window_id = Some(effective_window_id.to_string());
+        }
+        let (repair_items, sanitization) = repair.map_or_else(
+            || (None, crate::context::CompactedMediaSanitization::default()),
+            |repair| {
+                let mut repair_items = vec![RolloutItem::Compacted(repair.checkpoint)];
+                if let Some(world_state_baseline) = world_state_baseline.as_ref() {
+                    repair_items.push(RolloutItem::WorldState(WorldStateItem::full(
+                        world_state_baseline.clone().into_value(),
+                    )));
+                }
+                if let Some(reference_context_item) = reference_context_item.as_ref() {
+                    repair_items.push(RolloutItem::TurnContext(reference_context_item.clone()));
+                }
+                (Some(repair_items), repair.sanitization)
+            },
+        );
+        // Prepare unsummarized suffix media before installing reconstructed history. Historic
+        // compacted media has already been replaced with bounded references; its repair checkpoint
+        // is persisted separately without rewriting the source records on this critical path.
         prepare_response_items(&mut history);
         {
             let mut state = self.state.lock().await;
@@ -1626,14 +1675,12 @@ impl Session {
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }
-            let fallback_ids = state.auto_compact_window_ids();
-            let window_id = window_id.unwrap_or(fallback_ids.window_id);
             state.restore_auto_compact_window(
                 window_number,
                 AutoCompactWindowIds {
-                    first_window_id: first_window_id.unwrap_or(window_id),
+                    first_window_id: effective_first_window_id,
                     previous_window_id,
-                    window_id,
+                    window_id: effective_window_id,
                 },
             );
             state.set_previous_turn_settings(previous_turn_settings.clone());
@@ -1652,7 +1699,12 @@ impl Session {
             self.set_auto_compact_window_estimated_prefill_for_scope(turn_context, prefix_tokens)
                 .await;
         }
-        previous_turn_settings
+        rollout_reconstruction::AppliedRolloutReconstruction {
+            previous_turn_settings,
+            repair_items,
+            sanitization,
+            should_schedule_media_vacuum,
+        }
     }
 
     async fn set_auto_compact_window_estimated_prefill_for_scope(
@@ -3606,7 +3658,7 @@ impl Session {
                 let state = sess.state.lock().await;
                 state.history.raw_items().to_vec()
             };
-            let final_items = {
+            let mut final_items = {
                 let final_items =
                     crate::compact::preserve_mcp_server_use_context_items(items, &previous_history);
                 let final_items = crate::compact::preserve_promoted_skills_inventory_item(
@@ -3623,9 +3675,20 @@ impl Session {
                     final_items
                 }
             };
+            let media_sanitization =
+                crate::context::sanitize_compacted_media(final_items.as_mut_slice());
+            if media_sanitization.changed() {
+                info!(
+                    omitted_image_count = media_sanitization.omitted_image_count,
+                    omitted_inline_media_bytes = media_sanitization.omitted_inline_media_bytes,
+                    "removed media while installing compacted history"
+                );
+            }
 
             let mut compacted_item = compacted_item;
             compacted_item.replacement_history = Some(final_items.clone());
+            compacted_item.replacement_history_media_sanitized_prefix_len =
+                Some(u64::try_from(final_items.len()).unwrap_or(u64::MAX));
 
             sess.try_persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
                 .await
@@ -3663,6 +3726,7 @@ impl Session {
                 let mut state = sess.state.lock().await;
                 state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
             }
+            sess.schedule_compacted_media_vacuum();
             Ok(final_items)
         })
         .await?
@@ -4184,6 +4248,8 @@ impl Session {
                 first_window_id: Some(window_ids.first_window_id.to_string()),
                 previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
                 window_id: Some(window_ids.window_id.to_string()),
+                replacement_history_media_sanitized_prefix_len: None,
+                replacement_history_media_repair: false,
             },
         )
         .await?;

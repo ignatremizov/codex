@@ -598,7 +598,8 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         .into_iter()
         .chain(std::iter::once(RolloutItem::EventMsg(rollback_msg.clone())))
         .collect::<Vec<_>>();
-    sess.apply_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
+    let applied_reconstruction = sess
+        .apply_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
         .await;
     sess.services
         .agent_control
@@ -618,6 +619,14 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
             }),
         )
         .await;
+    } else if let Some(repair_items) = applied_reconstruction.repair_items {
+        sess.persist_reconstruction_repair(
+            repair_items.as_slice(),
+            applied_reconstruction.sanitization,
+        )
+        .await;
+    } else if applied_reconstruction.should_schedule_media_vacuum {
+        sess.schedule_compacted_media_vacuum();
     }
 
     sess.deliver_event_raw(Event {
