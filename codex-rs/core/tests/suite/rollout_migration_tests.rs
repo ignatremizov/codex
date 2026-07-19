@@ -131,6 +131,7 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
                 window_id: None,
                 compaction_response_id: None,
                 latest_token_usage_record: None,
+                ..Default::default()
             })])
             .await?;
     }

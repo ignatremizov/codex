@@ -1,11 +1,11 @@
 //! Exercises streamed remote compaction, including the retained checkpoint and continuing history.
 
+use super::compact::allow_echo_commands;
 use anyhow::Context;
 use anyhow::Result;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
+use codex_core::X_CODEX_ROUTING_HINT_HEADER;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::InitialHistory;
@@ -16,9 +16,13 @@ use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_5_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::AgentPath;
+use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageReference;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelServiceTier;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ConversationStartParams;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -27,8 +31,11 @@ use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::RealtimeOutputModality;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use codex_rollout::RolloutRecorder;
+use core_test_support::context_snapshot;
+use core_test_support::context_snapshot::ContextSnapshotOptions;
 use core_test_support::responses;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
@@ -37,6 +44,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::test_codex as base_test_codex;
+use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
@@ -631,196 +639,572 @@ async fn amazon_bedrock_automatic_compaction_uses_v2_responses_endpoint() -> Res
     Ok(())
 }
 
-#[test_case(None, "image_url"; "default_trims_images")]
-#[test_case(Some(false), "image_url"; "disabled_preserves_images")]
-#[test_case(None, "file_id"; "default_trims_file_images")]
-#[test_case(Some(false), "file_id"; "disabled_preserves_file_images")]
+// A successful v2 compact stream contains exactly one compaction item and completion.
+fn streamed_compaction_fixture(response_id: &str, summary: &str) -> String {
+    sse(vec![
+        json!({
+            "type": "response.output_item.done",
+            "item": { "type": "compaction", "encrypted_content": summary },
+        }),
+        responses::ev_completed(response_id),
+    ])
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_charges_retained_images_to_token_budget(
-    image_budget_enabled: Option<bool>,
-    image_field: &str,
-) -> Result<()> {
+async fn remote_compact_replaces_history_for_followups() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let harness = TestCodexHarness::with_auto_env_builder(
+    let harness = TestCodexHarness::with_builder(
         test_codex()
-            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-            .with_config(move |config| {
-                let _ = config.features.enable(Feature::UnifiedImageBudget);
-                if let Some(enabled) = image_budget_enabled {
-                    let _ = config
-                        .features
-                        .set_enabled(Feature::CompactionImageBudget, enabled);
-                }
-            }),
+            .with_history_mode(ThreadHistoryMode::Paginated)
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
     )
     .await?;
-    let codex = &harness.test().codex;
-    // Thirteen original-detail images at 10,000 tokens each exceed the 128,000-token budget.
-    let image_inputs = (1..=14)
-        .map(|number| {
-            if image_field == "file_id" {
-                return Ok(UserInput::Image {
-                    image: ImageReference::File {
-                        file_id: format!("file_{number}"),
-                    },
-                    detail: Some(codex_protocol::models::ImageDetail::Original),
-                });
-            }
-            let image = image::ImageBuffer::from_pixel(
-                /*width*/ 3200,
-                /*height*/ 3200,
-                image::Luma([number as u8]),
-            );
-            let mut bytes = std::io::Cursor::new(Vec::new());
-            image.write_to(&mut bytes, image::ImageFormat::Png)?;
-            Ok(UserInput::Image {
-                image: ImageReference::Inline {
-                    image_url: format!(
-                        "data:image/png;base64,{}",
-                        BASE64_STANDARD.encode(bytes.get_ref())
-                    ),
-                },
-                detail: Some(codex_protocol::models::ImageDetail::Original),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let mut input = image_inputs[..13].to_vec();
-    input.push(UserInput::Text {
-        text: "Compare these images".to_string(),
-        text_elements: Vec::new(),
-    });
-    let initial_mock = mount_sse_once(
+    let codex = harness.test().codex.clone();
+    let session_id = harness.test().session_configured.session_id.to_string();
+    let thread_id = harness.test().session_configured.thread_id.to_string();
+
+    let responses_mock = responses::mount_sse_sequence(
         harness.server(),
-        sse(vec![
-            responses::ev_assistant_message("initial", "done"),
-            responses::ev_completed("initial"),
-        ]),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed("resp-1"),
+            ]),
+            streamed_compaction_fixture("resp-compact", "ENCRYPTED_COMPACTION_SUMMARY"),
+            responses::sse(vec![
+                responses::ev_assistant_message("m2", "AFTER_COMPACT_REPLY"),
+                responses::ev_completed("resp-2"),
+            ]),
+        ],
     )
     .await;
+
     codex
-        .start_or_steer_turn(TurnInputRequest::user_input(input))
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "hello remote compact".into(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
-    wait_for_turn_complete(codex).await;
-    let initial_request = initial_mock.single_request();
-    let prepared_images = initial_request
-        .inputs_of_type("message")
-        .into_iter()
-        .filter(|item| item["role"] == "user")
-        .flat_map(|item| {
-            item["content"]
-                .as_array()
-                .expect("message content is an array")
-                .clone()
+    wait_for_turn_complete(&codex).await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "after compact".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    let response_requests = responses_mock.requests();
+    assert_eq!(response_requests.len(), 3);
+    let compact_request = &response_requests[1];
+    assert_eq!(compact_request.path(), "/v1/responses");
+    assert_eq!(
+        compact_request.inputs_of_type("compaction_trigger").len(),
+        1
+    );
+    assert_eq!(
+        compact_request.header("chatgpt-account-id").as_deref(),
+        Some("account_id")
+    );
+    assert_eq!(
+        compact_request.header("authorization").as_deref(),
+        Some("Bearer Access Token")
+    );
+    assert_eq!(
+        compact_request.header("session-id").as_deref(),
+        Some(session_id.as_str())
+    );
+    assert_eq!(
+        compact_request.header("thread-id").as_deref(),
+        Some(thread_id.as_str())
+    );
+    let compact_metadata: Value = serde_json::from_str(
+        &compact_request
+            .header("x-codex-turn-metadata")
+            .expect("remote compact request should include turn metadata"),
+    )
+    .expect("remote compact turn metadata should be valid json");
+    let compact_body = compact_request.body_json();
+    assert!(
+        compact_metadata["installation_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "remote compact turn metadata should include its installation id"
+    );
+    assert_eq!(
+        compact_body["client_metadata"]["x-codex-installation-id"].as_str(),
+        compact_metadata["installation_id"].as_str()
+    );
+    assert!(
+        compact_metadata["turn_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "remote compact turn metadata should include its turn id"
+    );
+    assert_eq!(
+        compact_metadata["request_kind"].as_str(),
+        Some("compaction")
+    );
+    assert_eq!(compact_metadata["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(
+        compact_metadata["window_id"].as_str(),
+        compact_request.header("x-codex-window-id").as_deref()
+    );
+    assert_eq!(compact_metadata["window_number"].as_u64(), Some(0));
+    assert!(compact_metadata["context_window_id"].as_str().is_some());
+    assert_eq!(
+        compact_metadata["compaction"],
+        json!({
+            "trigger": "manual",
+            "reason": "user_requested",
+            "implementation": "responses_compaction_v2",
+            "phase": "standalone_turn",
+            "strategy": "memento",
         })
-        .filter(|item| item["type"] == "input_image")
-        .map(|item| {
-            item[image_field]
-                .as_str()
-                .expect("image input has a string reference")
-                .to_owned()
+    );
+    assert_eq!(
+        compact_body.get("model").and_then(|v| v.as_str()),
+        Some(harness.test().session_configured.model.as_str())
+    );
+    let first_response_request = response_requests.first().expect("initial request missing");
+    let first_response_metadata: Value = serde_json::from_str(
+        &first_response_request
+            .header("x-codex-turn-metadata")
+            .expect("initial request should include turn metadata"),
+    )
+    .expect("initial turn metadata should be valid json");
+    assert_ne!(
+        first_response_metadata["turn_id"], compact_metadata["turn_id"],
+        "manual compaction should use its own turn id"
+    );
+    assert_eq!(
+        first_response_metadata["context_window_id"], compact_metadata["context_window_id"],
+        "remote compaction should retain the active model-visible context window"
+    );
+    assert_eq!(
+        compact_body["tools"],
+        first_response_request.body_json()["tools"],
+        "compact requests should send the same tools payload as /v1/responses"
+    );
+    assert_eq!(
+        compact_body["parallel_tool_calls"],
+        first_response_request.body_json()["parallel_tool_calls"],
+        "compact requests should match /v1/responses parallel_tool_calls"
+    );
+    assert_eq!(
+        compact_body["reasoning"],
+        first_response_request.body_json()["reasoning"],
+        "compact requests should match /v1/responses reasoning"
+    );
+    assert_eq!(
+        compact_body["text"],
+        first_response_request.body_json()["text"],
+        "compact requests should match /v1/responses text controls"
+    );
+    let compact_body_text = compact_body.to_string();
+    assert!(
+        compact_body_text.contains("hello remote compact"),
+        "expected compact request to include user history"
+    );
+    assert!(
+        compact_body_text.contains("FIRST_REMOTE_REPLY"),
+        "expected compact request to include assistant history"
+    );
+
+    let follow_up_request = response_requests.last().expect("follow-up request missing");
+    let follow_up_metadata: Value = serde_json::from_str(
+        &follow_up_request
+            .header("x-codex-turn-metadata")
+            .expect("follow-up request should include turn metadata"),
+    )
+    .expect("follow-up turn metadata should be valid json");
+    assert_eq!(
+        follow_up_metadata["request_kind"].as_str(),
+        Some("turn"),
+        "regular requests after compaction should remain turn requests"
+    );
+    assert!(
+        follow_up_metadata.get("compaction").is_none(),
+        "regular requests after compaction should not be marked as compact requests"
+    );
+    assert_ne!(
+        follow_up_metadata["turn_id"], compact_metadata["turn_id"],
+        "the following user turn should not reuse a manual compact turn id"
+    );
+    assert_eq!(
+        follow_up_metadata["window_id"].as_str(),
+        follow_up_request.header("x-codex-window-id").as_deref()
+    );
+    assert_ne!(
+        follow_up_metadata["window_id"], compact_metadata["window_id"],
+        "the following user turn should use the new compacted context window"
+    );
+    assert_ne!(
+        follow_up_metadata["context_window_id"], compact_metadata["context_window_id"],
+        "the following user turn should expose the new model-visible context window"
+    );
+    let follow_up_body = follow_up_request.body_json().to_string();
+    assert!(
+        follow_up_body.contains("\"type\":\"compaction\""),
+        "expected follow-up request to use compacted history"
+    );
+    assert!(
+        follow_up_body.contains("ENCRYPTED_COMPACTION_SUMMARY"),
+        "expected follow-up request to include compaction summary item"
+    );
+    assert!(
+        !follow_up_body.contains("FIRST_REMOTE_REPLY"),
+        "expected follow-up request to drop pre-compaction assistant messages"
+    );
+    assert!(
+        follow_up_body.contains("hello remote compact"),
+        "v2 compaction must retain real user input while replacing assistant/tool history"
+    );
+
+    insta::assert_snapshot!(
+        "remote_manual_compact_with_history_shapes",
+        context_snapshot::format_labeled_requests_snapshot(
+            "Streamed manual /compact retains user history, installs one compaction checkpoint, and starts a fresh context window for the follow-up.",
+            &[
+                ("Remote Compaction Request", compact_request),
+                ("Remote Post-Compaction History Layout", follow_up_request),
+            ],
+            &ContextSnapshotOptions::default().rewrite_known_segments(),
+        )
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_uses_agent_identity_assertion() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let auth_manager = codex_login::test_support::auth_manager_with_agent_identity().await?;
+    let auth = auth_manager.auth().await.context("test agent identity")?;
+    let harness = TestCodexHarness::with_builder(test_codex().with_auth(auth)).await?;
+    let codex = harness.test().codex.clone();
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            sse(vec![
+                responses::ev_assistant_message("m1", "REMOTE_REPLY"),
+                responses::ev_completed("resp-1"),
+            ]),
+            streamed_compaction_fixture("resp-compact", "COMPACTED"),
+        ],
+    )
+    .await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "hello remote compact".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    let response_requests = responses_mock.requests();
+    assert_eq!(response_requests.len(), 2);
+    let compact_request = &response_requests[1];
+    assert_eq!(compact_request.path(), "/v1/responses");
+    assert_eq!(
+        compact_request.inputs_of_type("compaction_trigger").len(),
+        1
+    );
+    assert!(
+        compact_request
+            .header("authorization")
+            .is_some_and(|value| value.starts_with("AgentAssertion ")),
+        "compact request should use task-scoped AgentAssertion auth"
+    );
+    assert_eq!(
+        compact_request.header("chatgpt-account-id").as_deref(),
+        Some("test-account-id")
+    );
+    let compact_body = compact_request.body_json();
+    let model = compact_body["model"]
+        .as_str()
+        .expect("missing request model");
+    assert_eq!(
+        compact_request.header(X_CODEX_ROUTING_HINT_HEADER),
+        Some(format!("model={model}"))
+    );
+
+    Ok(())
+}
+
+async fn assert_remote_manual_compact_request_parity(
+    auth: CodexAuth,
+    configured_service_tier: Option<ServiceTier>,
+    expected_service_tier: Option<&str>,
+    snapshot_name: &str,
+    scenario: &str,
+) -> Result<()> {
+    let uses_codex_backend = auth.uses_codex_backend();
+    let mut builder = test_codex()
+        .with_auth(auth)
+        .with_model_info_override("gpt-5.5", |model| {
+            model.service_tiers = vec![ModelServiceTier {
+                id: "priority".to_string(),
+                name: "Fast".to_string(),
+                description: "Priority processing.".to_string(),
+            }];
         })
-        .collect::<Vec<_>>();
-    assert_eq!(prepared_images.len(), 13);
-
-    for cycle in 1..=2 {
-        let compact_mock = mount_sse_once(
-            harness.server(),
-            sse(vec![
-                json!({
-                    "type": "response.output_item.done",
-                    "item": { "type": "compaction", "encrypted_content": "IMAGE_BUDGET_SUMMARY" },
-                }),
-                responses::ev_completed("compact-images"),
-            ]),
-        )
-        .await;
-        codex.submit(Op::Compact).await?;
-        wait_for_turn_complete(codex).await;
-        let compact_request = compact_mock.single_request();
-        assert_eq!(compact_request.path(), "/v1/responses");
-        assert_eq!(
-            compact_request.inputs_of_type("compaction_trigger").len(),
-            1
-        );
-
-        let follow_up_mock = mount_sse_once(
-            harness.server(),
-            sse(vec![
-                responses::ev_assistant_message("after", "done"),
-                responses::ev_completed("after"),
-            ]),
-        )
-        .await;
-        codex
-            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "after compact".to_string(),
-                text_elements: Vec::new(),
-            }]))
-            .await?;
-        wait_for_turn_complete(codex).await;
-        let follow_up = follow_up_mock.single_request();
-        assert_eq!(
-            follow_up.inputs_of_type("compaction")[0]["encrypted_content"],
-            "IMAGE_BUDGET_SUMMARY"
-        );
-        let dropped = if image_budget_enabled.unwrap_or(true) {
-            cycle
-        } else {
-            0
-        };
-        let mut expected_images = prepared_images[dropped..].to_vec();
-        if cycle == 2 {
-            let UserInput::Image { image, .. } = &image_inputs[13] else {
-                unreachable!()
-            };
-            expected_images.push(match image {
-                ImageReference::Inline { image_url } => image_url.clone(),
-                ImageReference::File { file_id } => file_id.clone(),
-            });
-        }
-        let retained_images = follow_up
-            .inputs_of_type("message")
-            .into_iter()
-            .filter(|item| item["role"] == "user")
-            .flat_map(|item| {
-                item["content"]
-                    .as_array()
-                    .expect("message content is an array")
-                    .clone()
-            })
-            .filter(|item| item["type"] == "input_image")
-            .map(|item| {
-                item[image_field]
-                    .as_str()
-                    .expect("image input has a string reference")
-                    .to_owned()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(retained_images, expected_images);
-        assert!(
-            follow_up
-                .message_input_texts("user")
-                .iter()
-                .any(|text| text == "Compare these images")
-        );
-
-        if cycle == 1 {
-            let append_mock = mount_sse_once(
-                harness.server(),
-                sse(vec![
-                    responses::ev_assistant_message("append", "done"),
-                    responses::ev_completed("append"),
-                ]),
-            )
-            .await;
-            codex
-                .start_or_steer_turn(TurnInputRequest::user_input(vec![image_inputs[13].clone()]))
-                .await?;
-            wait_for_turn_complete(codex).await;
-            let _ = append_mock.single_request();
-        }
+        .with_pre_build_hook(allow_echo_commands);
+    if let Some(service_tier) = configured_service_tier {
+        builder = builder.with_config(move |config| {
+            config.service_tier = Some(service_tier.request_value().to_string());
+        });
     }
+    let harness = TestCodexHarness::with_builder(builder).await?;
+    let codex = harness.test().codex.clone();
+    let image_url =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+            .to_string();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("turn-one-assistant", "TURN_ONE_ASSISTANT"),
+                responses::ev_completed("turn-one-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_reasoning_item(
+                    "turn-two-reasoning",
+                    &["TURN_TWO_REASONING"],
+                    &["turn two raw content"],
+                ),
+                responses::ev_assistant_message("turn-two-assistant", "TURN_TWO_ASSISTANT"),
+                responses::ev_completed("turn-two-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_function_call("turn-three-call", DUMMY_FUNCTION_NAME, "{}"),
+                responses::ev_completed("turn-three-call-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("turn-three-assistant", "TURN_THREE_ASSISTANT"),
+                responses::ev_completed("turn-three-final-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_exec_command_call(
+                    "turn-four-exec-command",
+                    "echo TURN_FOUR_LOCAL_SHELL",
+                ),
+                responses::ev_completed("turn-four-local-shell-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("turn-four-assistant", "TURN_FOUR_ASSISTANT"),
+                responses::ev_completed("turn-four-final-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_reasoning_item(
+                    "turn-five-reasoning",
+                    &["TURN_FIVE_REASONING"],
+                    &["turn five raw content"],
+                ),
+                responses::ev_assistant_message("turn-five-assistant", "TURN_FIVE_ASSISTANT"),
+                responses::ev_completed("turn-five-response"),
+            ]),
+            streamed_compaction_fixture("response-compact", "REMOTE_CACHE_TIER_SUMMARY"),
+        ],
+    )
+    .await;
+    let (sandbox_policy, permission_profile) = turn_permission_fields(
+        PermissionProfile::Disabled,
+        harness.test().config.cwd.as_path(),
+    );
+    codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "TURN_ONE_USER".to_string(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                ..Default::default()
+            }),
+        )
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            UserInput::Text {
+                text: "TURN_TWO_PREFIX".to_string(),
+                text_elements: Vec::new(),
+            },
+            UserInput::Text {
+                text: "TURN_TWO_SUFFIX".to_string(),
+                text_elements: Vec::new(),
+            },
+        ]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "TURN_THREE_TOOL_USER".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            UserInput::Image {
+                image: ImageReference::Inline { image_url },
+                detail: None,
+            },
+            UserInput::Text {
+                text: "TURN_FOUR_IMAGE_USER".to_string(),
+                text_elements: Vec::new(),
+            },
+        ]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "TURN_FIVE_USER".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    let response_requests = responses_mock.requests();
+    assert_eq!(
+        response_requests.len(),
+        8,
+        "expected seven normal requests across five turns and one streamed compaction request"
+    );
+    let normal_request = &response_requests[6];
+    let compact_request = &response_requests[7];
+    assert_eq!(compact_request.path(), "/v1/responses");
+    assert_eq!(
+        response_requests
+            .iter()
+            .filter(|request| !request.inputs_of_type("compaction_trigger").is_empty())
+            .count(),
+        1,
+    );
+    assert_eq!(
+        compact_request.inputs_of_type("compaction_trigger").len(),
+        1
+    );
+    let normal_body = normal_request.body_json();
+    let compact_body = compact_request.body_json();
+    let normal_images = normal_request.message_input_image_urls("user");
+    assert_eq!(
+        normal_images.len(),
+        1,
+        "the fixture must exercise real image input"
+    );
+    assert_eq!(
+        compact_request.message_input_image_urls("user"),
+        normal_images
+    );
+    let expected_routing_hint = |body: &Value| {
+        if !uses_codex_backend {
+            return None;
+        }
+
+        let model = body["model"].as_str().expect("missing request model");
+        match body.get("service_tier").and_then(Value::as_str) {
+            Some(tier) => Some(format!("model={model};tier={tier}")),
+            None => Some(format!("model={model}")),
+        }
+    };
+    assert_eq!(
+        normal_request.header(X_CODEX_ROUTING_HINT_HEADER),
+        expected_routing_hint(&normal_body)
+    );
+    assert_eq!(
+        compact_request.header(X_CODEX_ROUTING_HINT_HEADER),
+        expected_routing_hint(&compact_body)
+    );
+
+    // Both calls now use the same Responses transport. Only input and turn-scoped
+    // metadata differ: stream/store/include/tool_choice must remain in parity too.
+    let mut expected_shared_body = normal_body.clone();
+    let mut compact_shared_body = compact_body.clone();
+    for body in [&mut expected_shared_body, &mut compact_shared_body] {
+        let object = body.as_object_mut().context("Responses request object")?;
+        object.remove("input");
+        object.remove("client_metadata");
+    }
+    assert_eq!(compact_shared_body, expected_shared_body);
+    assert!(compact_body["prompt_cache_key"].is_string());
+    assert_eq!(
+        compact_body["prompt_cache_key"],
+        normal_body["prompt_cache_key"]
+    );
+    assert_eq!(
+        compact_body.get("service_tier").and_then(Value::as_str),
+        expected_service_tier
+    );
+    assert_eq!(compact_body["stream"], json!(true));
+    assert_eq!(compact_body["store"], json!(false));
+
+    insta::assert_snapshot!(
+        snapshot_name,
+        context_snapshot::format_labeled_requests_snapshot(
+            scenario,
+            &[
+                ("Last Normal /responses Request", normal_request),
+                ("Streamed Compaction /responses Request", compact_request),
+            ],
+            &ContextSnapshotOptions::default().include_request_settings(),
+        )
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_manual_compact_api_auth_reuses_service_tier_and_prompt_cache_key() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    assert_remote_manual_compact_request_parity(
+        CodexAuth::from_api_key("dummy"),
+        Some(ServiceTier::Fast),
+        Some("priority"),
+        "remote_manual_compact_api_auth_prompt_cache_key_request_diff",
+        "After five varied API-key-auth turns, streamed manual compaction reuses service_tier, prompt_cache_key, and the shared Responses request fields.",
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_manual_compact_chatgpt_auth_reuses_service_tier_and_prompt_cache_key() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    assert_remote_manual_compact_request_parity(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        Some(ServiceTier::Fast),
+        Some("priority"),
+        "remote_manual_compact_chatgpt_auth_service_tier_prompt_cache_key_request_diff",
+        "After five varied ChatGPT-auth turns, streamed manual compaction reuses service_tier, prompt_cache_key, and the shared Responses request fields.",
+    )
+    .await?;
+
     Ok(())
 }
 
@@ -832,7 +1216,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
         test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
     )
     .await?;
-    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
+    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
     let user_notice = "<image_resize_notice>retained user image</image_resize_notice>";
     let tool_notice = "<image_resize_notice>discarded tool image</image_resize_notice>";
     let unlisted_notice = "<unlisted_notice>discarded developer notice</unlisted_notice>";

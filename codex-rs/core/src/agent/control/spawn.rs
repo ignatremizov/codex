@@ -1082,10 +1082,10 @@ impl LocalAgentControl {
                     compacted.retained_context = (context_mode == GuardianContextMode::ThreadOwned
                         && multi_agent_version == MultiAgentVersion::V2)
                         .then(codex_history::RetainedContext::default);
-                    if let Some(replacement_history) = compacted.replacement_history.as_mut() {
+                    if compacted.replacement_history.is_some() {
                         // Matches before this checkpoint cannot survive its replacement history.
                         replaced_parent_developer_instructions = false;
-                        replacement_history.retain_mut(|response_item| {
+                        compacted.retain_replacement_history_items(|response_item| {
                             retain_forked_item(
                                 response_item,
                                 &mut replaced_parent_developer_instructions,

@@ -1,5 +1,6 @@
 use super::*;
 use crate::context::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
+use crate::context::CompactedImageOmission;
 use crate::context::UserInstructions;
 use crate::context::world_state::WorldState;
 use crate::context::world_state::WorldStateSection;
@@ -346,6 +347,104 @@ fn conversation_history_snapshot_excludes_contextual_user_messages() {
     );
 }
 
+#[test]
+fn compacted_prefix_sanitization_leaves_current_window_media_available() {
+    let inherited_image_url = "data:image/png;base64,inherited".to_string();
+    let current_image_url = "data:image/png;base64,current".to_string();
+    let inherited = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputImage {
+            image: ImageReference::Inline {
+                image_url: inherited_image_url.clone(),
+            },
+            detail: None,
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputImage {
+            image: ImageReference::Inline {
+                image_url: current_image_url,
+            },
+            detail: None,
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mut history = ContextManager::new();
+    history.replace(vec![inherited, current.clone()]);
+    history.set_compacted_prefix_len(Some(1));
+
+    let sanitization = history.sanitize_compacted_media_prefix();
+
+    assert!(sanitization.changed());
+    assert_eq!(sanitization.omitted_image_count, 1);
+    assert_eq!(
+        sanitization.omitted_inline_media_bytes,
+        u64::try_from(inherited_image_url.len()).expect("image URL length should fit in u64")
+    );
+    assert_eq!(
+        history.raw_items().cloned().collect::<Vec<_>>(),
+        vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: CompactedImageOmission::unavailable().render(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: Some(
+                    InternalChatMessageMetadataPassthrough {
+                        content_item_kinds: Some(vec![ContentItemKind(
+                            "compaction.image_omission".to_string(),
+                        )]),
+                        ..Default::default()
+                    },
+                ),
+            },
+            current,
+        ]
+    );
+}
+
+#[test]
+fn guardian_history_checkpoint_removes_inline_media() {
+    let mut history = create_history_with_items(vec![ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "Review this image.".to_string(),
+            },
+            ContentItem::InputImage {
+                image: ImageReference::Inline {
+                    image_url: "data:image/png;base64,inherited".to_string(),
+                },
+                detail: None,
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }]);
+    history.replace_compacted(
+        vec![ResponseItemEnvelope::new(assistant_msg("summary"))],
+        /*reviewer_compaction_hash*/ None,
+    );
+
+    let checkpoint = history
+        .guardian_history_checkpoint()
+        .expect("compaction initializes Guardian history");
+    let serialized = serde_json::to_string(&checkpoint).expect("serialize checkpoint");
+
+    assert!(serialized.contains("Review this image."));
+    assert!(serialized.contains(&CompactedImageOmission::unavailable().render()));
+    assert!(!serialized.contains("data:image/png"));
+}
+
 struct TestWorldStateSection;
 
 impl WorldStateSection for TestWorldStateSection {
@@ -671,7 +770,7 @@ fn non_last_reasoning_tokens_return_zero_when_no_user_messages() {
     let history =
         create_history_with_items(vec![reasoning_with_encrypted_content(/*len*/ 800)]);
 
-    assert_eq!(history.get_non_last_reasoning_items_tokens(), 0);
+    assert_eq!(history.estimated_non_last_reasoning_items_tokens(), 0);
 }
 
 #[test]
@@ -686,7 +785,7 @@ fn non_last_reasoning_tokens_ignore_entries_after_last_user() {
     // first: (900 * 0.75 - 650) / 4 = 6.25 tokens
     // second: (1000 * 0.75 - 650) / 4 = 25 tokens
     // first + second = 62.5
-    assert_eq!(history.get_non_last_reasoning_items_tokens(), 32);
+    assert_eq!(history.estimated_non_last_reasoning_items_tokens(), 32);
 }
 
 #[test]
@@ -1275,6 +1374,7 @@ fn estimate_token_count_with_base_instructions_uses_provided_text() {
 
 #[test]
 fn remove_first_item_removes_matching_output_for_function_call() {
+    let retained = user_input_text_msg("retained compacted prefix");
     let items = vec![
         ResponseItem::FunctionCall {
             id: None,
@@ -1285,6 +1385,7 @@ fn remove_first_item_removes_matching_output_for_function_call() {
             encrypted_function_args: None,
             internal_chat_message_metadata_passthrough: None,
         },
+        retained.clone(),
         ResponseItem::FunctionCallOutput {
             id: None,
             call_id: Some("call-1".to_string()),
@@ -1295,8 +1396,12 @@ fn remove_first_item_removes_matching_output_for_function_call() {
         },
     ];
     let mut h = create_history_with_items(items);
+    h.set_compacted_prefix_len(Some(2));
     h.remove_first_item();
-    assert_eq!(raw_items(&h), vec![]);
+    assert_eq!(
+        (raw_items(&h), h.compacted_prefix_len()),
+        (vec![retained], Some(1))
+    );
 }
 
 #[test]

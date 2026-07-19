@@ -4,10 +4,16 @@ use std::time::Instant;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::compacted_history_retention::RetainedMessageTruncation;
+use crate::compacted_history_retention::contains_atomic_compacted_media;
+use crate::compacted_history_retention::truncate_retained_message_to_token_budget;
+use crate::compacted_history_retention::truncate_text_to_approx_token_budget;
 use crate::context::CompactionSummary;
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianContextMode;
 use crate::context::McpServerUseInstructions;
+use crate::context::compacted_image_omission_text;
+use crate::context::standalone_compacted_image_omission_message;
 use crate::context::world_state::WorldState;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
@@ -53,6 +59,7 @@ use codex_rollout_trace::InferenceTraceContext;
 use futures::prelude::*;
 use tokio::time::timeout;
 use tracing::error;
+use tracing::info;
 
 pub use codex_prompts::SUMMARIZATION_PROMPT;
 pub use codex_prompts::SUMMARY_PREFIX;
@@ -275,6 +282,15 @@ async fn run_compact_task_inner_impl(
         &[initial_input_for_turn.into()],
         turn_context.model_info().truncation_policy.into(),
     );
+    let media_sanitization = history.sanitize_compacted_media_prefix();
+    if media_sanitization.changed() {
+        info!(
+            turn_id = %turn_context.sub_id,
+            omitted_image_count = media_sanitization.omitted_image_count,
+            omitted_inline_media_bytes = media_sanitization.omitted_inline_media_bytes,
+            "removed previously compacted media before local compaction"
+        );
+    }
 
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
@@ -403,6 +419,10 @@ async fn run_compact_task_inner_impl(
     };
     let user_messages = collect_annotated_user_messages(history_items, identity);
 
+    let compacted_prefix_len = history_snapshot
+        .compacted_prefix_len()
+        .unwrap_or_default()
+        .min(history_items.len());
     let rollout_path = sess.current_rollout_path().await.ok().flatten();
     let recent_turns_in_prompt =
         selected_user_messages_with_limit(&user_messages, COMPACT_USER_MESSAGE_MAX_TOKENS).len();
@@ -414,14 +434,18 @@ async fn run_compact_task_inner_impl(
     );
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}\n\n{session_metadata}");
     let summary_for_event_text = summary_for_event(&summary_text);
-    // Explicit MCP use is user-requested context expansion. Preserve every accepted inventory
-    // and its envelope in order, independently of the reconstructed user-message budget.
-    let mcp_context = history_items
-        .iter()
-        .filter(|envelope| McpServerUseInstructions::matches_response_item(&envelope.item))
-        .cloned()
-        .collect();
-    let mut new_history = build_compacted_history(mcp_context, &user_messages, &summary_text);
+
+    let mut new_history =
+        build_local_compacted_history(history_items, compacted_prefix_len, &summary_text);
+    if sess.guardian_context_mode != GuardianContextMode::ThreadOwned {
+        for envelope in &mut new_history {
+            if let ResponseItem::Message { id, role, .. } = &mut envelope.item
+                && role == "user"
+            {
+                *id = None;
+            }
+        }
+    }
     if let Some(summary_item) = new_history.last_mut() {
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.
@@ -494,6 +518,8 @@ pub(crate) struct CompactionAnalyticsAttempt {
 pub(crate) struct CompactionAnalyticsDetails {
     pub(crate) active_context_tokens_before: Option<i64>,
     pub(crate) retained_image_count: Option<usize>,
+    pub(crate) omitted_image_count: Option<usize>,
+    pub(crate) omitted_inline_media_bytes: Option<u64>,
     pub(crate) compaction_summary_tokens: Option<i64>,
     pub(crate) cached_input_tokens: Option<i64>,
     pub(crate) cache_write_input_tokens: Option<i64>,
@@ -532,6 +558,8 @@ impl CompactionAnalyticsAttempt {
         let CompactionAnalyticsDetails {
             active_context_tokens_before,
             retained_image_count,
+            omitted_image_count,
+            omitted_inline_media_bytes,
             compaction_summary_tokens,
             cached_input_tokens,
             cache_write_input_tokens,
@@ -556,6 +584,8 @@ impl CompactionAnalyticsAttempt {
                 active_context_tokens_before,
                 active_context_tokens_after,
                 retained_image_count,
+                omitted_image_count,
+                omitted_inline_media_bytes,
                 compaction_summary_tokens,
                 cached_input_tokens,
                 cache_write_input_tokens,
@@ -750,6 +780,11 @@ pub(crate) fn build_compacted_history(
     )
 }
 
+#[path = "compact_media_retention.rs"]
+mod media_retention;
+#[cfg(test)]
+use media_retention::build_compacted_history_preserving_mcp_context;
+use media_retention::build_local_compacted_history;
 fn build_compacted_history_with_limit(
     mut history: Vec<ResponseItemEnvelope>,
     user_messages: &[CompactedUserMessage],

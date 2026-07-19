@@ -78,7 +78,26 @@ pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineRead
                 Err(err) => return Err(err),
             }
         }
-        reader::open_once(path, &mut metrics).await
+        match reader::open_once(path, &mut metrics).await {
+            Ok(reader) => Ok(reader),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let recovery_path = path.to_path_buf();
+                let source = tokio::task::spawn_blocking(move || {
+                    crate::media_vacuum::open_recovery_source(&recovery_path)
+                })
+                .await
+                .map_err(io::Error::other)??;
+                let Some(source) = source else {
+                    return Err(error);
+                };
+                metrics.format = "plain";
+                use std::io::BufRead;
+                let reader =
+                    std::io::BufReader::new(Box::new(source) as Box<dyn Read + Send>).lines();
+                Ok(RolloutLineReaderInner::Blocking(Some(reader)))
+            }
+            Err(error) => Err(error),
+        }
     }
     .await;
     metrics.duration = started_at.elapsed();
@@ -92,7 +111,6 @@ pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineRead
 }
 
 /// Returns the compressed `.jsonl.zst` path for a rollout path.
-#[cfg(test)]
 pub(crate) fn compressed_rollout_path(path: &Path) -> PathBuf {
     path::compressed_rollout_path(path)
 }
@@ -115,61 +133,77 @@ pub(crate) async fn materialize_rollout_for_append(
 /// Materializes a compressed rollout back to plain `.jsonl` for blocking append paths.
 pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result<PathBuf> {
     let plain_path = plain_rollout_path(path);
-    if plain_path.exists() {
+    if plain_path.try_exists()? {
+        // An append must retire any old preimage authority before changing canonical history.
+        crate::media_vacuum::retire_recovery_before_append(&plain_path)?;
         metrics::materialize("plain_exists");
         return Ok(plain_path);
     }
     let compressed_path = path::compressed_rollout_path(plain_path.as_path());
-    if !compressed_path.exists() {
-        metrics::materialize("missing");
+    if !compressed_path.try_exists()? {
+        crate::media_vacuum::recover_compacted_media_backup_if_needed(&plain_path)?;
+        if plain_path.try_exists()? {
+            crate::media_vacuum::retire_recovery_before_append(&plain_path)?;
+            metrics::materialize("recovered_media_vacuum_backup");
+        } else {
+            metrics::materialize("missing");
+        }
         return Ok(plain_path);
     }
 
     let started_at = Instant::now();
     let temp_path = temp_path_for(plain_path.as_path(), "decompress");
+    let parent = plain_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let mut stage = "prepare_directory";
     let result: io::Result<()> = (|| {
-        if let Some(parent) = plain_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        std::fs::create_dir_all(parent)?;
         stage = "read_metadata";
         let metadata = std::fs::metadata(compressed_path.as_path())?;
-        let permissions = metadata.permissions();
         stage = "create_temp";
-        let mut output = create_file_with_permissions(temp_path.as_path(), &permissions)?;
-        {
-            stage = "open_source";
-            let input = File::open(compressed_path.as_path())?;
-            stage = "decode_and_write";
-            let mut decoder = zstd::stream::read::Decoder::new(input)?;
-            io::copy(&mut decoder, &mut output)?;
-        }
+        let mut output = create_file_with_permissions(&temp_path, &metadata.permissions())?;
+        stage = "open_source";
+        let input = File::open(&compressed_path)?;
+        stage = "decode_and_write";
+        let mut decoder = zstd::stream::read::Decoder::new(input)?;
+        io::copy(&mut decoder, &mut output)?;
+        drop(decoder);
         stage = "flush";
         output.flush()?;
-        stage = "sync";
-        output.sync_all()?;
-        stage = "publish";
-        match std::fs::hard_link(temp_path.as_path(), plain_path.as_path()) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(_) => persist_temp_file_noclobber(temp_path.as_path(), plain_path.as_path())?,
-        }
         stage = "set_metadata";
         output.set_times(std::fs::FileTimes::new().set_modified(metadata.modified()?))?;
         stage = "sync";
         output.sync_all()?;
-        drop(output);
-        let _ = std::fs::remove_file(temp_path.as_path());
-        stage = "remove_source";
-        match std::fs::remove_file(compressed_path.as_path()) {
+        stage = "publish";
+        match std::fs::hard_link(&temp_path, &plain_path) {
             Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(_) => persist_temp_file_noclobber(&temp_path, &plain_path)?,
         }
+        drop(output);
+        stage = "sync_directory";
+        crate::media_vacuum::sync_parent_directory(parent)?;
+        let _ = std::fs::remove_file(&temp_path);
+        #[cfg(unix)]
+        {
+            stage = "remove_source";
+            match std::fs::remove_file(&compressed_path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+            stage = "sync_directory";
+            crate::media_vacuum::sync_parent_directory(parent)?;
+        }
+        // Where directory sync is unavailable, retain the old compressed representation.
+        stage = "retire_media_recovery";
+        crate::media_vacuum::retire_recovery_before_append(&plain_path)?;
         Ok(())
     })();
     if let Err(err) = &result {
-        let _ = std::fs::remove_file(temp_path.as_path());
+        let _ = std::fs::remove_file(&temp_path);
         FailureMetric::Materialize.record(stage, err);
         metrics::materialize_duration("failed", started_at.elapsed());
     }

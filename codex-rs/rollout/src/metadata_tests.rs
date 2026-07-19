@@ -28,6 +28,31 @@ use tempfile::tempdir;
 use uuid::Uuid;
 
 #[test]
+fn rollout_paths_distinguish_thread_and_replacement_identities() {
+    let thread_id = ThreadId::new();
+    let replacement_id = ThreadId::new();
+    for suffix in [".jsonl", ".jsonl.zst"] {
+        for (ids, expected_rollout_id) in [
+            (thread_id.to_string(), thread_id),
+            (format!("{thread_id}_{replacement_id}"), replacement_id),
+        ] {
+            let path = PathBuf::from(format!("rollout-2026-01-27T12-34-56-{ids}{suffix}"));
+            assert_eq!(
+                (
+                    thread_id_from_rollout_path(&path),
+                    rollout_id_from_path(&path)
+                ),
+                (Some(thread_id), Some(expected_rollout_id)),
+            );
+        }
+    }
+    assert_eq!(
+        thread_id_from_rollout_path(Path::new("unrelated.jsonl")),
+        None
+    );
+}
+
+#[test]
 fn fork_cutoff_distinguishes_logical_parent_from_reverted_rollout() {
     let parent_id = ThreadId::new();
     let thread_id = ThreadId::new();
@@ -301,8 +326,7 @@ fn builder_from_items_falls_back_to_filename() {
         first_window_id: None,
         previous_window_id: None,
         window_id: None,
-        compaction_response_id: None,
-        latest_token_usage_record: None,
+        ..Default::default()
     })];
 
     let builder = builder_from_items(items.as_slice(), path.as_path()).expect("builder");

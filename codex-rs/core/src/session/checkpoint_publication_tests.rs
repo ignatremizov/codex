@@ -93,16 +93,25 @@ async fn checkpoint_and_cold_reconstruction_preserve_full_mcp_union_and_latest_e
             _ => None,
         })
         .expect("checkpoint");
-    assert_eq!(checkpoint, &installed);
+    // Compacted history stores a positional metadata array when any item has metadata.
+    // Missing entries are serialized as defaults; live publication keeps their original shape.
+    let mut persisted = installed.clone();
+    for item in &mut persisted {
+        item.metadata.get_or_insert_default();
+    }
+    assert_eq!(checkpoint, &persisted);
     let (fresh, _) = make_session_and_context().await;
-    fresh.record_initial_history(reconstructed).await;
+    fresh
+        .record_initial_history(reconstructed)
+        .await
+        .expect("record reconstructed history");
     let restored = fresh.clone_history().await;
-    assert_eq!(restored.annotated_items(), installed);
+    assert_eq!(restored.annotated_items(), persisted);
     let inventory = restored
         .annotated_items()
         .iter()
         .rev()
         .find_map(RestoredSkillsInventory::from_envelope)
         .expect("restored inventory");
-    assert_eq!(inventory.envelope(), &empty);
+    assert_eq!(inventory.envelope(), &persisted[2]);
 }

@@ -74,6 +74,7 @@ impl ThreadStore for GatedReviewerStore {
     delegate_store_methods! {
         fn resume_thread(params: ResumeThreadParams) -> ();
         fn append_items(params: AppendThreadItemsParams) -> ();
+        fn append_items_and_flush(params: AppendThreadItemsParams) -> ();
         fn discard_thread(thread_id: ThreadId) -> ();
         fn load_history(params: LoadThreadHistoryParams) -> StoredThreadHistory;
         fn read_thread(params: ReadThreadParams) -> StoredThread;
@@ -104,6 +105,8 @@ impl ThreadStore for GatedReviewerStore {
     }
 
     fn flush_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
+        // Canonical item batches use the store's append-and-flush acknowledgement above.
+        // Gate the explicit terminal flush, which must precede approval delivery.
         Box::pin(async move {
             let is_reviewer = self.reviewer.lock().await.thread_id == Some(thread_id);
             let pending = if is_reviewer {
@@ -204,7 +207,7 @@ async fn guardian_saves_each_completed_review_before_releasing_its_action() -> a
                 .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnComplete(_))))
                 .count(),
             review,
-            "the first save after inference must include turn completion"
+            "the terminal save after inference must include turn completion"
         );
         // The parent cannot consume the approval while its review is still being saved.
         assert!(

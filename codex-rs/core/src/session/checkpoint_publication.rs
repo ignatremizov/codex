@@ -112,6 +112,10 @@ impl Session {
             window_id: Some(metadata.window_ids.window_id.to_string()),
             compaction_response_id: metadata.compaction_response_id,
             latest_token_usage_record: state.latest_token_usage_record.clone(),
+            replacement_history_media_sanitized_prefix_len: Some(
+                u64::try_from(items.len()).unwrap_or(u64::MAX),
+            ),
+            replacement_history_media_repair: false,
         };
         drop(state);
         let mut rollout_items = vec![RolloutItem::Compacted(compacted_item)];
@@ -134,6 +138,7 @@ impl Session {
             /*acknowledgement*/ None,
             move |state| {
                 let installed = items.clone();
+                let compacted_prefix_len = items.len();
                 state.replace_annotated_history(
                     items,
                     reference_context_item,
@@ -142,6 +147,9 @@ impl Session {
                     },
                 );
                 state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
+                state
+                    .history
+                    .set_compacted_prefix_len(Some(compacted_prefix_len));
                 if let Some(snapshot) = world_state_snapshot {
                     state.history.set_world_state_baseline(snapshot);
                 }

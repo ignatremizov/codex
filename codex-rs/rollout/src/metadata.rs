@@ -10,6 +10,7 @@ use chrono::NaiveDateTime;
 use chrono::Timelike;
 use chrono::Utc;
 use codex_protocol::RolloutId;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionMeta;
@@ -112,6 +113,16 @@ pub fn builder_from_items(
 pub fn rollout_id_from_path(rollout_path: &Path) -> Option<RolloutId> {
     let file_name = rollout_path.file_name()?.to_str()?;
     Some(RolloutFileName::parse(file_name)?.rollout_id())
+}
+
+/// Returns the stable thread ID encoded in a canonical plain or compressed rollout filename.
+///
+/// Unlike [`rollout_id_from_path`], this retains the original thread identity after a revert
+/// switches the thread to a different immutable rollout. Filename identity must still be
+/// checked against the persisted metadata before authorizing a mutation.
+pub fn thread_id_from_rollout_path(rollout_path: &Path) -> Option<ThreadId> {
+    let file_name = rollout_path.file_name()?.to_str()?;
+    Some(RolloutFileName::parse(file_name)?.thread_id())
 }
 
 /// Reads the logical fork cutoff without mistaking a revert's history base for its parent.

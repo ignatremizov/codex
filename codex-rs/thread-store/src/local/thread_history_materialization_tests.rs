@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -1922,6 +1923,254 @@ SELECT
 }
 
 #[tokio::test]
+async fn failed_full_rebuild_preserves_all_derived_rows_and_checkpoint() {
+    let ProjectionFixture {
+        _home,
+        store,
+        thread_id,
+        rollout_path,
+        pool,
+    } = populated_projection().await;
+    store
+        .shutdown_thread(thread_id)
+        .await
+        .expect("close writer");
+    let before = projection_rows(&pool, thread_id).await;
+    assert!(before.iter().all(|rows| !rows.is_empty()));
+    let suffix = [
+        rollout_line(Some(5), turn_started("new-turn")),
+        rollout_line(
+            Some(6),
+            completed_item(
+                thread_id,
+                "new-turn",
+                agent_message("new-agent", MessagePhase::FinalAnswer),
+            ),
+        ),
+        rollout_line(Some(7), turn_completed("new-turn")),
+    ]
+    .join("\n");
+    append_suffix(&rollout_path, &format!("{suffix}\n"));
+    let canonical = fs::read(&rollout_path).expect("read replacement canonical history");
+    sqlx::query(
+        "CREATE TRIGGER reject_new_agent BEFORE INSERT ON thread_items \
+         WHEN NEW.item_id = 'new-agent' BEGIN SELECT RAISE(ABORT, 'projection failure'); END",
+    )
+    .execute(&pool)
+    .await
+    .expect("fail replacement after old rows have been reinserted");
+
+    super::rebuild_to_sqlite(&store, thread_id, &rollout_path)
+        .await
+        .expect_err("injected rebuild failure");
+    assert_eq!(projection_rows(&pool, thread_id).await, before);
+    assert_eq!(
+        fs::read(&rollout_path).expect("read canonical history"),
+        canonical,
+    );
+
+    sqlx::query("DROP TRIGGER reject_new_agent")
+        .execute(&pool)
+        .await
+        .expect("allow rebuild retry");
+    super::rebuild_to_sqlite(&store, thread_id, &rollout_path)
+        .await
+        .expect("publish complete replacement");
+    assert_eq!(
+        projection_state(&pool, thread_id).await,
+        (i64::try_from(canonical.len()).expect("logical length"), 8),
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT item_id FROM thread_items WHERE thread_id = ? ORDER BY rollout_ordinal",
+        )
+        .bind(thread_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("read replacement items"),
+        ["original-agent", "new-agent"],
+    );
+}
+
+#[tokio::test]
+async fn compressed_projection_validates_logical_checkpoints_and_rebuilds_invalid_boundaries() {
+    let ProjectionFixture {
+        _home,
+        store,
+        thread_id,
+        rollout_path,
+        pool,
+    } = populated_projection().await;
+    store
+        .shutdown_thread(thread_id)
+        .await
+        .expect("close writer");
+    let before = projection_rows(&pool, thread_id).await;
+    let checkpoint = projection_state(&pool, thread_id).await;
+    let (last_record_start, _) = rollout_line_byte_offsets(&rollout_path, /*ordinal*/ 4);
+    let (canonical_items, _, _) = RolloutRecorder::load_rollout_items(&rollout_path)
+        .await
+        .expect("read plain canonical history");
+    compress_rollout(&rollout_path);
+    let compressed_path = rollout_path.with_extension("jsonl.zst");
+    let compressed = fs::read(&compressed_path).expect("read compressed bytes");
+    assert!(i64::try_from(compressed.len()).expect("physical length") < checkpoint.0);
+    let valid_offset = u64::try_from(checkpoint.0).expect("logical offset");
+    assert_eq!(
+        codex_rollout::last_rollout_ordinal_before_offset(&rollout_path, valid_offset)
+            .expect("read compressed logical boundary"),
+        Some(4),
+    );
+    // A valid decoded checkpoint must not be mistaken for an offset beyond compressed EOF.
+    sqlx::query("UPDATE thread_turns SET status = 'sentinel' WHERE thread_id = ?")
+        .bind(thread_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("mark synchronized projection");
+    let synchronized = projection_rows(&pool, thread_id).await;
+    super::materialize_to_sqlite(&store, thread_id, &rollout_path)
+        .await
+        .expect("keep synchronized compressed projection");
+    assert_eq!(projection_rows(&pool, thread_id).await, synchronized);
+
+    for (offset, next_ordinal) in [
+        (last_record_start + 1, 4),
+        (checkpoint.0 + 1, checkpoint.1),
+        (0, checkpoint.1),
+        (checkpoint.0, checkpoint.1 + 1),
+    ] {
+        if offset != checkpoint.0 {
+            assert_eq!(
+                codex_rollout::last_rollout_ordinal_before_offset(
+                    &rollout_path,
+                    u64::try_from(offset).expect("test offset"),
+                )
+                .expect("validate boundary"),
+                None,
+            );
+        }
+        sqlx::query("UPDATE thread_turns SET status = 'sentinel' WHERE thread_id = ?")
+            .bind(thread_id.to_string())
+            .execute(&pool)
+            .await
+            .expect("make rebuild observable");
+        sqlx::query(
+            "UPDATE thread_history_projection_state \
+             SET next_rollout_byte_offset = ?, next_rollout_ordinal = ? WHERE thread_id = ?",
+        )
+        .bind(offset)
+        .bind(next_ordinal)
+        .bind(thread_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("install invalid checkpoint");
+        super::materialize_to_sqlite(&store, thread_id, &rollout_path)
+            .await
+            .expect("rebuild from compressed logical bytes");
+        assert_eq!(projection_rows(&pool, thread_id).await, before);
+    }
+    let (decoded_items, _, _) = RolloutRecorder::load_rollout_items(&rollout_path)
+        .await
+        .expect("read compressed canonical history");
+    assert_eq!(
+        serde_json::to_value(decoded_items).expect("serialize decoded history"),
+        serde_json::to_value(canonical_items).expect("serialize original history"),
+    );
+    assert!(
+        !rollout_path.exists(),
+        "projection reads must not materialize the rollout"
+    );
+    assert_eq!(
+        fs::read(compressed_path).expect("read compressed history"),
+        compressed,
+    );
+}
+
+#[tokio::test]
+async fn durable_append_projection_failure_retries_without_appending_canonical_items_twice() {
+    let ProjectionFixture {
+        _home,
+        store,
+        thread_id,
+        rollout_path,
+        pool,
+    } = populated_projection().await;
+    let before = projection_rows(&pool, thread_id).await;
+    sqlx::query(
+        "CREATE TRIGGER reject_new_agent BEFORE INSERT ON thread_items \
+         WHEN NEW.item_id = 'new-agent' BEGIN SELECT RAISE(ABORT, 'projection failure'); END",
+    )
+    .execute(&pool)
+    .await
+    .expect("inject derived projection failure");
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![
+                turn_started("new-turn"),
+                completed_item(
+                    thread_id,
+                    "new-turn",
+                    agent_message("new-agent", MessagePhase::FinalAnswer),
+                ),
+                turn_completed("new-turn"),
+            ],
+        })
+        .await
+        .expect("canonical append succeeds even when derived projection fails");
+    assert_eq!(projection_rows(&pool, thread_id).await, before);
+    let canonical = fs::read(&rollout_path).expect("read durable append");
+    let (items, _, _) = RolloutRecorder::load_rollout_items(&rollout_path)
+        .await
+        .expect("read durable items before retry");
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(EventMsg::TurnStarted(event))
+                        if event.turn_id == "new-turn"
+                )
+            })
+            .count(),
+        1,
+    );
+    sqlx::query("DROP TRIGGER reject_new_agent")
+        .execute(&pool)
+        .await
+        .expect("allow projection retry");
+    store
+        .flush_thread(thread_id)
+        .await
+        .expect("retry projection");
+    let recovered = projection_rows(&pool, thread_id).await;
+    assert_eq!(
+        projection_state(&pool, thread_id).await,
+        (i64::try_from(canonical.len()).expect("logical length"), 8),
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT item_id FROM thread_items WHERE thread_id = ? ORDER BY rollout_ordinal",
+        )
+        .bind(thread_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("read recovered item identities"),
+        ["original-agent", "new-agent"],
+    );
+    store
+        .flush_thread(thread_id)
+        .await
+        .expect("repeat projection retry");
+    assert_eq!(projection_rows(&pool, thread_id).await, recovered);
+    assert_eq!(
+        fs::read(&rollout_path).expect("read canonical history after retries"),
+        canonical,
+    );
+}
+
+#[tokio::test]
 async fn synchronized_catch_up_does_not_replay_old_rows() {
     let home = TempDir::new().expect("temp dir");
     let store = projection_store(home.path()).await;
@@ -2529,6 +2778,87 @@ SELECT
     .await
     .expect("read history row counts");
     assert_eq!(counts, (0, 0, 0));
+}
+
+struct ProjectionFixture {
+    _home: TempDir,
+    store: LocalThreadStore,
+    thread_id: ThreadId,
+    rollout_path: PathBuf,
+    pool: sqlx::SqlitePool,
+}
+
+async fn populated_projection() -> ProjectionFixture {
+    let home = TempDir::new().expect("temp dir");
+    let store = projection_store(home.path()).await;
+    let thread_id = ThreadId::default();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .persist_thread(thread_id, PersistContext::Standard)
+        .await
+        .expect("persist session metadata");
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![
+                RolloutItem::RealtimeItem(RealtimeItem {
+                    id: "voice:started".to_string(),
+                    realtime_session_id: "voice".to_string(),
+                    content: RealtimeItemContent::RealtimeSessionStarted,
+                }),
+                turn_started("original-turn"),
+                completed_item(
+                    thread_id,
+                    "original-turn",
+                    agent_message("original-agent", MessagePhase::FinalAnswer),
+                ),
+                turn_completed("original-turn"),
+            ],
+        })
+        .await
+        .expect("seed ordinary and realtime derived history");
+    let rollout_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("rollout path");
+    let pool = codex_state::open_thread_history_db(&codex_state::SqliteConfig::new_for_testing(
+        home.path().abs(),
+    ))
+    .await
+    .expect("open history database");
+    ProjectionFixture {
+        _home: home,
+        store,
+        thread_id,
+        rollout_path,
+        pool,
+    }
+}
+
+/// Snapshot all persisted projection columns, including the byte/ordinal checkpoint.
+async fn projection_rows(pool: &sqlx::SqlitePool, thread_id: ThreadId) -> Vec<Vec<String>> {
+    let mut tables = Vec::new();
+    for query in [
+        "SELECT json_array(thread_id, turn_id, rollout_ordinal, status, error_json, started_at, \
+         completed_at, duration_ms, first_user_item_id, final_agent_item_id, rollout_byte_offset, \
+         rollout_end_ordinal, rollout_end_byte_offset) FROM thread_turns \
+         WHERE thread_id = ? ORDER BY rollout_ordinal",
+        "SELECT json_array(thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json, \
+         item_type, updated_at_ordinal) FROM thread_items WHERE thread_id = ? ORDER BY rollout_ordinal",
+        "SELECT json_array(thread_id, item_id, rollout_ordinal, created_at_ms, item_type, item_json) \
+         FROM thread_realtime_items WHERE thread_id = ? ORDER BY rollout_ordinal",
+        "SELECT json_array(thread_id, next_rollout_byte_offset, next_rollout_ordinal) \
+         FROM thread_history_projection_state WHERE thread_id = ?",
+    ] {
+        tables.push(
+            sqlx::query_scalar::<_, String>(query)
+                .bind(thread_id.to_string())
+                .fetch_all(pool)
+                .await
+                .expect("read complete derived table"),
+        );
+    }
+    tables
 }
 
 async fn projection_store(codex_home: &Path) -> LocalThreadStore {
