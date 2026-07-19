@@ -1549,7 +1549,7 @@ async fn visit_rollout_filenames<T>(
             Err(err) => return Err(err),
         };
         while let Some(entry) = read_dir.next_entry().await? {
-            let path = entry.path();
+            let mut path = entry.path();
             let file_type = entry.file_type().await?;
             if file_type.is_dir() {
                 stack.push(path);
@@ -1557,6 +1557,39 @@ async fn visit_rollout_filenames<T>(
             }
             if !file_type.is_file() {
                 continue;
+            }
+            let entry_file_name = entry.file_name();
+            // A committed vacuum can leave its validated backup as the only representation if
+            // replacement is interrupted. Recover it during filename discovery so lifecycle
+            // operations can still find, archive, or hard-delete the thread.
+            if let Some(backup_rollout_file_name) = entry_file_name
+                .to_str()
+                .and_then(crate::media_vacuum::compacted_media_backup_rollout_file_name)
+                && let Some(plain_rollout_file_name) =
+                    compression::parse_rollout_file_name(backup_rollout_file_name)
+            {
+                let canonical_path = path.with_file_name(plain_rollout_file_name);
+                if compression::existing_rollout_path(canonical_path.as_path())
+                    .await
+                    .is_some()
+                {
+                    continue;
+                }
+                let recovery_path = canonical_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::media_vacuum::recover_compacted_media_backup_if_needed(
+                        recovery_path.as_path(),
+                    )
+                })
+                .await
+                .map_err(io::Error::other)??;
+                if let Some(recovered_path) =
+                    compression::existing_rollout_path(canonical_path.as_path()).await
+                {
+                    path = recovered_path;
+                } else {
+                    continue;
+                }
             }
             let Some(rollout_file) = compression::RolloutFile::from_path(path) else {
                 continue;

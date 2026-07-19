@@ -6,6 +6,25 @@ use std::io::SeekFrom;
 use serde::de::DeserializeOwned;
 
 const READ_CHUNK_SIZE: usize = 64 * 1024;
+const MAX_JSONL_RECORD_BYTES: usize = 256 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+enum OversizedRecordPolicy {
+    Unlimited,
+    Skip { max_record_bytes: usize },
+    Reject { max_record_bytes: usize },
+}
+
+impl OversizedRecordPolicy {
+    fn max_record_bytes(self) -> Option<usize> {
+        match self {
+            Self::Unlimited => None,
+            Self::Skip { max_record_bytes } | Self::Reject { max_record_bytes } => {
+                Some(max_record_bytes)
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum ScanOutcome<T> {
@@ -23,7 +42,7 @@ pub struct ReverseJsonlScanner<R> {
     chunk_position: usize,
     chunk: Vec<u8>,
     record_reversed: Vec<u8>,
-    max_record_bytes: Option<usize>,
+    oversized_record_policy: OversizedRecordPolicy,
     discarding_oversized_record: bool,
 }
 
@@ -32,36 +51,64 @@ where
     R: Read + Seek,
 {
     pub fn new(mut reader: R) -> io::Result<Self> {
-        let next_chunk_end = reader.seek(SeekFrom::End(0))?;
-        Self::new_at(reader, next_chunk_end)
+        let end = reader.seek(SeekFrom::End(0))?;
+        Self::new_at(reader, end)
     }
 
     /// Creates a reverse scanner whose logical end is the given byte offset.
     ///
     /// This lets callers scan a frozen JSONL prefix without reading records appended after that
     /// prefix was captured.
-    pub fn new_at(mut reader: R, end_byte_offset: u64) -> io::Result<Self> {
-        let file_len = reader.seek(SeekFrom::End(0))?;
-        if end_byte_offset > file_len {
+    pub fn new_at(reader: R, end_byte_offset: u64) -> io::Result<Self> {
+        Self::new_before_offset_with_policy(
+            reader,
+            end_byte_offset,
+            OversizedRecordPolicy::Unlimited,
+        )
+    }
+
+    pub(crate) fn new_before_offset(reader: R, offset: u64) -> io::Result<Self> {
+        Self::new_before_offset_with_limit(reader, offset, MAX_JSONL_RECORD_BYTES)
+    }
+
+    fn new_before_offset_with_limit(
+        reader: R,
+        offset: u64,
+        max_record_bytes: usize,
+    ) -> io::Result<Self> {
+        Self::new_before_offset_with_policy(
+            reader,
+            offset,
+            OversizedRecordPolicy::Reject { max_record_bytes },
+        )
+    }
+
+    fn new_before_offset_with_policy(
+        mut reader: R,
+        offset: u64,
+        oversized_record_policy: OversizedRecordPolicy,
+    ) -> io::Result<Self> {
+        let end = reader.seek(SeekFrom::End(0))?;
+        if offset > end {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "reverse JSONL scan end is past the file",
+                "reverse JSONL scan offset exceeds the reader length",
             ));
         }
         Ok(Self {
             reader,
-            next_chunk_end: end_byte_offset,
+            next_chunk_end: offset,
             chunk_position: 0,
             chunk: vec![0; READ_CHUNK_SIZE],
             record_reversed: Vec::new(),
-            max_record_bytes: None,
+            oversized_record_policy,
             discarding_oversized_record: false,
         })
     }
 
     /// Skips records larger than the configured limit without buffering or parsing them.
     pub fn with_max_record_bytes(mut self, max_record_bytes: usize) -> Self {
-        self.max_record_bytes = Some(max_record_bytes);
+        self.oversized_record_policy = OversizedRecordPolicy::Skip { max_record_bytes };
         self
     }
 
@@ -93,17 +140,7 @@ where
 
             let chunk = &self.chunk[..self.chunk_position];
             if let Some(newline_position) = chunk.iter().rposition(|byte| *byte == b'\n') {
-                let fragment = &chunk[newline_position + 1..];
-                if !self.discarding_oversized_record {
-                    if self.max_record_bytes.is_some_and(|max_record_bytes| {
-                        self.record_reversed.len().saturating_add(fragment.len()) > max_record_bytes
-                    }) {
-                        self.record_reversed.clear();
-                        self.discarding_oversized_record = true;
-                    } else {
-                        self.record_reversed.extend(fragment.iter().rev().copied());
-                    }
-                }
+                self.append_reversed_chunk_fragment(newline_position + 1, self.chunk_position)?;
                 self.chunk_position = newline_position;
                 if self.discarding_oversized_record {
                     self.discarding_oversized_record = false;
@@ -113,19 +150,42 @@ where
                     return Ok(Some(outcome));
                 }
             } else {
-                if !self.discarding_oversized_record {
-                    if self.max_record_bytes.is_some_and(|max_record_bytes| {
-                        self.record_reversed.len().saturating_add(chunk.len()) > max_record_bytes
-                    }) {
-                        self.record_reversed.clear();
-                        self.discarding_oversized_record = true;
-                    } else {
-                        self.record_reversed.extend(chunk.iter().rev().copied());
-                    }
-                }
+                self.append_reversed_chunk_fragment(/*start*/ 0, self.chunk_position)?;
                 self.chunk_position = 0;
             }
         }
+    }
+
+    fn append_reversed_chunk_fragment(&mut self, start: usize, end: usize) -> io::Result<()> {
+        if self.discarding_oversized_record {
+            return Ok(());
+        }
+        let fragment_len = end.saturating_sub(start);
+        if self
+            .oversized_record_policy
+            .max_record_bytes()
+            .is_some_and(|max_record_bytes| {
+                fragment_len > max_record_bytes.saturating_sub(self.record_reversed.len())
+            })
+        {
+            self.record_reversed.clear();
+            match self.oversized_record_policy {
+                OversizedRecordPolicy::Unlimited => {}
+                OversizedRecordPolicy::Skip { .. } => {
+                    self.discarding_oversized_record = true;
+                    return Ok(());
+                }
+                OversizedRecordPolicy::Reject { max_record_bytes } => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("reverse JSONL record exceeds the {max_record_bytes} byte limit"),
+                    ));
+                }
+            }
+        }
+        self.record_reversed
+            .extend(self.chunk[start..end].iter().rev().copied());
+        Ok(())
     }
 
     fn finish_record<T>(&mut self) -> Option<ScanOutcome<T>>

@@ -1016,10 +1016,10 @@ impl AgentControl {
                     // Parent-local review evidence must not become the child's authorization.
                     // Root user authorization is collected separately by the host.
                     compacted.guardian_history = None;
-                    if let Some(replacement_history) = compacted.replacement_history.as_mut() {
+                    if compacted.replacement_history.is_some() {
                         // Matches before this checkpoint cannot survive its replacement history.
                         replaced_parent_developer_instructions = false;
-                        replacement_history.retain_mut(|response_item| {
+                        compacted.retain_replacement_history_items(|response_item| {
                             retain_forked_item(
                                 response_item,
                                 &mut replaced_parent_developer_instructions,

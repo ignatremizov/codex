@@ -35,6 +35,39 @@ pub(super) async fn materialize_to_sqlite(
     {
         return Ok(());
     }
+    let offset_is_valid = if let Some(projection_state) = projection_state.as_ref() {
+        let rollout_len = tokio::fs::metadata(rollout_path)
+            .await
+            .map_err(thread_store_io_error)?
+            .len();
+        if start_offset == 0 {
+            projection_state.next_ordinal == 0
+        } else if start_offset <= rollout_len
+            && let Some(expected_previous_ordinal) = projection_state.next_ordinal.checked_sub(1)
+        {
+            let rollout_path = rollout_path.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                codex_rollout::last_rollout_ordinal_before_offset(
+                    rollout_path.as_path(),
+                    start_offset,
+                )
+            })
+            .await
+            .map_err(thread_history_error)?
+            .map_err(thread_store_io_error)?
+                == Some(expected_previous_ordinal)
+        } else {
+            false
+        }
+    } else {
+        true
+    };
+    if !offset_is_valid {
+        warn!(
+            "rebuilding paginated history projection after canonical rollout changed for {thread_id}"
+        );
+        return rebuild_to_sqlite(store, thread_id, rollout_path).await;
+    }
     let session_meta = codex_rollout::read_session_meta_line(rollout_path)
         .await
         .map_err(thread_store_io_error)?
@@ -67,6 +100,15 @@ pub(super) async fn materialize_to_sqlite(
         projections,
     )
     .await
+}
+
+pub(super) async fn rebuild_to_sqlite(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    rollout_path: &Path,
+) -> ThreadStoreResult<()> {
+    super::thread_history::delete_thread(store, thread_id).await?;
+    Box::pin(materialize_to_sqlite(store, thread_id, rollout_path)).await
 }
 
 async fn read_projection_steps(
@@ -287,6 +329,12 @@ async fn read_projection_steps(
         line_start_offset = line_end_offset;
     }
     Ok((projections, next_offset))
+}
+
+fn thread_history_error(err: impl std::fmt::Display) -> ThreadStoreError {
+    ThreadStoreError::Internal {
+        message: format!("failed to project thread history: {err}"),
+    }
 }
 
 fn thread_store_io_error(err: std::io::Error) -> ThreadStoreError {

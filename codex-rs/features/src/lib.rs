@@ -345,8 +345,6 @@ pub enum Feature {
     PreventIdleSleep,
     /// Enable remote compaction v2 over the normal Responses API.
     RemoteCompactionV2,
-    /// Include retained images in the remote compaction context budget.
-    CompactionImageBudget,
     /// Retain client-authored developer messages across compacted context windows.
     RetainClientDeveloperMessages,
     /// Use Agent Identity for ChatGPT-authenticated sessions.
@@ -1706,12 +1704,6 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RemoteCompactionV2,
         key: "remote_compaction_v2",
-        stage: Stage::Stable,
-        default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::CompactionImageBudget,
-        key: "compaction_image_budget",
         stage: Stage::Stable,
         default_enabled: true,
     },

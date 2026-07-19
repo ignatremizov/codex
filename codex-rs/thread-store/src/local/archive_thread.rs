@@ -9,6 +9,8 @@ use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use chrono::Utc;
 use codex_rollout::RolloutReferenceIndex;
+use codex_rollout::remove_compacted_media_vacuum_backups;
+use codex_rollout::remove_obsolete_compressed_rollout_sibling;
 use tracing::warn;
 
 use super::thread_rollout_resolver;
@@ -97,6 +99,25 @@ async fn archive_thread_with_paths(
         )?;
         let file_name =
             validated_rollout_file_name(canonical_rollout_path.as_path(), rollout_path.as_path())?;
+        let vacuum_rollout_path = codex_rollout::plain_rollout_path(&canonical_rollout_path);
+        remove_compacted_media_vacuum_backups(vacuum_rollout_path.as_path()).map_err(|err| {
+            ThreadStoreError::Internal {
+                message: format!(
+                    "failed to remove compacted-media vacuum backups before archiving `{}`: {err}",
+                    vacuum_rollout_path.display()
+                ),
+            }
+        })?;
+        if canonical_rollout_path == vacuum_rollout_path {
+            remove_obsolete_compressed_rollout_sibling(vacuum_rollout_path.as_path()).map_err(
+                |err| ThreadStoreError::Internal {
+                    message: format!(
+                        "failed to remove obsolete compressed rollout before archiving `{}`: {err}",
+                        vacuum_rollout_path.display()
+                    ),
+                },
+            )?;
+        }
         let destination = archive_folder.join(&file_name);
         if rollout_path == selected_rollout_path {
             archived_path = Some(destination.clone());

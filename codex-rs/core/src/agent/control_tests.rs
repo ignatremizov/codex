@@ -1534,8 +1534,7 @@ async fn spawn_agent_numeric_fork_from_compacted_paginated_parent_clamps_to_prov
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
-                compaction_response_id: None,
-                latest_token_usage_record: None,
+                ..Default::default()
             }),
             rollout_response_item(ResponseItem::Message {
                 id: None,
@@ -2036,8 +2035,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
-                compaction_response_id: None,
-                latest_token_usage_record: None,
+                ..Default::default()
             }),
             RolloutItem::TurnContext(turn_context.to_turn_context_item()),
             rollout_response_item(spawn_agent_call(&parent_spawn_call_id)),

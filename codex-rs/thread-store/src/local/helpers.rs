@@ -16,6 +16,8 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::NetworkAccess;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -66,6 +68,29 @@ pub(super) fn rollout_path_is_archived(codex_home: &Path, path: &Path) -> bool {
         || path
             .components()
             .any(|component| component.as_os_str() == OsStr::new(ARCHIVED_SESSIONS_SUBDIR))
+}
+
+pub(super) fn matching_rollout_file_name(
+    rollout_path: &Path,
+    thread_id: ThreadId,
+    display_path: &Path,
+) -> ThreadStoreResult<std::ffi::OsString> {
+    let file_name = validated_rollout_file_name(rollout_path, display_path)?;
+    let required_plain_suffix = format!("{thread_id}.jsonl");
+    let required_compressed_suffix = format!("{required_plain_suffix}.zst");
+    let file_name_str = file_name.to_string_lossy();
+    if file_name_str.ends_with(required_plain_suffix.as_str())
+        || file_name_str.ends_with(required_compressed_suffix.as_str())
+    {
+        Ok(file_name)
+    } else {
+        Err(ThreadStoreError::InvalidRequest {
+            message: format!(
+                "rollout path `{}` does not match thread id {thread_id}",
+                display_path.display()
+            ),
+        })
+    }
 }
 
 /// Returns rollout files whose session metadata belongs to `thread_id`.

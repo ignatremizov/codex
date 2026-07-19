@@ -10,6 +10,8 @@ use crate::ReadThreadParams;
 use crate::StoredThread;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
+use codex_rollout::remove_compacted_media_vacuum_backups;
+use codex_rollout::remove_obsolete_compressed_rollout_sibling;
 use codex_rollout::rollout_date_parts;
 
 use super::thread_rollout_resolver;
@@ -54,6 +56,25 @@ pub(super) async fn unarchive_thread(
         )?;
         let file_name =
             validated_rollout_file_name(canonical_archived_path.as_path(), rollout_path.as_path())?;
+        let vacuum_rollout_path = codex_rollout::plain_rollout_path(&canonical_archived_path);
+        remove_compacted_media_vacuum_backups(vacuum_rollout_path.as_path()).map_err(|err| {
+            ThreadStoreError::Internal {
+                message: format!(
+                    "failed to remove compacted-media vacuum backups before unarchiving `{}`: {err}",
+                    vacuum_rollout_path.display()
+                ),
+            }
+        })?;
+        if canonical_archived_path == vacuum_rollout_path {
+            remove_obsolete_compressed_rollout_sibling(vacuum_rollout_path.as_path()).map_err(
+                |err| ThreadStoreError::Internal {
+                    message: format!(
+                        "failed to remove obsolete compressed rollout before unarchiving `{}`: {err}",
+                        vacuum_rollout_path.display()
+                    ),
+                },
+            )?;
+        }
         let Some((year, month, day)) = rollout_date_parts(&file_name) else {
             return Err(ThreadStoreError::InvalidRequest {
                 message: format!(
