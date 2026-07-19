@@ -17,6 +17,7 @@ use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 
 use super::*;
+use crate::build_turns_from_rollout_items;
 use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::TurnError;
 

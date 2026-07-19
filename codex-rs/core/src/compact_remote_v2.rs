@@ -575,7 +575,7 @@ fn truncate_retained_messages_for_remote_compaction(
         } else {
             match truncate_message_text_to_token_budget(item, /*max_tokens*/ remaining) {
                 RetainedMessageTruncation::Retained(truncated_item) => {
-                    truncated_reversed.push(truncated_item);
+                    truncated_reversed.push(*truncated_item);
                     remaining = 0;
                 }
                 RetainedMessageTruncation::OmissionDidNotFit => remaining = 0,
@@ -604,7 +604,7 @@ fn message_text_token_count(item: &ResponseItem) -> usize {
 }
 
 enum RetainedMessageTruncation {
-    Retained(ResponseItem),
+    Retained(Box<ResponseItem>),
     OmissionDidNotFit,
     Empty,
 }
@@ -621,7 +621,7 @@ fn truncate_message_text_to_token_budget(
         internal_chat_message_metadata_passthrough: metadata,
     } = item
     else {
-        return RetainedMessageTruncation::Retained(item);
+        return RetainedMessageTruncation::Retained(Box::new(item));
     };
 
     let mut remaining = max_tokens;
@@ -654,13 +654,13 @@ fn truncate_message_text_to_token_budget(
         return RetainedMessageTruncation::Empty;
     }
 
-    RetainedMessageTruncation::Retained(ResponseItem::Message {
+    RetainedMessageTruncation::Retained(Box::new(ResponseItem::Message {
         id,
         role,
         content: truncated_content,
         phase,
         internal_chat_message_metadata_passthrough: metadata,
-    })
+    }))
 }
 
 #[cfg(test)]
