@@ -1877,7 +1877,7 @@ impl Session {
             };
 
             // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
-            Box::pin(sess.record_initial_history(initial_history)).await;
+            Box::pin(sess.record_initial_history(initial_history)).await?;
             if let Some(inventory) = sess.state.lock().await.history.annotated_items().iter().rev()
                 .find_map(codex_extension_api::RestoredSkillsInventory::from_envelope)
             {

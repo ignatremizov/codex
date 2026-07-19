@@ -255,8 +255,7 @@ fn compacted(replacement_history: Vec<ResponseItem>) -> RolloutItem {
         first_window_id: None,
         previous_window_id: None,
         window_id: None,
-        compaction_response_id: None,
-        latest_token_usage_record: None,
+        ..Default::default()
     })
 }
 
@@ -1853,8 +1852,7 @@ async fn assert_subagent_transcript_migration(scenario: SubagentMigrationScenari
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
-                compaction_response_id: None,
-                latest_token_usage_record: None,
+                ..Default::default()
             }),
             started("removed-turn"),
             user_message("ROLLED_BACK_SENTINEL"),
@@ -1885,8 +1883,7 @@ async fn assert_subagent_transcript_migration(scenario: SubagentMigrationScenari
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
-                compaction_response_id: None,
-                latest_token_usage_record: None,
+                ..Default::default()
             }),
             started("child-turn"),
             RolloutItem::TurnContext(TurnContextItem {

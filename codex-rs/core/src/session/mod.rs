@@ -227,6 +227,7 @@ use codex_protocol::exec_output::StreamOutput;
 
 mod checkpoint_publication;
 mod code_mode_warning;
+mod compacted_media_repair;
 pub(crate) mod context_window;
 mod daemon_recovery;
 mod durable_context;
@@ -249,6 +250,7 @@ mod mcp_runtime;
 pub(crate) mod multi_agents;
 mod plugin_selection;
 mod realtime_history;
+mod reconstruction_publication;
 mod retained_context;
 mod review;
 mod rollout_budget;
@@ -1539,7 +1541,10 @@ impl Session {
         state.clear_connector_selection();
     }
 
-    async fn record_initial_history(&self, conversation_history: InitialHistory) {
+    async fn record_initial_history(
+        &self,
+        conversation_history: InitialHistory,
+    ) -> anyhow::Result<()> {
         let (is_subagent, is_paginated_subagent) = {
             let state = self.state.lock().await;
             let session_configuration = &state.session_configuration;
@@ -1579,9 +1584,14 @@ impl Session {
                 ) {
                     self.agent_status.send_replace(AgentStatus::Interrupted);
                 }
-                let previous_turn_settings = self
+                let applied_reconstruction = self
                     .apply_rollout_reconstruction(&turn_context, &rollout_items)
-                    .await;
+                    .await?;
+                let previous_turn_settings = applied_reconstruction.previous_turn_settings;
+                if let Some(repair) = applied_reconstruction.repair.as_ref() {
+                    self.persist_reconstruction_repair_with_policy(repair)
+                        .await?;
+                }
 
                 // If resuming, warn when the last recorded model differs from the current one.
                 let curr: &str = turn_context.model_info().slug.as_str();
@@ -1611,6 +1621,9 @@ impl Session {
                 }
                 self.state.lock().await.latest_token_usage_record =
                     Self::last_token_usage_record_from_rollout(&rollout_items);
+                if applied_reconstruction.should_recompute_token_usage {
+                    self.recompute_token_usage(&turn_context).await;
+                }
 
                 // Checkpoint effective settings even when no turn follows the resume.
                 self.persist_rollout_items(&[RolloutItem::EventMsg(
@@ -1628,7 +1641,8 @@ impl Session {
             InitialHistory::Forked(mut rollout_items) => {
                 let turn_context = self.new_default_turn().await;
                 Self::assign_missing_rollout_response_item_ids(&mut rollout_items);
-                self.apply_rollout_reconstruction(&turn_context, &rollout_items)
+                let prepared_reconstruction = self
+                    .prepare_rollout_reconstruction(&turn_context, &rollout_items)
                     .await;
 
                 // Seed usage info from the recorded rollout so UIs can show token counts
@@ -1664,7 +1678,20 @@ impl Session {
                         rollout_items.push(thread_settings_applied);
                     }
                 }
-                self.persist_rollout_items(&rollout_items).await;
+                let applied_reconstruction = self
+                    .install_rollout_reconstruction(
+                        &turn_context,
+                        prepared_reconstruction,
+                        rollout_items,
+                    )
+                    .await?;
+                if let Some(repair) = applied_reconstruction.repair.as_ref() {
+                    self.persist_reconstruction_repair_with_policy(repair)
+                        .await?;
+                }
+                if applied_reconstruction.should_recompute_token_usage {
+                    self.recompute_token_usage(&turn_context).await;
+                }
 
                 // Forked threads should remain file-backed immediately after startup.
                 self.ensure_rollout_materialized(PersistContext::Standard)
@@ -1689,115 +1716,7 @@ impl Session {
                     .await;
             }
         }
-    }
-
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            thread_id = %self.thread_id(),
-            rollout_item_count = rollout_items.len()
-        )
-    )]
-    async fn apply_rollout_reconstruction(
-        &self,
-        turn_context: &Arc<TurnContext>,
-        rollout_items: &[RolloutItem],
-    ) -> Option<PreviousTurnSettings> {
-        let rollout_reconstruction::RolloutReconstruction {
-            mut history,
-            retained_context,
-            guardian_history,
-            previous_turn_settings,
-            reference_context_item,
-            world_state_baseline,
-            window_number,
-            first_window_id,
-            previous_window_id,
-            window_id,
-        } = self
-            .reconstruct_history_from_rollout(turn_context, rollout_items)
-            .await;
-        // Keep the recorded rollout unchanged. Prepare its reconstructed history before
-        // installing it, so legacy media is processed once for this resume or fork and
-        // will be processed again if the rollout is reconstructed in a future session.
-        // Replay disables image-resize notices, so media preparation remains one-to-one. Keep
-        // the prior batch behavior and carry history-only metadata in a positional sidecar.
-        let (mut prepared_history, metadata): (Vec<_>, Vec<_>) = history
-            .into_iter()
-            .map(|envelope| (envelope.item, envelope.metadata))
-            .unzip();
-        // Replay must not upload or migrate recorded history. The inline store returns prepared
-        // inline bytes, while existing file references bypass preparation and remain unchanged.
-        // Bound replay future size now that image preparation can await storage.
-        let _ = Box::pin(prepare_image_response_items(
-            &mut prepared_history,
-            ImagePreparationMode::DetailBased,
-            ImageResizeNoticeMode::Disabled,
-            &InlineAttachmentStore,
-        ))
-        .await;
-        prepare_audio_response_items(&mut prepared_history);
-        assert_eq!(
-            prepared_history.len(),
-            metadata.len(),
-            "replay media preparation must remain one-to-one when resize notices are disabled"
-        );
-        history = prepared_history
-            .into_iter()
-            .zip(metadata)
-            .map(|(item, metadata)| ResponseItemEnvelope { item, metadata })
-            .collect();
-        let reviewer_compaction_hash =
-            if self.guardian_context_mode == crate::context::GuardianContextMode::ThreadOwned {
-                let context = crate::guardian::GuardianReviewContext::from(turn_context);
-                let (_, reviewer) = crate::guardian::resolve_review_model(self, &context).await;
-                reviewer.comp_hash.clone()
-            } else {
-                None
-            };
-        {
-            let mut state = self.state.lock().await;
-            state.replace_annotated_history(
-                history,
-                reference_context_item,
-                HistoryReplacement::Reset,
-            );
-            state.history.restore_review_context(
-                Some(&retained_context),
-                guardian_history.as_ref(),
-                reviewer_compaction_hash.as_deref(),
-            );
-            if let Some(world_state) = world_state_baseline {
-                state.history.set_world_state_baseline(world_state);
-            }
-            let fallback_ids = state.auto_compact_window_ids();
-            let window_id = window_id.unwrap_or(fallback_ids.window_id);
-            state.restore_auto_compact_window(
-                window_number,
-                AutoCompactWindowIds {
-                    first_window_id: first_window_id.unwrap_or(window_id),
-                    previous_window_id,
-                    window_id,
-                },
-            );
-            state.set_previous_turn_settings(previous_turn_settings.clone());
-        }
-        let prefix_tokens = if matches!(
-            turn_context.config.model_auto_compact_token_limit_scope,
-            AutoCompactTokenLimitScope::BodyAfterPrefix
-        ) {
-            let history = self.clone_history().await;
-            let base_instructions = self.get_base_instructions().await;
-            history.estimate_token_count_with_base_instructions(&base_instructions)
-        } else {
-            None
-        };
-        if let Some(prefix_tokens) = prefix_tokens {
-            self.set_auto_compact_window_estimated_prefill_for_scope(turn_context, prefix_tokens)
-                .await;
-        }
-        previous_turn_settings
+        Ok(())
     }
 
     async fn set_auto_compact_window_estimated_prefill_for_scope(
@@ -4732,13 +4651,30 @@ impl Session {
     }
 
     pub(crate) async fn recompute_token_usage(&self, turn_context: &TurnContext) {
-        let history = self.clone_history().await;
+        let (history, server_reasoning_included) = {
+            let state = self.state.lock().await;
+            (state.clone_history(), state.server_reasoning_included())
+        };
         let base_instructions = self.get_base_instructions().await;
         let Some(estimated_total_tokens) =
             history.estimate_token_count_with_base_instructions(&base_instructions)
         else {
             return;
         };
+        // Active-context accounting adds items after the latest model-generated item separately
+        // because no server response has reported them yet. Keep the reconstructed estimate in
+        // the same shape so an incomplete resume/fork suffix is not counted twice.
+        let estimated_local_tail_tokens =
+            history.estimated_tokens_after_last_model_generated_item();
+        let estimated_reasoning_supplement = if server_reasoning_included {
+            0
+        } else {
+            history.estimated_non_last_reasoning_items_tokens()
+        };
+        let estimated_last_model_tokens = estimated_total_tokens
+            .saturating_sub(estimated_local_tail_tokens)
+            .saturating_sub(estimated_reasoning_supplement)
+            .max(0);
         {
             let mut state = self.state.lock().await;
             let mut info = state.token_info().unwrap_or(TokenUsageInfo {
@@ -4753,7 +4689,7 @@ impl Session {
                 cache_write_input_tokens: 0,
                 output_tokens: 0,
                 reasoning_output_tokens: 0,
-                total_tokens: estimated_total_tokens.max(0),
+                total_tokens: estimated_last_model_tokens,
                 codex_rollout_budget_units: None,
             };
 

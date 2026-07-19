@@ -100,6 +100,11 @@ WHERE thread_id = ?
         .transpose()
 }
 
+pub(super) enum ProjectionMode {
+    Append,
+    Rebuild,
+}
+
 pub(super) async fn apply_projection(
     store: &LocalThreadStore,
     thread_id: ThreadId,
@@ -107,6 +112,7 @@ pub(super) async fn apply_projection(
     next_offset: u64,
     initial_ordinal: u64,
     projections: Vec<RolloutProjectionStep>,
+    mode: ProjectionMode,
 ) -> ThreadStoreResult<()> {
     let pool = store.thread_history_db().await?;
     // Write the projected rows and advance the JSONL offset and ordinal in one transaction. If
@@ -117,6 +123,20 @@ pub(super) async fn apply_projection(
         .await
         .map_err(thread_history_error)?;
     let thread_id = thread_id.to_string();
+    if matches!(mode, ProjectionMode::Rebuild) {
+        for statement in [
+            "DELETE FROM thread_items WHERE thread_id = ?",
+            "DELETE FROM thread_realtime_items WHERE thread_id = ?",
+            "DELETE FROM thread_turns WHERE thread_id = ?",
+            "DELETE FROM thread_history_projection_state WHERE thread_id = ?",
+        ] {
+            sqlx::query(statement)
+                .bind(thread_id.as_str())
+                .execute(&mut *transaction)
+                .await
+                .map_err(thread_history_error)?;
+        }
+    }
     let projection_state = sqlx::query_as::<_, (i64, i64)>(
         r#"
 SELECT next_rollout_byte_offset, next_rollout_ordinal
@@ -285,7 +305,7 @@ pub(super) async fn delete_thread(
         .map_err(thread_history_delete_error)
 }
 
-async fn apply_change_set(
+pub(super) async fn apply_change_set(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     thread_id: &str,
     rollout_ordinal: i64,

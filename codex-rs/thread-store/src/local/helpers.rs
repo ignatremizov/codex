@@ -68,6 +68,24 @@ pub(super) fn rollout_path_is_archived(codex_home: &Path, path: &Path) -> bool {
             .any(|component| component.as_os_str() == OsStr::new(ARCHIVED_SESSIONS_SUBDIR))
 }
 
+pub(super) fn matching_rollout_file_name(
+    rollout_path: &Path,
+    thread_id: ThreadId,
+    display_path: &Path,
+) -> ThreadStoreResult<std::ffi::OsString> {
+    let file_name = validated_rollout_file_name(rollout_path, display_path)?;
+    if codex_rollout::thread_id_from_rollout_path(rollout_path) == Some(thread_id) {
+        Ok(file_name)
+    } else {
+        Err(ThreadStoreError::InvalidRequest {
+            message: format!(
+                "rollout path `{}` does not match thread id {thread_id}",
+                display_path.display()
+            ),
+        })
+    }
+}
+
 /// Returns rollout files whose session metadata belongs to `thread_id`.
 pub(super) async fn owned_rollout_paths(
     store: &LocalThreadStore,

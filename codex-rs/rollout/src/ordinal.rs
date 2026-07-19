@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::path::Path;
@@ -97,6 +98,31 @@ pub(crate) fn ordinal_state_for_rollout(
     Ok(RolloutOrdinalState::Paginated {
         next: ordinal.checked_add(1),
     })
+}
+
+/// Returns the last valid ordinal at a complete JSONL byte boundary.
+///
+/// Offsets address decoded bytes even for compressed rollouts. An offset inside a record is
+/// not a valid projection checkpoint, even if an earlier record has the expected ordinal.
+pub fn last_rollout_ordinal_before_offset(path: &Path, offset: u64) -> io::Result<Option<u64>> {
+    let mut file = crate::open_rollout_seekable_reader(path)?;
+    if offset == 0 || offset > file.metadata()?.len() {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(offset - 1))?;
+    let mut preceding_byte = [0u8; 1];
+    file.read_exact(&mut preceding_byte)?;
+    if preceding_byte != [b'\n'] {
+        return Ok(None);
+    }
+    let mut scanner = ReverseJsonlScanner::new_before_offset(file, offset)?;
+    loop {
+        match scanner.scan_next_rollout_line()? {
+            Some(ScanOutcome::Parsed(record)) => return Ok(record.ordinal),
+            Some(ScanOutcome::Rejected(_)) => continue,
+            None => return Ok(None),
+        }
+    }
 }
 
 fn read_history_metadata(

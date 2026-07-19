@@ -400,6 +400,8 @@ async fn thread_originator_overrides_shared_connection_across_thread_events() {
                     active_context_tokens_before: 131_000,
                     active_context_tokens_after: 64_000,
                     retained_image_count: None,
+                    omitted_image_count: None,
+                    omitted_inline_media_bytes: None,
                     compaction_summary_tokens: None,
                     cached_input_tokens: None,
                     cache_write_input_tokens: None,

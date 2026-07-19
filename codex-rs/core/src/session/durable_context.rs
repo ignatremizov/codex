@@ -159,12 +159,7 @@ impl Session {
             if !items.is_empty()
                 && let Some(live_thread) = live_thread
             {
-                if let Err(error) = live_thread.append_items(&items).await {
-                    let _ = sender.send(Err(outcome.fail(error)));
-                    return;
-                }
-                outcome.stage = "flush";
-                if let Err(error) = live_thread.flush().await {
+                if let Err(error) = live_thread.append_items_and_flush_canonical(&items).await {
                     let _ = sender.send(Err(outcome.fail(error)));
                     return;
                 }

@@ -48,7 +48,10 @@ async fn initial_replay_preserves_prewarmed_effort(history: InitialHistory) {
             .await,
         Some(ReasoningEffort::Medium),
     );
-    session.record_initial_history(history).await;
+    session
+        .record_initial_history(history)
+        .await
+        .expect("record initial history");
 
     selected.collaboration_mode.settings.reasoning_effort = Some(ReasoningEffort::High);
     let turn_settings = ResolvedStepSettings::new(

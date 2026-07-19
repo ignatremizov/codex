@@ -94,7 +94,10 @@ async fn checkpoint_and_cold_reconstruction_preserve_full_mcp_union_and_latest_e
         .expect("checkpoint");
     assert_eq!(checkpoint, &installed);
     let (fresh, _) = make_session_and_context().await;
-    fresh.record_initial_history(reconstructed).await;
+    fresh
+        .record_initial_history(reconstructed)
+        .await
+        .expect("record reconstructed history");
     let restored = fresh.clone_history().await;
     assert_eq!(restored.annotated_items(), installed);
     let inventory = restored

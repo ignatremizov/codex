@@ -86,6 +86,12 @@ pub(crate) struct ContextManager {
     /// Reviewer policy travels with the history snapshot, independently of capture.
     guardian_review_mode: GuardianContextMode,
     retain_inherited_user_messages: bool,
+    /// Prefix inherited from the selected persisted compaction checkpoint.
+    ///
+    /// Media references in this prefix remain available to the current compactor but expire from
+    /// its newly installed replacement history. Items appended after the prefix belong to the
+    /// current unsummarized window.
+    compacted_prefix_len: Option<usize>,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
     /// Last destructive history replacement; ordinary input and compaction preserve it.
@@ -185,6 +191,7 @@ impl ContextManager {
             guardian_context_mode: GuardianContextMode::Legacy,
             guardian_review_mode: GuardianContextMode::Legacy,
             retain_inherited_user_messages: false,
+            compacted_prefix_len: None,
             history_version: 0,
             reset_version: 0,
             user_message_revision: 0,
@@ -242,9 +249,11 @@ impl ContextManager {
         if self.guardian_review_mode == GuardianContextMode::ThreadOwned {
             return None;
         }
-        self.review_history
-            .as_ref()
-            .map(|history| GuardianHistoryCheckpoint(history.items().cloned().collect()))
+        self.review_history.as_ref().map(|history| {
+            let mut items = history.items().cloned().collect::<Vec<_>>();
+            let _ = crate::context::sanitize_compacted_media(&mut items);
+            GuardianHistoryCheckpoint(items)
+        })
     }
 
     pub(crate) fn restore_review_context(
@@ -496,6 +505,41 @@ impl ContextManager {
         &self.items
     }
 
+    pub(crate) fn compacted_prefix_len(&self) -> Option<usize> {
+        self.compacted_prefix_len
+    }
+
+    pub(crate) fn set_compacted_prefix_len(&mut self, compacted_prefix_len: Option<usize>) {
+        self.compacted_prefix_len =
+            compacted_prefix_len.map(|prefix_len| prefix_len.min(self.items.len()));
+    }
+
+    /// Removes media only from the persisted compacted prefix of this history snapshot.
+    ///
+    /// The current-window suffix remains available to the compactor that will summarize it.
+    pub(crate) fn sanitize_compacted_media_prefix(
+        &mut self,
+    ) -> crate::context::CompactedMediaSanitization {
+        let compacted_prefix_len = self
+            .compacted_prefix_len
+            .unwrap_or_default()
+            .min(self.items.len());
+        let items = Arc::make_mut(&mut self.items);
+        let mut raw_items = items
+            .iter()
+            .map(|envelope| envelope.item.clone())
+            .collect::<Vec<_>>();
+        let sanitization =
+            crate::context::sanitize_compacted_media_prefix(&mut raw_items, compacted_prefix_len);
+        if sanitization.changed() {
+            for (envelope, item) in items.iter_mut().zip(raw_items) {
+                envelope.item = item;
+            }
+            self.history_version = self.history_version.saturating_add(1);
+        }
+        sanitization
+    }
+
     /// Returns annotated history items and consumes the snapshot.
     pub(crate) fn into_annotated_items(self) -> Vec<ResponseItemEnvelope> {
         Arc::unwrap_or_clone(self.into_shared_annotated_items())
@@ -546,7 +590,17 @@ impl ContextManager {
             // If the removed item participates in a call/output pair, also remove
             // its corresponding counterpart to keep the invariants intact without
             // running a full normalization pass.
-            normalize::remove_corresponding_for(items, &removed.item);
+            let removed_pair_index = normalize::remove_corresponding_for(items, &removed.item);
+            if let Some(compacted_prefix_len) = self.compacted_prefix_len {
+                let prefix_after_first = compacted_prefix_len.saturating_sub(1);
+                let removed_from_prefix =
+                    usize::from(removed_pair_index.is_some_and(|index| index < prefix_after_first));
+                self.compacted_prefix_len = Some(
+                    prefix_after_first
+                        .saturating_sub(removed_from_prefix)
+                        .min(items.len()),
+                );
+            }
             self.world_state_baseline = None;
         }
     }
@@ -557,6 +611,7 @@ impl ContextManager {
     }
 
     pub(crate) fn replace_annotated(&mut self, items: Vec<ResponseItemEnvelope>) {
+        self.compacted_prefix_len = None;
         self.retained_context = Arc::default();
         self.user_message_revision = self.user_message_revision.saturating_add(1);
         if let Some(review_history) = &mut self.review_history {
@@ -599,6 +654,9 @@ impl ContextManager {
             self.review_history = Some(retained);
         }
         self.items = Arc::new(items);
+        self.compacted_prefix_len = self
+            .compacted_prefix_len
+            .map(|prefix_len| prefix_len.min(self.items.len()));
         self.history_version = self.history_version.saturating_add(1);
         if promoted {
             self.reset_version = self.history_version;
@@ -724,7 +782,7 @@ impl ContextManager {
         );
     }
 
-    fn get_non_last_reasoning_items_tokens(&self) -> i64 {
+    pub(crate) fn estimated_non_last_reasoning_items_tokens(&self) -> i64 {
         // Get reasoning items excluding all the ones after the last instruction boundary.
         let Some(last_user_index) = self
             .items
@@ -779,7 +837,7 @@ impl ContextManager {
             last_tokens.saturating_add(items_after_last_model_generated_tokens)
         } else {
             last_tokens
-                .saturating_add(self.get_non_last_reasoning_items_tokens())
+                .saturating_add(self.estimated_non_last_reasoning_items_tokens())
                 .saturating_add(items_after_last_model_generated_tokens)
         }
     }
@@ -1172,7 +1230,7 @@ fn estimate_function_output_bytes(output: &FunctionCallOutputBody) -> i64 {
     }
 }
 
-fn is_model_generated_item(item: &ResponseItem) -> bool {
+pub(crate) fn is_model_generated_item(item: &ResponseItem) -> bool {
     match item {
         ResponseItem::Message { role, .. } => role == "assistant",
         ResponseItem::Reasoning { .. }

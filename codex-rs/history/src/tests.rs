@@ -7,6 +7,43 @@ use serde_json::json;
 
 use super::*;
 
+#[test]
+fn filtering_repair_history_preserves_envelopes_and_recounts_only_the_prefix() {
+    let item = |text: &str| ResponseItemEnvelope {
+        item: ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        metadata: Some(CodexHarnessMetadata {
+            inherited_user_message: true,
+            ..Default::default()
+        }),
+    };
+    let retained = item("retained");
+    let suffix = item("current window");
+    let mut checkpoint = CompactedItem {
+        replacement_history: Some(vec![item("removed"), retained.clone(), suffix.clone()]),
+        replacement_history_media_sanitized_prefix_len: Some(2),
+        replacement_history_media_repair: true,
+        ..Default::default()
+    };
+    checkpoint.retain_replacement_history_items(|envelope| *envelope != item("removed"));
+    assert_eq!(
+        checkpoint,
+        CompactedItem {
+            replacement_history: Some(vec![retained, suffix]),
+            replacement_history_media_sanitized_prefix_len: Some(1),
+            replacement_history_media_repair: true,
+            ..Default::default()
+        }
+    );
+}
+
 fn thread_settings_snapshot(disabled_plugin_ids: Vec<String>) -> Result<ThreadSettingsSnapshot> {
     Ok(serde_json::from_value(json!({
         "model": "gpt-5",
@@ -389,6 +426,8 @@ fn compacted_replacement_history_stores_metadata_in_an_aligned_sidecar() -> Resu
         window_id: None,
         compaction_response_id: None,
         latest_token_usage_record: None,
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
 
     let serialized = serde_json::to_value(item)?;
@@ -501,6 +540,8 @@ fn compacted_metadata_remains_compatible_with_legacy_response_item_readers() -> 
         window_id: None,
         compaction_response_id: None,
         latest_token_usage_record: None,
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     }))?;
 
     let restored: RolloutItem = serde_json::from_value(compacted_line.clone())?;
@@ -710,6 +751,8 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
         window_id: Some("019b3f6e-7a10-7cc3-8b6e-1d09e2f7a001".to_string()),
         compaction_response_id: None,
         latest_token_usage_record: None,
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
 
     let serialized = serde_json::to_value(&item)?;
@@ -753,6 +796,8 @@ fn compacted_item_migrates_legacy_numeric_window_id() -> Result<()> {
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
+            replacement_history_media_sanitized_prefix_len: None,
+            replacement_history_media_repair: false,
         }
     );
     Ok(())

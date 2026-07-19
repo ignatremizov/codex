@@ -2,8 +2,6 @@
 
 use anyhow::Context;
 use anyhow::Result;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_features::Feature;
@@ -631,196 +629,569 @@ async fn amazon_bedrock_automatic_compaction_uses_v2_responses_endpoint() -> Res
     Ok(())
 }
 
-#[test_case(None, "image_url"; "default_trims_images")]
-#[test_case(Some(false), "image_url"; "disabled_preserves_images")]
-#[test_case(None, "file_id"; "default_trims_file_images")]
-#[test_case(Some(false), "file_id"; "disabled_preserves_file_images")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_charges_retained_images_to_token_budget(
-    image_budget_enabled: Option<bool>,
-    image_field: &str,
-) -> Result<()> {
+async fn remote_compact_replaces_history_for_followups() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let harness = TestCodexHarness::with_auto_env_builder(
+    let harness = TestCodexHarness::with_builder(
         test_codex()
-            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-            .with_config(move |config| {
-                let _ = config.features.enable(Feature::UnifiedImageBudget);
-                if let Some(enabled) = image_budget_enabled {
-                    let _ = config
-                        .features
-                        .set_enabled(Feature::CompactionImageBudget, enabled);
-                }
-            }),
+            .with_history_mode(ThreadHistoryMode::Paginated)
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
     )
     .await?;
-    let codex = &harness.test().codex;
-    // Thirteen original-detail images at 10,000 tokens each exceed the 128,000-token budget.
-    let image_inputs = (1..=14)
-        .map(|number| {
-            if image_field == "file_id" {
-                return Ok(UserInput::Image {
-                    image: ImageReference::File {
-                        file_id: format!("file_{number}"),
-                    },
-                    detail: Some(codex_protocol::models::ImageDetail::Original),
-                });
-            }
-            let image = image::ImageBuffer::from_pixel(
-                /*width*/ 3200,
-                /*height*/ 3200,
-                image::Luma([number as u8]),
-            );
-            let mut bytes = std::io::Cursor::new(Vec::new());
-            image.write_to(&mut bytes, image::ImageFormat::Png)?;
-            Ok(UserInput::Image {
-                image: ImageReference::Inline {
-                    image_url: format!(
-                        "data:image/png;base64,{}",
-                        BASE64_STANDARD.encode(bytes.get_ref())
-                    ),
-                },
-                detail: Some(codex_protocol::models::ImageDetail::Original),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let mut input = image_inputs[..13].to_vec();
-    input.push(UserInput::Text {
-        text: "Compare these images".to_string(),
-        text_elements: Vec::new(),
-    });
-    let initial_mock = mount_sse_once(
+    let codex = harness.test().codex.clone();
+    let session_id = harness.test().session_configured.session_id.to_string();
+    let thread_id = harness.test().session_configured.thread_id.to_string();
+
+    let responses_mock = responses::mount_sse_sequence(
         harness.server(),
-        sse(vec![
-            responses::ev_assistant_message("initial", "done"),
-            responses::ev_completed("initial"),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m2", "AFTER_COMPACT_REPLY"),
+                responses::ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    let compacted_history = vec![ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    let compact_mock = responses::mount_compact_json_once(
+        harness.server(),
+        serde_json::json!({ "output": compacted_history.clone() }),
+    )
+    .await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "hello remote compact".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "after compact".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    let compact_request = compact_mock.single_request();
+    assert_eq!(compact_request.path(), "/v1/responses/compact");
+    assert_eq!(
+        compact_request.header("chatgpt-account-id").as_deref(),
+        Some("account_id")
+    );
+    assert_eq!(
+        compact_request.header("authorization").as_deref(),
+        Some("Bearer Access Token")
+    );
+    assert_eq!(
+        compact_request.header("session-id").as_deref(),
+        Some(session_id.as_str())
+    );
+    assert_eq!(
+        compact_request.header("thread-id").as_deref(),
+        Some(thread_id.as_str())
+    );
+    let compact_metadata: Value = serde_json::from_str(
+        &compact_request
+            .header("x-codex-turn-metadata")
+            .expect("remote compact request should include turn metadata"),
+    )
+    .expect("remote compact turn metadata should be valid json");
+    assert_eq!(
+        compact_request.header("x-codex-installation-id").as_deref(),
+        compact_metadata["installation_id"].as_str()
+    );
+    assert!(
+        compact_metadata["turn_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "remote compact turn metadata should include its turn id"
+    );
+    assert_eq!(
+        compact_metadata["request_kind"].as_str(),
+        Some("compaction")
+    );
+    assert_eq!(compact_metadata["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(
+        compact_metadata["window_id"].as_str(),
+        compact_request.header("x-codex-window-id").as_deref()
+    );
+    assert_eq!(compact_metadata["window_number"].as_u64(), Some(0));
+    assert!(compact_metadata["context_window_id"].as_str().is_some());
+    assert_eq!(
+        compact_metadata["compaction"],
+        json!({
+            "trigger": "manual",
+            "reason": "user_requested",
+            "implementation": "responses_compact",
+            "phase": "standalone_turn",
+            "strategy": "memento",
+        })
+    );
+    let compact_body = compact_request.body_json();
+    assert_eq!(
+        compact_body.get("model").and_then(|v| v.as_str()),
+        Some(harness.test().session_configured.model.as_str())
+    );
+    let response_requests = responses_mock.requests();
+    let first_response_request = response_requests.first().expect("initial request missing");
+    let first_response_metadata: Value = serde_json::from_str(
+        &first_response_request
+            .header("x-codex-turn-metadata")
+            .expect("initial request should include turn metadata"),
+    )
+    .expect("initial turn metadata should be valid json");
+    assert_ne!(
+        first_response_metadata["turn_id"], compact_metadata["turn_id"],
+        "manual compaction should use its own turn id"
+    );
+    assert_eq!(
+        first_response_metadata["context_window_id"], compact_metadata["context_window_id"],
+        "remote compaction should retain the active model-visible context window"
+    );
+    assert_eq!(
+        compact_body["tools"],
+        first_response_request.body_json()["tools"],
+        "compact requests should send the same tools payload as /v1/responses"
+    );
+    assert_eq!(
+        compact_body["parallel_tool_calls"],
+        first_response_request.body_json()["parallel_tool_calls"],
+        "compact requests should match /v1/responses parallel_tool_calls"
+    );
+    assert_eq!(
+        compact_body["reasoning"],
+        first_response_request.body_json()["reasoning"],
+        "compact requests should match /v1/responses reasoning"
+    );
+    assert_eq!(
+        compact_body["text"],
+        first_response_request.body_json()["text"],
+        "compact requests should match /v1/responses text controls"
+    );
+    let compact_body_text = compact_body.to_string();
+    assert!(
+        compact_body_text.contains("hello remote compact"),
+        "expected compact request to include user history"
+    );
+    assert!(
+        compact_body_text.contains("FIRST_REMOTE_REPLY"),
+        "expected compact request to include assistant history"
+    );
+
+    let response_requests = responses_mock.requests();
+    let follow_up_request = response_requests.last().expect("follow-up request missing");
+    let follow_up_metadata: Value = serde_json::from_str(
+        &follow_up_request
+            .header("x-codex-turn-metadata")
+            .expect("follow-up request should include turn metadata"),
+    )
+    .expect("follow-up turn metadata should be valid json");
+    assert_eq!(
+        follow_up_metadata["request_kind"].as_str(),
+        Some("turn"),
+        "regular requests after compaction should remain turn requests"
+    );
+    assert!(
+        follow_up_metadata.get("compaction").is_none(),
+        "regular requests after compaction should not be marked as compact requests"
+    );
+    assert_ne!(
+        follow_up_metadata["turn_id"], compact_metadata["turn_id"],
+        "the following user turn should not reuse a manual compact turn id"
+    );
+    assert_eq!(
+        follow_up_metadata["window_id"].as_str(),
+        follow_up_request.header("x-codex-window-id").as_deref()
+    );
+    assert_ne!(
+        follow_up_metadata["window_id"], compact_metadata["window_id"],
+        "the following user turn should use the new compacted context window"
+    );
+    assert_ne!(
+        follow_up_metadata["context_window_id"], compact_metadata["context_window_id"],
+        "the following user turn should expose the new model-visible context window"
+    );
+    let follow_up_body = follow_up_request.body_json().to_string();
+    assert!(
+        follow_up_body.contains("\"type\":\"compaction\""),
+        "expected follow-up request to use compacted history"
+    );
+    assert!(
+        follow_up_body.contains("ENCRYPTED_COMPACTION_SUMMARY"),
+        "expected follow-up request to include compaction summary item"
+    );
+    assert!(
+        !follow_up_body.contains("FIRST_REMOTE_REPLY"),
+        "expected follow-up request to drop pre-compaction assistant messages"
+    );
+    assert!(
+        !follow_up_body.contains("hello remote compact"),
+        "expected follow-up request to drop compacted-away user turns when remote output omits them"
+    );
+
+    insta::assert_snapshot!(
+        "remote_manual_compact_with_history_shapes",
+        format_labeled_requests_snapshot(
+            "Remote manual /compact where remote compact output is compaction-only: follow-up layout uses the returned compaction item plus new user message.",
+            &[
+                ("Remote Compaction Request", &compact_request),
+                ("Remote Post-Compaction History Layout", follow_up_request),
+            ]
+        )
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_uses_agent_identity_assertion() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex().with_auth(CodexAuth::AgentIdentity(
+            AgentIdentityAuth::from_record(
+                AgentIdentityAuthRecord {
+                    agent_runtime_id: "agent-runtime-compact".to_string(),
+                    agent_private_key: TEST_AGENT_IDENTITY_PRIVATE_KEY.to_string(),
+                    account_id: "account-compact".to_string(),
+                    chatgpt_user_id: "user-compact".to_string(),
+                    email: Some("agent@example.com".to_string()),
+                    plan_type: AccountPlanType::Plus,
+                    chatgpt_account_is_fedramp: false,
+                    task_id: Some("task-compact".to_string()),
+                },
+                "https://auth.openai.com/api/accounts",
+                &codex_login::test_support::transport_default_auth_route_config(),
+            )
+            .await?,
+        )),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let _responses_mock = responses::mount_sse_once(
+        harness.server(),
+        responses::sse(vec![
+            responses::ev_assistant_message("m1", "REMOTE_REPLY"),
+            responses::ev_completed("resp-1"),
         ]),
     )
     .await;
+    let compact_mock = responses::mount_compact_json_once(
+        harness.server(),
+        serde_json::json!({ "output": compacted_summary_only_output("COMPACTED") }),
+    )
+    .await;
+
     codex
-        .start_or_steer_turn(TurnInputRequest::user_input(input))
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "hello remote compact".into(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
-    wait_for_turn_complete(codex).await;
-    let initial_request = initial_mock.single_request();
-    let prepared_images = initial_request
-        .inputs_of_type("message")
-        .into_iter()
-        .filter(|item| item["role"] == "user")
-        .flat_map(|item| {
-            item["content"]
-                .as_array()
-                .expect("message content is an array")
-                .clone()
-        })
-        .filter(|item| item["type"] == "input_image")
-        .map(|item| {
-            item[image_field]
-                .as_str()
-                .expect("image input has a string reference")
-                .to_owned()
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(prepared_images.len(), 13);
+    wait_for_turn_complete(&codex).await;
 
-    for cycle in 1..=2 {
-        let compact_mock = mount_sse_once(
-            harness.server(),
-            sse(vec![
-                json!({
-                    "type": "response.output_item.done",
-                    "item": { "type": "compaction", "encrypted_content": "IMAGE_BUDGET_SUMMARY" },
-                }),
-                responses::ev_completed("compact-images"),
-            ]),
-        )
-        .await;
-        codex.submit(Op::Compact).await?;
-        wait_for_turn_complete(codex).await;
-        let compact_request = compact_mock.single_request();
-        assert_eq!(compact_request.path(), "/v1/responses");
-        assert_eq!(
-            compact_request.inputs_of_type("compaction_trigger").len(),
-            1
-        );
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
 
-        let follow_up_mock = mount_sse_once(
-            harness.server(),
-            sse(vec![
-                responses::ev_assistant_message("after", "done"),
-                responses::ev_completed("after"),
-            ]),
-        )
-        .await;
-        codex
-            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "after compact".to_string(),
-                text_elements: Vec::new(),
-            }]))
-            .await?;
-        wait_for_turn_complete(codex).await;
-        let follow_up = follow_up_mock.single_request();
-        assert_eq!(
-            follow_up.inputs_of_type("compaction")[0]["encrypted_content"],
-            "IMAGE_BUDGET_SUMMARY"
-        );
-        let dropped = if image_budget_enabled.unwrap_or(true) {
-            cycle
-        } else {
-            0
-        };
-        let mut expected_images = prepared_images[dropped..].to_vec();
-        if cycle == 2 {
-            let UserInput::Image { image, .. } = &image_inputs[13] else {
-                unreachable!()
-            };
-            expected_images.push(match image {
-                ImageReference::Inline { image_url } => image_url.clone(),
-                ImageReference::File { file_id } => file_id.clone(),
-            });
-        }
-        let retained_images = follow_up
-            .inputs_of_type("message")
-            .into_iter()
-            .filter(|item| item["role"] == "user")
-            .flat_map(|item| {
-                item["content"]
-                    .as_array()
-                    .expect("message content is an array")
-                    .clone()
-            })
-            .filter(|item| item["type"] == "input_image")
-            .map(|item| {
-                item[image_field]
-                    .as_str()
-                    .expect("image input has a string reference")
-                    .to_owned()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(retained_images, expected_images);
-        assert!(
-            follow_up
-                .message_input_texts("user")
-                .iter()
-                .any(|text| text == "Compare these images")
-        );
+    let compact_request = compact_mock.single_request();
+    assert_eq!(compact_request.path(), "/v1/responses/compact");
+    assert!(
+        compact_request
+            .header("authorization")
+            .is_some_and(|value| value.starts_with("AgentAssertion ")),
+        "compact request should use task-scoped AgentAssertion auth"
+    );
+    assert_eq!(
+        compact_request.header("chatgpt-account-id").as_deref(),
+        Some("account-compact")
+    );
+    let compact_body = compact_request.body_json();
+    let model = compact_body["model"]
+        .as_str()
+        .expect("missing request model");
+    assert_eq!(
+        compact_request.header(X_CODEX_ROUTING_HINT_HEADER),
+        Some(format!("model={model}"))
+    );
 
-        if cycle == 1 {
-            let append_mock = mount_sse_once(
-                harness.server(),
-                sse(vec![
-                    responses::ev_assistant_message("append", "done"),
-                    responses::ev_completed("append"),
-                ]),
-            )
-            .await;
-            codex
-                .start_or_steer_turn(TurnInputRequest::user_input(vec![image_inputs[13].clone()]))
-                .await?;
-            wait_for_turn_complete(codex).await;
-            let _ = append_mock.single_request();
-        }
+    Ok(())
+}
+
+async fn assert_remote_manual_compact_request_parity(
+    auth: CodexAuth,
+    configured_service_tier: Option<ServiceTier>,
+    expected_service_tier: Option<&str>,
+    snapshot_name: &str,
+    scenario: &str,
+) -> Result<()> {
+    let uses_codex_backend = auth.uses_codex_backend();
+    let mut builder = test_codex()
+        .with_auth(auth)
+        .with_pre_build_hook(allow_echo_commands);
+    if let Some(service_tier) = configured_service_tier {
+        builder = builder.with_config(move |config| {
+            config.service_tier = Some(service_tier.request_value().to_string());
+        });
     }
+    let harness = TestCodexHarness::with_builder(builder).await?;
+    let codex = harness.test().codex.clone();
+    let image_url =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
+            .to_string();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("turn-one-assistant", "TURN_ONE_ASSISTANT"),
+                responses::ev_completed("turn-one-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_reasoning_item(
+                    "turn-two-reasoning",
+                    &["TURN_TWO_REASONING"],
+                    &["turn two raw content"],
+                ),
+                responses::ev_assistant_message("turn-two-assistant", "TURN_TWO_ASSISTANT"),
+                responses::ev_completed("turn-two-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_function_call("turn-three-call", DUMMY_FUNCTION_NAME, "{}"),
+                responses::ev_completed("turn-three-call-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("turn-three-assistant", "TURN_THREE_ASSISTANT"),
+                responses::ev_completed("turn-three-final-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_exec_command_call(
+                    "turn-four-exec-command",
+                    "echo TURN_FOUR_LOCAL_SHELL",
+                ),
+                responses::ev_completed("turn-four-local-shell-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("turn-four-assistant", "TURN_FOUR_ASSISTANT"),
+                responses::ev_completed("turn-four-final-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_reasoning_item(
+                    "turn-five-reasoning",
+                    &["TURN_FIVE_REASONING"],
+                    &["turn five raw content"],
+                ),
+                responses::ev_assistant_message("turn-five-assistant", "TURN_FIVE_ASSISTANT"),
+                responses::ev_completed("turn-five-response"),
+            ]),
+        ],
+    )
+    .await;
+    let compact_mock = responses::mount_compact_user_history_with_summary_once(
+        harness.server(),
+        "REMOTE_CACHE_TIER_SUMMARY",
+    )
+    .await;
+
+    codex
+        .start_or_steer_turn(unrestricted_user_turn(vec![UserInput::Text {
+            text: "TURN_ONE_USER".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            UserInput::Text {
+                text: "TURN_TWO_PREFIX".to_string(),
+                text_elements: Vec::new(),
+            },
+            UserInput::Text {
+                text: "TURN_TWO_SUFFIX".to_string(),
+                text_elements: Vec::new(),
+            },
+        ]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "TURN_THREE_TOOL_USER".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            UserInput::Image {
+                image: ImageReference::Inline { image_url },
+                detail: None,
+            },
+            UserInput::Text {
+                text: "TURN_FOUR_IMAGE_USER".to_string(),
+                text_elements: Vec::new(),
+            },
+        ]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "TURN_FIVE_USER".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    let response_requests = responses_mock.requests();
+    assert_eq!(
+        response_requests.len(),
+        7,
+        "expected five turns with one unsupported tool continuation and one shell command continuation"
+    );
+    assert_eq!(
+        compact_mock.requests().len(),
+        1,
+        "expected exactly one remote compact request"
+    );
+    let normal_request = response_requests
+        .last()
+        .cloned()
+        .expect("last turn request missing");
+    let compact_request = compact_mock.single_request();
+    let normal_body = normal_request.body_json();
+    let compact_body = compact_request.body_json();
+    let expected_routing_hint = |body: &Value| {
+        if !uses_codex_backend {
+            return None;
+        }
+
+        let model = body["model"].as_str().expect("missing request model");
+        match body.get("service_tier").and_then(Value::as_str) {
+            Some(tier) => Some(format!("model={model};tier={tier}")),
+            None => Some(format!("model={model}")),
+        }
+    };
+    assert_eq!(
+        normal_request.header(X_CODEX_ROUTING_HINT_HEADER),
+        expected_routing_hint(&normal_body)
+    );
+    assert_eq!(
+        compact_request.header(X_CODEX_ROUTING_HINT_HEADER),
+        expected_routing_hint(&compact_body)
+    );
+
+    let mut expected_compact_body_without_input = normal_body.clone();
+    let expected_compact_object = expected_compact_body_without_input
+        .as_object_mut()
+        .expect("responses request body should be an object");
+    for field in [
+        "input",
+        "client_metadata",
+        "include",
+        "store",
+        "stream",
+        "tool_choice",
+    ] {
+        expected_compact_object.remove(field);
+    }
+    if expected_service_tier.is_none() {
+        expected_compact_object.remove("service_tier");
+    }
+    let mut compact_body_without_input = compact_body.clone();
+    compact_body_without_input
+        .as_object_mut()
+        .expect("compact request body should be an object")
+        .remove("input");
+    let canonical_compact_body_without_input = canonical_json(&compact_body_without_input);
+    let canonical_expected_compact_body_without_input =
+        canonical_json(&expected_compact_body_without_input);
+
+    assert_eq!(
+        json!({
+            "compact_body_without_input": canonical_compact_body_without_input,
+            "expected_compact_body_without_input": canonical_expected_compact_body_without_input,
+            "prompt_cache_key_matches_responses": compact_body["prompt_cache_key"] == normal_body["prompt_cache_key"],
+            "prompt_cache_key_present": compact_body["prompt_cache_key"].is_string(),
+            "service_tier": compact_body.get("service_tier").and_then(Value::as_str),
+        }),
+        json!({
+            "compact_body_without_input": canonical_expected_compact_body_without_input,
+            "expected_compact_body_without_input": canonical_expected_compact_body_without_input,
+            "prompt_cache_key_matches_responses": true,
+            "prompt_cache_key_present": true,
+            "service_tier": expected_service_tier,
+        }),
+        "compact requests should carry the same shared request fields as /responses"
+    );
+
+    insta::assert_snapshot!(
+        snapshot_name,
+        context_snapshot::format_request_body_diff_snapshot(
+            scenario,
+            "Last Normal /responses Request",
+            &normal_request,
+            "Remote /responses/compact Request",
+            &compact_request,
+            &ContextSnapshotOptions::default().strip_response_item_ids(),
+        )
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_manual_compact_api_auth_omits_service_tier_and_reuses_prompt_cache_key()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    assert_remote_manual_compact_request_parity(
+        CodexAuth::from_api_key("dummy"),
+        Some(ServiceTier::Fast),
+        /*expected_service_tier*/ None,
+        "remote_manual_compact_api_auth_prompt_cache_key_request_diff",
+        "After five varied API-key-auth turns, remote manual compaction omits service_tier, reuses prompt_cache_key, and still omits responses-only fields.",
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_manual_compact_chatgpt_auth_reuses_service_tier_and_prompt_cache_key() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    assert_remote_manual_compact_request_parity(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        Some(ServiceTier::Fast),
+        Some("priority"),
+        "remote_manual_compact_chatgpt_auth_service_tier_prompt_cache_key_request_diff",
+        "After five varied ChatGPT-auth turns, remote manual compaction reuses service_tier and prompt_cache_key while omitting responses-only fields.",
+    )
+    .await?;
+
     Ok(())
 }
 
