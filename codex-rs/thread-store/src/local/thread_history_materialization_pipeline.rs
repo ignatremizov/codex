@@ -93,6 +93,7 @@ pub(super) async fn apply_batches(
                     next_offset,
                     initial_ordinal,
                     projections,
+                    super::super::thread_history::ProjectionMode::Append,
                 )
                 .await?;
                 start_offset = next_offset;

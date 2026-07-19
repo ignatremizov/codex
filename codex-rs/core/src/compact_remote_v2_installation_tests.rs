@@ -80,8 +80,9 @@ async fn prepared_prefix_rejection_respects_caller_intent(
         attempt: RemoteCompactV2Attempt {
             input_goal_ids: Default::default(),
             trace_input_history: None,
-            prompt_input: vec![original.clone()],
-            prompt_input_metadata: vec![None],
+            replacement_history_input: vec![ResponseItemEnvelope::new(original.clone())],
+            compacted_prefix_len: 0,
+            media_sanitization: CompactedMediaSanitization::default(),
             compaction_output: ResponseItem::Compaction {
                 id: None,
                 encrypted_content: "stale-summary".to_string(),

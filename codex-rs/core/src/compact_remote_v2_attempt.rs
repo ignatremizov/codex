@@ -12,6 +12,7 @@ use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::compact::CompactionAnalyticsDetails;
 use crate::compact_remote_history::trim_function_call_history_to_fit_context_window;
+use crate::context::CompactedMediaSanitization;
 use crate::context::world_state::WorldState;
 use crate::context_manager::ContextManager;
 use crate::responses_metadata::CompactionTurnMetadata;
@@ -22,7 +23,7 @@ use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
 use codex_analytics::CompactionTrigger;
-use codex_history::CodexHarnessMetadata;
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
@@ -34,8 +35,9 @@ use tracing::info;
 pub(super) struct RemoteCompactV2Attempt {
     pub(super) input_goal_ids: HashSet<ResponseItemId>,
     pub(super) trace_input_history: Option<Vec<ResponseItem>>,
-    pub(super) prompt_input: Vec<ResponseItem>,
-    pub(super) prompt_input_metadata: Vec<Option<CodexHarnessMetadata>>,
+    pub(super) replacement_history_input: Vec<ResponseItemEnvelope>,
+    pub(super) compacted_prefix_len: usize,
+    pub(super) media_sanitization: CompactedMediaSanitization,
     pub(super) compaction_output: ResponseItem,
     pub(super) compaction_response_id: String,
     pub(super) token_usage: Option<TokenUsage>,
@@ -45,7 +47,7 @@ pub(super) struct RemoteCompactV2Attempt {
 
 pub(super) enum RemoteCompactV2AttemptInput<'a> {
     Foreground(Option<&'a mut ModelClientSession>),
-    Background(BackgroundCompactionInput),
+    Background(Box<BackgroundCompactionInput>),
 }
 
 pub(crate) struct BackgroundCompactionCandidate {
@@ -61,7 +63,9 @@ pub(crate) struct BackgroundCompactionInput {
     window: (String, u64, uuid::Uuid),
     base_instructions: BaseInstructions,
     input: Vec<ResponseItem>,
-    metadata: Vec<Option<CodexHarnessMetadata>>,
+    replacement_history_input: Vec<ResponseItemEnvelope>,
+    compacted_prefix_len: usize,
+    media_sanitization: CompactedMediaSanitization,
 }
 
 pub(super) async fn run_remote_compact_v2_attempt(
@@ -82,13 +86,16 @@ pub(super) async fn run_remote_compact_v2_attempt(
         trace_input_history,
         base_instructions,
         mut input,
-        prompt_input_metadata,
+        replacement_history_input,
+        compacted_prefix_len,
+        media_sanitization,
         transport,
         captured_window,
     ) = match input {
         RemoteCompactV2AttemptInput::Foreground(client_session) => {
             let model_info = turn_context.model_info();
             let mut history = sess.clone_history().await;
+            let media_sanitization = history.sanitize_compacted_media_prefix();
             let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
             let tools_in_history = step_context.settings.model_info.use_responses_lite
                 && history
@@ -130,11 +137,13 @@ pub(super) async fn run_remote_compact_v2_attempt(
             let trace_input_history = compaction_trace
                 .is_enabled()
                 .then(|| history.raw_items().cloned().collect());
-            let (mut input, metadata): (Vec<_>, Vec<_>) = history
+            let compacted_prefix_len = history.compacted_prefix_len().unwrap_or_default();
+            let replacement_history_input = history.annotated_items().to_vec();
+            let mut input = history
                 .for_prompt_annotated(&model_info.input_modalities)
                 .into_iter()
-                .map(|envelope| (envelope.item, envelope.metadata))
-                .unzip();
+                .map(ResponseItemEnvelope::into_item)
+                .collect::<Vec<_>>();
             sess.services
                 .executed_tool_calls
                 .attach_to_compaction_prompt(&mut input);
@@ -147,18 +156,27 @@ pub(super) async fn run_remote_compact_v2_attempt(
                 trace_input_history,
                 base_instructions,
                 input,
-                metadata,
+                replacement_history_input,
+                compacted_prefix_len,
+                media_sanitization,
                 CompactionRequestTransport::Foreground(client_session),
                 None,
             )
         }
         RemoteCompactV2AttemptInput::Background(input) => (
             &step_context.settings.model_info,
-            UserGoalUpdate::message_ids(input.input.iter()),
+            UserGoalUpdate::message_ids(
+                input
+                    .replacement_history_input
+                    .iter()
+                    .map(|envelope| &envelope.item),
+            ),
             None,
             input.base_instructions,
             input.input,
-            input.metadata,
+            input.replacement_history_input,
+            input.compacted_prefix_len,
+            input.media_sanitization,
             CompactionRequestTransport::Background(
                 input.turn_state,
                 input.prefix.auth_owner_generation,
@@ -220,13 +238,12 @@ pub(super) async fn run_remote_compact_v2_attempt(
         response_id,
         token_usage,
     } = compaction_output_result?;
-    let mut prompt_input = prompt.input;
-    prompt_input.pop();
     Ok(RemoteCompactV2Attempt {
         input_goal_ids,
         trace_input_history,
-        prompt_input,
-        prompt_input_metadata,
+        replacement_history_input,
+        compacted_prefix_len,
+        media_sanitization,
         compaction_output,
         compaction_response_id: response_id,
         token_usage,
@@ -260,17 +277,20 @@ pub(crate) fn capture_background_input(
         len: snapshot.annotated_items().len(),
         auth_owner_generation,
     };
+    let media_sanitization = snapshot.sanitize_compacted_media_prefix();
     trim_function_call_history_to_fit_context_window(
         &mut snapshot,
         &step_context.turn,
         step_context.settings.model_info.usable_context_window(),
         &base_instructions,
     );
-    let (mut input, metadata): (Vec<_>, Vec<_>) = snapshot
+    let compacted_prefix_len = snapshot.compacted_prefix_len().unwrap_or_default();
+    let replacement_history_input = snapshot.annotated_items().to_vec();
+    let mut input = snapshot
         .for_prompt_annotated(&step_context.settings.model_info.input_modalities)
         .into_iter()
-        .map(|envelope| (envelope.item, envelope.metadata))
-        .unzip();
+        .map(ResponseItemEnvelope::into_item)
+        .collect::<Vec<_>>();
     sess.services
         .executed_tool_calls
         .attach_to_compaction_prompt(&mut input);
@@ -280,7 +300,9 @@ pub(crate) fn capture_background_input(
         window,
         base_instructions,
         input,
-        metadata,
+        replacement_history_input,
+        compacted_prefix_len,
+        media_sanitization,
     }
 }
 
@@ -304,7 +326,7 @@ pub(crate) async fn run_background_compaction(
         &CompactionTraceContext::disabled(),
         metadata,
         &mut CompactionAnalyticsDetails::default(),
-        RemoteCompactV2AttemptInput::Background(prepared_input),
+        RemoteCompactV2AttemptInput::Background(Box::new(prepared_input)),
     )
     .await?;
     Ok(BackgroundCompactionCandidate {
