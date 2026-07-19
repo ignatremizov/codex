@@ -1323,7 +1323,7 @@ impl Session {
             };
 
             // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
-            Box::pin(sess.record_initial_history(initial_history)).await;
+            Box::pin(sess.record_initial_history(initial_history)).await?;
             if matches!(&sess.fork_persistence, ForkPersistence::Referenced { .. }) {
                 // Keep the source reserved until the child's history reference is durable.
                 sess.try_ensure_rollout_materialized().await?;

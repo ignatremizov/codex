@@ -23,7 +23,7 @@ pub enum ModelContextScanProgress {
 ///
 /// The scan stops once it has both:
 ///
-/// - `saw_compaction`: a `CompactedItem` with `replacement_history` and `window_number`;
+/// - `saw_compaction`: a semantic `CompactedItem` with `replacement_history` and `window_number`;
 /// - `saw_completed_turn_context`: a completed user turn with a compatible `TurnContextItem`.
 ///
 /// If the scan reaches the beginning before finding a bounded cutoff, it has already collected
@@ -42,6 +42,9 @@ pub enum ModelContextScanProgress {
 ///
 /// - compaction without `replacement_history` or `window_number`;
 /// - rollback markers;
+///
+/// Representation-only compaction repairs do not satisfy the semantic-checkpoint requirement, so
+/// the scan continues through them to the preceding semantic compaction.
 ///
 /// When one appears, the scanner continues to the beginning and returns the complete replay.
 #[derive(Debug, Default)]
@@ -88,6 +91,7 @@ impl ModelContextScan {
             {
                 self.must_scan_to_start = true;
             }
+            RolloutItem::Compacted(compacted) if compacted.replacement_history_media_repair => {}
             RolloutItem::Compacted(_) => {
                 self.saw_compaction = true;
             }

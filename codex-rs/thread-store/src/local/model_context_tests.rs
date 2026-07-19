@@ -167,6 +167,55 @@ async fn loads_turn_metadata_across_an_older_checkpoint() {
 }
 
 #[tokio::test]
+async fn scans_past_representation_repair_to_semantic_checkpoint() {
+    let home = TempDir::new().expect("temp dir");
+    let uuid = Uuid::from_u128(/*v*/ 1007);
+    let thread_id = codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    write_paginated_rollout(
+        home.path(),
+        "2025-01-03T13-00-06",
+        uuid,
+        [
+            turn_started("turn-1"),
+            user_message("semantic turn"),
+            completed_user_message("turn-1", "semantic turn"),
+            turn_context(home.path(), "turn-1"),
+            compacted("semantic checkpoint", Some(Vec::new())),
+            turn_complete("turn-1"),
+            RolloutItem::Compacted(CompactedItem {
+                message: "representation repair".to_string(),
+                replacement_history: Some(Vec::new()),
+                window_number: Some(1),
+                replacement_history_media_repair: true,
+                replacement_history_media_sanitized_prefix_len: Some(0),
+                ..Default::default()
+            }),
+            turn_started("turn-2"),
+            user_message("latest turn"),
+            completed_user_message("turn-2", "latest turn"),
+            turn_context(home.path(), "turn-2"),
+            turn_complete("turn-2"),
+        ],
+    );
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+
+    let context = store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("load model context");
+
+    assert!(context.items.iter().any(|item| {
+        matches!(item, RolloutItem::Compacted(compacted) if compacted.message == "semantic checkpoint")
+    }));
+    assert!(context.items.iter().any(|item| {
+        matches!(item, RolloutItem::Compacted(compacted) if compacted.message == "representation repair")
+    }));
+}
+
+#[tokio::test]
 async fn returns_scanned_full_history_for_unsupported_compaction() {
     let home = TempDir::new().expect("temp dir");
     let uuid = Uuid::from_u128(/*v*/ 1002);
@@ -620,5 +669,6 @@ fn compacted(message: &str, replacement_history: Option<Vec<ResponseItem>>) -> R
         first_window_id: None,
         previous_window_id: None,
         window_id: None,
+        ..Default::default()
     })
 }

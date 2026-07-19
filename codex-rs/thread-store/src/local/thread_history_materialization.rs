@@ -29,9 +29,39 @@ pub(super) async fn materialize_to_sqlite(
     if store.state_db.is_none() {
         return Ok(());
     }
-    let start_offset = super::thread_history::projection_state(store, thread_id)
-        .await?
-        .map_or(0, |state| state.next_byte_offset);
+    let projection_state = super::thread_history::projection_state(store, thread_id).await?;
+    let (start_offset, next_ordinal) = projection_state
+        .map(|state| (state.next_byte_offset, state.next_ordinal))
+        .unwrap_or((0, 0));
+    let rollout_len = tokio::fs::metadata(rollout_path)
+        .await
+        .map_err(thread_store_io_error)?
+        .len();
+    let offset_is_valid = if start_offset == 0 {
+        next_ordinal == 0
+    } else if start_offset <= rollout_len
+        && let Some(expected_previous_ordinal) = next_ordinal.checked_sub(1)
+    {
+        let rollout_path = rollout_path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            codex_rollout::last_rollout_ordinal_before_offset(
+                rollout_path.as_path(),
+                start_offset,
+            )
+        })
+        .await
+        .map_err(thread_history_error)?
+        .map_err(thread_store_io_error)?
+            == Some(expected_previous_ordinal)
+    } else {
+        false
+    };
+    if !offset_is_valid {
+        warn!(
+            "rebuilding paginated history projection after canonical rollout changed for {thread_id}"
+        );
+        return rebuild_to_sqlite(store, thread_id, rollout_path).await;
+    }
     let (lines, next_offset) = read_complete_rollout_lines(rollout_path, start_offset).await?;
     // Empty valid records can still consume bytes through blank or rejected complete lines.
     if lines.is_empty() && start_offset == next_offset {
@@ -79,6 +109,15 @@ pub(super) async fn materialize_to_sqlite(
         projections,
     )
     .await
+}
+
+pub(super) async fn rebuild_to_sqlite(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    rollout_path: &Path,
+) -> ThreadStoreResult<()> {
+    super::thread_history::delete_thread(store, thread_id).await?;
+    Box::pin(materialize_to_sqlite(store, thread_id, rollout_path)).await
 }
 
 async fn read_complete_rollout_lines(
