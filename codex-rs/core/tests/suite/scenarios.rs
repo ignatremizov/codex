@@ -2793,12 +2793,14 @@ async fn async_compaction_test(
 #[derive(Clone, Copy)]
 enum LiveSuffix {
     User,
+    Images,
     Tool,
     RetainedTool,
     OverBudgetRetainedTool,
 }
 
 #[test_case::test_case(LiveSuffix::User; "newer user")]
+#[test_case::test_case(LiveSuffix::Images; "newer image remains outside sanitized prefix")]
 #[test_case::test_case(LiveSuffix::Tool; "only assistant and tools")]
 #[test_case::test_case(LiveSuffix::RetainedTool; "retained standalone output")]
 #[test_case::test_case(LiveSuffix::OverBudgetRetainedTool; "ready adoption still over budget")]
@@ -2814,6 +2816,13 @@ async fn astra_async_compaction_keeps_work_added_after_its_snapshot(
 
     skip_if_no_network!(Ok(()));
     let over_budget = matches!(suffix, LiveSuffix::OverBudgetRetainedTool);
+    let user_suffix = matches!(suffix, LiveSuffix::User | LiveSuffix::Images);
+    let image_input = || UserInput::Image {
+        image: ImageReference::Inline {
+            image_url: format!("data:image/png;base64,{ONE_PIXEL_PNG_BASE64}"),
+        },
+        detail: None,
+    };
     let retained_output = if over_budget {
         format!("delegated work {}", "x ".repeat(12_000))
     } else {
@@ -2883,7 +2892,7 @@ async fn astra_async_compaction_keeps_work_added_after_its_snapshot(
     }
     let (streaming, _completions) = start_streaming_sse_server(responses).await;
     let features = match suffix {
-        LiveSuffix::User => vec![Feature::IncrementalTools],
+        LiveSuffix::User | LiveSuffix::Images => vec![Feature::IncrementalTools],
         LiveSuffix::Tool => vec![],
         LiveSuffix::RetainedTool | LiveSuffix::OverBudgetRetainedTool => {
             vec![Feature::RetainClientToolOutputs]
@@ -2907,11 +2916,28 @@ async fn astra_async_compaction_keeps_work_added_after_its_snapshot(
         _ => None,
     };
 
-    test.submit_text_turn("Draft the launch notes.").await?;
+    if matches!(suffix, LiveSuffix::Images) {
+        test.codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![
+                text("Draft the launch notes."),
+                image_input(),
+            ]))
+            .await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    } else {
+        test.submit_text_turn("Draft the launch notes.").await?;
+    }
     let timeout = Duration::from_secs(/*secs*/ 20);
     tokio::time::timeout(timeout, streaming.wait_for_request_count(/*count*/ 2)).await?;
-    let next_input = if matches!(suffix, LiveSuffix::User) {
-        TurnInputRequest::user_input(vec![text("Check who can finish the notes.")])
+    let next_input = if user_suffix {
+        let mut input = vec![text("Check who can finish the notes.")];
+        if matches!(suffix, LiveSuffix::Images) {
+            input.push(image_input());
+        }
+        TurnInputRequest::user_input(input)
     } else {
         let item = serde_json::from_value(json!({
             "type": "function_call_output",
@@ -3035,18 +3061,62 @@ async fn astra_async_compaction_keeps_work_added_after_its_snapshot(
     let draft = position("Draft the launch notes.");
     let compaction = position("ASYNC_LAUNCH_CHECKPOINT");
     let plan = position("Plan Mode");
-    if matches!(suffix, LiveSuffix::User) {
+    if user_suffix {
         let user = position("Check who can finish the notes.");
         assert!(draft < compaction && compaction < default && default < plan && plan < user);
-        let entries = requests.iter().map(SnapshotEntry::body).collect::<Vec<_>>();
-        insta::assert_snapshot!(
-            "astra_async_compaction_with_live_suffix",
-            context_snapshot::format_context_snapshot(
-                "Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode while it runs. Adoption restores Default mode at the cutoff, then preserves the Plan update, newer user message, and assistant/tool exchange in their original order.",
-                &entries,
-                &ContextSnapshotOptions::default().rewrite_known_segments(),
-            )
-        );
+        if matches!(suffix, LiveSuffix::Images) {
+            let image_count = |items: &[serde_json::Value]| {
+                items
+                    .iter()
+                    .filter_map(|item| item["content"].as_array())
+                    .flatten()
+                    .filter(|content| content["type"] == "input_image")
+                    .count()
+            };
+            assert_eq!(
+                image_count(requests[1]["input"].as_array().expect("background input")),
+                1,
+                "the background request must include its current-window image"
+            );
+            assert_eq!(image_count(input), 1);
+            assert_eq!(image_count(&input[draft..=draft]), 0);
+            assert_eq!(image_count(&input[user..=user]), 1);
+            let checkpoint = history
+                .iter()
+                .find_map(|item| match item {
+                    RolloutItem::Compacted(checkpoint) => Some(checkpoint),
+                    _ => None,
+                })
+                .expect("adopted checkpoint");
+            let prefix_len = usize::try_from(
+                checkpoint
+                    .replacement_history_media_sanitized_prefix_len
+                    .expect("sanitized prefix boundary"),
+            )?;
+            let replacement = checkpoint
+                .replacement_history
+                .as_ref()
+                .expect("canonical replacement")
+                .iter()
+                .map(|envelope| serde_json::to_value(&envelope.item))
+                .collect::<serde_json::Result<Vec<_>>>()?;
+            assert_eq!(image_count(&replacement[..prefix_len]), 0);
+            assert_eq!(image_count(&replacement[prefix_len..]), 1);
+            assert!(
+                serde_json::to_string(&replacement[..prefix_len])?
+                    .contains("<compacted_image_omission>")
+            );
+        } else {
+            let entries = requests.iter().map(SnapshotEntry::body).collect::<Vec<_>>();
+            insta::assert_snapshot!(
+                "astra_async_compaction_with_live_suffix",
+                context_snapshot::format_context_snapshot(
+                    "Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode while it runs. Adoption restores Default mode at the cutoff, then preserves the Plan update, newer user message, and assistant/tool exchange in their original order.",
+                    &entries,
+                    &ContextSnapshotOptions::default().rewrite_known_segments(),
+                )
+            );
+        }
     } else {
         let tool = position("delegated work");
         if matches!(

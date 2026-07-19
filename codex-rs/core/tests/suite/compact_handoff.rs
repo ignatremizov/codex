@@ -299,20 +299,28 @@ async fn remote_checkpoint_and_retained_inventory_are_independent_of_decoder(
         &envelope.item, ResponseItem::Compaction { encrypted_content, id: Some(_), .. }
             if encrypted_content == "CANONICAL_CHECKPOINT"
     )));
-    assert!(!serde_json::to_string(&checkpoint)?.contains("DECODED_PRESENTATION"));
+    let checkpoint_items = checkpoint
+        .iter()
+        .map(|envelope| {
+            let mut item = envelope.item.clone();
+            item.clear_content_item_metadata();
+            serde_json::to_value(item)
+        })
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    // Inspect the supported persisted representation, including harness metadata,
+    // independently of the response-only items sent to the decoder.
+    let checkpoint_records = checkpoint
+        .iter()
+        .cloned()
+        .map(RolloutItem::ResponseItem)
+        .collect::<Vec<_>>();
+    assert!(!serde_json::to_string(&checkpoint_records)?.contains("DECODED_PRESENTATION"));
     for decoder in &requests[2..2 + decoder_count] {
         let input = decoder.input();
         assert_eq!(input.len(), checkpoint.len() + 2);
         assert_eq!(
             input[1..=checkpoint.len()],
-            checkpoint
-                .iter()
-                .map(|envelope| {
-                    let mut item = envelope.item.clone();
-                    item.clear_content_item_metadata();
-                    serde_json::to_value(item)
-                })
-                .collect::<serde_json::Result<Vec<_>>>()?,
+            checkpoint_items,
             "decoder must use the exact installed items, including assigned IDs",
         );
         assert_eq!(input[checkpoint.len() + 1]["role"], "developer");

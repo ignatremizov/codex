@@ -17,7 +17,9 @@ use codex_protocol::models::ExecutedToolCall;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
+use codex_protocol_test_support::ContentItemTestExt;
 use codex_tools::ToolName;
+use codex_utils_output_truncation::approx_token_count;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
@@ -385,6 +387,23 @@ fn user_message(text: &str) -> ResponseItem {
         internal_chat_message_metadata_passthrough: None,
     }
 }
+
+fn compaction_summary_message(text: &str) -> ResponseItem {
+    ContextualUserFragment::into(CompactionSummary::new(text))
+}
+
+fn developer_message(text: String) -> ResponseItem {
+    ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText { text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
 
 fn compacted_user_message<'a>(text: &str, original: &'a ResponseItem) -> CompactedUserMessage<'a> {
     CompactedUserMessage {
@@ -830,6 +849,501 @@ fn build_compacted_history_preserves_user_message_passthrough_metadata(attribute
             ResponseItemEnvelope::new(ContextualUserFragment::into(CompactionSummary::new(
                 "summary text",
             ))),
+        ]
+    );
+}
+
+#[test]
+fn build_compacted_history_preserving_mcp_context_keeps_invocation_order_in_retained_tail() {
+    let linear = McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string())
+        .render()
+        .expect_text();
+    let history = vec![
+        user_message("first prompt"),
+        developer_message(linear.clone()),
+        user_message("second prompt"),
+    ];
+
+    let compacted = build_compacted_history_preserving_mcp_context(
+        &annotated(history),
+        "summary text",
+        COMPACT_USER_MESSAGE_MAX_TOKENS,
+    );
+
+    assert_eq!(
+        raw(compacted),
+        vec![
+            user_message("first prompt"),
+            developer_message(linear),
+            user_message("second prompt"),
+            compaction_summary_message("summary text"),
+        ]
+    );
+}
+
+#[test]
+fn build_local_compacted_history_expires_flattened_inherited_image_paths() {
+    let inherited_path = "/tmp/inherited.png";
+    let inherited = user_message(&format!(
+        "before<image name=[Image #1] path=\"{inherited_path}\">image omitted</image>after"
+    ));
+    let current = user_message("current window");
+
+    let compacted = build_local_compacted_history(
+        &annotated(vec![inherited, current.clone()]),
+        /*compacted_prefix_len*/ 1,
+        "summary text",
+    );
+
+    assert_eq!(
+        raw(compacted),
+        vec![
+            ResponseItem::Message {
+                status: None,
+                encrypted_content: None,
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "beforeafter".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: Some(
+                    InternalChatMessageMetadataPassthrough {
+                        // A legacy text wrapper does not establish human-authored provenance.
+                        content_item_kinds: Some(vec![ContentItemKind("unknown".to_string())]),
+                        ..Default::default()
+                    },
+                ),
+            },
+            current,
+            compaction_summary_message("summary text"),
+        ]
+    );
+}
+
+#[test]
+fn build_local_compacted_history_retains_current_image_path_for_one_window() {
+    let current_path = "/tmp/current.png";
+    let current = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "before".to_string(),
+            },
+            ContentItem::InputText {
+                text: format!("<image name=[Image #1] path=\"{current_path}\">"),
+            },
+            ContentItem::InputImage {
+                image: ImageReference::Inline {
+                    image_url: "data:image/png;base64,current".to_string(),
+                },
+                detail: None,
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let first_summary = format!("{SUMMARY_PREFIX}\nfirst summary");
+    let first = build_local_compacted_history(
+        &annotated(vec![current]),
+        /*compacted_prefix_len*/ 0,
+        &first_summary,
+    );
+    let expected_retained = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "before".to_string(),
+            },
+            ContentItem::InputText {
+                text: format!("<image name=[Image #1] path=\"{current_path}\">"),
+            },
+            ContentItem::InputText {
+                text: crate::context::CompactedImageOmission::reopenable_local_image()
+                    .render()
+                    .expect_text(),
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            content_item_kinds: Some(vec![
+                ContentItemKind("unknown".to_string()),
+                ContentItemKind("unknown".to_string()),
+                ContentItemKind("compaction.image_omission".to_string()),
+                ContentItemKind("unknown".to_string()),
+                ContentItemKind("unknown".to_string()),
+            ]),
+            content_item_metadata: Some(vec![
+                ContentItemMetadata::default(),
+                ContentItemMetadata::default(),
+                ContentItemMetadata::harness(),
+                ContentItemMetadata::default(),
+                ContentItemMetadata::default(),
+            ]),
+            ..Default::default()
+        }),
+    };
+    assert_eq!(
+        raw(first.clone()),
+        vec![
+            expected_retained,
+            compaction_summary_message(&first_summary),
+        ]
+    );
+
+    let mut second_input = first;
+    let second_prefix_len = second_input.len();
+    second_input.push(user_message("next window").into());
+    let second_summary = format!("{SUMMARY_PREFIX}\nsecond summary");
+    let second = build_local_compacted_history(&second_input, second_prefix_len, &second_summary);
+
+    assert_eq!(
+        raw(second),
+        vec![
+            ResponseItem::Message {
+                status: None,
+                encrypted_content: None,
+                id: None,
+                role: "user".to_string(),
+                // Expiring the image removes its wrapper, not the surviving source boundaries.
+                content: vec![
+                    ContentItem::InputText {
+                        text: "before".to_string(),
+                    },
+                    ContentItem::InputText {
+                        text: "after".to_string(),
+                    },
+                ],
+                phase: None,
+                internal_chat_message_metadata_passthrough: Some(
+                    InternalChatMessageMetadataPassthrough {
+                        content_item_kinds: Some(vec![
+                            ContentItemKind("unknown".to_string()),
+                            ContentItemKind("unknown".to_string()),
+                        ]),
+                        ..Default::default()
+                    },
+                ),
+            },
+            user_message("next window"),
+            compaction_summary_message(&second_summary),
+        ]
+    );
+}
+
+#[test]
+fn build_local_compacted_history_drops_oversized_image_message_atomically() {
+    let huge_text = "x".repeat((COMPACT_USER_MESSAGE_MAX_TOKENS + 1) * 4);
+    let current = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: huge_text.clone(),
+            },
+            ContentItem::InputText {
+                text: "<image name=[Image #1] path=\"/tmp/current.png\">".to_string(),
+            },
+            ContentItem::InputImage {
+                image: ImageReference::Inline {
+                    image_url: "data:image/png;base64,current".to_string(),
+                },
+                detail: None,
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText { text: huge_text },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+
+    let compacted = build_local_compacted_history(
+        &annotated(vec![current]),
+        /*compacted_prefix_len*/ 0,
+        &summary,
+    );
+
+    assert_eq!(
+        raw(compacted),
+        vec![
+            crate::context::standalone_compacted_image_omission_message(
+                crate::context::CompactedImageOmission::reopenable_local_image()
+                    .render()
+                    .expect_text()
+            ),
+            compaction_summary_message(&summary),
+        ]
+    );
+}
+
+#[test]
+fn build_local_compacted_history_rehomes_tool_only_image_omission() {
+    let current = ResponseItem::FunctionCallOutput {
+        id: None,
+        call_id: Some("tool-call".to_string()),
+        name: None,
+        namespace: None,
+        output: codex_protocol::models::FunctionCallOutputPayload::from_content_items(vec![
+            codex_protocol::models::FunctionCallOutputContentItem::InputImage {
+                image: ImageReference::Inline {
+                    image_url: "data:image/png;base64,current".to_string(),
+                },
+                detail: None,
+            },
+        ]),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+
+    let compacted = build_local_compacted_history(
+        &annotated(vec![current]),
+        /*compacted_prefix_len*/ 0,
+        &summary,
+    );
+
+    assert_eq!(
+        raw(compacted),
+        vec![
+            crate::context::standalone_compacted_image_omission_message(
+                crate::context::CompactedImageOmission::unavailable()
+                    .render()
+                    .expect_text()
+            ),
+            compaction_summary_message(&summary),
+        ]
+    );
+}
+
+#[test]
+fn build_local_compacted_history_charges_rehomed_omission_to_retention_budget() {
+    let history = vec![
+        ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: Some("tool-call".to_string()),
+            name: None,
+            namespace: None,
+            output: codex_protocol::models::FunctionCallOutputPayload::from_content_items(vec![
+                codex_protocol::models::FunctionCallOutputContentItem::InputImage {
+                    image: ImageReference::Inline {
+                        image_url: "data:image/png;base64,current".to_string(),
+                    },
+                    detail: None,
+                },
+            ]),
+            internal_chat_message_metadata_passthrough: None,
+        },
+        user_message(
+            "x".repeat(COMPACT_USER_MESSAGE_MAX_TOKENS.saturating_mul(4))
+                .as_str(),
+        ),
+    ];
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+
+    let compacted = build_local_compacted_history(
+        &annotated(history),
+        /*compacted_prefix_len*/ 0,
+        &summary,
+    );
+    let retained = raw(compacted[..compacted.len().saturating_sub(1)].to_vec());
+    let retained_tokens = retained
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::Message { content, .. } => content_items_to_text(content),
+            _ => None,
+        })
+        .map(|text| approx_token_count(text.as_str()))
+        .sum::<usize>();
+
+    assert!(retained_tokens <= COMPACT_USER_MESSAGE_MAX_TOKENS);
+    assert!(compacted_image_omission_text(&retained).is_some());
+}
+
+#[test]
+fn build_local_compacted_history_drops_oversized_text_image_wrapper_atomically() {
+    let huge_text = "x".repeat((COMPACT_USER_MESSAGE_MAX_TOKENS + 1) * 4);
+    let current = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: huge_text.clone(),
+            },
+            ContentItem::InputText {
+                text: "<image name=[Image #1] path=\"/tmp/current.png\">".to_string(),
+            },
+            ContentItem::InputText {
+                text: "[Image #1]".to_string(),
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+    let expected = crate::compacted_history_retention::truncate_text_to_approx_token_budget(
+        &huge_text,
+        COMPACT_USER_MESSAGE_MAX_TOKENS,
+    );
+
+    let compacted = build_local_compacted_history(
+        &annotated(vec![current]),
+        /*compacted_prefix_len*/ 0,
+        &summary,
+    );
+
+    assert_eq!(
+        raw(compacted),
+        vec![
+            ResponseItem::Message {
+                status: None,
+                encrypted_content: None,
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText { text: expected }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: Some(
+                    InternalChatMessageMetadataPassthrough {
+                        content_item_kinds: Some(vec![ContentItemKind("unknown".to_string())]),
+                        ..Default::default()
+                    },
+                ),
+            },
+            compaction_summary_message(&summary),
+        ]
+    );
+}
+
+#[test]
+fn build_local_compacted_history_preserves_whole_message_text_truncation() {
+    let leading = "x".repeat((COMPACT_USER_MESSAGE_MAX_TOKENS + 1) * 4);
+    let unmatched_opener = "<image name=[Image #1] path=\"/tmp/not-a-wrapper.png\">";
+    let trailing = "TRAILING_SENTINEL";
+    let current = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: leading.clone(),
+            },
+            ContentItem::InputText {
+                text: unmatched_opener.to_string(),
+            },
+            ContentItem::InputText {
+                text: trailing.to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+    let expected = crate::compacted_history_retention::truncate_text_to_approx_token_budget(
+        &format!("{leading}{unmatched_opener}{trailing}"),
+        COMPACT_USER_MESSAGE_MAX_TOKENS,
+    );
+
+    let compacted = build_local_compacted_history(
+        &annotated(vec![current]),
+        /*compacted_prefix_len*/ 0,
+        &summary,
+    );
+
+    assert!(expected.ends_with(trailing));
+    let mut compacted = raw(compacted);
+    assert_eq!(compacted.pop(), Some(compaction_summary_message(&summary)));
+    assert_eq!(compacted.len(), 1);
+    let ResponseItem::Message {
+        content,
+        internal_chat_message_metadata_passthrough: Some(metadata),
+        ..
+    } = &compacted[0]
+    else {
+        panic!("retained message must preserve its positional attribution");
+    };
+    let retained_text: String = content
+        .iter()
+        .cloned()
+        .map(ContentItemTestExt::expect_text)
+        .collect();
+    let sources = metadata
+        .content_item_metadata
+        .as_ref()
+        .expect("truncation notice has harness provenance");
+    assert_eq!(
+        (
+            retained_text,
+            metadata.content_item_kinds.as_ref().map(Vec::len),
+            sources.len(),
+            sources
+                .iter()
+                .filter(|source| **source == ContentItemMetadata::harness())
+                .count(),
+        ),
+        (expected, Some(content.len()), content.len(), 1),
+    );
+}
+
+#[test]
+fn local_compaction_keeps_mcp_inventory_after_prompt_and_before_summary() {
+    let linear = McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string())
+        .render()
+        .expect_text();
+    let summary = format!("{SUMMARY_PREFIX}\nsummary text");
+    let history = annotated(vec![
+        user_message("retained prompt"),
+        developer_message(linear.clone()),
+    ]);
+    let merged = raw(build_compacted_history_preserving_mcp_context(
+        &history,
+        &summary,
+        COMPACT_USER_MESSAGE_MAX_TOKENS,
+    ));
+
+    assert_eq!(
+        merged
+            .iter()
+            .filter_map(|item| match item {
+                ResponseItem::Message { role, content, .. } => {
+                    Some(format!("{role}:{}", content_items_to_text(content)?))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            "user:retained prompt".to_string(),
+            format!("developer:{linear}"),
+            format!("user:{summary}"),
         ]
     );
 }
