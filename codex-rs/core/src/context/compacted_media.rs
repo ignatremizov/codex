@@ -217,7 +217,11 @@ pub(crate) fn sanitize_compacted_media_before_latest_compaction(
     let Some(compaction_index) = items.iter().rposition(|item| {
         matches!(
             item,
-            ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+            ResponseItem::Compaction { .. }
+                | ResponseItem::ContextCompaction {
+                    encrypted_content: Some(_),
+                    ..
+                }
         )
     }) else {
         return CompactedMediaSanitization::default();

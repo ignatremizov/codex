@@ -155,6 +155,11 @@ fn sanitization_is_idempotent_and_respects_prefix_boundaries() {
             image_url: "data:image/png;base64,new".to_string(),
             detail: None,
         }]),
+        ResponseItem::ContextCompaction {
+            id: None,
+            encrypted_content: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
     ];
 
     let first = sanitize_compacted_media_before_latest_compaction(&mut items);
