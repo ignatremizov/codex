@@ -62,7 +62,7 @@ pub(super) async fn create_thread(
         recorder.persist().await.map_err(thread_store_io_error)?;
         if let Err(error) = index_attached_thread(store, state, recorder.rollout_path()).await {
             recorder.discard().await.map_err(thread_store_io_error)?;
-            super::delete_thread::delete_rollout_file(store, recorder.rollout_path())?;
+            super::delete_thread::delete_rollout_file(store, recorder.rollout_path(), thread_id)?;
             super::delete_thread::delete_state_rows(store, &[thread_id]).await?;
             return Err(error);
         }
@@ -450,8 +450,11 @@ async fn write_and_project(
             warn!("failed to project durable rollout for {thread_id}: {err}");
         }
     }
-    if sync_rollout_path {
-        sync_materialized_rollout_path(store, thread_id, recorder.rollout_path()).await?;
+    if sync_rollout_path
+        && let Err(err) =
+            sync_materialized_rollout_path(store, thread_id, recorder.rollout_path()).await
+    {
+        warn!("failed to project durable rollout path for {thread_id}: {err}");
     }
     Ok(())
 }
