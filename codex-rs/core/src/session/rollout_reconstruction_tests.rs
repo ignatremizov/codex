@@ -352,7 +352,8 @@ async fn reconstruction_does_not_roll_back_an_out_of_band_representation_repair(
 #[tokio::test]
 async fn representation_repair_without_companion_records_preserves_existing_baselines() {
     let (session, turn_context) = make_session_and_context().await;
-    let world_state = build_world_state_from_turn_context(session.as_ref(), &turn_context).await;
+    let turn_context = Arc::new(turn_context);
+    let world_state = build_world_state_from_turn_context(&session, &turn_context).await;
     let world_state_snapshot = world_state.snapshot();
     let reference_context = turn_context.to_turn_context_item();
     let replacement_history = vec![user_message("summary")];
@@ -396,7 +397,8 @@ async fn representation_repair_without_companion_records_preserves_existing_base
 #[tokio::test]
 async fn representation_repair_applies_its_out_of_band_companion_records() {
     let (session, turn_context) = make_session_and_context().await;
-    let world_state = build_world_state_from_turn_context(session.as_ref(), &turn_context).await;
+    let turn_context = Arc::new(turn_context);
+    let world_state = build_world_state_from_turn_context(&session, &turn_context).await;
     let world_state_snapshot = world_state.snapshot();
     let reference_context = turn_context.to_turn_context_item();
     let rollout_items = vec![
