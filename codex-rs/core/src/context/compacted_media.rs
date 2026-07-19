@@ -147,6 +147,30 @@ pub(crate) fn sanitize_compacted_media_prefix(
     else {
         return inventory.sanitization;
     };
+    let marker_insertion_index = match &items[marker_target_index] {
+        ResponseItem::Message { content, .. } => content
+            .iter()
+            .position(|item| match item {
+                ContentItem::InputImage { .. } => true,
+                ContentItem::InputText { text } => is_compacted_image_omission_text(text),
+                ContentItem::OutputText { .. } => false,
+            })
+            .unwrap_or(0),
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => output
+            .content_items()
+            .and_then(|content| {
+                content.iter().position(|item| match item {
+                    FunctionCallOutputContentItem::InputImage { .. } => true,
+                    FunctionCallOutputContentItem::InputText { text } => {
+                        is_compacted_image_omission_text(text)
+                    }
+                    FunctionCallOutputContentItem::EncryptedContent { .. } => false,
+                })
+            })
+            .unwrap_or(0),
+        _ => 0,
+    };
     for item in items.iter_mut().take(prefix_len) {
         match item {
             ResponseItem::Message { content, .. } => {
@@ -165,7 +189,7 @@ pub(crate) fn sanitize_compacted_media_prefix(
     match &mut items[marker_target_index] {
         ResponseItem::Message { content, .. } => {
             content.insert(
-                0,
+                marker_insertion_index.min(content.len()),
                 ContentItem::InputText {
                     text: omission_text,
                 },
@@ -175,7 +199,7 @@ pub(crate) fn sanitize_compacted_media_prefix(
         | ResponseItem::CustomToolCallOutput { output, .. } => {
             if let Some(content) = output.content_items_mut() {
                 content.insert(
-                    0,
+                    marker_insertion_index.min(content.len()),
                     FunctionCallOutputContentItem::InputText {
                         text: omission_text,
                     },

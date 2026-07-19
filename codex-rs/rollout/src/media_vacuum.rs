@@ -171,7 +171,12 @@ pub(crate) fn recover_compacted_media_backup_if_needed(path: &Path) -> io::Resul
         return Ok(());
     };
     let mut candidates = Vec::new();
-    for entry in fs::read_dir(parent)? {
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
         let Some(backup_id) = name

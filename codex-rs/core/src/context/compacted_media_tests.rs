@@ -50,10 +50,10 @@ fn sanitizes_images_with_bounded_reference_aware_text() {
         items,
         vec![user_message(vec![
             ContentItem::InputText {
-                text: CompactedImageOmission::mixed().render(),
+                text: "<image name=\"[Image #1]\" path=\"/tmp/image.png\">".to_string(),
             },
             ContentItem::InputText {
-                text: "<image name=\"[Image #1]\" path=\"/tmp/image.png\">".to_string(),
+                text: CompactedImageOmission::mixed().render(),
             },
             ContentItem::InputText {
                 text: "</image>".to_string(),

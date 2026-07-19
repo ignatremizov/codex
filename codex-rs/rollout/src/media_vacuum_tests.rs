@@ -227,3 +227,14 @@ fn missing_canonical_rollout_recovers_the_newest_valid_vacuum_backup() {
     assert_eq!(fs::read(path).expect("read recovered rollout"), expected);
     assert!(!backup_path.exists());
 }
+
+#[test]
+fn missing_canonical_rollout_without_a_parent_directory_needs_no_recovery() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let path = temp_dir.path().join("missing-parent").join("rollout.jsonl");
+
+    recover_compacted_media_backup_if_needed(path.as_path())
+        .expect("a new rollout has no backup to recover");
+
+    assert!(!path.exists());
+}

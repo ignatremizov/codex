@@ -130,6 +130,7 @@ fn finalize_active_segment<'a>(
         replay_state.reference_context_item,
         TurnReferenceContextItem::NeverSet
     ) && (active_segment.counts_as_user_turn
+        || active_segment.base_compacted_item.is_some()
         || matches!(
             active_segment.reference_context_item,
             TurnReferenceContextItem::Cleared
