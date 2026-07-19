@@ -29,9 +29,10 @@ mod tests;
 /// Paginated JSONL rollouts use a reverse scan. It stops at the newest `CompactedItem` with both
 /// replacement history and a window number, and returns that compaction plus its newer suffix. If
 /// the newest compaction lacks either field, the scan continues to the beginning of the rollout.
+/// Representation-only media repairs do not satisfy that semantic checkpoint cutoff. Compressed
+/// input uses the existing anonymous decoded seekable reader without modifying canonical files.
 ///
-/// Compressed segments are decoded before applying their original JSONL offsets. Legacy rollouts
-/// keep the existing full-history path.
+/// Legacy rollout shapes keep the existing full-history path.
 pub(super) async fn load_latest_model_context(
     store: &LocalThreadStore,
     params: LoadThreadHistoryParams,

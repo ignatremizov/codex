@@ -12,6 +12,7 @@ use tracing::warn;
 
 use super::LocalThreadStore;
 use super::thread_history::ProjectedRolloutLine;
+use super::thread_history::ProjectionMode;
 use super::thread_history::RolloutProjectionStep;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
@@ -55,6 +56,34 @@ async fn materialize_to_sqlite_with_state_db(
     let initial_ordinal = session_meta
         .history_base
         .map_or(0, |base| base.end_ordinal_exclusive);
+    let offset_is_valid = if let Some(projection_state) = projection_state.as_ref() {
+        if start_offset == 0 {
+            projection_state.next_ordinal == initial_ordinal
+        } else if let Some(expected_previous_ordinal) = projection_state.next_ordinal.checked_sub(1)
+        {
+            let rollout_path = rollout_path.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                codex_rollout::last_rollout_ordinal_before_offset(
+                    rollout_path.as_path(),
+                    start_offset,
+                )
+            })
+            .await
+            .map_err(thread_history_error)?
+            .map_err(thread_store_io_error)?
+                == Some(expected_previous_ordinal)
+        } else {
+            false
+        }
+    } else {
+        true
+    };
+    if !offset_is_valid {
+        warn!(
+            "rebuilding paginated history projection after canonical rollout changed for {thread_id}"
+        );
+        return rebuild_to_sqlite(store, thread_id, rollout_path).await;
+    }
     let subagent_history_start_ordinal = session_meta.subagent_history_start_ordinal;
     let expected_ordinal = projection_state
         .as_ref()
@@ -78,6 +107,44 @@ async fn materialize_to_sqlite_with_state_db(
         next_offset,
         initial_ordinal,
         projections,
+        ProjectionMode::Append,
+    )
+    .await
+}
+
+pub(super) async fn rebuild_to_sqlite(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    rollout_path: &Path,
+) -> ThreadStoreResult<()> {
+    if store.state_db.is_none() {
+        return Ok(());
+    }
+    let session_meta = codex_rollout::read_session_meta_line(rollout_path)
+        .await
+        .map_err(thread_store_io_error)?
+        .meta;
+    let initial_ordinal = session_meta
+        .history_base
+        .map_or(0, |base| base.end_ordinal_exclusive);
+    // Read the replacement before opening the transaction. A failed read or projection must
+    // leave the previous derived view available, and replacement rows publish atomically.
+    let (projections, next_offset) = read_projection_steps(
+        rollout_path,
+        /*start_offset*/ 0,
+        initial_ordinal,
+        thread_id,
+        session_meta.subagent_history_start_ordinal,
+    )
+    .await?;
+    super::thread_history::apply_projection(
+        store,
+        thread_id,
+        /*start_offset*/ 0,
+        next_offset,
+        initial_ordinal,
+        projections,
+        ProjectionMode::Rebuild,
     )
     .await
 }
@@ -353,6 +420,12 @@ fn record_projection_anomaly(anomaly: ProjectionAnomaly) {
         /*inc*/ 1,
         &[("kind", anomaly.tag())],
     );
+}
+
+fn thread_history_error(err: impl std::fmt::Display) -> ThreadStoreError {
+    ThreadStoreError::Internal {
+        message: format!("failed to project thread history: {err}"),
+    }
 }
 
 fn thread_store_io_error(err: std::io::Error) -> ThreadStoreError {

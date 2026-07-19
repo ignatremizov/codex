@@ -94,6 +94,10 @@ impl Session {
                     })
                 });
             items.splice(boundary..boundary, retained);
+            // Every caller, including a fresh context-window reset, passes the same
+            // representation gate before this checkpoint certifies its whole prefix.
+            let prefix_len = items.len();
+            crate::context::sanitize_compacted_media_envelopes(&mut items, prefix_len);
             if let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
                 matches!(
                     envelope.item,
@@ -111,7 +115,7 @@ impl Session {
                 message: metadata.message,
                 replacement_history: Some(items.clone()),
                 retained_context: Some(projected.retained_context().clone()),
-                guardian_history: projected.guardian_history_checkpoint(),
+                guardian_history: projected.compacted_guardian_history_checkpoint(),
                 mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
                 compaction_summary_tokens: metadata.compaction_summary_tokens,
                 window_number: Some(metadata.window_number),
@@ -128,6 +132,10 @@ impl Session {
                     last_started_turn_id: state.last_started_turn_id.clone(),
                     previous_turn_settings: state.previous_turn_settings(),
                 }),
+                replacement_history_media_sanitized_prefix_len: Some(
+                    u64::try_from(items.len()).unwrap_or(u64::MAX),
+                ),
+                replacement_history_media_repair: false,
             };
             // A metadata-only replacement still needs the extension-owned full baseline.
             let world_state_snapshot = world_state_baseline
@@ -163,6 +171,7 @@ impl Session {
             /*acknowledgement*/ None,
             move |state| {
                 let installed = items.clone();
+                let compacted_prefix_len = items.len();
                 state.replace_annotated_history(
                     items,
                     reference_context_item,
@@ -171,6 +180,9 @@ impl Session {
                     },
                 );
                 state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
+                state
+                    .history
+                    .set_compacted_prefix_len(Some(compacted_prefix_len));
                 if let Some(snapshot) = world_state_snapshot {
                     state.history.set_world_state_baseline(snapshot);
                 }

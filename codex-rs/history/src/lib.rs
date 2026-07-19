@@ -271,7 +271,7 @@ mod rollout_payload;
 
 pub use guardian_history::GuardianHistoryCheckpoint;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CompactedItem {
     pub message: String,
     pub replacement_history: Option<Vec<ResponseItemEnvelope>>,
@@ -294,6 +294,41 @@ pub struct CompactedItem {
     /// Resume metadata for values not represented by the companion rollout records.
     /// Presence distinguishes explicitly persisted values from legacy fallback reconstruction.
     pub resume_metadata: Option<CompactionResumeMetadata>,
+    /// Prefix of `replacement_history` covered by the media policy.
+    ///
+    /// Historic repair checkpoints can retain unsummarized suffix media after this boundary.
+    pub replacement_history_media_sanitized_prefix_len: Option<u64>,
+    /// Whether this checkpoint is a representation-only media repair.
+    pub replacement_history_media_repair: bool,
+}
+
+impl CompactedItem {
+    /// Retains replacement-history items while preserving the sanitized-prefix boundary.
+    pub fn retain_replacement_history_items(
+        &mut self,
+        mut keep: impl FnMut(&mut ResponseItemEnvelope) -> bool,
+    ) {
+        let Some(replacement_history) = self.replacement_history.as_mut() else {
+            return;
+        };
+        let sanitized_prefix_len = self
+            .replacement_history_media_sanitized_prefix_len
+            .map(|len| usize::try_from(len).unwrap_or(usize::MAX));
+        let mut original_index = 0usize;
+        let mut retained_prefix_len = 0u64;
+        replacement_history.retain_mut(|envelope| {
+            let retain = keep(envelope);
+            if retain && sanitized_prefix_len.is_some_and(|prefix_len| original_index < prefix_len)
+            {
+                retained_prefix_len = retained_prefix_len.saturating_add(1);
+            }
+            original_index = original_index.saturating_add(1);
+            retain
+        });
+        if sanitized_prefix_len.is_some() {
+            self.replacement_history_media_sanitized_prefix_len = Some(retained_prefix_len);
+        }
+    }
 }
 
 impl Serialize for CompactedItem {
@@ -514,11 +549,11 @@ impl InitialHistory {
     fn get_session_meta(&self) -> Option<&SessionMeta> {
         match self {
             Self::New | Self::Cleared => None,
-            Self::Resumed(resumed) => resumed.history.iter().find_map(|item| match item {
+            Self::Resumed(resumed) => resumed.history.iter().rev().find_map(|item| match item {
                 RolloutItem::SessionMeta(meta_line) => Some(&meta_line.meta),
                 _ => None,
             }),
-            Self::Forked(items) => items.iter().find_map(|item| match item {
+            Self::Forked(items) => items.iter().rev().find_map(|item| match item {
                 RolloutItem::SessionMeta(meta_line) => Some(&meta_line.meta),
                 _ => None,
             }),
@@ -528,7 +563,7 @@ impl InitialHistory {
     fn get_resumed_session_meta(&self) -> Option<&SessionMeta> {
         match self {
             Self::New | Self::Cleared | Self::Forked(_) => None,
-            Self::Resumed(resumed) => resumed.history.iter().find_map(|item| match item {
+            Self::Resumed(resumed) => resumed.history.iter().rev().find_map(|item| match item {
                 RolloutItem::SessionMeta(meta_line) => Some(&meta_line.meta),
                 _ => None,
             }),

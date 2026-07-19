@@ -20,6 +20,7 @@ use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::build_turns_from_rollout_items;
 use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::TurnError;
 
@@ -244,6 +245,7 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: None,
+        ..Default::default()
     }));
     let security_risk = project(RolloutItem::SecurityRiskScore(SecurityRiskScore {
         scores: BTreeMap::from([("action_risk".to_string(), 0.92)]),
@@ -255,6 +257,25 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
     assert!(aborted.is_empty());
     assert!(compacted.is_empty());
     assert!(security_risk.is_empty());
+}
+
+#[test]
+fn ignores_representation_only_compaction_repairs() {
+    let repair = RolloutItem::Compacted(CompactedItem {
+        replacement_history_media_repair: true,
+        ..Default::default()
+    });
+    let turns = build_turns_from_rollout_items(std::slice::from_ref(&repair));
+
+    assert!(turns.is_empty());
+    let semantic = RolloutItem::Compacted(CompactedItem::default());
+    let expected = build_turns_from_rollout_items(std::slice::from_ref(&semantic));
+    assert_eq!(expected.len(), 1, "a real compaction still owns a turn");
+    assert_eq!(
+        build_turns_from_rollout_items(&[semantic, repair]),
+        expected,
+        "a repair cannot create or alter semantic compaction history"
+    );
 }
 
 #[test]

@@ -1456,12 +1456,17 @@ impl ThreadHistoryBuilder {
         }
     }
 
-    /// Marks the current turn as containing a persisted compaction marker.
+    /// Marks the current turn as containing a semantic compaction marker.
     ///
     /// This keeps compaction-only legacy turns from being dropped by
     /// `finish_current_turn` when they have no renderable items and were not
     /// explicitly opened.
-    fn handle_compacted(&mut self, _payload: &CompactedItem) {
+    fn handle_compacted(&mut self, payload: &CompactedItem) {
+        // A media-only rewrite preserves the existing conversation boundaries.
+        // Its raw ordinal is still accounted for by handle_rollout_item.
+        if payload.replacement_history_media_repair {
+            return;
+        }
         self.ensure_turn().saw_compaction = true;
     }
 
@@ -4639,6 +4644,7 @@ mod tests {
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: None,
+                ..Default::default()
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),
@@ -4698,6 +4704,7 @@ mod tests {
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: None,
+                ..Default::default()
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),

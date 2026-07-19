@@ -174,6 +174,7 @@ pub(super) async fn update_thread_metadata(
     if live_writer::rollout_path(store, thread_id).await.is_ok() {
         live_writer::persist_thread(store, thread_id).await?;
     }
+    let live_writer_guard = store.live_writer_locks.lock(thread_id).await;
     let mut resolved_rollout = if params.include_archived {
         thread_rollout_resolver::resolve_current_including_archived(store, thread_id).await?
     } else {
@@ -192,6 +193,7 @@ pub(super) async fn update_thread_metadata(
             thread_id,
             &resolved_rollout.path,
             writer_lock,
+            &live_writer_guard,
             |meta| {
                 // Replay retains prior git metadata when this marker omits it.
                 meta.git = None;
@@ -274,6 +276,7 @@ pub(super) async fn update_thread_metadata(
             thread_id,
             &resolved_rollout.path,
             writer_lock,
+            &live_writer_guard,
             |meta| {
                 meta.git = Some(GitInfo {
                     commit_hash: sha.as_deref().map(codex_git_utils::GitSha::new),
@@ -287,6 +290,7 @@ pub(super) async fn update_thread_metadata(
         refresh_resolved_rollout_path(&mut resolved_rollout).await;
         apply_thread_git_info(store, thread_id, sha, branch, origin_url).await?;
     }
+    drop(live_writer_guard);
 
     let mut thread = match read_thread::read_thread(
         store,
@@ -865,10 +869,11 @@ async fn update_rollout_metadata(
     thread_id: ThreadId,
     path: &Path,
     writer_lock: &super::WriterLockGuard,
+    _live_writer_guard: &tokio::sync::OwnedMutexGuard<()>,
     patch: impl FnOnce(&mut SessionMetaLine),
 ) -> ThreadStoreResult<()> {
-    // Keep shutdown from closing the selected recorder before its metadata append is flushed.
-    let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
+    // The caller's borrowed guard keeps shutdown out through the metadata flush.
+    // Reacquiring this non-reentrant mutex here would deadlock ordinary updates.
     let io_error = |err| ThreadStoreError::Internal {
         message: format!("failed to update rollout metadata: {err}"),
     };
@@ -1303,16 +1308,26 @@ mod tests {
         expected.push(RolloutItem::SessionMeta(metadata));
 
         let mut shutdown = Box::pin(store.shutdown_thread(thread_id));
-        update_rollout_metadata(&store, thread_id, &path, &writer_lock, |meta| {
-            meta.meta.memory_mode = Some("disabled".into());
-            // Poll shutdown in the read/append gap; the writer mutex must keep it pending.
-            assert!(
-                tokio::task::unconstrained(shutdown.as_mut())
-                    .now_or_never()
-                    .is_none()
-            );
-        })
-        .await?;
+        {
+            let live_writer_guard = store.live_writer_locks.lock(thread_id).await;
+            update_rollout_metadata(
+                &store,
+                thread_id,
+                &path,
+                &writer_lock,
+                &live_writer_guard,
+                |meta| {
+                    meta.meta.memory_mode = Some("disabled".into());
+                    // Poll shutdown in the read/append gap; the writer mutex must keep it pending.
+                    assert!(
+                        tokio::task::unconstrained(shutdown.as_mut())
+                            .now_or_never()
+                            .is_none()
+                    );
+                },
+            )
+            .await?;
+        }
         shutdown.await?;
 
         let (actual, _, _) = RolloutRecorder::load_rollout_items(&path).await?;

@@ -78,6 +78,8 @@ fn restores_cumulative_item_and_compaction_checkpoints() {
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
+            replacement_history_media_sanitized_prefix_len: None,
+            replacement_history_media_repair: false,
         }),
     ]);
 

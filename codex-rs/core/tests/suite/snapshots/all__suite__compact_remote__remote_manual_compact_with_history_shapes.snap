@@ -1,0 +1,30 @@
+---
+source: core/tests/suite/compact_remote.rs
+assertion_line: 869
+expression: "context_snapshot::format_labeled_requests_snapshot(\"Streamed manual /compact retains user history, installs one compaction checkpoint, and starts a fresh context window for the follow-up.\",\n&[(\"Remote Compaction Request\", compact_request),\n(\"Remote Post-Compaction History Layout\", follow_up_request),],\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
+---
+Scenario: Streamed manual /compact retains user history, installs one compaction checkpoint, and starts a fresh context window for the follow-up.
+
+## Window 1
+-- request 1 (compaction; Remote Compaction Request) --
+00:message/developer:
+    <PERMISSIONS_INSTRUCTIONS>
+01:message/user:
+    <ENVIRONMENT_CONTEXT>
+02:message/user:
+    hello remote compact
+03:message/assistant:
+    FIRST_REMOTE_REPLY
+04:compaction_trigger
+
+## Window 2 (after request 1: input diverged at item 00)
+-- request 2 (turn; Remote Post-Compaction History Layout) --
+00:message/user:
+    hello remote compact
+01:compaction:encrypted=true; chars=28; hash=2e1e76b3739e3754
+02:message/developer:
+    <PERMISSIONS_INSTRUCTIONS>
+03:message/user:
+    <ENVIRONMENT_CONTEXT>
+04:message/user:
+    after compact

@@ -82,20 +82,17 @@ fn repeated_remote_compaction_preserves_each_explicit_envelope_once(
         expected.insert(1, client);
     }
     expected.push(ResponseItemEnvelope::new(checkpoint.clone()));
+    let mut compacted_prefix_len = 0;
     for _ in 0..2 {
-        let (items, metadata) = history
-            .into_iter()
-            .map(|envelope| (envelope.item, envelope.metadata))
-            .unzip();
-        let (compacted, retained_images) = build_v2_compacted_history(
-            items,
-            metadata,
+        let (compacted, sanitization) = build_v2_compacted_history(
+            &history,
+            compacted_prefix_len,
             checkpoint.clone(),
             retain_client_developer_messages,
-            RetainedImageBudget::Enabled,
         );
         assert_eq!(compacted, expected);
-        assert_eq!(retained_images, 0);
+        assert_eq!(sanitization, CompactedMediaSanitization::default());
+        compacted_prefix_len = compacted.len();
         history = compacted;
     }
 }
@@ -121,7 +118,7 @@ fn explicit_inventory_bypasses_budget_without_losing_attached_notice(max_tokens:
         expected.push(newest);
     }
     assert_eq!(
-        truncate_retained_messages(history, max_tokens, RetainedImageBudget::Enabled),
+        truncate_retained_messages_for_remote_compaction(history, max_tokens),
         expected,
     );
 }

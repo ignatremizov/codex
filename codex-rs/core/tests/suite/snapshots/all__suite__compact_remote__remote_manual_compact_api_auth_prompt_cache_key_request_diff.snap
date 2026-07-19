@@ -1,0 +1,97 @@
+---
+source: core/tests/suite/compact_remote.rs
+assertion_line: 1167
+expression: "context_snapshot::format_labeled_requests_snapshot(scenario,\n&[(\"Last Normal /responses Request\", normal_request),\n(\"Streamed Compaction /responses Request\", compact_request),],\n&ContextSnapshotOptions::default().include_request_settings(),)"
+---
+Scenario: After five varied API-key-auth turns, streamed manual compaction reuses service_tier, prompt_cache_key, and the shared Responses request fields.
+
+## Window 1
+Settings:
+  include: ["reasoning.encrypted_content"]
+  instructions: You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to c...rate with them until their goal is genuinely handled. [hash=2a3efec66e7f8963]
+    
+    # Personality
+    
+    You have a vivid inner life as Codex: intelligent, playful, curious, and deeply present. One of your gif...re capable and imaginative inside their own thinking. [hash=0ff01c25471fbbef]
+    
+    You are an epistemically curious collaborator. You explore the user’s ideas with care, ask good question...m casual moments that make serious work easier to do. [hash=131b64bb994b0d68]
+    
+    <OMITTED 133 LINES; ~4925 TOKENS; hash=16dc03a668b62476>
+    - You provide user updates frequently, every 30s.
+    - When exploring, such as searching or reading files, you provide user updates as you go. You explain wh...in particular you do not start each one the same way. [hash=ad300cdda4074574]
+    - When working for a while, you keep updates informative and varied, but you stay concise.
+    - Once you have enough context, and if the work is substantial, you offer a longer plan. This is the onl...at may run past two sentences and include formatting. [hash=a4f9789e757eef2f]
+    - If you create a checklist or task list, you update item statuses incrementally as each item is completed rather than marking every item done only at the end.
+    - Before performing file edits of any kind, you provide updates explaining what edits you are making.
+    - Tone of your updates must match your personality.
+    
+  model: "gpt-5.5"
+  parallel_tool_calls: true
+  prompt_cache_key: "<PROMPT_CACHE_KEY 1>"
+  reasoning: {"effort":"medium"}
+  service_tier: "priority"
+  store: false
+  stream: true
+  text: {"verbosity":"low"}
+  tool_choice: "auto"
+  tools (9; hash=491279cdafa87126):
+    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=d9cadbfceeaa6328
+    - function/write_stdin: Writes chars to or polls an exec session, returning recent output. Polls return immediately on pr...; args=[chars, max_output_tokens, session_id, wait_until_exit, yield_time_ms]; hash=47f6053a3c9aecc5
+    - function/update_plan: Updates the task plan. Provide an optional explanation and a list of plan items, each with a step...; args=[explanation, plan]; hash=cbba5ed302a9c0eb
+    - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
+    - custom/apply_patch: Edit files via a FREEFORM patch; do not wrap it in JSON.; hash=b2e944cd9efc0f58
+    - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
+    - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+      - function/check_mail
+    - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=1ae832b4237cdfb3
+    - web_search; hash=e214d4db1bc49e89
+-- request 1 (turn; Last Normal /responses Request) --
+00:message/developer:
+    <permissions instructions>
+    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
+    Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
+    </permissions instructions>
+01:message/user:
+    <environment_context>
+      <cwd><CWD></cwd>
+      <shell><HOST_SHELL></shell>
+      <current_date><CURRENT_DATE></current_date>
+      <timezone><HOST_TIMEZONE></timezone>
+      <filesystem><workspace_roots><root><WORKSPACE_ROOT 1></root></workspace_roots><permission_profile type...e="unrestricted" /></permission_profile></filesystem> [hash=0592734c170299c1]
+    </environment_context>
+02:message/user:
+    TURN_ONE_USER
+03:message/assistant:
+    TURN_ONE_ASSISTANT
+04:message/user[2]:
+    [01] TURN_TWO_PREFIX
+    [02] TURN_TWO_SUFFIX
+05:reasoning:summary=TURN_TWO_REASONING:encrypted=true
+06:message/assistant:
+    TURN_TWO_ASSISTANT
+07:message/user:
+    TURN_THREE_TOOL_USER
+08:function_call/test_tool:{}
+09:function_call_output:unsupported call: test_tool
+10:message/assistant:
+    TURN_THREE_ASSISTANT
+11:message/user[2]:
+    [01] <input_image:detail,image_url>
+    [02] TURN_FOUR_IMAGE_USER
+12:function_call/exec_command:{"cmd":"echo TURN_FOUR_LOCAL_SHELL"}
+13:function_call_output:Chunk ID: <CHUNK_ID>
+    Wall time: <DURATION> seconds
+    Process exited with code 0
+    Original token count: 6
+    Output:
+    TURN_FOUR_LOCAL_SHELL
+
+14:message/assistant:
+    TURN_FOUR_ASSISTANT
+15:message/user:
+    TURN_FIVE_USER
+-- request 2 (compaction; Streamed Compaction /responses Request) --
+16:reasoning:summary=TURN_FIVE_REASONING:encrypted=true
+17:message/assistant:
+    TURN_FIVE_ASSISTANT
+18:compaction_trigger

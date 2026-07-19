@@ -4,6 +4,42 @@ use codex_history::CodexHarnessMetadata;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn direct_checkpoint_publication_sanitizes_media_before_certification_and_installation() {
+    let (mut session, _turn, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"), Vec::new(), |_| {},
+    ).await;
+    let rollout_path = attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
+    let item = ResponseItemEnvelope::new(serde_json::from_value(serde_json::json!({
+        "type": "message", "role": "developer",
+        "content": [{"type": "input_image", "image_url": "data:image/png;base64,payload"}],
+    })).expect("media input"));
+    let (window_number, window_ids) = session.advance_auto_compact_window().await;
+    let installed = session.replace_compacted_history(
+        vec![item],
+        /*reference_context_item*/ None,
+        /*world_state_baseline*/ None,
+        CompactedHistoryMetadata {
+            message: String::new(), compaction_summary_tokens: None,
+            window_number, window_ids, compaction_response_id: None,
+            compaction_model_hash: None, reviewer_compaction_hash: None,
+        },
+    ).await.expect("published media-free checkpoint");
+    assert!(!serde_json::to_string(&installed).unwrap().contains("data:image/png"));
+    assert_eq!(installed, session.clone_history().await.annotated_items());
+    let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
+        .await.expect("cold read") else { panic!("saved history"); };
+    let checkpoint = resumed.history.iter().rev().find_map(|item| match item {
+        RolloutItem::Compacted(checkpoint) => Some(checkpoint),
+        _ => None,
+    }).expect("saved checkpoint");
+    let mut persisted = installed.clone();
+    for item in &mut persisted { item.metadata.get_or_insert_default(); }
+    assert_eq!(checkpoint.replacement_history.as_ref(), Some(&persisted));
+    assert_eq!(checkpoint.replacement_history_media_sanitized_prefix_len, Some(1));
+    assert!(!checkpoint.replacement_history_media_repair);
+}
+
+#[tokio::test]
 async fn checkpoint_and_cold_reconstruction_preserve_full_mcp_union_and_latest_empty_catalog() {
     let (mut session, turn, _rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
@@ -93,16 +129,25 @@ async fn checkpoint_and_cold_reconstruction_preserve_full_mcp_union_and_latest_e
             _ => None,
         })
         .expect("checkpoint");
-    assert_eq!(checkpoint, &installed);
+    // Compacted history stores a positional metadata array when any item has metadata.
+    // Missing entries are serialized as defaults; live publication keeps their original shape.
+    let mut persisted = installed.clone();
+    for item in &mut persisted {
+        item.metadata.get_or_insert_default();
+    }
+    assert_eq!(checkpoint, &persisted);
     let (fresh, _) = make_session_and_context().await;
-    fresh.record_initial_history(reconstructed).await;
+    fresh
+        .record_initial_history(reconstructed)
+        .await
+        .expect("record reconstructed history");
     let restored = fresh.clone_history().await;
-    assert_eq!(restored.annotated_items(), installed);
+    assert_eq!(restored.annotated_items(), persisted);
     let inventory = restored
         .annotated_items()
         .iter()
         .rev()
         .find_map(RestoredSkillsInventory::from_envelope)
         .expect("restored inventory");
-    assert_eq!(inventory.envelope(), &empty);
+    assert_eq!(inventory.envelope(), &persisted[2]);
 }
