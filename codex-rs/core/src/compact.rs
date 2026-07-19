@@ -7,8 +7,14 @@ use std::time::Instant;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::compacted_history_retention::RetainedMessageTruncation;
+use crate::compacted_history_retention::contains_atomic_compacted_media;
+use crate::compacted_history_retention::truncate_retained_message_to_token_budget;
+use crate::compacted_history_retention::truncate_text_to_approx_token_budget;
 use crate::context::CompactionSummary;
 use crate::context::ContextualUserFragment;
+use crate::context::compacted_image_omission_text;
+use crate::context::standalone_compacted_image_omission_message;
 use crate::context::world_state::WorldState;
 use crate::event_mapping::parse_turn_item;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -62,6 +68,7 @@ use codex_utils_output_truncation::truncate_text;
 use futures::prelude::*;
 use tokio::time::timeout;
 use tracing::error;
+use tracing::info;
 
 pub use codex_prompts::SUMMARIZATION_PROMPT;
 pub use codex_prompts::SUMMARY_PREFIX;
@@ -289,6 +296,15 @@ async fn run_compact_task_inner_impl(
         &[initial_input_for_turn.into()],
         turn_context.model_info().truncation_policy.into(),
     );
+    let media_sanitization = history.sanitize_compacted_media_prefix();
+    if media_sanitization.changed() {
+        info!(
+            turn_id = %turn_context.sub_id,
+            omitted_image_count = media_sanitization.omitted_image_count,
+            omitted_inline_media_bytes = media_sanitization.omitted_inline_media_bytes,
+            "removed previously compacted media before local compaction"
+        );
+    }
 
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
@@ -406,6 +422,10 @@ async fn run_compact_task_inner_impl(
     }
     let history_items = history_snapshot.annotated_items();
     let user_messages = collect_annotated_user_messages(history_items);
+    let compacted_prefix_len = history_snapshot
+        .compacted_prefix_len()
+        .unwrap_or_default()
+        .min(history_items.len());
     let rollout_path = sess.current_rollout_path().await.ok().flatten();
     let thread_id = sess.thread_id();
     let recent_turns_in_prompt =
@@ -420,7 +440,7 @@ async fn run_compact_task_inner_impl(
     let summary_for_event_text = summary_for_event(&summary_text);
 
     let mut new_history =
-        build_compacted_history_preserving_mcp_context(history_items, &summary_text);
+        build_local_compacted_history(history_items, compacted_prefix_len, &summary_text);
     if let Some(summary_item) = new_history.last_mut() {
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.
@@ -488,6 +508,8 @@ pub(crate) struct CompactionAnalyticsAttempt {
 pub(crate) struct CompactionAnalyticsDetails {
     pub(crate) active_context_tokens_before: Option<i64>,
     pub(crate) retained_image_count: Option<usize>,
+    pub(crate) omitted_image_count: Option<usize>,
+    pub(crate) omitted_inline_media_bytes: Option<u64>,
     pub(crate) compaction_summary_tokens: Option<i64>,
     pub(crate) cached_input_tokens: Option<i64>,
     pub(crate) cache_write_input_tokens: Option<i64>,
@@ -526,6 +548,8 @@ impl CompactionAnalyticsAttempt {
         let CompactionAnalyticsDetails {
             active_context_tokens_before,
             retained_image_count,
+            omitted_image_count,
+            omitted_inline_media_bytes,
             compaction_summary_tokens,
             cached_input_tokens,
             cache_write_input_tokens,
@@ -550,6 +574,8 @@ impl CompactionAnalyticsAttempt {
                 active_context_tokens_before,
                 active_context_tokens_after,
                 retained_image_count,
+                omitted_image_count,
+                omitted_inline_media_bytes,
                 compaction_summary_tokens,
                 cached_input_tokens,
                 cache_write_input_tokens,
@@ -791,19 +817,71 @@ pub(crate) fn build_compacted_history(
 fn build_compacted_history_preserving_mcp_context(
     history_items: &[ResponseItemEnvelope],
     summary_text: &str,
+    max_tokens: usize,
 ) -> Vec<ResponseItemEnvelope> {
     let retained_history = collect_annotated_mcp_and_recent_user_items_with_limit(
         history_items,
-        COMPACT_USER_MESSAGE_MAX_TOKENS,
+        max_tokens,
     );
     build_compacted_history_with_limit(retained_history, &[], summary_text, 0)
+}
+
+fn build_local_compacted_history(
+    history_items: &[ResponseItemEnvelope],
+    compacted_prefix_len: usize,
+    summary_text: &str,
+) -> Vec<ResponseItemEnvelope> {
+    let mut replacement_history_items = history_items.to_vec();
+    let compacted_prefix_len = compacted_prefix_len.min(replacement_history_items.len());
+    let mut raw_items = replacement_history_items
+        .iter()
+        .map(|envelope| envelope.item.clone())
+        .collect::<Vec<_>>();
+    let _ =
+        crate::context::sanitize_compacted_media_prefix(&mut raw_items, compacted_prefix_len);
+    crate::context::expire_compacted_media_references(&mut raw_items[..compacted_prefix_len]);
+    let _ = crate::context::sanitize_compacted_media(&mut raw_items[compacted_prefix_len..]);
+    for (envelope, item) in replacement_history_items.iter_mut().zip(raw_items) {
+        envelope.item = item;
+    }
+    let current_items = replacement_history_items[compacted_prefix_len..]
+        .iter()
+        .map(|envelope| envelope.item.clone())
+        .collect::<Vec<_>>();
+    let current_omission_text = compacted_image_omission_text(&current_items).map(str::to_owned);
+    let retained_message_budget = current_omission_text
+        .as_deref()
+        .map_or(COMPACT_USER_MESSAGE_MAX_TOKENS, |omission| {
+            COMPACT_USER_MESSAGE_MAX_TOKENS.saturating_sub(approx_token_count(omission))
+        });
+    let mut compacted_history = build_compacted_history_preserving_mcp_context(
+        replacement_history_items.as_slice(),
+        summary_text,
+        retained_message_budget,
+    );
+    let compacted_items = compacted_history
+        .iter()
+        .map(|envelope| envelope.item.clone())
+        .collect::<Vec<_>>();
+    if compacted_image_omission_text(&compacted_items).is_none()
+        && let Some(omission_text) = current_omission_text
+    {
+        let insertion_index = compacted_history.len().saturating_sub(1);
+        compacted_history.insert(
+            insertion_index,
+            ResponseItemEnvelope::new(standalone_compacted_image_omission_message(
+                omission_text,
+            )),
+        );
+    }
+    compacted_history
 }
 
 fn collect_annotated_mcp_and_recent_user_items_with_limit(
     history_items: &[ResponseItemEnvelope],
     max_tokens: usize,
 ) -> Vec<ResponseItemEnvelope> {
-    let mut selected_user_messages: HashMap<usize, CompactedUserMessage> = HashMap::new();
+    let mut selected_user_items: HashMap<usize, ResponseItemEnvelope> = HashMap::new();
     let mut remaining = max_tokens;
     if max_tokens > 0 {
         for (index, envelope) in history_items.iter().enumerate().rev() {
@@ -815,14 +893,43 @@ fn collect_annotated_mcp_and_recent_user_items_with_limit(
             else {
                 continue;
             };
+            if is_summary_message(&message.message) {
+                continue;
+            }
             let tokens = approx_token_count(&message.message);
+            let contains_atomic_media = matches!(
+                &envelope.item,
+                ResponseItem::Message { content, .. }
+                    if contains_atomic_compacted_media(content)
+            );
             if tokens <= remaining {
-                selected_user_messages.insert(index, message);
+                selected_user_items.insert(
+                    index,
+                    if contains_atomic_media {
+                        envelope.clone()
+                    } else {
+                        compacted_user_message_envelope(&message)
+                    },
+                );
                 remaining = remaining.saturating_sub(tokens);
+            } else if contains_atomic_media {
+                match truncate_retained_message_to_token_budget(envelope.item.clone(), remaining) {
+                    RetainedMessageTruncation::Retained(truncated_item) => {
+                        selected_user_items.insert(
+                            index,
+                            ResponseItemEnvelope {
+                                item: *truncated_item,
+                                metadata: envelope.metadata.clone(),
+                            },
+                        );
+                    }
+                    RetainedMessageTruncation::OmissionDidNotFit
+                    | RetainedMessageTruncation::Empty => {}
+                }
+                break;
             } else {
-                message.message =
-                    truncate_text(&message.message, TruncationPolicy::Tokens(remaining));
-                selected_user_messages.insert(index, message);
+                message.message = truncate_text_to_approx_token_budget(&message.message, remaining);
+                selected_user_items.insert(index, compacted_user_message_envelope(&message));
                 break;
             }
         }
@@ -835,9 +942,7 @@ fn collect_annotated_mcp_and_recent_user_items_with_limit(
             if is_mcp_server_use_context_item(&envelope.item) {
                 return Some(envelope.clone());
             }
-            selected_user_messages
-                .get(&index)
-                .map(compacted_user_message_envelope)
+            selected_user_items.get(&index).cloned()
         })
         .collect()
 }
@@ -1113,7 +1218,9 @@ fn is_mcp_server_use_context_item(item: &ResponseItem) -> bool {
         ContentItem::InputText { text } => {
             crate::context::McpServerUseInstructions::parse_server_name(text).is_some()
         }
-        ContentItem::InputImage { .. } | ContentItem::OutputText { .. } => false,
+        ContentItem::InputImage { .. }
+        | ContentItem::InputAudio { .. }
+        | ContentItem::OutputText { .. } => false,
     })
 }
 

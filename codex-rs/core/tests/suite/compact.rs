@@ -751,10 +751,17 @@ async fn summarize_context_three_requests_and_instructions(
                     .expect("compacted history should retain its summary");
                 let summary_item =
                     serde_json::to_value(&summary_item.item).expect("serialize compacted summary");
+                let summary_text = summary_item["content"][0]["text"]
+                    .as_str()
+                    .map(normalize_summary_message)
+                    .expect("compacted summary should contain text");
                 assert_eq!(
                     json!({
                         "role": summary_item["role"],
-                        "content": summary_item["content"],
+                        "content": [{
+                            "type": "input_text",
+                            "text": summary_text,
+                        }],
                         "content_item_kinds": summary_item
                             ["internal_chat_message_metadata_passthrough"]["content_item_kinds"],
                     }),

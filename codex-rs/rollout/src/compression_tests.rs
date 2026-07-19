@@ -1,6 +1,7 @@
 use codex_utils_absolute_path::test_support::PathExt;
 use std::fs;
 use std::fs::FileTimes;
+use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
@@ -178,6 +179,28 @@ async fn read_session_meta_line_preserves_pre_header_and_error_semantics() -> an
     Ok(())
 }
 
+#[tokio::test]
+async fn seekable_reader_spools_compressed_rollout_without_changing_representation()
+-> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::from_u128(12);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let rollout_path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(&rollout_path, thread_id, "hello seekable compressed")?;
+    let expected = fs::read(&rollout_path)?;
+    compress_now(&rollout_path)?;
+    let compressed_path = compressed_rollout_path(&rollout_path);
+
+    let mut reader = open_rollout_seekable_reader(&rollout_path).await?;
+    let mut actual = Vec::new();
+    reader.read_to_end(&mut actual)?;
+
+    assert_eq!(actual, expected);
+    assert!(!rollout_path.exists());
+    assert!(compressed_path.exists());
+    Ok(())
+}
+
 #[test]
 fn rollout_file_from_path_normalizes_compressed_file_names() -> anyhow::Result<()> {
     let home = TempDir::new()?;
@@ -229,7 +252,10 @@ async fn append_rollout_item_materializes_compressed_rollout() -> anyhow::Result
     .await?;
 
     assert!(rollout_path.exists());
+    #[cfg(unix)]
     assert!(!compressed_rollout_path(&rollout_path).exists());
+    #[cfg(not(unix))]
+    assert!(compressed_rollout_path(&rollout_path).exists());
     let (items, loaded_thread_id, parse_errors) =
         RolloutRecorder::load_rollout_items(&rollout_path).await?;
     assert_eq!(loaded_thread_id, Some(thread_id));
@@ -407,7 +433,6 @@ async fn resume_materializes_compressed_rollout_path() -> anyhow::Result<()> {
     compress_now(&rollout_path)?;
     let compressed_path = compressed_rollout_path(&rollout_path);
     set_old_mtime(compressed_path.as_path())?;
-    let compressed_modified = fs::metadata(compressed_path.as_path())?.modified()?;
 
     let InitialHistory::Resumed(history) =
         RolloutRecorder::get_rollout_history(compressed_path.as_path()).await?
@@ -424,8 +449,10 @@ async fn resume_materializes_compressed_rollout_path() -> anyhow::Result<()> {
 
     assert_eq!(recorder.rollout_path(), rollout_path.as_path());
     assert!(rollout_path.exists());
+    #[cfg(unix)]
     assert!(!compressed_path.exists());
-    assert!(fs::metadata(rollout_path.as_path())?.modified()? > compressed_modified);
+    #[cfg(not(unix))]
+    assert!(compressed_path.exists());
     recorder
         .record_canonical_items(&[RolloutItem::EventMsg(EventMsg::UserMessage(
             UserMessageEvent {
@@ -548,6 +575,30 @@ async fn compression_preserves_read_only_rollout_permissions() -> anyhow::Result
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn materialization_preserves_read_only_compressed_metadata() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::from_u128(17);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let rollout_path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(&rollout_path, thread_id, "read-only compressed transcript")?;
+    compress_now(&rollout_path)?;
+    let compressed_path = compressed_rollout_path(&rollout_path);
+    set_old_mtime(&compressed_path)?;
+    fs::set_permissions(&compressed_path, fs::Permissions::from_mode(0o400))?;
+    let source_modified = fs::metadata(&compressed_path)?.modified()?;
+
+    let materialized = materialize_rollout_for_append_blocking(&rollout_path)?;
+
+    assert_eq!(materialized, rollout_path);
+    assert!(!compressed_path.exists());
+    let materialized_metadata = fs::metadata(&materialized)?;
+    assert_eq!(materialized_metadata.permissions().mode() & 0o777, 0o400);
+    assert_eq!(materialized_metadata.modified()?, source_modified);
+    Ok(())
+}
+
 #[tokio::test]
 async fn worker_skips_existing_compressed_archived_rollouts() -> anyhow::Result<()> {
     let home = TempDir::new()?;
@@ -634,6 +685,37 @@ async fn find_thread_path_by_id_handles_compressed_rollout_filenames() -> anyhow
         crate::find_thread_path_by_id_str(home.path(), "not-a-uuid", /*state_db_ctx*/ None).await?,
         None
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn find_thread_path_by_id_recovers_media_vacuum_backup() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::from_u128(18);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let rollout_path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(&rollout_path, thread_id, "media vacuum recovery lookup")?;
+    let file_name = rollout_path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .expect("rollout path should have a UTF-8 file name");
+    let backup_path = rollout_path.with_file_name(format!(
+        ".{file_name}.pre-media-vacuum-{}.bak",
+        Uuid::from_u128(19)
+    ));
+    fs::rename(&rollout_path, &backup_path)?;
+
+    assert_eq!(
+        crate::find_thread_path_by_id_str(
+            home.path(),
+            &uuid.to_string(),
+            /*state_db_ctx*/ None
+        )
+        .await?,
+        Some(rollout_path.clone())
+    );
+    assert!(rollout_path.exists());
+    assert!(backup_path.exists());
     Ok(())
 }
 

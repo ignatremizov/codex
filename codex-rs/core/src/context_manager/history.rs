@@ -56,6 +56,12 @@ pub(crate) struct ContextManager {
     items: Arc<Vec<ResponseItemEnvelope>>,
     /// Starts at the first compaction; ordinary history snapshots need no second payload copy.
     review_history: Option<TranscriptHistory>,
+    /// Prefix inherited from the selected persisted compaction checkpoint.
+    ///
+    /// Media references in this prefix remain available to the current compactor but expire from
+    /// its newly installed replacement history. Items appended after the prefix belong to the
+    /// current unsummarized window.
+    compacted_prefix_len: Option<usize>,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
     /// Monotonic user-input/reset revision, independent of compaction's history generation.
@@ -131,6 +137,7 @@ impl ContextManager {
         Self {
             items: Arc::new(Vec::new()),
             review_history: None,
+            compacted_prefix_len: None,
             history_version: 0,
             user_message_revision: 0,
             token_info: TokenUsageInfo::new_or_append(
@@ -151,9 +158,11 @@ impl ContextManager {
     }
 
     pub(crate) fn guardian_history_checkpoint(&self) -> Option<GuardianHistoryCheckpoint> {
-        self.review_history
-            .as_ref()
-            .map(|history| GuardianHistoryCheckpoint(history.items().cloned().collect()))
+        self.review_history.as_ref().map(|history| {
+            let mut items = history.items().cloned().collect::<Vec<_>>();
+            let _ = crate::context::sanitize_compacted_media(&mut items);
+            GuardianHistoryCheckpoint(items)
+        })
     }
 
     pub(crate) fn restore_guardian_history(
@@ -312,6 +321,42 @@ impl ContextManager {
         &self.items
     }
 
+    pub(crate) fn compacted_prefix_len(&self) -> Option<usize> {
+        self.compacted_prefix_len
+    }
+
+    pub(crate) fn set_compacted_prefix_len(&mut self, compacted_prefix_len: Option<usize>) {
+        self.compacted_prefix_len =
+            compacted_prefix_len.map(|prefix_len| prefix_len.min(self.items.len()));
+    }
+
+    /// Removes media only from the persisted compacted prefix of this history snapshot.
+    ///
+    /// The current-window suffix remains available to the compactor that will summarize it.
+    pub(crate) fn sanitize_compacted_media_prefix(
+        &mut self,
+    ) -> crate::context::CompactedMediaSanitization {
+        let compacted_prefix_len = self
+            .compacted_prefix_len
+            .unwrap_or_default()
+            .min(self.items.len());
+        let items = Arc::make_mut(&mut self.items);
+        let mut raw_items = items
+            .iter()
+            .map(|envelope| envelope.item.clone())
+            .collect::<Vec<_>>();
+        let sanitization =
+            crate::context::sanitize_compacted_media_prefix(&mut raw_items, compacted_prefix_len);
+        if sanitization.changed() {
+            for (envelope, item) in items.iter_mut().zip(raw_items) {
+                envelope.item = item;
+            }
+            self.history_version = self.history_version.saturating_add(1);
+            self.world_state_baseline = None;
+        }
+        sanitization
+    }
+
     /// Returns raw items in the history and consumes the snapshot.
     pub(crate) fn into_raw_items(self) -> Vec<ResponseItem> {
         self.into_annotated_items()
@@ -361,6 +406,7 @@ impl ContextManager {
 
     pub(crate) fn remove_first_item(&mut self) {
         if !self.items.is_empty() {
+            let previous_len = self.items.len();
             // Remove the oldest item (front of the list). Items are ordered from
             // oldest → newest, so index 0 is the first entry recorded.
             let items = Arc::make_mut(&mut self.items);
@@ -369,6 +415,14 @@ impl ContextManager {
             // its corresponding counterpart to keep the invariants intact without
             // running a full normalization pass.
             normalize::remove_corresponding_for(items, &removed.item);
+            if let Some(compacted_prefix_len) = self.compacted_prefix_len {
+                let removed_count = previous_len.saturating_sub(items.len());
+                self.compacted_prefix_len = Some(
+                    compacted_prefix_len
+                        .saturating_sub(removed_count)
+                        .min(items.len()),
+                );
+            }
             self.world_state_baseline = None;
         }
     }
@@ -404,6 +458,9 @@ impl ContextManager {
             self.review_history = Some(retained);
         }
         self.items = Arc::new(items);
+        self.compacted_prefix_len = self
+            .compacted_prefix_len
+            .map(|prefix_len| prefix_len.min(self.items.len()));
         self.history_version = self.history_version.saturating_add(1);
         self.world_state_baseline = None;
     }
@@ -494,7 +551,7 @@ impl ContextManager {
         );
     }
 
-    fn get_non_last_reasoning_items_tokens(&self) -> i64 {
+    pub(crate) fn estimated_non_last_reasoning_items_tokens(&self) -> i64 {
         // Get reasoning items excluding all the ones after the last instruction boundary.
         let Some(last_user_index) = self
             .items
@@ -549,7 +606,7 @@ impl ContextManager {
             last_tokens.saturating_add(items_after_last_model_generated_tokens)
         } else {
             last_tokens
-                .saturating_add(self.get_non_last_reasoning_items_tokens())
+                .saturating_add(self.estimated_non_last_reasoning_items_tokens())
                 .saturating_add(items_after_last_model_generated_tokens)
         }
     }
@@ -814,16 +871,6 @@ fn estimate_original_image_bytes(image_url: &str) -> Option<i64> {
     })
 }
 
-/// Shared image estimate, excluding the data URL prefix and message framing.
-pub(crate) fn estimate_image_bytes(image_url: &str, detail: Option<ImageDetail>) -> i64 {
-    match detail {
-        Some(ImageDetail::Original) => {
-            estimate_original_image_bytes(image_url).unwrap_or(RESIZED_IMAGE_BYTES_ESTIMATE)
-        }
-        _ => RESIZED_IMAGE_BYTES_ESTIMATE,
-    }
-}
-
 /// Scans one response item for discount-eligible inline image data URLs and
 /// returns:
 /// - total base64 payload bytes to subtract from raw serialized size
@@ -836,8 +883,12 @@ fn image_data_url_estimate_adjustment(item: &ResponseItem) -> (i64, i64) {
         if let Some(payload_len) = parse_base64_image_data_url(image_url).map(str::len) {
             payload_bytes =
                 payload_bytes.saturating_add(i64::try_from(payload_len).unwrap_or(i64::MAX));
-            replacement_bytes =
-                replacement_bytes.saturating_add(estimate_image_bytes(image_url, detail));
+            replacement_bytes = replacement_bytes.saturating_add(match detail {
+                Some(ImageDetail::Original) => {
+                    estimate_original_image_bytes(image_url).unwrap_or(RESIZED_IMAGE_BYTES_ESTIMATE)
+                }
+                _ => RESIZED_IMAGE_BYTES_ESTIMATE,
+            });
         }
     };
 
@@ -950,7 +1001,7 @@ fn encrypted_function_output_estimate_adjustment(item: &ResponseItem) -> (i64, i
     (payload_bytes, replacement_bytes)
 }
 
-fn is_model_generated_item(item: &ResponseItem) -> bool {
+pub(crate) fn is_model_generated_item(item: &ResponseItem) -> bool {
     match item {
         ResponseItem::Message { role, .. } => role == "assistant",
         ResponseItem::Reasoning { .. }

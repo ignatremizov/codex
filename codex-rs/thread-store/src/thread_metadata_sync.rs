@@ -590,8 +590,7 @@ mod tests {
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
-            compaction_response_id: None,
-            latest_token_usage_record: None,
+            ..Default::default()
         });
 
         let first = sync

@@ -1,5 +1,6 @@
 use super::*;
 use crate::context::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
+use crate::context::CompactedImageOmission;
 use crate::context::UserInstructions;
 use crate::context::world_state::WorldState;
 use crate::context::world_state::WorldStateSection;
@@ -174,6 +175,95 @@ fn conversation_history_snapshot_excludes_contextual_user_messages() {
         snapshot.items().cloned().collect::<Vec<_>>(),
         vec![user_message, assistant_message, developer_message],
     );
+}
+
+#[test]
+fn compacted_prefix_sanitization_leaves_current_window_media_available() {
+    let inherited_image_url = "data:image/png;base64,inherited".to_string();
+    let current_image_url = "data:image/png;base64,current".to_string();
+    let inherited = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputImage {
+            image_url: inherited_image_url.clone(),
+            detail: None,
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputImage {
+            image_url: current_image_url,
+            detail: None,
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mut history = ContextManager::new();
+    history.replace(vec![inherited, current.clone()]);
+    history.set_compacted_prefix_len(Some(1));
+
+    let sanitization = history.sanitize_compacted_media_prefix();
+
+    assert!(sanitization.changed());
+    assert_eq!(sanitization.omitted_image_count, 1);
+    assert_eq!(
+        sanitization.omitted_inline_media_bytes,
+        u64::try_from(inherited_image_url.len()).expect("image URL length should fit in u64")
+    );
+    assert_eq!(
+        history.raw_items().cloned().collect::<Vec<_>>(),
+        vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: CompactedImageOmission::unavailable().render(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: Some(
+                    InternalChatMessageMetadataPassthrough {
+                        content_item_kinds: Some(vec![ContentItemKind(
+                            "compaction.image_omission".to_string(),
+                        )]),
+                        ..Default::default()
+                    },
+                ),
+            },
+            current,
+        ]
+    );
+}
+
+#[test]
+fn guardian_history_checkpoint_removes_inline_media() {
+    let mut history = create_history_with_items(vec![ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "Review this image.".to_string(),
+            },
+            ContentItem::InputImage {
+                image_url: "data:image/png;base64,inherited".to_string(),
+                detail: None,
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }]);
+    history.replace_compacted(vec![ResponseItemEnvelope::new(assistant_msg("summary"))]);
+
+    let checkpoint = history
+        .guardian_history_checkpoint()
+        .expect("compaction initializes Guardian history");
+    let serialized = serde_json::to_string(&checkpoint).expect("serialize checkpoint");
+
+    assert!(serialized.contains("Review this image."));
+    assert!(serialized.contains(&CompactedImageOmission::unavailable().render()));
+    assert!(!serialized.contains("data:image/png"));
 }
 
 struct TestWorldStateSection;

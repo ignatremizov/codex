@@ -25,14 +25,14 @@ mod tests;
 
 /// Loads rollout items needed to reconstruct the latest model-visible context.
 ///
-/// Paginated JSONL rollouts use a reverse scan. When it finds both a usable replacement-
-/// history checkpoint and the completed user-turn context needed for resume metadata, the returned
-/// replay starts with the canonical `SessionMeta` followed by that newest suffix. When no
-/// bounded cutoff is available, the scan continues to the beginning and returns the complete
-/// replay it already accumulated.
+/// Paginated JSONL rollouts use a reverse scan. Compressed input is streamed into a temporary
+/// seekable file first, without changing the canonical parent representation. When the scan finds
+/// both a usable replacement-history checkpoint and the completed user-turn context needed for
+/// resume metadata, the returned replay starts with the canonical head `SessionMeta` followed by
+/// that newest suffix. When no bounded cutoff is available, the scan continues to the beginning and
+/// returns the complete replay it already accumulated.
 ///
-/// Compressed segments are decoded before applying their original JSONL offsets. Legacy rollouts
-/// keep the existing full-history path.
+/// Legacy rollout shapes keep the existing full-history path.
 pub(super) async fn load_latest_model_context(
     store: &LocalThreadStore,
     params: LoadThreadHistoryParams,

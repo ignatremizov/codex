@@ -239,8 +239,7 @@ fn compacted(replacement_history: Vec<ResponseItem>) -> RolloutItem {
         first_window_id: None,
         previous_window_id: None,
         window_id: None,
-        compaction_response_id: None,
-        latest_token_usage_record: None,
+        ..Default::default()
     })
 }
 
@@ -1419,8 +1418,7 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
-                compaction_response_id: None,
-                latest_token_usage_record: None,
+                ..Default::default()
             }),
             RolloutItem::Compacted(CompactedItem {
                 message: "latest checkpoint".to_string(),
@@ -1443,8 +1441,7 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
-                compaction_response_id: None,
-                latest_token_usage_record: None,
+                ..Default::default()
             }),
             started("child-turn"),
             RolloutItem::TurnContext(TurnContextItem {

@@ -19,6 +19,7 @@ use crate::compact_remote_history::history_item_groups;
 use crate::compacted_history_retention::RetainedMessageTruncation;
 use crate::compacted_history_retention::truncate_retained_message_to_token_budget;
 use crate::context::CompactedMediaSanitization;
+use crate::context::annotated_compacted_image_omission;
 use crate::context::compacted_image_omission_text;
 use crate::context::expire_compacted_media_references;
 use crate::context::sanitize_compacted_media;
@@ -589,19 +590,18 @@ fn build_v2_compacted_history(
     if compacted_image_omission_text_from_envelopes(&current).is_none()
         && let Some(omission_text) = current_omission_text.as_ref()
     {
-        let target_content = current.iter_mut().rev().find_map(|envelope| {
+        let target_message = current.iter_mut().rev().find_map(|envelope| {
             if !should_keep_compacted_history_item(&envelope.item) {
                 return None;
             }
-            let ResponseItem::Message { content, .. } = &mut envelope.item else {
-                return None;
-            };
-            Some(content)
+            matches!(&envelope.item, ResponseItem::Message { .. }).then_some(&mut envelope.item)
         });
-        if let Some(content) = target_content {
-            content.push(ContentItem::InputText {
-                text: omission_text.clone(),
-            });
+        if let Some(message) = target_message {
+            let Some(mut content) = codex_context_fragments::to_annotated_content(message) else {
+                unreachable!("target_message only returns message items");
+            };
+            content.push(annotated_compacted_image_omission(omission_text.clone()));
+            let _ = codex_context_fragments::set_annotated_content(message, content);
         } else {
             current.push(ResponseItemEnvelope::new(
                 standalone_compacted_image_omission_message(omission_text.clone()),
@@ -826,6 +826,30 @@ mod tests {
             }],
             phase,
             internal_chat_message_metadata_passthrough: None,
+        }
+    }
+
+    fn message_with_kinds(
+        role: &str,
+        content: Vec<ContentItem>,
+        content_item_kinds: Vec<&str>,
+    ) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: role.to_string(),
+            content,
+            phase: None,
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    content_item_kinds: Some(
+                        content_item_kinds
+                            .into_iter()
+                            .map(|kind| ContentItemKind(kind.to_string()))
+                            .collect(),
+                    ),
+                    ..Default::default()
+                },
+            ),
         }
     }
 
@@ -1093,7 +1117,9 @@ mod tests {
             },
             ResponseItem::FunctionCallOutput {
                 id: None,
-                call_id: "tool-call".to_string(),
+                call_id: Some("tool-call".to_string()),
+                name: None,
+                namespace: None,
                 output: FunctionCallOutputPayload::from_content_items(vec![
                     FunctionCallOutputContentItem::InputImage {
                         image_url: "data:image/png;base64,tool".to_string(),
@@ -1116,18 +1142,16 @@ mod tests {
         assert_eq!(
             history,
             vec![
-                ResponseItem::Message {
-                    id: None,
-                    role: "user".to_string(),
-                    content: vec![
+                message_with_kinds(
+                    "user",
+                    vec![
                         ContentItem::InputText {
                             text: "user".to_string(),
                         },
                         ContentItem::InputText { text: omission },
                     ],
-                    phase: None,
-                    internal_chat_message_metadata_passthrough: None,
-                },
+                    vec!["unknown", "compaction.image_omission"],
+                ),
                 output,
             ]
         );
@@ -1137,7 +1161,9 @@ mod tests {
     fn build_v2_compacted_history_retains_tool_only_current_window_omission() {
         let input = vec![ResponseItem::FunctionCallOutput {
             id: None,
-            call_id: "tool-call".to_string(),
+            call_id: Some("tool-call".to_string()),
+            name: None,
+            namespace: None,
             output: FunctionCallOutputPayload::from_content_items(vec![
                 FunctionCallOutputContentItem::InputImage {
                     image_url: "data:image/png;base64,tool".to_string(),
@@ -1159,15 +1185,13 @@ mod tests {
         assert_eq!(
             history,
             vec![
-                ResponseItem::Message {
-                    id: None,
-                    role: "developer".to_string(),
-                    content: vec![ContentItem::InputText {
+                message_with_kinds(
+                    "developer",
+                    vec![ContentItem::InputText {
                         text: CompactedImageOmission::unavailable().render(),
                     }],
-                    phase: None,
-                    internal_chat_message_metadata_passthrough: None,
-                },
+                    vec!["compaction.image_omission"],
+                ),
                 output,
             ]
         );
@@ -1291,11 +1315,16 @@ mod tests {
         assert_eq!(
             history,
             vec![
-                message("user", "old image context", /*phase*/ None),
-                ResponseItem::Message {
-                    id: None,
-                    role: "user".to_string(),
-                    content: vec![
+                message_with_kinds(
+                    "user",
+                    vec![ContentItem::InputText {
+                        text: "old image context".to_string(),
+                    }],
+                    vec!["unknown"],
+                ),
+                message_with_kinds(
+                    "user",
+                    vec![
                         ContentItem::InputText {
                             text: format!("<image name=[Image #2] path=\"{current_path}\">"),
                         },
@@ -1309,9 +1338,8 @@ mod tests {
                             text: "current image context".to_string(),
                         },
                     ],
-                    phase: None,
-                    internal_chat_message_metadata_passthrough: None,
-                },
+                    vec!["unknown", "compaction.image_omission", "unknown", "unknown",],
+                ),
                 output,
             ]
         );
@@ -1362,7 +1390,13 @@ mod tests {
         assert_eq!(
             history,
             vec![
-                message("user", "old image context", /*phase*/ None),
+                message_with_kinds(
+                    "user",
+                    vec![ContentItem::InputText {
+                        text: "old image context".to_string(),
+                    }],
+                    vec!["unknown"],
+                ),
                 message("user", "current text only", /*phase*/ None),
                 output,
             ]
@@ -1516,8 +1550,6 @@ mod tests {
                     InternalChatMessageMetadataPassthrough {
                         turn_id: Some("turn-1".to_string()),
                         content_item_kinds: Some(vec![
-                            ContentItemKind("user.text".to_string()),
-                            ContentItemKind("user.image".to_string()),
                             ContentItemKind("user.text".to_string()),
                             ContentItemKind("user.image".to_string()),
                         ]),

@@ -67,12 +67,16 @@ async fn async_guardian_retains_evidence_after_compaction_and_discards_it_after_
                 move |Json(request): Json<Value>| {
                     let parent_requests = Arc::clone(&parent_requests);
                     async move {
-                        let events = if request["client_metadata"]["x-openai-subagent"]
-                            == "guardian"
-                        {
+                        let subagent = &request["client_metadata"]["x-openai-subagent"];
+                        let events = if subagent == "guardian" {
                             vec![
                                 responses::ev_assistant_message("review", r#"{"outcome":"allow"}"#),
                                 responses::ev_completed("review"),
+                            ]
+                        } else if subagent == "compact" {
+                            vec![
+                                responses::ev_assistant_message("decoded-summary", SUMMARY),
+                                responses::ev_completed("decoded-summary"),
                             ]
                         } else {
                             let mut requests = parent_requests.lock().unwrap();
@@ -189,6 +193,8 @@ async fn async_guardian_retains_evidence_after_compaction_and_discards_it_after_
                 .send_thread_rollback_request(ThreadRollbackParams {
                     thread_id: thread_id.clone(),
                     num_turns: 2,
+                    expected_start_turn_id: None,
+                    expected_turn_count: None,
                 })
                 .await?;
             let _: ThreadRollbackResponse =
