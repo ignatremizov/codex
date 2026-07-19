@@ -202,6 +202,7 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
+            ..Default::default()
         }),
     )
     .await?;

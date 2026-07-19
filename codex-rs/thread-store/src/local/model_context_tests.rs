@@ -301,6 +301,121 @@ async fn fork_version_respects_inherited_segment_cutoffs() {
 }
 
 #[tokio::test]
+async fn loads_resume_metadata_from_latest_semantic_checkpoint() {
+    let home = TempDir::new().expect("temp dir");
+    let uuid = Uuid::from_u128(/*v*/ 1006);
+    let thread_id = codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let metadata = codex_rollout::CompactionResumeMetadata {
+        multi_agent_version: Some(MultiAgentVersion::V2),
+        last_started_turn_id: Some("turn-2".to_owned()),
+        previous_turn_settings: None,
+    };
+    let RolloutItem::Compacted(mut latest) = compacted("latest checkpoint", Some(Vec::new()))
+    else {
+        unreachable!();
+    };
+    latest.resume_metadata = Some(metadata.clone());
+    write_paginated_rollout(
+        home.path(),
+        "2025-01-03T13-00-05",
+        uuid,
+        [
+            turn_started("turn-0"),
+            user_message("oldest turn"),
+            completed_user_message("turn-0", "oldest turn"),
+            turn_context(home.path(), "turn-0"),
+            turn_complete("turn-0"),
+            turn_started("turn-1"),
+            user_message("metadata turn"),
+            completed_user_message("turn-1", "metadata turn"),
+            turn_context(home.path(), "turn-1"),
+            compacted("older checkpoint", Some(Vec::new())),
+            turn_complete("turn-1"),
+            turn_started("turn-2"),
+            RolloutItem::Compacted(latest),
+            turn_complete("turn-2"),
+        ],
+    );
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+
+    let context = store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("load model context");
+
+    assert!(context.items.iter().any(|item| {
+        matches!(item, RolloutItem::Compacted(compacted) if compacted.message == "latest checkpoint")
+    }));
+    let checkpoint = context
+        .items
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::Compacted(checkpoint) => Some(checkpoint),
+            _ => None,
+        })
+        .expect("semantic checkpoint after the session header");
+    assert_eq!(checkpoint.resume_metadata.as_ref(), Some(&metadata));
+    assert!(!context.items.iter().any(|item| {
+        matches!(item, RolloutItem::TurnContext(context) if context.turn_id.as_deref() == Some("turn-1"))
+    }));
+    assert!(!context.items.iter().any(|item| {
+        matches!(item, RolloutItem::TurnContext(context) if context.turn_id.as_deref() == Some("turn-0"))
+    }));
+}
+
+#[tokio::test]
+async fn scans_past_representation_repair_to_semantic_checkpoint() {
+    let home = TempDir::new().expect("temp dir");
+    let uuid = Uuid::from_u128(/*v*/ 1007);
+    let thread_id = codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    write_paginated_rollout(
+        home.path(),
+        "2025-01-03T13-00-06",
+        uuid,
+        [
+            turn_started("turn-1"),
+            user_message("semantic turn"),
+            completed_user_message("turn-1", "semantic turn"),
+            turn_context(home.path(), "turn-1"),
+            compacted("semantic checkpoint", Some(Vec::new())),
+            turn_complete("turn-1"),
+            RolloutItem::Compacted(CompactedItem {
+                message: "representation repair".to_string(),
+                replacement_history: Some(Vec::new()),
+                window_number: Some(1),
+                replacement_history_media_repair: true,
+                replacement_history_media_sanitized_prefix_len: Some(0),
+                ..Default::default()
+            }),
+            turn_started("turn-2"),
+            user_message("latest turn"),
+            completed_user_message("turn-2", "latest turn"),
+            turn_context(home.path(), "turn-2"),
+            turn_complete("turn-2"),
+        ],
+    );
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+
+    let context = store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("load model context");
+
+    assert!(context.items.iter().any(|item| {
+        matches!(item, RolloutItem::Compacted(compacted) if compacted.message == "semantic checkpoint")
+    }));
+    assert!(context.items.iter().any(|item| {
+        matches!(item, RolloutItem::Compacted(compacted) if compacted.message == "representation repair")
+    }));
+}
+
+#[tokio::test]
 async fn returns_scanned_full_history_for_unsupported_compaction() {
     enum MissingField {
         ReplacementHistory,
@@ -719,5 +834,6 @@ fn compacted(message: &str, replacement_history: Option<Vec<ResponseItem>>) -> R
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: None,
+        ..Default::default()
     })
 }
