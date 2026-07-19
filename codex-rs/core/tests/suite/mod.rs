@@ -98,6 +98,8 @@ mod guardian_cached_score;
 mod guardian_checkpoint_migration;
 // Uses the same command-approval harness as guardian_review below.
 mod canonical_plugin_connectors;
+#[path = "compacted_media_resume_tests.rs"]
+mod compacted_media_resume;
 mod gateway_auth;
 mod guardian_connector_trust;
 #[cfg(not(target_os = "windows"))]

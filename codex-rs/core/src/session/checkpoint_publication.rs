@@ -25,8 +25,16 @@ impl Session {
         }
         let permit = thread_settings::acquire_persistence_lock(self).await;
         self.check_history_publication()?;
-        let (compacted_item, metadata, started_item, advance_window, mcp_revision) = {
+        let (
+            compacted_item,
+            metadata,
+            started_item,
+            advance_window,
+            mcp_revision,
+            compacted_prefix_len,
+        ) = {
             let state = self.state.lock().await;
+            let mut unsummarized_suffix = Vec::new();
             let advance_window =
                 matches!(&installation, CompactedHistoryInstallation::Prefix { .. });
             let (metadata, started_item) = match installation {
@@ -65,7 +73,7 @@ impl Session {
                         0..0,
                         prefix_context.into_iter().map(ResponseItemEnvelope::new),
                     );
-                    items.extend_from_slice(suffix);
+                    unsummarized_suffix.extend_from_slice(suffix);
                     if let Some(checkpoint) = state.history.world_state_checkpoint() {
                         world_state_baseline = WorldStateSnapshot::from(&checkpoint.state);
                     }
@@ -142,6 +150,12 @@ impl Session {
                         .find_map(RestoredSkillsInventory::from_envelope)
                 });
             items.retain(|envelope| RestoredSkillsInventory::from_envelope(envelope).is_none());
+            // The same accepted inventories are already retained above. Keep every other
+            // suffix envelope outside the compaction representation gate.
+            unsummarized_suffix.retain(|envelope| {
+                !crate::context::McpServerUseInstructions::matches_response_item(&envelope.item)
+                    && RestoredSkillsInventory::from_envelope(envelope).is_none()
+            });
             // Only newly constructed replacement items need identity. Accepted source
             // envelopes must survive byte-for-byte, including legacy absent IDs.
             for envelope in &mut items {
@@ -179,6 +193,12 @@ impl Session {
                     })
                 });
             items.splice(boundary..boundary, retained);
+            // Every caller, including a fresh context-window reset, passes the same
+            // representation gate before this checkpoint certifies its compacted prefix.
+            // A prepared prefix can have newer, still-unsummarized media after this boundary.
+            let prefix_len = items.len();
+            crate::context::sanitize_compacted_media_envelopes(&mut items, prefix_len);
+            items.extend(unsummarized_suffix.iter().cloned());
             if let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
                 matches!(
                     envelope.item,
@@ -197,7 +217,8 @@ impl Session {
                 message: metadata.message.clone(),
                 replacement_history: Some(items.clone()),
                 retained_context: Some(projected.retained_context().clone()),
-                guardian_history: projected.guardian_history_checkpoint(),
+                guardian_history: projected
+                    .compacted_guardian_history_checkpoint(&unsummarized_suffix),
                 mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
                 compaction_summary_tokens: metadata.compaction_summary_tokens,
                 window_number: Some(metadata.window_number),
@@ -215,6 +236,10 @@ impl Session {
                     turn_attribution: state.turn_attribution.clone(),
                     previous_turn_settings: state.previous_turn_settings(),
                 }),
+                replacement_history_media_sanitized_prefix_len: Some(
+                    u64::try_from(prefix_len).unwrap_or(u64::MAX),
+                ),
+                replacement_history_media_repair: false,
             };
             (
                 compacted_item,
@@ -222,6 +247,7 @@ impl Session {
                 started_item,
                 advance_window,
                 mcp_revision,
+                prefix_len,
             )
         };
         if let Some((turn_context, item)) = started_item {
@@ -258,6 +284,9 @@ impl Session {
                 );
                 state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
                 state.history.set_world_state_baseline(world_state_baseline);
+                state
+                    .history
+                    .set_compacted_prefix_len(Some(compacted_prefix_len));
                 state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
                 if let Some(revision) = mcp_revision {
                     executed_tool_calls.mark_mcp_attribution_persisted(revision);

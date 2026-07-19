@@ -2701,6 +2701,7 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
                 compaction_response_id: None,
                 latest_token_usage_record: Some(parent_record.clone()),
                 resume_metadata: Some(parent_resume_metadata.clone()),
+                ..Default::default()
             }),
             RolloutItem::TokenUsageRecord(parent_record),
             rollout_response_item(spawn_agent_call(&parent_spawn_call_id)),
@@ -2809,6 +2810,94 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
             thread_token_usage: child_usage,
         })
     );
+}
+
+#[tokio::test]
+async fn spawn_agent_numeric_fork_from_compacted_paginated_parent_clamps_to_provable_turns() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, parent_thread) = harness.start_paginated_thread().await;
+    let parent_spawn_call_id = "spawn-call-paginated-numeric".to_string();
+    parent_thread
+        .session
+        .persist_rollout_items(&[
+            RolloutItem::Compacted(CompactedItem {
+                message: String::new(),
+                replacement_history: Some(vec![
+                    ResponseItem::Message {
+                        status: None,
+                        encrypted_content: None,
+                        id: None,
+                        role: "user".to_string(),
+                        content: vec![ContentItem::InputText {
+                            text: "compacted summary".to_string(),
+                        }],
+                        phase: None,
+                        internal_chat_message_metadata_passthrough: None,
+                    }
+                    .into(),
+                ]),
+                retained_context: None,
+                guardian_history: None,
+                mcp_resource_origins: None,
+                compaction_summary_tokens: None,
+                window_number: None,
+                first_window_id: None,
+                previous_window_id: None,
+                window_id: None,
+                compaction_response_id: None,
+                latest_token_usage_record: None,
+                resume_metadata: None,
+                ..Default::default()
+            }),
+            rollout_response_item(ResponseItem::Message {
+                status: None,
+                encrypted_content: None,
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "recent parent turn".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            rollout_response_item(spawn_agent_call(&parent_spawn_call_id)),
+        ])
+        .await;
+
+    let clamped_child_thread_id = harness
+        .spawn_anonymous_child(
+            parent_thread_id,
+            SpawnAgentOptions {
+                fork_parent_spawn_call_id: Some(parent_spawn_call_id),
+                fork_mode: Some(SpawnAgentForkMode::LastNTurns(2)),
+                ..Default::default()
+            },
+        )
+        .await;
+    let clamped_child_thread = harness
+        .manager
+        .get_thread(clamped_child_thread_id)
+        .await
+        .expect("clamped child thread should be registered");
+    let clamped_history = clamped_child_thread.session.clone_history().await;
+    assert!(
+        history_contains_text(clamped_history.raw_items(), "recent parent turn"),
+        "clamped numeric fork should keep the provable recent turn"
+    );
+    assert!(
+        !history_contains_text(clamped_history.raw_items(), "compacted summary"),
+        "clamped numeric fork should not expand into compacted parent context"
+    );
+
+    let _ = harness
+        .control
+        .shutdown_live_agent(clamped_child_thread_id)
+        .await
+        .expect("clamped child shutdown should submit");
+    let _ = parent_thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("parent shutdown should submit");
 }
 
 #[tokio::test]
@@ -3376,6 +3465,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: None,
+                ..Default::default()
             }),
             RolloutItem::RetainedContext(answer_event),
             RolloutItem::ResponseItem(delivery),
@@ -3602,6 +3692,7 @@ async fn spawn_agent_full_fork_restores_instructions_after_compaction_discards_p
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: None,
+                ..Default::default()
             }),
             RolloutItem::TurnContext(turn_context.to_turn_context_item()),
             rollout_response_item(spawn_agent_call(&parent_spawn_call_id)),
@@ -3778,6 +3869,7 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
                         realtime_active: None,
                     }),
                 }),
+                ..Default::default()
             }),
         ];
         if let Some(instructions) = parent_developer_instructions {

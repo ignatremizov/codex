@@ -32,6 +32,11 @@ impl RolloutReader {
                 Err(err) if err.kind() == io::ErrorKind::NotFound && attempt < 3 => {
                     std::thread::sleep(Duration::from_millis(50));
                 }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    return crate::media_vacuum::open_recovery_source(&plain_path)?
+                        .map(Self::Plain)
+                        .ok_or(err);
+                }
                 Err(err) => return Err(err),
             }
         }

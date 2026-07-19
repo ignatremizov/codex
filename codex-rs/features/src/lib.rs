@@ -428,8 +428,6 @@ pub enum Feature {
     RemoteCompactionV2,
     /// Prepare remote compaction in the background before the foreground limit is reached.
     AsyncCompaction,
-    /// Include retained images in the remote compaction context budget.
-    CompactionImageBudget,
     /// Retain client-authored developer messages across compacted context windows.
     RetainClientDeveloperMessages,
     /// Honor client-requested tool-output retention across context windows.
@@ -2083,12 +2081,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "async_compaction",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::CompactionImageBudget,
-        key: "compaction_image_budget",
-        stage: Stage::Stable,
-        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::RetainClientDeveloperMessages,
