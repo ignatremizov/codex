@@ -8,6 +8,45 @@ use serde_json::json;
 
 use super::*;
 
+#[test]
+fn filtering_repair_history_preserves_envelopes_and_recounts_only_the_prefix() {
+    let item = |text: &str| ResponseItemEnvelope {
+        item: ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        metadata: Some(CodexHarnessMetadata {
+            inherited_user_message: true,
+            ..Default::default()
+        }),
+    };
+    let retained = item("retained");
+    let suffix = item("current window");
+    let mut checkpoint = CompactedItem {
+        replacement_history: Some(vec![item("removed"), retained.clone(), suffix.clone()]),
+        replacement_history_media_sanitized_prefix_len: Some(2),
+        replacement_history_media_repair: true,
+        ..Default::default()
+    };
+    checkpoint.retain_replacement_history_items(|envelope| *envelope != item("removed"));
+    assert_eq!(
+        checkpoint,
+        CompactedItem {
+            replacement_history: Some(vec![retained, suffix]),
+            replacement_history_media_sanitized_prefix_len: Some(1),
+            replacement_history_media_repair: true,
+            ..Default::default()
+        }
+    );
+}
+
 fn thread_settings_snapshot(disabled_plugin_ids: Vec<String>) -> Result<ThreadSettingsSnapshot> {
     Ok(serde_json::from_value(json!({
         "model": "gpt-5",
@@ -546,6 +585,8 @@ fn compacted_replacement_history_stores_metadata_in_an_aligned_sidecar() -> Resu
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: None,
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
 
     let serialized = serde_json::to_value(item)?;
@@ -606,6 +647,8 @@ fn compacted_resume_metadata_presence_round_trips_empty_values() -> Result<()> {
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: Some(resume_metadata.clone()),
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
 
     let serialized = serde_json::to_value(&item)?;
@@ -706,6 +749,8 @@ fn compacted_metadata_remains_compatible_with_legacy_response_item_readers() -> 
             turn_attribution: None,
             previous_turn_settings: None,
         }),
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     })))?;
 
     let restored: RolloutItem = serde_json::from_value(compacted_line.clone())?;
@@ -757,6 +802,8 @@ fn uploaded_audio_round_trips_in_canonical_message_content() -> Result<()> {
         compaction_summary_tokens: None,
         latest_token_usage_record: None,
         resume_metadata: None,
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     }));
     for (item, paths) in [
         (response, vec!["/payload/content"]),
@@ -992,6 +1039,8 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: None,
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
 
     let serialized = serde_json::to_value(&item)?;
@@ -1036,6 +1085,8 @@ fn compacted_item_migrates_legacy_numeric_window_id() -> Result<()> {
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
+            replacement_history_media_sanitized_prefix_len: None,
+            replacement_history_media_repair: false,
         }
     );
     Ok(())
@@ -1049,6 +1100,15 @@ fn copied_history_uses_persisted_history_mode() -> Result<()> {
             session_id: thread_id.into(),
             id: thread_id,
             history_mode: ThreadHistoryMode::Legacy,
+            originator: "canonical".to_string(),
+            ..SessionMeta::default()
+        },
+        git: None,
+    }));
+    let inherited_meta = RolloutItem::SessionMeta(Box::new(SessionMetaLine {
+        meta: SessionMeta {
+            history_mode: ThreadHistoryMode::Paginated,
+            originator: "inherited".to_string(),
             ..SessionMeta::default()
         },
         git: None,
@@ -1056,17 +1116,24 @@ fn copied_history_uses_persisted_history_mode() -> Result<()> {
     let history = InitialHistory::Resumed(ResumedHistory {
         history_revision: None,
         conversation_id: thread_id,
-        history: Arc::new(vec![session_meta.clone()]),
+        history: Arc::new(vec![session_meta.clone(), inherited_meta.clone()]),
         rollout_path: None,
     });
 
     assert_eq!(
-        history.get_history_mode(ThreadHistoryMode::Paginated),
-        ThreadHistoryMode::Legacy
+        (
+            history.get_history_mode(ThreadHistoryMode::Paginated),
+            history.get_session_originator(),
+        ),
+        (ThreadHistoryMode::Legacy, Some("canonical".to_string()))
     );
+    let forked = InitialHistory::Forked(vec![session_meta, inherited_meta]);
     assert_eq!(
-        InitialHistory::Forked(vec![session_meta]).get_history_mode(ThreadHistoryMode::Paginated),
-        ThreadHistoryMode::Legacy
+        (
+            forked.get_history_mode(ThreadHistoryMode::Paginated),
+            forked.get_session_originator(),
+        ),
+        (ThreadHistoryMode::Legacy, Some("canonical".to_string()))
     );
     assert_eq!(
         InitialHistory::New.get_history_mode(ThreadHistoryMode::Paginated),

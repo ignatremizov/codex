@@ -1,8 +1,8 @@
 //! Collects persisted rollout items needed to reconstruct the most recent context window.
 //!
 //! Storage readers feed items newest-to-oldest. The scan stops at the newest compaction that has
-//! both replacement history and a window number, or at the beginning of the rollout when no such
-//! compaction exists. Items are returned in chronological order.
+//! both replacement history and a window number and is not a representation-only repair, or at
+//! the beginning of the rollout when no such semantic compaction exists. Items are returned in chronological order.
 
 use crate::RolloutItem;
 
@@ -20,7 +20,8 @@ pub enum ModelContextScanProgress {
 /// A compaction with replacement history and a window number is a complete conversation-history
 /// boundary. Records after it provide any companion state that was persisted. Older compactions
 /// missing either field require the complete rollout so reconstruction can rebuild their history
-/// or window number.
+/// or window number. Representation-only media repairs remain in the replay but never satisfy
+/// the semantic compaction cutoff; prior source context is still needed to reconstruct them.
 #[derive(Debug, Default)]
 pub struct ModelContextScan {
     items_newest_first: Vec<RolloutItem>,
@@ -34,7 +35,11 @@ impl ModelContextScan {
             ModelContextScanProgress::Continue
         } else if let RolloutItem::Compacted(compacted) = &item {
             if compacted.replacement_history.is_some() && compacted.window_number.is_some() {
-                ModelContextScanProgress::Complete
+                if compacted.replacement_history_media_repair {
+                    ModelContextScanProgress::Continue
+                } else {
+                    ModelContextScanProgress::Complete
+                }
             } else {
                 // This compaction cannot be reconstructed from a bounded suffix. Do not stop at
                 // an older compaction because this newer one still affects the surviving history.

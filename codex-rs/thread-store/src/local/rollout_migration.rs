@@ -1193,6 +1193,7 @@ impl LocalThreadStore {
                     offset,
                     /*initial_ordinal*/ 0,
                     std::mem::take(&mut batch),
+                    thread_history::ProjectionMode::Append,
                 )
                 .await?;
                 batch_start = offset;
@@ -1207,6 +1208,7 @@ impl LocalThreadStore {
                 offset,
                 /*initial_ordinal*/ 0,
                 batch,
+                thread_history::ProjectionMode::Append,
             )
             .await?;
         }

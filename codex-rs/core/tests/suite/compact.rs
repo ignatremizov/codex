@@ -762,10 +762,16 @@ async fn summarize_context_three_requests_and_instructions(
                     .expect("compacted history should retain its summary");
                 let summary_item =
                     serde_json::to_value(&summary_item.item).expect("serialize compacted summary");
+                let summary_text = summary_item["content"][0]["text"]
+                    .as_str()
+                    .expect("compacted summary should contain text");
                 assert_eq!(
                     json!({
                         "role": summary_item["role"],
-                        "content": summary_item["content"],
+                        "content": [{
+                            "type": "input_text",
+                            "text": summary_text,
+                        }],
                         "content_item_kinds": summary_item
                             ["internal_chat_message_metadata_passthrough"]["content_item_kinds"],
                     }),
@@ -1509,7 +1515,7 @@ async fn manual_compact_records_durable_and_local_token_usage() {
     assert_eq!(
         (
             compacted.compaction_response_id.as_deref(),
-            compacted.latest_token_usage_record.as_ref(),
+            compacted.latest_token_usage_record.as_deref(),
         ),
         (Some("r1"), records.last().copied())
     );
