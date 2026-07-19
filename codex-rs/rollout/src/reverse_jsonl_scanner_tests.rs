@@ -139,3 +139,24 @@ fn scans_record_spanning_three_read_chunks() -> std::io::Result<()> {
 
     assert_records(&mut scanner, &["third", &large_value, "first"])
 }
+
+#[test]
+fn rejects_records_over_the_configured_byte_limit() -> std::io::Result<()> {
+    let input = b"12345\n";
+    let mut scanner = ReverseJsonlScanner::new_before_offset_with_limit(
+        Cursor::new(input),
+        u64::try_from(input.len()).expect("input length"),
+        /*max_record_bytes*/ 4,
+    )?;
+
+    let error = scanner
+        .scan_next::<serde_json::Value>()
+        .expect_err("oversized record should fail");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "reverse JSONL record exceeds the 4 byte limit"
+    );
+    Ok(())
+}

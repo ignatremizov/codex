@@ -1,6 +1,5 @@
 use std::fs::File;
 use std::io;
-use std::path::Path;
 use std::path::PathBuf;
 
 use codex_protocol::protocol::RolloutItem;
@@ -25,13 +24,14 @@ mod tests;
 
 /// Loads rollout items needed to reconstruct the latest model-visible context.
 ///
-/// Plain paginated JSONL rollouts use a reverse scan. When it finds both a usable replacement-
-/// history checkpoint and the completed user-turn context needed for resume metadata, the returned
-/// replay starts with the canonical head `SessionMeta` followed by that newest suffix. When no
-/// bounded cutoff is available, the scan continues to the beginning and returns the complete
-/// replay it already accumulated.
+/// Paginated JSONL rollouts use a reverse scan. Compressed input is streamed into a temporary
+/// seekable file first, without changing the canonical parent representation. When the scan finds
+/// both a usable replacement-history checkpoint and the completed user-turn context needed for
+/// resume metadata, the returned replay starts with the canonical head `SessionMeta` followed by
+/// that newest suffix. When no bounded cutoff is available, the scan continues to the beginning and
+/// returns the complete replay it already accumulated.
 ///
-/// Legacy and compressed rollout shapes keep the existing full-history path.
+/// Legacy rollout shapes keep the existing full-history path.
 pub(super) async fn load_latest_model_context(
     store: &LocalThreadStore,
     params: LoadThreadHistoryParams,
@@ -58,12 +58,7 @@ pub(super) async fn load_latest_model_context(
         });
     }
 
-    let items = if matches!(session_meta.meta.history_mode, ThreadHistoryMode::Paginated)
-        && !path
-            .file_name()
-            .and_then(|file_name| file_name.to_str())
-            .is_some_and(|file_name| file_name.ends_with(".jsonl.zst"))
-    {
+    let items = if matches!(session_meta.meta.history_mode, ThreadHistoryMode::Paginated) {
         scan_model_context_from_end(path, session_meta).await?
     } else {
         read_thread::load_history_items(path.as_path()).await?
@@ -79,34 +74,27 @@ async fn scan_model_context_from_end(
     path: PathBuf,
     session_meta: SessionMetaLine,
 ) -> ThreadStoreResult<Vec<RolloutItem>> {
-    let path_for_scan = path.clone();
-    let scan = tokio::task::spawn_blocking(move || {
-        scan_model_context_from_end_blocking(&path_for_scan, session_meta)
-    })
-    .await
-    .map_err(|err| ThreadStoreError::Internal {
-        message: format!("failed to join model context scan: {err}"),
-    })?;
-    match scan {
-        Ok(items) => Ok(items),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            // Compression can replace the resolved plain rollout with its compressed sibling
-            // before the blocking reverse scanner opens it. The forward loader re-resolves that
-            // representation transition and already supports compressed rollouts.
-            read_thread::load_history_items(path.as_path()).await
-        }
-        Err(err) => Err(ThreadStoreError::Internal {
+    let reader = codex_rollout::open_rollout_seekable_reader(path.as_path())
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to open model context {}: {err}", path.display()),
+        })?;
+    tokio::task::spawn_blocking(move || scan_model_context_from_end_blocking(reader, session_meta))
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to join model context scan: {err}"),
+        })?
+        .map_err(|err| ThreadStoreError::Internal {
             message: format!("failed to scan model context {}: {err}", path.display()),
-        }),
-    }
+        })
 }
 
 fn scan_model_context_from_end_blocking(
-    path: &Path,
+    reader: File,
     session_meta: SessionMetaLine,
 ) -> io::Result<Vec<RolloutItem>> {
     let mut scan = ModelContextScan::default();
-    let mut scanner = ReverseJsonlScanner::new(File::open(path)?)?;
+    let mut scanner = ReverseJsonlScanner::new(reader)?;
     while let Some(outcome) = scanner.scan_next::<RolloutLine>()? {
         let ScanOutcome::Parsed(line) = outcome else {
             continue;

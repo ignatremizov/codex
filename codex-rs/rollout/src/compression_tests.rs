@@ -1,5 +1,6 @@
 use std::fs;
 use std::fs::FileTimes;
+use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
@@ -42,6 +43,28 @@ async fn load_rollout_items_reads_compressed_rollout() -> anyhow::Result<()> {
     assert_eq!(items.len(), 2);
     assert!(!rollout_path.exists());
     assert!(compressed_rollout_path(&rollout_path).exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn seekable_reader_spools_compressed_rollout_without_changing_representation()
+-> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::from_u128(12);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let rollout_path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(&rollout_path, thread_id, "hello seekable compressed")?;
+    let expected = fs::read(&rollout_path)?;
+    compress_now(&rollout_path)?;
+    let compressed_path = compressed_rollout_path(&rollout_path);
+
+    let mut reader = open_rollout_seekable_reader(&rollout_path).await?;
+    let mut actual = Vec::new();
+    reader.read_to_end(&mut actual)?;
+
+    assert_eq!(actual, expected);
+    assert!(!rollout_path.exists());
+    assert!(compressed_path.exists());
     Ok(())
 }
 
@@ -96,7 +119,10 @@ async fn append_rollout_item_materializes_compressed_rollout() -> anyhow::Result
     .await?;
 
     assert!(rollout_path.exists());
+    #[cfg(unix)]
     assert!(!compressed_rollout_path(&rollout_path).exists());
+    #[cfg(not(unix))]
+    assert!(compressed_rollout_path(&rollout_path).exists());
     let (items, loaded_thread_id, parse_errors) =
         RolloutRecorder::load_rollout_items(&rollout_path).await?;
     assert_eq!(loaded_thread_id, Some(thread_id));
@@ -207,7 +233,10 @@ async fn resume_materializes_compressed_rollout_path() -> anyhow::Result<()> {
 
     assert_eq!(recorder.rollout_path(), rollout_path.as_path());
     assert!(rollout_path.exists());
+    #[cfg(unix)]
     assert!(!compressed_path.exists());
+    #[cfg(not(unix))]
+    assert!(compressed_path.exists());
     recorder
         .record_canonical_items(&[RolloutItem::EventMsg(EventMsg::UserMessage(
             UserMessageEvent {
@@ -327,6 +356,30 @@ async fn compression_preserves_read_only_rollout_permissions() -> anyhow::Result
     assert!(!rollout_path.exists());
     assert_eq!(compressed_metadata.permissions().mode() & 0o777, 0o400);
     assert_eq!(compressed_metadata.modified()?, source_modified);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn materialization_preserves_read_only_compressed_metadata() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::from_u128(17);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let rollout_path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(&rollout_path, thread_id, "read-only compressed transcript")?;
+    compress_now(&rollout_path)?;
+    let compressed_path = compressed_rollout_path(&rollout_path);
+    set_old_mtime(&compressed_path)?;
+    fs::set_permissions(&compressed_path, fs::Permissions::from_mode(0o400))?;
+    let source_modified = fs::metadata(&compressed_path)?.modified()?;
+
+    let materialized = materialize_rollout_for_append_blocking(&rollout_path)?;
+
+    assert_eq!(materialized, rollout_path);
+    assert!(!compressed_path.exists());
+    let materialized_metadata = fs::metadata(&materialized)?;
+    assert_eq!(materialized_metadata.permissions().mode() & 0o777, 0o400);
+    assert_eq!(materialized_metadata.modified()?, source_modified);
     Ok(())
 }
 

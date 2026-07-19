@@ -297,6 +297,11 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(async move { live_writer::append_items(self, params).await })
     }
 
+    fn append_items_and_flush(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
+        // Local append already records, flushes, and projects under one live-writer lock.
+        Box::pin(async move { live_writer::append_items(self, params).await })
+    }
+
     fn persist_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move { live_writer::persist_thread(self, thread_id).await })
     }

@@ -117,6 +117,7 @@ impl SessionState {
         reference_context_item: Option<TurnContextItem>,
     ) {
         self.history.replace(items);
+        self.history.set_compacted_prefix_len(None);
         self.history
             .set_reference_context_item(reference_context_item);
         self.auto_compact_window.clear_prefill();

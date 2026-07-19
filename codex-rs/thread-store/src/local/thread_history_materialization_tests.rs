@@ -10,7 +10,10 @@ use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::RolloutItem;
@@ -20,6 +23,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_rollout::CompactedMediaVacuumPolicy;
 use codex_rollout::RolloutRecorder;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -30,6 +34,7 @@ use crate::AppendThreadItemsParams;
 use crate::CreateThreadParams;
 use crate::DeleteThreadParams;
 use crate::ListTurnsParams;
+use crate::ResumeThreadParams;
 use crate::SortDirection;
 use crate::StoredTurnItemsView;
 use crate::ThreadPersistenceMetadata;
@@ -159,6 +164,150 @@ WHERE thread_id = ?
     .await
     .expect("read projection state");
     assert_eq!(projection_state, (rollout_len, 5));
+}
+
+#[tokio::test]
+async fn append_after_offline_compacted_media_vacuum_rebuilds_paginated_projection() {
+    let home = TempDir::new().expect("temp dir");
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let thread_id = ThreadId::default();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .persist_thread(thread_id)
+        .await
+        .expect("persist session metadata");
+    let legacy_image = format!("data:image/png;base64,{}", "a".repeat(/*n*/ 4_096));
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![
+                RolloutItem::Compacted(CompactedItem {
+                    message: "legacy".to_string(),
+                    replacement_history: Some(vec![ResponseItem::Message {
+                        id: None,
+                        role: "user".to_string(),
+                        content: vec![ContentItem::InputImage {
+                            image_url: legacy_image,
+                            detail: None,
+                        }],
+                        phase: None,
+                        internal_chat_message_metadata_passthrough: None,
+                    }]),
+                    replacement_history_media_sanitized_prefix_len: None,
+                    ..Default::default()
+                }),
+                RolloutItem::Compacted(CompactedItem {
+                    message: "repair".to_string(),
+                    replacement_history: Some(Vec::new()),
+                    replacement_history_media_sanitized_prefix_len: Some(0),
+                    ..Default::default()
+                }),
+            ],
+        })
+        .await
+        .expect("append compacted checkpoints");
+    let pool = codex_state::open_thread_history_db(home.path())
+        .await
+        .expect("open thread history db");
+    let stale_projection = projection_state(&pool, thread_id).await;
+    let tail_turn_count = 64usize;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: (0..tail_turn_count)
+                .map(|index| turn_started(&format!("tail-{index}")))
+                .collect(),
+        })
+        .await
+        .expect("append durable suffix after projection checkpoint");
+
+    let rollout_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("rollout path");
+    store
+        .shutdown_thread(thread_id)
+        .await
+        .expect("close rollout before offline vacuum");
+    sqlx::query("DELETE FROM thread_turns WHERE thread_id = ? AND turn_id LIKE 'tail-%'")
+        .bind(thread_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("remove projected suffix rows");
+    sqlx::query(
+        r#"
+UPDATE thread_history_projection_state
+SET next_rollout_byte_offset = ?, next_rollout_ordinal = ?
+WHERE thread_id = ?
+        "#,
+    )
+    .bind(stale_projection.0)
+    .bind(stale_projection.1)
+    .bind(thread_id.to_string())
+    .execute(&pool)
+    .await
+    .expect("restore lagging projection checkpoint");
+    let report = codex_rollout::vacuum_compacted_media(
+        rollout_path.as_path(),
+        &CompactedMediaVacuumPolicy {
+            reopenable_image_omission: "reopen image".to_string(),
+            unavailable_image_omission: "image unavailable".to_string(),
+            mixed_image_omission: "some images unavailable".to_string(),
+        },
+    )
+    .expect("vacuum compacted media");
+    assert_eq!(report.records_rewritten, 1);
+    assert!(report.bytes_after < report.bytes_before);
+    assert!(
+        stale_projection.0 <= i64::try_from(report.bytes_after).expect("vacuumed rollout length"),
+        "the stale projection offset should remain in range after vacuum"
+    );
+
+    store
+        .resume_thread(ResumeThreadParams {
+            thread_id,
+            rollout_path: Some(rollout_path.clone()),
+            history: None,
+            include_archived: false,
+            metadata: ThreadPersistenceMetadata {
+                cwd: Some(std::env::current_dir().expect("cwd")),
+                model_provider: "test-provider".to_string(),
+                memory_mode: ThreadMemoryMode::Enabled,
+            },
+        })
+        .await
+        .expect("resume vacuumed rollout");
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![turn_started("turn-after-vacuum")],
+        })
+        .await
+        .expect("append after vacuum");
+    let expected_offset =
+        i64::try_from(fs::metadata(rollout_path).expect("rollout metadata").len())
+            .expect("rollout length");
+    let projected_tail_turn_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM thread_turns WHERE thread_id = ? AND turn_id LIKE 'tail-%'",
+    )
+    .bind(thread_id.to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("count rebuilt tail turns");
+
+    assert_eq!(
+        projection_state(&pool, thread_id).await,
+        (
+            expected_offset,
+            i64::try_from(tail_turn_count)
+                .expect("small tail count")
+                .saturating_add(4)
+        )
+    );
+    assert_eq!(
+        projected_tail_turn_count,
+        i64::try_from(tail_turn_count).expect("small tail count")
+    );
 }
 
 #[tokio::test]

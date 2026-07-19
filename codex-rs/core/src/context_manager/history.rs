@@ -38,6 +38,12 @@ use std::sync::LazyLock;
 pub(crate) struct ContextManager {
     /// The oldest items are at the beginning of the vector.
     items: Vec<ResponseItem>,
+    /// Prefix inherited from the selected persisted compaction checkpoint.
+    ///
+    /// Media references in this prefix remain available to the current compactor but expire from
+    /// its newly installed replacement history. Items appended after the prefix belong to the
+    /// current unsummarized window.
+    compacted_prefix_len: Option<usize>,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
     token_info: Option<TokenUsageInfo>,
@@ -60,6 +66,7 @@ impl ContextManager {
     pub(crate) fn new() -> Self {
         Self {
             items: Vec::new(),
+            compacted_prefix_len: None,
             history_version: 0,
             token_info: TokenUsageInfo::new_or_append(
                 &None, &None, /*model_context_window*/ None,
@@ -148,6 +155,36 @@ impl ContextManager {
         &self.items
     }
 
+    pub(crate) fn compacted_prefix_len(&self) -> Option<usize> {
+        self.compacted_prefix_len
+    }
+
+    pub(crate) fn set_compacted_prefix_len(&mut self, compacted_prefix_len: Option<usize>) {
+        self.compacted_prefix_len =
+            compacted_prefix_len.map(|prefix_len| prefix_len.min(self.items.len()));
+    }
+
+    /// Removes media only from the persisted compacted prefix of this history snapshot.
+    ///
+    /// The current-window suffix remains available to the compactor that will summarize it.
+    pub(crate) fn sanitize_compacted_media_prefix(
+        &mut self,
+    ) -> crate::context::CompactedMediaSanitization {
+        let compacted_prefix_len = self
+            .compacted_prefix_len
+            .unwrap_or_default()
+            .min(self.items.len());
+        let sanitization = crate::context::sanitize_compacted_media_prefix(
+            self.items.as_mut_slice(),
+            compacted_prefix_len,
+        );
+        if sanitization.changed() {
+            self.history_version = self.history_version.saturating_add(1);
+            self.world_state_baseline = None;
+        }
+        sanitization
+    }
+
     /// Returns raw items in the history and consumes the snapshot.
     pub(crate) fn into_raw_items(self) -> Vec<ResponseItem> {
         self.items
@@ -186,6 +223,7 @@ impl ContextManager {
 
     pub(crate) fn remove_first_item(&mut self) {
         if !self.items.is_empty() {
+            let previous_len = self.items.len();
             // Remove the oldest item (front of the list). Items are ordered from
             // oldest → newest, so index 0 is the first entry recorded.
             let removed = self.items.remove(0);
@@ -193,12 +231,23 @@ impl ContextManager {
             // its corresponding counterpart to keep the invariants intact without
             // running a full normalization pass.
             normalize::remove_corresponding_for(&mut self.items, &removed);
+            if let Some(compacted_prefix_len) = self.compacted_prefix_len {
+                let removed_count = previous_len.saturating_sub(self.items.len());
+                self.compacted_prefix_len = Some(
+                    compacted_prefix_len
+                        .saturating_sub(removed_count)
+                        .min(self.items.len()),
+                );
+            }
             self.world_state_baseline = None;
         }
     }
 
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
         self.items = items;
+        self.compacted_prefix_len = self
+            .compacted_prefix_len
+            .map(|prefix_len| prefix_len.min(self.items.len()));
         self.history_version = self.history_version.saturating_add(1);
         self.world_state_baseline = None;
     }
@@ -290,7 +339,7 @@ impl ContextManager {
         );
     }
 
-    fn get_non_last_reasoning_items_tokens(&self) -> i64 {
+    pub(crate) fn estimated_non_last_reasoning_items_tokens(&self) -> i64 {
         // Get reasoning items excluding all the ones after the last instruction boundary.
         let Some(last_user_index) = self.items.iter().rposition(is_user_turn_boundary) else {
             return 0;
@@ -340,7 +389,7 @@ impl ContextManager {
             last_tokens.saturating_add(items_after_last_model_generated_tokens)
         } else {
             last_tokens
-                .saturating_add(self.get_non_last_reasoning_items_tokens())
+                .saturating_add(self.estimated_non_last_reasoning_items_tokens())
                 .saturating_add(items_after_last_model_generated_tokens)
         }
     }
@@ -719,7 +768,7 @@ fn encrypted_function_output_estimate_adjustment(item: &ResponseItem) -> (i64, i
     })
 }
 
-fn is_model_generated_item(item: &ResponseItem) -> bool {
+pub(crate) fn is_model_generated_item(item: &ResponseItem) -> bool {
     match item {
         ResponseItem::Message { role, .. } => role == "assistant",
         ResponseItem::Reasoning { .. }

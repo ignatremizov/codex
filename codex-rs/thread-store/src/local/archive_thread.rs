@@ -1,9 +1,12 @@
 use chrono::Utc;
 use codex_rollout::find_thread_path_by_id_str;
+use codex_rollout::remove_compacted_media_vacuum_backups;
+use codex_rollout::remove_obsolete_compressed_rollout_sibling;
 
 use super::LocalThreadStore;
 use super::helpers::matching_rollout_file_name;
 use super::helpers::scoped_rollout_path;
+use super::helpers::validate_rollout_for_lifecycle;
 use crate::ArchiveThreadParams;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
@@ -13,6 +16,7 @@ pub(super) async fn archive_thread(
     params: ArchiveThreadParams,
 ) -> ThreadStoreResult<()> {
     let thread_id = params.thread_id;
+    let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
     let state_db_ctx = store.state_db().await;
     let rollout_path = find_thread_path_by_id_str(
         store.config.codex_home.as_path(),
@@ -37,6 +41,26 @@ pub(super) async fn archive_thread(
         thread_id,
         rollout_path.as_path(),
     )?;
+    validate_rollout_for_lifecycle(canonical_rollout_path.as_path(), thread_id).await?;
+    let vacuum_rollout_path = codex_rollout::plain_rollout_path(&canonical_rollout_path);
+    remove_compacted_media_vacuum_backups(vacuum_rollout_path.as_path()).map_err(|err| {
+        ThreadStoreError::Internal {
+            message: format!(
+                "failed to remove compacted-media vacuum backups before archiving `{}`: {err}",
+                vacuum_rollout_path.display()
+            ),
+        }
+    })?;
+    if canonical_rollout_path == vacuum_rollout_path {
+        remove_obsolete_compressed_rollout_sibling(vacuum_rollout_path.as_path()).map_err(
+            |err| ThreadStoreError::Internal {
+                message: format!(
+                    "failed to remove obsolete compressed rollout before archiving `{}`: {err}",
+                    vacuum_rollout_path.display()
+                ),
+            },
+        )?;
+    }
 
     let archive_folder = store
         .config
@@ -62,6 +86,10 @@ pub(super) async fn archive_thread(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::path::Path;
+    use std::path::PathBuf;
+
     use chrono::Utc;
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::SessionSource;
@@ -78,6 +106,36 @@ mod tests {
     use crate::local::test_support::test_config;
     use crate::local::test_support::write_session_file;
 
+    fn replace_canonical_with_vacuum_backup(path: &Path) -> PathBuf {
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .expect("open rollout"),
+            "{}",
+            serde_json::json!({
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "type": "compacted",
+                "payload": {
+                    "message": "media-policy certification",
+                    "replacement_history": [],
+                    "replacement_history_media_sanitized_prefix_len": 0
+                }
+            })
+        )
+        .expect("append protected checkpoint");
+        let backup_path = path.with_file_name(format!(
+            ".{}.pre-media-vacuum-{}.bak",
+            path.file_name()
+                .and_then(|file_name| file_name.to_str())
+                .expect("UTF-8 rollout file name"),
+            Uuid::now_v7()
+        ));
+        std::fs::hard_link(path, &backup_path).expect("retained vacuum backup");
+        std::fs::remove_file(path).expect("remove canonical rollout");
+        backup_path
+    }
+
     #[tokio::test]
     async fn archive_thread_moves_rollout_to_archived_collection() {
         let home = TempDir::new().expect("temp dir");
@@ -86,6 +144,7 @@ mod tests {
         let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
         let active_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let backup_path = replace_canonical_with_vacuum_backup(&active_path);
 
         store
             .archive_thread(ArchiveThreadParams { thread_id })
@@ -93,6 +152,7 @@ mod tests {
             .expect("archive thread");
 
         assert!(!active_path.exists());
+        assert!(!backup_path.exists());
         let archived_path = home
             .path()
             .join(ARCHIVED_SESSIONS_SUBDIR)
@@ -157,6 +217,7 @@ mod tests {
             .upsert_thread(&metadata)
             .await
             .expect("state db upsert should succeed");
+        let backup_path = replace_canonical_with_vacuum_backup(&active_path);
 
         store
             .archive_thread(ArchiveThreadParams { thread_id })
@@ -167,6 +228,7 @@ mod tests {
             .path()
             .join(ARCHIVED_SESSIONS_SUBDIR)
             .join(active_path.file_name().expect("file name"));
+        assert!(!backup_path.exists());
         let updated = runtime
             .get_thread(thread_id)
             .await
@@ -175,5 +237,111 @@ mod tests {
         assert_eq!(updated.rollout_path, archived_path);
         assert!(updated.archived_at.is_some());
         assert_eq!(updated.recency_at, metadata.recency_at);
+    }
+
+    #[tokio::test]
+    async fn archive_thread_removes_hidden_compressed_sibling() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(205);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let active_path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let compressed_path = active_path.with_extension("jsonl.zst");
+        std::fs::write(&compressed_path, b"obsolete compressed sibling")
+            .expect("write compressed sibling");
+
+        store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect("archive thread");
+
+        let archived_path = home
+            .path()
+            .join(ARCHIVED_SESSIONS_SUBDIR)
+            .join(active_path.file_name().expect("file name"));
+        assert!(archived_path.exists());
+        assert!(!active_path.exists());
+        assert!(!compressed_path.exists());
+    }
+
+    #[tokio::test]
+    async fn archive_thread_accepts_metadata_only_rollout() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(208);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let active_path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let session_meta = std::fs::read_to_string(&active_path)
+            .expect("read session file")
+            .lines()
+            .next()
+            .expect("session metadata")
+            .to_string();
+        std::fs::write(&active_path, format!("{session_meta}\n"))
+            .expect("write metadata-only rollout");
+
+        store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect("archive metadata-only thread");
+
+        assert!(!active_path.exists());
+        assert!(
+            home.path()
+                .join(ARCHIVED_SESSIONS_SUBDIR)
+                .join(active_path.file_name().expect("file name"))
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_thread_preserves_recovery_artifacts_when_session_metadata_is_not_first() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(206);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let active_path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let session_meta = std::fs::read_to_string(&active_path)
+            .expect("read session file")
+            .lines()
+            .next()
+            .expect("session metadata")
+            .to_string();
+        let backup_path = active_path.with_file_name(format!(
+            ".{}.pre-media-vacuum-{}.bak",
+            active_path
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .expect("UTF-8 rollout file name"),
+            Uuid::now_v7()
+        ));
+        std::fs::hard_link(&active_path, &backup_path).expect("retained vacuum backup");
+        let compressed_path = active_path.with_extension("jsonl.zst");
+        std::fs::write(&compressed_path, b"compressed recovery representation")
+            .expect("write compressed sibling");
+        let invalid_path = active_path.with_file_name("invalid-rollout.jsonl");
+        let compacted = serde_json::json!({
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "type": "compacted",
+            "payload": {
+                "message": "record before metadata",
+                "replacement_history": []
+            }
+        });
+        std::fs::write(&invalid_path, format!("{compacted}\n{session_meta}\n"))
+            .expect("write noncanonical rollout");
+        std::fs::rename(invalid_path, &active_path).expect("replace canonical rollout");
+
+        store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect_err("rollout with late session metadata must not be archived");
+
+        assert!(active_path.exists());
+        assert!(backup_path.exists());
+        assert!(compressed_path.exists());
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::context::CompactedImageOmission;
 use crate::context::UserInstructions;
 use crate::context::world_state::WorldState;
 use crate::context::world_state::WorldStateSection;
@@ -78,6 +79,59 @@ fn create_history_with_items(items: Vec<ResponseItem>) -> ContextManager {
     // behavior, not on a specific model's token limit.
     h.record_items(items.iter(), TruncationPolicy::Tokens(10_000));
     h
+}
+
+#[test]
+fn compacted_prefix_sanitization_leaves_current_window_media_available() {
+    let inherited_image_url = "data:image/png;base64,inherited".to_string();
+    let current_image_url = "data:image/png;base64,current".to_string();
+    let inherited = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputImage {
+            image_url: inherited_image_url.clone(),
+            detail: None,
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputImage {
+            image_url: current_image_url,
+            detail: None,
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mut history = ContextManager::new();
+    history.replace(vec![inherited, current.clone()]);
+    history.set_compacted_prefix_len(Some(1));
+
+    let sanitization = history.sanitize_compacted_media_prefix();
+
+    assert!(sanitization.changed());
+    assert_eq!(sanitization.omitted_image_count, 1);
+    assert_eq!(
+        sanitization.omitted_inline_media_bytes,
+        u64::try_from(inherited_image_url.len()).expect("image URL length should fit in u64")
+    );
+    assert_eq!(
+        history.raw_items(),
+        &[
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: CompactedImageOmission::unavailable().render(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            current,
+        ]
+    );
 }
 
 struct TestWorldStateSection;
@@ -350,7 +404,7 @@ fn non_last_reasoning_tokens_return_zero_when_no_user_messages() {
     let history =
         create_history_with_items(vec![reasoning_with_encrypted_content(/*len*/ 800)]);
 
-    assert_eq!(history.get_non_last_reasoning_items_tokens(), 0);
+    assert_eq!(history.estimated_non_last_reasoning_items_tokens(), 0);
 }
 
 #[test]
@@ -365,7 +419,7 @@ fn non_last_reasoning_tokens_ignore_entries_after_last_user() {
     // first: (900 * 0.75 - 650) / 4 = 6.25 tokens
     // second: (1000 * 0.75 - 650) / 4 = 25 tokens
     // first + second = 62.5
-    assert_eq!(history.get_non_last_reasoning_items_tokens(), 32);
+    assert_eq!(history.estimated_non_last_reasoning_items_tokens(), 32);
 }
 
 #[test]

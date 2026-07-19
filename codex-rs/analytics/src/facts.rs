@@ -422,6 +422,8 @@ pub struct CodexCompactionEvent {
     pub active_context_tokens_before: i64,
     pub active_context_tokens_after: i64,
     pub retained_image_count: Option<usize>,
+    pub omitted_image_count: Option<usize>,
+    pub omitted_inline_media_bytes: Option<u64>,
     pub compaction_summary_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
     pub cache_write_input_tokens: Option<i64>,

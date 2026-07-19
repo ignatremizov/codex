@@ -1496,6 +1496,39 @@ async fn find_rollout_path_by_id_from_filenames(
             if !file_type.is_file() {
                 continue;
             }
+            let entry_file_name = entry.file_name();
+            // A committed vacuum can leave its validated backup as the only representation if
+            // replacement is interrupted. Recover it during filename discovery so lifecycle
+            // operations can still find, archive, or hard-delete the thread.
+            if let Some(backup_rollout_file_name) = entry_file_name
+                .to_str()
+                .and_then(crate::media_vacuum::compacted_media_backup_rollout_file_name)
+                && let Some(plain_rollout_file_name) =
+                    compression::parse_rollout_file_name(backup_rollout_file_name)
+                && parse_timestamp_uuid_from_filename(plain_rollout_file_name)
+                    .is_some_and(|(_, id)| id == target)
+            {
+                let canonical_path = path.with_file_name(plain_rollout_file_name);
+                if let Some(existing_path) =
+                    compression::existing_rollout_path(canonical_path.as_path()).await
+                {
+                    return Ok(Some(existing_path));
+                }
+                let recovery_path = canonical_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::media_vacuum::recover_compacted_media_backup_if_needed(
+                        recovery_path.as_path(),
+                    )
+                })
+                .await
+                .map_err(io::Error::other)??;
+                if let Some(recovered_path) =
+                    compression::existing_rollout_path(canonical_path.as_path()).await
+                {
+                    return Ok(Some(recovered_path));
+                }
+                continue;
+            }
             let Some(rollout_file) = compression::RolloutFile::from_path(path) else {
                 continue;
             };

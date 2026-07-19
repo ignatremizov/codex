@@ -6,6 +6,7 @@ use std::io::SeekFrom;
 use serde::de::DeserializeOwned;
 
 const READ_CHUNK_SIZE: usize = 8 * 1024;
+const MAX_JSONL_RECORD_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum ScanOutcome<T> {
@@ -23,6 +24,7 @@ pub struct ReverseJsonlScanner<R> {
     chunk_position: usize,
     chunk: Vec<u8>,
     record_reversed: Vec<u8>,
+    max_record_bytes: usize,
 }
 
 impl<R> ReverseJsonlScanner<R>
@@ -30,13 +32,33 @@ where
     R: Read + Seek,
 {
     pub fn new(mut reader: R) -> io::Result<Self> {
-        let next_chunk_end = reader.seek(SeekFrom::End(0))?;
+        let end = reader.seek(SeekFrom::End(0))?;
+        Self::new_before_offset(reader, end)
+    }
+
+    pub(crate) fn new_before_offset(reader: R, offset: u64) -> io::Result<Self> {
+        Self::new_before_offset_with_limit(reader, offset, MAX_JSONL_RECORD_BYTES)
+    }
+
+    fn new_before_offset_with_limit(
+        mut reader: R,
+        offset: u64,
+        max_record_bytes: usize,
+    ) -> io::Result<Self> {
+        let end = reader.seek(SeekFrom::End(0))?;
+        if offset > end {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "reverse JSONL scan offset exceeds the reader length",
+            ));
+        }
         Ok(Self {
             reader,
-            next_chunk_end,
+            next_chunk_end: offset,
             chunk_position: 0,
             chunk: vec![0; READ_CHUNK_SIZE],
             record_reversed: Vec::new(),
+            max_record_bytes,
         })
     }
 
@@ -54,6 +76,15 @@ where
             };
 
             if byte != b'\n' {
+                if self.record_reversed.len() >= self.max_record_bytes {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "reverse JSONL record exceeds the {} byte limit",
+                            self.max_record_bytes
+                        ),
+                    ));
+                }
                 self.record_reversed.push(byte);
                 continue;
             }

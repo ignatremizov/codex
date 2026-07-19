@@ -204,6 +204,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::exec_output::StreamOutput;
 
 mod code_mode_warning;
+mod compacted_media_repair;
 mod config_lock;
 pub(crate) mod context_window;
 mod handlers;
@@ -1491,7 +1492,10 @@ impl Session {
             .collect()
     }
 
-    async fn record_initial_history(&self, conversation_history: InitialHistory) {
+    async fn record_initial_history(
+        &self,
+        conversation_history: InitialHistory,
+    ) -> anyhow::Result<()> {
         let (is_subagent, is_paginated_subagent) = {
             let state = self.state.lock().await;
             let session_configuration = &state.session_configuration;
@@ -1521,9 +1525,14 @@ impl Session {
             InitialHistory::Resumed(resumed_history) => {
                 let turn_context = self.new_default_turn().await;
                 let rollout_items = resumed_history.history;
-                let previous_turn_settings = self
+                let applied_reconstruction = self
                     .apply_rollout_reconstruction(&turn_context, &rollout_items)
                     .await;
+                let previous_turn_settings = applied_reconstruction.previous_turn_settings;
+                if let Some(repair) = applied_reconstruction.repair.as_ref() {
+                    self.persist_reconstruction_repair_with_policy(repair)
+                        .await?;
+                }
 
                 // If resuming, warn when the last recorded model differs from the current one.
                 let curr: &str = turn_context.model_info.slug.as_str();
@@ -1551,6 +1560,9 @@ impl Session {
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
                 }
+                if applied_reconstruction.should_recompute_token_usage {
+                    self.recompute_token_usage(&turn_context).await;
+                }
 
                 // Defer seeding the session's initial context until the first turn starts so
                 // turn/start overrides can be merged before we write to the rollout.
@@ -1563,7 +1575,8 @@ impl Session {
                 if turn_context.item_ids_enabled() {
                     Self::assign_missing_rollout_response_item_ids(&mut rollout_items);
                 }
-                self.apply_rollout_reconstruction(&turn_context, &rollout_items)
+                let applied_reconstruction = self
+                    .apply_rollout_reconstruction(&turn_context, &rollout_items)
                     .await;
 
                 // Seed usage info from the recorded rollout so UIs can show token counts
@@ -1578,6 +1591,13 @@ impl Session {
                 if !rollout_items.is_empty() && !is_paginated_subagent {
                     self.persist_rollout_items(&rollout_items).await;
                 }
+                if let Some(repair) = applied_reconstruction.repair.as_ref() {
+                    self.persist_reconstruction_repair_with_policy(repair)
+                        .await?;
+                }
+                if applied_reconstruction.should_recompute_token_usage {
+                    self.recompute_token_usage(&turn_context).await;
+                }
 
                 // Forked threads should remain file-backed immediately after startup.
                 self.ensure_rollout_materialized().await;
@@ -1588,6 +1608,19 @@ impl Session {
                 }
             }
         }
+        Ok(())
+    }
+
+    async fn apply_rollout_reconstruction(
+        &self,
+        turn_context: &TurnContext,
+        rollout_items: &[RolloutItem],
+    ) -> rollout_reconstruction::AppliedRolloutReconstruction {
+        let reconstruction = self
+            .prepare_rollout_reconstruction(turn_context, rollout_items)
+            .await;
+        self.install_rollout_reconstruction(turn_context, reconstruction)
+            .await
     }
 
     #[instrument(
@@ -1598,13 +1631,16 @@ impl Session {
             rollout_item_count = rollout_items.len()
         )
     )]
-    async fn apply_rollout_reconstruction(
+    async fn prepare_rollout_reconstruction(
         &self,
         turn_context: &TurnContext,
         rollout_items: &[RolloutItem],
-    ) -> Option<PreviousTurnSettings> {
+    ) -> rollout_reconstruction::PreparedRolloutReconstruction {
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
+            compacted_prefix_len,
+            mut repair,
+            should_recompute_token_usage,
             previous_turn_settings,
             reference_context_item,
             world_state_baseline,
@@ -1615,23 +1651,82 @@ impl Session {
         } = self
             .reconstruct_history_from_rollout(turn_context, rollout_items)
             .await;
-        // Keep the recorded rollout unchanged. Prepare its reconstructed history before
-        // installing it, so legacy images are processed once for this resume or fork and
-        // will be processed again if the rollout is reconstructed in a future session.
-        // This meets image resizing requirements without modifying persisted rollouts.
+        let fallback_ids = {
+            let state = self.state.lock().await;
+            state.auto_compact_window_ids()
+        };
+        let effective_window_id = window_id.unwrap_or(fallback_ids.window_id);
+        let effective_first_window_id = first_window_id.unwrap_or(effective_window_id);
+        if let Some(repair) = repair.as_mut() {
+            repair.checkpoint.window_number = Some(window_number);
+            repair.checkpoint.first_window_id = Some(effective_first_window_id.to_string());
+            repair.checkpoint.previous_window_id = previous_window_id.map(|id| id.to_string());
+            repair.checkpoint.window_id = Some(effective_window_id.to_string());
+        }
+        let repair = repair.map(|repair| {
+            let mut repair_items = vec![RolloutItem::Compacted(repair.checkpoint)];
+            if let Some(world_state_baseline) = world_state_baseline.as_ref() {
+                repair_items.push(RolloutItem::WorldState(WorldStateItem::full(
+                    world_state_baseline.clone().into_value(),
+                )));
+            }
+            if let Some(reference_context_item) = reference_context_item.as_ref() {
+                repair_items.push(RolloutItem::TurnContext(reference_context_item.clone()));
+            }
+            rollout_reconstruction::AppliedRolloutReconstructionRepair {
+                items: repair_items,
+                sanitization: repair.sanitization,
+                persistence: repair.persistence,
+            }
+        });
+        // Prepare unsummarized suffix media before installing reconstructed history. Historic
+        // compacted media has already been replaced with bounded references; its repair checkpoint
+        // is persisted separately without rewriting the source records on this critical path.
         prepare_response_items(&mut history);
+        rollout_reconstruction::PreparedRolloutReconstruction {
+            history,
+            compacted_prefix_len,
+            repair,
+            should_recompute_token_usage,
+            previous_turn_settings,
+            reference_context_item,
+            world_state_baseline,
+            window_number,
+            first_window_id: effective_first_window_id,
+            previous_window_id,
+            window_id: effective_window_id,
+        }
+    }
+
+    async fn install_rollout_reconstruction(
+        &self,
+        turn_context: &TurnContext,
+        reconstruction: rollout_reconstruction::PreparedRolloutReconstruction,
+    ) -> rollout_reconstruction::AppliedRolloutReconstruction {
+        let rollout_reconstruction::PreparedRolloutReconstruction {
+            history,
+            compacted_prefix_len,
+            repair,
+            should_recompute_token_usage,
+            previous_turn_settings,
+            reference_context_item,
+            world_state_baseline,
+            window_number,
+            first_window_id,
+            previous_window_id,
+            window_id,
+        } = reconstruction;
         {
             let mut state = self.state.lock().await;
             state.replace_history(history, reference_context_item);
+            state.history.set_compacted_prefix_len(compacted_prefix_len);
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }
-            let fallback_ids = state.auto_compact_window_ids();
-            let window_id = window_id.unwrap_or(fallback_ids.window_id);
             state.restore_auto_compact_window(
                 window_number,
                 AutoCompactWindowIds {
-                    first_window_id: first_window_id.unwrap_or(window_id),
+                    first_window_id,
                     previous_window_id,
                     window_id,
                 },
@@ -1652,7 +1747,11 @@ impl Session {
             self.set_auto_compact_window_estimated_prefill_for_scope(turn_context, prefix_tokens)
                 .await;
         }
-        previous_turn_settings
+        rollout_reconstruction::AppliedRolloutReconstruction {
+            previous_turn_settings,
+            repair,
+            should_recompute_token_usage,
+        }
     }
 
     async fn set_auto_compact_window_estimated_prefill_for_scope(
@@ -3606,7 +3705,7 @@ impl Session {
                 let state = sess.state.lock().await;
                 state.history.raw_items().to_vec()
             };
-            let final_items = {
+            let mut final_items = {
                 let final_items =
                     crate::compact::preserve_mcp_server_use_context_items(items, &previous_history);
                 let final_items = crate::compact::preserve_promoted_skills_inventory_item(
@@ -3623,18 +3722,35 @@ impl Session {
                     final_items
                 }
             };
+            let media_sanitization =
+                crate::context::sanitize_compacted_media(final_items.as_mut_slice());
+            if media_sanitization.changed() {
+                info!(
+                    omitted_image_count = media_sanitization.omitted_image_count,
+                    omitted_inline_media_bytes = media_sanitization.omitted_inline_media_bytes,
+                    "removed media while installing compacted history"
+                );
+            }
 
             let mut compacted_item = compacted_item;
             compacted_item.replacement_history = Some(final_items.clone());
+            compacted_item.replacement_history_media_sanitized_prefix_len =
+                Some(u64::try_from(final_items.len()).unwrap_or(u64::MAX));
 
-            sess.try_persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
-                .await
-                .map_err(|err| {
-                    CodexErr::Fatal(format!("failed to persist compacted history: {err}"))
-                })?;
+            if let Some(live_thread) = sess.live_thread() {
+                live_thread
+                    .append_items_and_flush_canonical(&[RolloutItem::Compacted(compacted_item)])
+                    .await
+                    .map_err(|err| {
+                        CodexErr::Fatal(format!("failed to persist compacted history: {err}"))
+                    })?;
+            }
             {
                 let mut state = sess.state.lock().await;
                 state.replace_history(final_items.clone(), reference_context_item.clone());
+                state
+                    .history
+                    .set_compacted_prefix_len(Some(final_items.len()));
                 if let Some(world_state) = world_state_baseline {
                     let snapshot = world_state.snapshot();
                     world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
@@ -4184,6 +4300,8 @@ impl Session {
                 first_window_id: Some(window_ids.first_window_id.to_string()),
                 previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
                 window_id: Some(window_ids.window_id.to_string()),
+                replacement_history_media_sanitized_prefix_len: None,
+                replacement_history_media_repair: false,
             },
         )
         .await?;
@@ -4345,13 +4463,30 @@ impl Session {
     }
 
     pub(crate) async fn recompute_token_usage(&self, turn_context: &TurnContext) {
-        let history = self.clone_history().await;
+        let (history, server_reasoning_included) = {
+            let state = self.state.lock().await;
+            (state.clone_history(), state.server_reasoning_included())
+        };
         let base_instructions = self.get_base_instructions().await;
         let Some(estimated_total_tokens) =
             history.estimate_token_count_with_base_instructions(&base_instructions)
         else {
             return;
         };
+        // Active-context accounting adds items after the latest model-generated item separately
+        // because no server response has reported them yet. Keep the reconstructed estimate in
+        // the same shape so an incomplete resume/fork suffix is not counted twice.
+        let estimated_local_tail_tokens =
+            history.estimated_tokens_after_last_model_generated_item();
+        let estimated_reasoning_supplement = if server_reasoning_included {
+            0
+        } else {
+            history.estimated_non_last_reasoning_items_tokens()
+        };
+        let estimated_last_model_tokens = estimated_total_tokens
+            .saturating_sub(estimated_local_tail_tokens)
+            .saturating_sub(estimated_reasoning_supplement)
+            .max(0);
         {
             let mut state = self.state.lock().await;
             let mut info = state.token_info().unwrap_or(TokenUsageInfo {
@@ -4366,7 +4501,7 @@ impl Session {
                 cache_write_input_tokens: 0,
                 output_tokens: 0,
                 reasoning_output_tokens: 0,
-                total_tokens: estimated_total_tokens.max(0),
+                total_tokens: estimated_last_model_tokens,
             };
 
             if let Some(model_context_window) = turn_context.model_context_window() {

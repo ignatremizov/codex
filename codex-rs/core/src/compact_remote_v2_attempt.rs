@@ -22,6 +22,7 @@ use tracing::info;
 
 pub(super) struct RemoteCompactV2Attempt {
     pub(super) trace_input_history: Vec<ResponseItem>,
+    pub(super) compacted_prefix_len: usize,
     pub(super) prompt_input: Vec<ResponseItem>,
     pub(super) compaction_output: ResponseItem,
     pub(super) token_usage: Option<TokenUsage>,
@@ -39,6 +40,18 @@ pub(super) async fn run_remote_compact_v2_attempt(
 ) -> CodexResult<RemoteCompactV2Attempt> {
     let turn_context = &step_context.turn;
     let mut history = sess.clone_history().await;
+    let media_sanitization = history.sanitize_compacted_media_prefix();
+    if media_sanitization.changed() {
+        info!(
+            turn_id = %turn_context.sub_id,
+            omitted_image_count = media_sanitization.omitted_image_count,
+            omitted_inline_media_bytes = media_sanitization.omitted_inline_media_bytes,
+            "removed previously compacted media before remote compaction v2"
+        );
+        analytics_details.omitted_image_count = Some(media_sanitization.omitted_image_count);
+        analytics_details.omitted_inline_media_bytes =
+            Some(media_sanitization.omitted_inline_media_bytes);
+    }
     let base_instructions = sess.get_base_instructions().await;
     let (rewritten_outputs, estimated_deleted_tokens) =
         trim_function_call_history_to_fit_context_window(
@@ -64,6 +77,11 @@ pub(super) async fn run_remote_compact_v2_attempt(
                     .saturating_sub(estimated_deleted_tokens.min(max_local_deleted_tokens))
             });
     }
+
+    let compacted_prefix_len = history
+        .compacted_prefix_len()
+        .unwrap_or_default()
+        .min(history.raw_items().len());
 
     let trace_input_history = history.raw_items().to_vec();
     let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
@@ -131,6 +149,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
     .await;
     Ok(RemoteCompactV2Attempt {
         trace_input_history,
+        compacted_prefix_len,
         prompt_input,
         compaction_output,
         token_usage,

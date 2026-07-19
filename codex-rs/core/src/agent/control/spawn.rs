@@ -709,10 +709,8 @@ impl AgentControl {
             });
         }
         for item in &mut forked_rollout_items {
-            if let RolloutItem::Compacted(compacted) = item
-                && let Some(replacement_history) = compacted.replacement_history.as_mut()
-            {
-                replacement_history.retain(|response_item| {
+            if let RolloutItem::Compacted(compacted) = item {
+                compacted.retain_replacement_history_items(|response_item| {
                     !is_goal_owned_context_item(response_item)
                         && !is_multi_agent_v2_usage_hint_message(
                             response_item,

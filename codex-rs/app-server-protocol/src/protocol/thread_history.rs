@@ -1291,7 +1291,10 @@ impl ThreadHistoryBuilder {
     /// This keeps compaction-only legacy turns from being dropped by
     /// `finish_current_turn` when they have no renderable items and were not
     /// explicitly opened.
-    fn handle_compacted(&mut self, _payload: &CompactedItem) {
+    fn handle_compacted(&mut self, payload: &CompactedItem) {
+        if payload.replacement_history_media_repair {
+            return;
+        }
         self.ensure_turn().saw_compaction = true;
     }
 
@@ -3661,6 +3664,7 @@ mod tests {
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
+                ..Default::default()
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),
@@ -3711,6 +3715,7 @@ mod tests {
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
+                ..Default::default()
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),

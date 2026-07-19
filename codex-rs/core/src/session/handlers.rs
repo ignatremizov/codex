@@ -12,6 +12,7 @@ use tracing::info_span;
 
 use crate::session::SteerInputError;
 use crate::session::TurnInput;
+use crate::session::rollout_reconstruction::RolloutReconstructionRepairPersistence;
 use crate::session::session::Session;
 use crate::session::session::SessionSettingsUpdate;
 
@@ -564,7 +565,7 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
             return;
         }
     };
-    if let Err(err) = live_thread.flush().await {
+    if let Err(err) = live_thread.flush_canonical().await {
         sess.send_event_raw(Event {
             id: turn_context.sub_id.clone(),
             msg: EventMsg::Error(ErrorEvent {
@@ -593,12 +594,83 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
 
     let rollback_event = ThreadRolledBackEvent { num_turns };
     let rollback_msg = EventMsg::ThreadRolledBack(rollback_event.clone());
-    let replay_items = stored_history
-        .items
-        .into_iter()
-        .chain(std::iter::once(RolloutItem::EventMsg(rollback_msg.clone())))
-        .collect::<Vec<_>>();
-    sess.apply_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
+    let mut replay_items = stored_history.items;
+    let current_reconstruction = sess
+        .prepare_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
+        .await;
+    // Commit a required repair before the rollback marker so every durable prefix is replay-safe.
+    // An interruption can leave the current history certified without rolling it back; once the
+    // marker commits, reconstruction can safely apply the requested rollback to that certified base.
+    if let Some(repair) = current_reconstruction.repair.as_ref().filter(|repair| {
+        matches!(
+            repair.persistence,
+            RolloutReconstructionRepairPersistence::Required
+        )
+    }) {
+        if let Err(err) = live_thread
+            .append_items_and_flush_canonical(repair.items.as_slice())
+            .await
+        {
+            sess.deliver_event_raw(Event {
+                id: turn_context.sub_id.clone(),
+                msg: EventMsg::Error(ErrorEvent {
+                    message: format!(
+                        "failed to persist required compacted-media repair before rolling back thread: {err}"
+                    ),
+                    codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                }),
+            })
+            .await;
+            return;
+        }
+        info!(
+            omitted_image_count = repair.sanitization.omitted_image_count,
+            omitted_inline_media_bytes = repair.sanitization.omitted_inline_media_bytes,
+            "persisted compacted-media rollout repair before rollback"
+        );
+        replay_items.extend(repair.items.iter().cloned());
+    }
+    replay_items.push(RolloutItem::EventMsg(rollback_msg.clone()));
+    let prepared_reconstruction = sess
+        .prepare_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
+        .await;
+    let required_rollback_repair = prepared_reconstruction.repair.as_ref().filter(|repair| {
+        matches!(
+            repair.persistence,
+            RolloutReconstructionRepairPersistence::Required
+        )
+    });
+    let required_rollback_repair_sanitization =
+        required_rollback_repair.map(|repair| repair.sanitization);
+    let mut rollback_items = vec![RolloutItem::EventMsg(rollback_msg.clone())];
+    if let Some(repair) = required_rollback_repair {
+        rollback_items.extend(repair.items.iter().cloned());
+    }
+    if let Err(err) = live_thread
+        .append_items_and_flush_canonical(rollback_items.as_slice())
+        .await
+    {
+        sess.deliver_event_raw(Event {
+            id: turn_context.sub_id.clone(),
+            msg: EventMsg::Error(ErrorEvent {
+                message: format!(
+                    "failed to persist rollback marker before rolling back thread: {err}"
+                ),
+                codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+            }),
+        })
+        .await;
+        return;
+    }
+    if let Some(sanitization) = required_rollback_repair_sanitization {
+        info!(
+            omitted_image_count = sanitization.omitted_image_count,
+            omitted_inline_media_bytes = sanitization.omitted_inline_media_bytes,
+            "persisted rollback marker with required compacted-media repair"
+        );
+    }
+    let applied_reconstruction = sess
+        .install_rollout_reconstruction(turn_context.as_ref(), prepared_reconstruction)
         .await;
     sess.services
         .agent_control
@@ -606,18 +678,11 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         .rearm_reminder(sess.thread_id());
     sess.recompute_token_usage(turn_context.as_ref()).await;
 
-    sess.persist_rollout_items(&[RolloutItem::EventMsg(rollback_msg.clone())])
-        .await;
-    if let Err(err) = sess.flush_rollout().await {
-        sess.send_event(
-            turn_context.as_ref(),
-            EventMsg::Warning(WarningEvent {
-                message: format!(
-                    "Rolled the thread back, but failed to save the rollback marker. Codex will continue retrying. Error: {err}"
-                ),
-            }),
-        )
-        .await;
+    if required_rollback_repair_sanitization.is_none()
+        && let Some(repair) = applied_reconstruction.repair.as_ref()
+        && let Err(err) = sess.persist_reconstruction_repair_with_policy(repair).await
+    {
+        warn!(%err, "failed to persist compacted-media repair after rollback");
     }
 
     sess.deliver_event_raw(Event {

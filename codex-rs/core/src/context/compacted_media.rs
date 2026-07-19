@@ -1,0 +1,581 @@
+use std::collections::VecDeque;
+
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::models::is_local_image_close_tag_text;
+use codex_protocol::models::is_local_image_open_tag_with_path_text;
+
+use super::ContextualUserFragment;
+
+const REOPENABLE_IMAGE_OMISSION: &str =
+    "Image bytes removed after compaction; use view_image with retained image paths if needed.";
+const UNAVAILABLE_IMAGE_OMISSION: &str =
+    "Image bytes removed after compaction; no durable source reference is available.";
+const MIXED_IMAGE_OMISSION: &str = "Image bytes removed after compaction; retained paths can be reopened with view_image, while images without durable source references are unavailable.";
+const COMPACTED_IMAGE_OMISSION_OPEN_TAG: &str = "<compacted_image_omission>";
+const COMPACTED_IMAGE_OMISSION_CLOSE_TAG: &str = "</compacted_image_omission>";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CompactedImageOmission {
+    kind: CompactedImageOmissionKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompactedImageOmissionKind {
+    ReopenableLocalImage,
+    Unavailable,
+    Mixed,
+}
+
+impl CompactedImageOmission {
+    pub(crate) const fn reopenable_local_image() -> Self {
+        Self {
+            kind: CompactedImageOmissionKind::ReopenableLocalImage,
+        }
+    }
+
+    pub(crate) const fn unavailable() -> Self {
+        Self {
+            kind: CompactedImageOmissionKind::Unavailable,
+        }
+    }
+
+    pub(crate) const fn mixed() -> Self {
+        Self {
+            kind: CompactedImageOmissionKind::Mixed,
+        }
+    }
+
+    fn kind_from_text(text: &str) -> Option<CompactedImageOmissionKind> {
+        let body = text
+            .strip_prefix(COMPACTED_IMAGE_OMISSION_OPEN_TAG)?
+            .strip_suffix(COMPACTED_IMAGE_OMISSION_CLOSE_TAG)?;
+        match body {
+            REOPENABLE_IMAGE_OMISSION => Some(CompactedImageOmissionKind::ReopenableLocalImage),
+            UNAVAILABLE_IMAGE_OMISSION => Some(CompactedImageOmissionKind::Unavailable),
+            MIXED_IMAGE_OMISSION => Some(CompactedImageOmissionKind::Mixed),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) fn is_compacted_image_omission_text(text: &str) -> bool {
+    CompactedImageOmission::kind_from_text(text).is_some()
+}
+
+pub(crate) fn compacted_image_omission_text(items: &[ResponseItem]) -> Option<&str> {
+    items.iter().find_map(|item| match item {
+        ResponseItem::Message { content, .. } => content.iter().find_map(|item| match item {
+            ContentItem::InputText { text } | ContentItem::OutputText { text }
+                if is_compacted_image_omission_text(text) =>
+            {
+                Some(text.as_str())
+            }
+            ContentItem::InputText { .. }
+            | ContentItem::OutputText { .. }
+            | ContentItem::InputImage { .. } => None,
+        }),
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => {
+            output.content_items().and_then(|content| {
+                content.iter().find_map(|item| match item {
+                    FunctionCallOutputContentItem::InputText { text }
+                        if is_compacted_image_omission_text(text) =>
+                    {
+                        Some(text.as_str())
+                    }
+                    FunctionCallOutputContentItem::InputText { .. }
+                    | FunctionCallOutputContentItem::InputImage { .. }
+                    | FunctionCallOutputContentItem::EncryptedContent { .. } => None,
+                })
+            })
+        }
+        _ => None,
+    })
+}
+
+/// Builds a model-visible omission that cannot be mistaken for a user turn.
+///
+/// Omission text embedded in a real user message keeps that message's role. This standalone form
+/// is used when compaction retention removes every current-window marker carrier, such as a
+/// tool-output-only suffix.
+pub(crate) fn standalone_compacted_image_omission_message(text: String) -> ResponseItem {
+    debug_assert!(is_compacted_image_omission_text(text.as_str()));
+    ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText { text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+pub(crate) fn is_standalone_compacted_image_omission_message(item: &ResponseItem) -> bool {
+    matches!(
+        item,
+        ResponseItem::Message { role, content, .. }
+            if role == "developer"
+                && matches!(
+                    content.as_slice(),
+                    [ContentItem::InputText { text }]
+                        if is_compacted_image_omission_text(text)
+                )
+    )
+}
+
+impl ContextualUserFragment for CompactedImageOmission {
+    fn role(&self) -> &'static str {
+        "user"
+    }
+
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+
+    fn type_markers() -> (&'static str, &'static str) {
+        (
+            COMPACTED_IMAGE_OMISSION_OPEN_TAG,
+            COMPACTED_IMAGE_OMISSION_CLOSE_TAG,
+        )
+    }
+
+    fn body(&self) -> String {
+        match self.kind {
+            CompactedImageOmissionKind::ReopenableLocalImage => {
+                REOPENABLE_IMAGE_OMISSION.to_string()
+            }
+            CompactedImageOmissionKind::Unavailable => UNAVAILABLE_IMAGE_OMISSION.to_string(),
+            CompactedImageOmissionKind::Mixed => MIXED_IMAGE_OMISSION.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CompactedMediaSanitization {
+    pub(crate) omitted_image_count: usize,
+    pub(crate) omitted_inline_media_bytes: u64,
+    did_rewrite: bool,
+}
+
+impl CompactedMediaSanitization {
+    pub(crate) fn changed(self) -> bool {
+        self.did_rewrite
+    }
+
+    pub(crate) fn accumulate(&mut self, other: Self) {
+        self.omitted_image_count = self
+            .omitted_image_count
+            .saturating_add(other.omitted_image_count);
+        self.omitted_inline_media_bytes = self
+            .omitted_inline_media_bytes
+            .saturating_add(other.omitted_inline_media_bytes);
+        self.did_rewrite |= other.did_rewrite;
+    }
+}
+
+pub(crate) fn sanitize_compacted_media(items: &mut [ResponseItem]) -> CompactedMediaSanitization {
+    sanitize_compacted_media_prefix(items, items.len())
+}
+
+pub(crate) fn sanitize_compacted_media_prefix(
+    items: &mut [ResponseItem],
+    prefix_len: usize,
+) -> CompactedMediaSanitization {
+    let prefix_len = prefix_len.min(items.len());
+    let mut inventory = CompactedMediaInventory::default();
+    for item in items.iter().take(prefix_len) {
+        match item {
+            ResponseItem::Message { content, .. } => {
+                inventory.inspect_message_content(content);
+            }
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
+                if let Some(content) = output.content_items() {
+                    inventory.inspect_tool_output_content(content);
+                }
+            }
+            _ => {}
+        }
+    }
+    if inventory.sanitization.omitted_image_count == 0 && inventory.omission_count <= 1 {
+        return inventory.sanitization;
+    }
+    inventory.sanitization.did_rewrite = true;
+
+    // Emit one bounded model-visible omission fragment for the entire sanitized checkpoint, not
+    // one fragment per image. All canonical source-path wrapper text remains in place.
+    let omission = match (inventory.has_local_reference, inventory.has_unavailable) {
+        (true, true) => CompactedImageOmission::mixed(),
+        (true, false) => CompactedImageOmission::reopenable_local_image(),
+        (false, true) => CompactedImageOmission::unavailable(),
+        (false, false) => CompactedImageOmission::unavailable(),
+    };
+    let target_raw_image = inventory.sanitization.omitted_image_count > 0;
+    let Some(marker_target_index) = items[..prefix_len].iter().rposition(|item| {
+        if target_raw_image {
+            response_item_contains_input_image(item)
+        } else {
+            response_item_contains_compacted_media(item)
+        }
+    }) else {
+        return inventory.sanitization;
+    };
+    let marker_insertion_index = match &items[marker_target_index] {
+        ResponseItem::Message { content, .. } => {
+            let target_index = content
+                .iter()
+                .rposition(|item| {
+                    if target_raw_image {
+                        matches!(item, ContentItem::InputImage { .. })
+                    } else {
+                        content_item_is_compacted_media(item)
+                    }
+                })
+                .unwrap_or(0);
+            content[..target_index]
+                .iter()
+                .filter(|item| !content_item_is_compacted_media(item))
+                .count()
+        }
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => output
+            .content_items()
+            .and_then(|content| {
+                let target_index = content.iter().rposition(|item| {
+                    if target_raw_image {
+                        matches!(item, FunctionCallOutputContentItem::InputImage { .. })
+                    } else {
+                        tool_output_item_is_compacted_media(item)
+                    }
+                })?;
+                Some(
+                    content[..target_index]
+                        .iter()
+                        .filter(|item| !tool_output_item_is_compacted_media(item))
+                        .count(),
+                )
+            })
+            .unwrap_or(0),
+        _ => 0,
+    };
+    for item in items.iter_mut().take(prefix_len) {
+        match item {
+            ResponseItem::Message { content, .. } => {
+                sanitize_message_content(content);
+            }
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
+                if let Some(content) = output.content_items_mut() {
+                    sanitize_tool_output_content(content);
+                }
+            }
+            _ => {}
+        }
+    }
+    let omission_text = omission.render();
+    match &mut items[marker_target_index] {
+        ResponseItem::Message { content, .. } => {
+            content.insert(
+                marker_insertion_index.min(content.len()),
+                ContentItem::InputText {
+                    text: omission_text,
+                },
+            );
+        }
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => {
+            if let Some(content) = output.content_items_mut() {
+                content.insert(
+                    marker_insertion_index.min(content.len()),
+                    FunctionCallOutputContentItem::InputText {
+                        text: omission_text,
+                    },
+                );
+            }
+        }
+        _ => {}
+    }
+    inventory.sanitization
+}
+
+/// Expires image references inherited from a previously compacted window.
+///
+/// Callers sanitize inherited items first so structured canonical wrappers contain no raw image.
+/// This also recognizes wrappers flattened into one retained text item by local compaction. The
+/// current compaction request can still contain those paths, but the newly installed replacement
+/// history should retain references only for images introduced after the latest boundary.
+pub(crate) fn expire_compacted_media_references(items: &mut [ResponseItem]) {
+    for item in items {
+        match item {
+            ResponseItem::Message { content, .. } => {
+                content.retain(|item| {
+                    !matches!(
+                        item,
+                        ContentItem::InputText { text }
+                            if is_compacted_image_omission_text(text)
+                    )
+                });
+                let mut retained = Vec::with_capacity(content.len());
+                let mut content_items = VecDeque::from(std::mem::take(content));
+                while let Some(mut content_item) = content_items.pop_front() {
+                    let wrapper_tail_len = if matches!(
+                        &content_item,
+                        ContentItem::InputText { text }
+                            if is_local_image_open_tag_with_path_text(text)
+                    ) && matches!(
+                        content_items.front(),
+                        Some(ContentItem::InputText { text })
+                            if is_local_image_close_tag_text(text)
+                    ) {
+                        1usize
+                    } else if matches!(
+                        &content_item,
+                        ContentItem::InputText { text }
+                            if is_local_image_open_tag_with_path_text(text)
+                    ) && matches!(
+                        (content_items.front(), content_items.get(1)),
+                        (
+                            Some(ContentItem::InputText { .. }),
+                            Some(ContentItem::InputText { text })
+                        ) if is_local_image_close_tag_text(text)
+                    ) {
+                        // Text-only models normalize the image between these tags into one input
+                        // text placeholder. Treat it as part of the inherited wrapper instead of
+                        // allowing its local path to survive another checkpoint.
+                        2usize
+                    } else if matches!(
+                        &content_item,
+                        ContentItem::InputText { text }
+                            if is_local_image_open_tag_with_path_text(text)
+                    ) && matches!(
+                        (content_items.front(), content_items.get(1)),
+                        (
+                            Some(ContentItem::InputImage { .. }),
+                            Some(ContentItem::InputText { text })
+                        ) if is_local_image_close_tag_text(text)
+                    ) {
+                        // The legacy remote compactor can return the original raw image triplet.
+                        // It has no structural source-window boundary, so expire the whole wrapper
+                        // before central sanitization can turn the image into a retained marker.
+                        2usize
+                    } else {
+                        0usize
+                    };
+                    if wrapper_tail_len == 0 {
+                        let retain_item = match &mut content_item {
+                            ContentItem::InputText { text } => {
+                                expire_flattened_local_image_references(text);
+                                !text.is_empty()
+                            }
+                            ContentItem::OutputText { .. } | ContentItem::InputImage { .. } => true,
+                        };
+                        if retain_item {
+                            retained.push(content_item);
+                        }
+                        continue;
+                    }
+                    for _ in 0..wrapper_tail_len {
+                        let _ = content_items.pop_front();
+                    }
+                }
+                *content = retained;
+            }
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
+                if let Some(content) = output.content_items_mut() {
+                    content.retain(|item| {
+                        !matches!(
+                            item,
+                            FunctionCallOutputContentItem::InputText { text }
+                                if is_compacted_image_omission_text(text)
+                        )
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn expire_flattened_local_image_references(text: &mut String) {
+    const LOCAL_IMAGE_OPEN_PREFIX: &str = "<image name=";
+    const LOCAL_IMAGE_OPEN_SUFFIX: &str = "\">";
+    const LOCAL_IMAGE_CLOSE_TAG: &str = "</image>";
+
+    let mut search_start = 0usize;
+    while let Some(relative_start) = text[search_start..].find(LOCAL_IMAGE_OPEN_PREFIX) {
+        let wrapper_start = search_start.saturating_add(relative_start);
+        let Some(relative_open_end) = text[wrapper_start..].find(LOCAL_IMAGE_OPEN_SUFFIX) else {
+            break;
+        };
+        let open_end = wrapper_start
+            .saturating_add(relative_open_end)
+            .saturating_add(LOCAL_IMAGE_OPEN_SUFFIX.len());
+        if !is_local_image_open_tag_with_path_text(&text[wrapper_start..open_end]) {
+            search_start = open_end;
+            continue;
+        }
+        let Some(relative_close_end) = text[open_end..].find(LOCAL_IMAGE_CLOSE_TAG) else {
+            break;
+        };
+        let wrapper_end = open_end
+            .saturating_add(relative_close_end)
+            .saturating_add(LOCAL_IMAGE_CLOSE_TAG.len());
+        text.replace_range(wrapper_start..wrapper_end, "");
+        search_start = wrapper_start;
+    }
+}
+
+#[derive(Default)]
+struct CompactedMediaInventory {
+    sanitization: CompactedMediaSanitization,
+    has_local_reference: bool,
+    has_unavailable: bool,
+    omission_count: usize,
+}
+
+impl CompactedMediaInventory {
+    fn inspect_message_content(&mut self, content: &[ContentItem]) {
+        for (index, item) in content.iter().enumerate() {
+            match item {
+                ContentItem::InputImage { image_url, .. } => {
+                    // The wrapper is a persisted model-visible path hint, not an authorization
+                    // credential. `view_image` still resolves it through the active environment's
+                    // filesystem policy; this check only decides whether retaining the hint is
+                    // more useful than claiming no source exists.
+                    let has_local_reference = index > 0
+                        && matches!(
+                            &content[index - 1],
+                            ContentItem::InputText { text }
+                                if is_local_image_open_tag_with_path_text(text)
+                        )
+                        && matches!(
+                            content.get(index + 1),
+                            Some(ContentItem::InputText { text })
+                                if is_local_image_close_tag_text(text)
+                        );
+                    self.record_image(image_url, has_local_reference);
+                }
+                ContentItem::InputText { text } => self.record_omission_text(text),
+                ContentItem::OutputText { .. } => {}
+            }
+        }
+    }
+
+    fn inspect_tool_output_content(&mut self, content: &[FunctionCallOutputContentItem]) {
+        for item in content {
+            match item {
+                FunctionCallOutputContentItem::InputImage { image_url, .. } => {
+                    // Structured tool output can be owned by another environment, so it remains
+                    // unavailable without typed provenance.
+                    self.record_image(image_url, /*has_local_reference*/ false);
+                }
+                FunctionCallOutputContentItem::InputText { text } => {
+                    self.record_omission_text(text);
+                }
+                FunctionCallOutputContentItem::EncryptedContent { .. } => {}
+            }
+        }
+    }
+
+    fn record_image(&mut self, image_url: &str, has_local_reference: bool) {
+        self.sanitization.omitted_image_count =
+            self.sanitization.omitted_image_count.saturating_add(1);
+        self.sanitization.omitted_inline_media_bytes = self
+            .sanitization
+            .omitted_inline_media_bytes
+            .saturating_add(u64::try_from(image_url.len()).unwrap_or(u64::MAX));
+        self.has_local_reference |= has_local_reference;
+        self.has_unavailable |= !has_local_reference;
+    }
+
+    fn record_omission_text(&mut self, text: &str) {
+        let Some(kind) = CompactedImageOmission::kind_from_text(text) else {
+            return;
+        };
+        self.omission_count = self.omission_count.saturating_add(1);
+        match kind {
+            CompactedImageOmissionKind::ReopenableLocalImage => {
+                self.has_local_reference = true;
+            }
+            CompactedImageOmissionKind::Unavailable => {
+                self.has_unavailable = true;
+            }
+            CompactedImageOmissionKind::Mixed => {
+                self.has_local_reference = true;
+                self.has_unavailable = true;
+            }
+        }
+    }
+}
+
+fn response_item_contains_compacted_media(item: &ResponseItem) -> bool {
+    match item {
+        ResponseItem::Message { content, .. } => {
+            content.iter().any(content_item_is_compacted_media)
+        }
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => output
+            .content_items()
+            .is_some_and(|content| content.iter().any(tool_output_item_is_compacted_media)),
+        _ => false,
+    }
+}
+
+fn response_item_contains_input_image(item: &ResponseItem) -> bool {
+    match item {
+        ResponseItem::Message { content, .. } => content
+            .iter()
+            .any(|item| matches!(item, ContentItem::InputImage { .. })),
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => {
+            output.content_items().is_some_and(|content| {
+                content
+                    .iter()
+                    .any(|item| matches!(item, FunctionCallOutputContentItem::InputImage { .. }))
+            })
+        }
+        _ => false,
+    }
+}
+
+fn content_item_is_compacted_media(item: &ContentItem) -> bool {
+    match item {
+        ContentItem::InputImage { .. } => true,
+        ContentItem::InputText { text } => is_compacted_image_omission_text(text),
+        ContentItem::OutputText { .. } => false,
+    }
+}
+
+fn tool_output_item_is_compacted_media(item: &FunctionCallOutputContentItem) -> bool {
+    match item {
+        FunctionCallOutputContentItem::InputImage { .. } => true,
+        FunctionCallOutputContentItem::InputText { text } => is_compacted_image_omission_text(text),
+        FunctionCallOutputContentItem::EncryptedContent { .. } => false,
+    }
+}
+
+fn sanitize_message_content(content: &mut Vec<ContentItem>) {
+    let mut sanitized = Vec::with_capacity(content.len());
+    for item in std::mem::take(content) {
+        if !content_item_is_compacted_media(&item) {
+            sanitized.push(item);
+        }
+    }
+    *content = sanitized;
+}
+
+fn sanitize_tool_output_content(content: &mut Vec<FunctionCallOutputContentItem>) {
+    let mut sanitized = Vec::with_capacity(content.len());
+    for item in std::mem::take(content) {
+        if !tool_output_item_is_compacted_media(&item) {
+            sanitized.push(item);
+        }
+    }
+    *content = sanitized;
+}
+
+#[cfg(test)]
+#[path = "compacted_media_tests.rs"]
+mod tests;

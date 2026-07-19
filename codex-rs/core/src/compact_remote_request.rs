@@ -37,6 +37,18 @@ pub(super) async fn run_remote_compact_attempt(
     let mut history = sess.clone_history().await;
     let explicit_mcp_context =
         crate::compact::collect_mcp_server_use_context_items(history.raw_items());
+    let media_sanitization = history.sanitize_compacted_media_prefix();
+    if media_sanitization.changed() {
+        info!(
+            turn_id = %turn_context.sub_id,
+            omitted_image_count = media_sanitization.omitted_image_count,
+            omitted_inline_media_bytes = media_sanitization.omitted_inline_media_bytes,
+            "removed previously compacted media before remote compaction"
+        );
+        analytics_details.omitted_image_count = Some(media_sanitization.omitted_image_count);
+        analytics_details.omitted_inline_media_bytes =
+            Some(media_sanitization.omitted_inline_media_bytes);
+    }
     let base_instructions = sess.get_base_instructions().await;
     let (rewritten_outputs, estimated_deleted_tokens) =
         trim_function_call_history_to_fit_context_window(

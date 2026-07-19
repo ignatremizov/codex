@@ -17,6 +17,7 @@ use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 
 use super::*;
+use crate::build_turns_from_rollout_items;
 use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::TurnError;
 
@@ -160,10 +161,21 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
         first_window_id: None,
         previous_window_id: None,
         window_id: None,
+        ..Default::default()
     }));
 
     assert!(aborted.is_empty());
     assert!(compacted.is_empty());
+}
+
+#[test]
+fn ignores_representation_only_compaction_repairs() {
+    let turns = build_turns_from_rollout_items(&[RolloutItem::Compacted(CompactedItem {
+        replacement_history_media_repair: true,
+        ..Default::default()
+    })]);
+
+    assert!(turns.is_empty());
 }
 
 #[test]

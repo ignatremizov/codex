@@ -1,8 +1,11 @@
 use std::ffi::OsStr;
 use std::fs::File;
+use std::fs::FileTimes;
 use std::fs::Permissions;
 use std::io;
 use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -54,11 +57,78 @@ pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineRead
             Err(err) => return Err(err),
         }
     }
+    let recovery_path = plain_rollout_path(path);
+    tokio::task::spawn_blocking(move || {
+        crate::media_vacuum::recover_compacted_media_backup_if_needed(recovery_path.as_path())
+    })
+    .await
+    .map_err(io::Error::other)??;
     reader::open_once(path).await
 }
 
+/// Opens a seekable read-only representation of a rollout.
+///
+/// Plain rollouts are opened directly. Compressed rollouts are streamed into an unnamed
+/// same-directory temporary file so reverse readers stay bounded without changing the canonical
+/// parent rollout representation.
+pub async fn open_rollout_seekable_reader(path: &Path) -> io::Result<File> {
+    for _ in 0..MAX_NOT_FOUND_RETRIES {
+        let Some(existing_path) = path::existing_rollout_path(path).await else {
+            tokio::time::sleep(OPEN_ROLLOUT_LINE_READER_RETRY_DELAY).await;
+            continue;
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            open_seekable_rollout_path(existing_path.as_path())
+        })
+        .await
+        .map_err(io::Error::other)?;
+        match result {
+            Ok(reader) => return Ok(reader),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                tokio::time::sleep(OPEN_ROLLOUT_LINE_READER_RETRY_DELAY).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    let recovery_path = plain_rollout_path(path);
+    tokio::task::spawn_blocking({
+        let recovery_path = recovery_path.clone();
+        move || {
+            crate::media_vacuum::recover_compacted_media_backup_if_needed(recovery_path.as_path())
+        }
+    })
+    .await
+    .map_err(io::Error::other)??;
+    let existing_path = path::existing_rollout_path(recovery_path.as_path())
+        .await
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("rollout does not exist: {}", path.display()),
+            )
+        })?;
+    tokio::task::spawn_blocking(move || open_seekable_rollout_path(existing_path.as_path()))
+        .await
+        .map_err(io::Error::other)?
+}
+
+fn open_seekable_rollout_path(path: &Path) -> io::Result<File> {
+    if !path::is_compressed_rollout_path(path) {
+        return File::open(path);
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let input = File::open(path)?;
+    let mut decoder = zstd::stream::read::Decoder::new(input)?;
+    let mut output = tempfile::tempfile_in(parent)?;
+    io::copy(&mut decoder, &mut output)?;
+    output.seek(SeekFrom::Start(0))?;
+    Ok(output)
+}
+
 /// Returns the compressed `.jsonl.zst` path for a rollout path.
-#[cfg(test)]
 pub(crate) fn compressed_rollout_path(path: &Path) -> PathBuf {
     path::compressed_rollout_path(path)
 }
@@ -80,22 +150,34 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
     }
     let compressed_path = path::compressed_rollout_path(plain_path.as_path());
     if !compressed_path.exists() {
+        crate::media_vacuum::recover_compacted_media_backup_if_needed(plain_path.as_path())?;
+        if plain_path.exists() {
+            metrics::materialize("recovered_media_vacuum_backup");
+            return Ok(plain_path);
+        }
         metrics::materialize("missing");
         return Ok(plain_path);
     }
 
     let temp_path = temp_path_for(plain_path.as_path(), "decompress");
-    if let Some(parent) = plain_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = plain_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
     let result: io::Result<()> = (|| {
-        let permissions = std::fs::metadata(compressed_path.as_path())?.permissions();
+        let metadata = std::fs::metadata(compressed_path.as_path())?;
+        let permissions = metadata.permissions();
+        let modified = metadata.modified().ok();
         {
             let input = File::open(compressed_path.as_path())?;
             let mut decoder = zstd::stream::read::Decoder::new(input)?;
             let mut output = create_file_with_permissions(temp_path.as_path(), &permissions)?;
             io::copy(&mut decoder, &mut output)?;
             output.flush()?;
+            if let Some(modified) = modified {
+                output.set_times(FileTimes::new().set_modified(modified))?;
+            }
             output.sync_all()?;
         }
         match std::fs::hard_link(temp_path.as_path(), plain_path.as_path()) {
@@ -103,12 +185,20 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
             Err(_) => persist_temp_file_noclobber(temp_path.as_path(), plain_path.as_path())?,
         }
+        // Commit the canonical plain name before removing either recovery representation.
+        crate::media_vacuum::sync_parent_directory(parent)?;
         let _ = std::fs::remove_file(temp_path.as_path());
-        match std::fs::remove_file(compressed_path.as_path()) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
+        #[cfg(unix)]
+        {
+            match std::fs::remove_file(compressed_path.as_path()) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+            crate::media_vacuum::sync_parent_directory(parent)?;
         }
+        // Platforms without a directory durability barrier retain the compressed representation
+        // until a later explicit cleanup can observe the established canonical plain file.
         Ok(())
     })();
     if result.is_err() {

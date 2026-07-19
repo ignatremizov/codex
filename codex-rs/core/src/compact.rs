@@ -7,6 +7,12 @@ use std::time::Instant;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::compacted_history_retention::RetainedMessageTruncation;
+use crate::compacted_history_retention::contains_atomic_compacted_media;
+use crate::compacted_history_retention::truncate_retained_message_to_token_budget;
+use crate::compacted_history_retention::truncate_text_to_approx_token_budget;
+use crate::context::compacted_image_omission_text;
+use crate::context::standalone_compacted_image_omission_message;
 use crate::context::world_state::WorldState;
 use crate::event_mapping::parse_turn_item;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -54,6 +60,7 @@ use codex_utils_output_truncation::truncate_text;
 use futures::prelude::*;
 use tokio::time::timeout;
 use tracing::error;
+use tracing::info;
 
 use codex_model_provider_info::ModelProviderInfo;
 
@@ -267,6 +274,15 @@ async fn run_compact_task_inner_impl(
         &[initial_input_for_turn.into()],
         turn_context.model_info.truncation_policy.into(),
     );
+    let media_sanitization = history.sanitize_compacted_media_prefix();
+    if media_sanitization.changed() {
+        info!(
+            turn_id = %turn_context.sub_id,
+            omitted_image_count = media_sanitization.omitted_image_count,
+            omitted_inline_media_bytes = media_sanitization.omitted_inline_media_bytes,
+            "removed previously compacted media before local compaction"
+        );
+    }
 
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
@@ -373,6 +389,10 @@ async fn run_compact_task_inner_impl(
         )
         .await;
     }
+    let compacted_prefix_len = history_snapshot
+        .compacted_prefix_len()
+        .unwrap_or_default()
+        .min(history_snapshot.raw_items().len());
     let history_items = history_snapshot.raw_items();
     let user_messages = collect_user_messages(history_items);
     let rollout_path = sess.current_rollout_path().await.ok().flatten();
@@ -389,7 +409,7 @@ async fn run_compact_task_inner_impl(
     let summary_for_event_text = summary_for_event(&summary_text);
 
     let mut new_history =
-        build_compacted_history_preserving_mcp_context(history_items, &summary_text);
+        build_local_compacted_history(history_items, compacted_prefix_len, &summary_text);
     if let Some(summary_item) = new_history.last_mut() {
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.
@@ -421,6 +441,8 @@ async fn run_compact_task_inner_impl(
         first_window_id: Some(window_ids.first_window_id.to_string()),
         previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(window_ids.window_id.to_string()),
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
     sess.replace_compacted_history(
         Arc::clone(&turn_context),
@@ -464,6 +486,8 @@ pub(crate) struct CompactionAnalyticsAttempt {
 pub(crate) struct CompactionAnalyticsDetails {
     pub(crate) active_context_tokens_before: Option<i64>,
     pub(crate) retained_image_count: Option<usize>,
+    pub(crate) omitted_image_count: Option<usize>,
+    pub(crate) omitted_inline_media_bytes: Option<u64>,
     pub(crate) compaction_summary_tokens: Option<i64>,
     pub(crate) cached_input_tokens: Option<i64>,
     pub(crate) cache_write_input_tokens: Option<i64>,
@@ -502,6 +526,8 @@ impl CompactionAnalyticsAttempt {
         let CompactionAnalyticsDetails {
             active_context_tokens_before,
             retained_image_count,
+            omitted_image_count,
+            omitted_inline_media_bytes,
             compaction_summary_tokens,
             cached_input_tokens,
             cache_write_input_tokens,
@@ -526,6 +552,8 @@ impl CompactionAnalyticsAttempt {
                 active_context_tokens_before,
                 active_context_tokens_after,
                 retained_image_count,
+                omitted_image_count,
+                omitted_inline_media_bytes,
                 compaction_summary_tokens,
                 cached_input_tokens,
                 cache_write_input_tokens,
@@ -733,19 +761,59 @@ pub(crate) fn build_compacted_history(
 fn build_compacted_history_preserving_mcp_context(
     history_items: &[ResponseItem],
     summary_text: &str,
+    max_tokens: usize,
 ) -> Vec<ResponseItem> {
-    let retained_history = collect_mcp_and_recent_user_items_with_limit(
-        history_items,
-        COMPACT_USER_MESSAGE_MAX_TOKENS,
-    );
+    let retained_history = collect_mcp_and_recent_user_items_with_limit(history_items, max_tokens);
     build_compacted_history_with_limit(retained_history, &[], summary_text, 0)
+}
+
+fn build_local_compacted_history(
+    history_items: &[ResponseItem],
+    compacted_prefix_len: usize,
+    summary_text: &str,
+) -> Vec<ResponseItem> {
+    let mut replacement_history_items = history_items.to_vec();
+    let compacted_prefix_len = compacted_prefix_len.min(replacement_history_items.len());
+    let _ = crate::context::sanitize_compacted_media_prefix(
+        replacement_history_items.as_mut_slice(),
+        compacted_prefix_len,
+    );
+    crate::context::expire_compacted_media_references(
+        &mut replacement_history_items[..compacted_prefix_len],
+    );
+    let _ = crate::context::sanitize_compacted_media(
+        &mut replacement_history_items[compacted_prefix_len..],
+    );
+    let current_omission_text =
+        compacted_image_omission_text(&replacement_history_items[compacted_prefix_len..])
+            .map(str::to_owned);
+    let retained_message_budget = current_omission_text
+        .as_deref()
+        .map_or(COMPACT_USER_MESSAGE_MAX_TOKENS, |omission| {
+            COMPACT_USER_MESSAGE_MAX_TOKENS.saturating_sub(approx_token_count(omission))
+        });
+    let mut compacted_history = build_compacted_history_preserving_mcp_context(
+        replacement_history_items.as_slice(),
+        summary_text,
+        retained_message_budget,
+    );
+    if compacted_image_omission_text(&compacted_history).is_none()
+        && let Some(omission_text) = current_omission_text
+    {
+        let insertion_index = compacted_history.len().saturating_sub(1);
+        compacted_history.insert(
+            insertion_index,
+            standalone_compacted_image_omission_message(omission_text),
+        );
+    }
+    compacted_history
 }
 
 fn collect_mcp_and_recent_user_items_with_limit(
     history_items: &[ResponseItem],
     max_tokens: usize,
 ) -> Vec<ResponseItem> {
-    let mut selected_user_messages: HashMap<usize, String> = HashMap::new();
+    let mut selected_user_items: HashMap<usize, ResponseItem> = HashMap::new();
     let mut remaining = max_tokens;
     if max_tokens > 0 {
         for (index, item) in history_items.iter().enumerate().rev() {
@@ -760,13 +828,34 @@ fn collect_mcp_and_recent_user_items_with_limit(
                 continue;
             }
             let tokens = approx_token_count(&message);
+            let contains_atomic_media = matches!(
+                item,
+                ResponseItem::Message { content, .. }
+                    if contains_atomic_compacted_media(content)
+            );
             if tokens <= remaining {
-                selected_user_messages.insert(index, message);
-                remaining = remaining.saturating_sub(tokens);
-            } else {
-                selected_user_messages.insert(
+                selected_user_items.insert(
                     index,
-                    truncate_text(&message, TruncationPolicy::Tokens(remaining)),
+                    if contains_atomic_media {
+                        item.clone()
+                    } else {
+                        user_message_item(message)
+                    },
+                );
+                remaining = remaining.saturating_sub(tokens);
+            } else if contains_atomic_media {
+                match truncate_retained_message_to_token_budget(item.clone(), remaining) {
+                    RetainedMessageTruncation::Retained(truncated_item) => {
+                        selected_user_items.insert(index, *truncated_item);
+                    }
+                    RetainedMessageTruncation::OmissionDidNotFit
+                    | RetainedMessageTruncation::Empty => {}
+                }
+                break;
+            } else {
+                selected_user_items.insert(
+                    index,
+                    user_message_item(truncate_text_to_approx_token_budget(&message, remaining)),
                 );
                 break;
             }
@@ -780,9 +869,7 @@ fn collect_mcp_and_recent_user_items_with_limit(
             if is_mcp_server_use_context_item(item) {
                 return Some(item.clone());
             }
-            selected_user_messages
-                .get(&index)
-                .map(|message| user_message_item(message.clone()))
+            selected_user_items.get(&index).cloned()
         })
         .collect()
 }

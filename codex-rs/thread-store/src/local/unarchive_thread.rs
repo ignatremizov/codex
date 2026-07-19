@@ -1,5 +1,7 @@
 use codex_rollout::find_archived_thread_path_by_id_str;
 use codex_rollout::read_thread_item_from_rollout;
+use codex_rollout::remove_compacted_media_vacuum_backups;
+use codex_rollout::remove_obsolete_compressed_rollout_sibling;
 use codex_rollout::rollout_date_parts;
 
 use super::LocalThreadStore;
@@ -7,6 +9,7 @@ use super::helpers::matching_rollout_file_name;
 use super::helpers::scoped_rollout_path;
 use super::helpers::stored_thread_from_rollout_item;
 use super::helpers::touch_modified_time;
+use super::helpers::validate_rollout_for_lifecycle;
 use crate::ArchiveThreadParams;
 use crate::StoredThread;
 use crate::ThreadStoreError;
@@ -17,6 +20,7 @@ pub(super) async fn unarchive_thread(
     params: ArchiveThreadParams,
 ) -> ThreadStoreResult<StoredThread> {
     let thread_id = params.thread_id;
+    let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
     let state_db_ctx = store.state_db().await;
     let archived_path = find_archived_thread_path_by_id_str(
         store.config.codex_home.as_path(),
@@ -52,6 +56,26 @@ pub(super) async fn unarchive_thread(
             ),
         });
     };
+    validate_rollout_for_lifecycle(canonical_archived_path.as_path(), thread_id).await?;
+    let vacuum_rollout_path = codex_rollout::plain_rollout_path(&canonical_archived_path);
+    remove_compacted_media_vacuum_backups(vacuum_rollout_path.as_path()).map_err(|err| {
+        ThreadStoreError::Internal {
+            message: format!(
+                "failed to remove compacted-media vacuum backups before unarchiving `{}`: {err}",
+                vacuum_rollout_path.display()
+            ),
+        }
+    })?;
+    if canonical_archived_path == vacuum_rollout_path {
+        remove_obsolete_compressed_rollout_sibling(vacuum_rollout_path.as_path()).map_err(
+            |err| ThreadStoreError::Internal {
+                message: format!(
+                    "failed to remove obsolete compressed rollout before unarchiving `{}`: {err}",
+                    vacuum_rollout_path.display()
+                ),
+            },
+        )?;
+    }
 
     let dest_dir = store
         .config
@@ -123,6 +147,18 @@ mod tests {
         let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
         let archived_path = write_archived_session_file(home.path(), "2025-01-03T13-00-00", uuid)
             .expect("archived session file");
+        let compressed_path = archived_path.with_extension("jsonl.zst");
+        std::fs::write(&compressed_path, b"obsolete compressed sibling")
+            .expect("write compressed sibling");
+        let backup_path = archived_path.with_file_name(format!(
+            ".{}.pre-media-vacuum-{}.bak",
+            archived_path
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .expect("UTF-8 rollout file name"),
+            Uuid::now_v7()
+        ));
+        std::fs::hard_link(&archived_path, &backup_path).expect("retained vacuum backup");
 
         let thread = store
             .unarchive_thread(ArchiveThreadParams { thread_id })
@@ -130,6 +166,8 @@ mod tests {
             .expect("unarchive thread");
 
         assert!(!archived_path.exists());
+        assert!(!compressed_path.exists());
+        assert!(!backup_path.exists());
         let restored_path = home
             .path()
             .join("sessions/2025/01/03")
@@ -197,5 +235,40 @@ mod tests {
         assert_eq!(updated.rollout_path, restored_path);
         assert_eq!(updated.archived_at, None);
         assert_eq!(updated.recency_at, metadata.recency_at);
+    }
+
+    #[tokio::test]
+    async fn unarchive_thread_preserves_recovery_artifacts_for_invalid_canonical_rollout() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(207);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let archived_path = write_archived_session_file(home.path(), "2025-01-03T13-00-00", uuid)
+            .expect("archived session file");
+        let backup_path = archived_path.with_file_name(format!(
+            ".{}.pre-media-vacuum-{}.bak",
+            archived_path
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .expect("UTF-8 rollout file name"),
+            Uuid::now_v7()
+        ));
+        std::fs::hard_link(&archived_path, &backup_path).expect("retained vacuum backup");
+        let compressed_path = archived_path.with_extension("jsonl.zst");
+        std::fs::write(&compressed_path, b"compressed recovery representation")
+            .expect("write compressed sibling");
+        let invalid_path = archived_path.with_file_name("invalid-rollout.jsonl");
+        std::fs::write(&invalid_path, b"invalid canonical rollout\n")
+            .expect("write invalid rollout");
+        std::fs::rename(invalid_path, &archived_path).expect("replace canonical rollout");
+
+        store
+            .unarchive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect_err("invalid canonical rollout must not be unarchived");
+
+        assert!(archived_path.exists());
+        assert!(backup_path.exists());
+        assert!(compressed_path.exists());
     }
 }

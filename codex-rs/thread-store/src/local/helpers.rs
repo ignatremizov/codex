@@ -13,10 +13,13 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::NetworkAccess;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
 use codex_rollout::ThreadItem;
+use codex_rollout::open_rollout_line_reader;
 use codex_state::ThreadMetadata;
 
 use crate::StoredThread;
@@ -211,6 +214,83 @@ fn parse_legacy_sandbox_policy(value: &str) -> serde_json::Result<SandboxPolicy>
             }),
             _ => serde_json::from_value(serde_json::Value::String(value.to_string())),
         })
+}
+
+pub(super) async fn validate_rollout_for_lifecycle(
+    rollout_path: &Path,
+    thread_id: ThreadId,
+) -> ThreadStoreResult<()> {
+    let mut reader = open_rollout_line_reader(rollout_path)
+        .await
+        .map_err(|err| ThreadStoreError::InvalidRequest {
+            message: format!(
+                "failed to open rollout path `{}` for validation: {err}",
+                rollout_path.display()
+            ),
+        })?;
+    let first_record = loop {
+        match reader
+            .next_line()
+            .await
+            .map_err(|err| ThreadStoreError::InvalidRequest {
+                message: format!(
+                    "failed to read rollout path `{}` through EOF: {err}",
+                    rollout_path.display()
+                ),
+            })? {
+            Some(line) if line.trim().is_empty() => {}
+            Some(line) => break line,
+            None => {
+                return Err(ThreadStoreError::InvalidRequest {
+                    message: format!(
+                        "rollout path `{}` does not contain session metadata",
+                        rollout_path.display()
+                    ),
+                });
+            }
+        }
+    };
+    let first_record =
+        serde_json::from_str::<RolloutLine>(first_record.as_str()).map_err(|err| {
+            ThreadStoreError::InvalidRequest {
+                message: format!(
+                    "rollout path `{}` does not start with readable session metadata: {err}",
+                    rollout_path.display()
+                ),
+            }
+        })?;
+    let RolloutItem::SessionMeta(session_meta) = first_record.item else {
+        return Err(ThreadStoreError::InvalidRequest {
+            message: format!(
+                "rollout path `{}` does not start with session metadata",
+                rollout_path.display()
+            ),
+        });
+    };
+    if session_meta.meta.id != thread_id {
+        return Err(ThreadStoreError::InvalidRequest {
+            message: format!(
+                "rollout path `{}` belongs to thread {}, not {thread_id}",
+                rollout_path.display(),
+                session_meta.meta.id
+            ),
+        });
+    }
+    // Continue through EOF on the same reader before retiring recovery artifacts. In particular, a
+    // compressed rollout can yield valid metadata and preview records before a corrupt/truncated
+    // tail reports an error.
+    while reader
+        .next_line()
+        .await
+        .map_err(|err| ThreadStoreError::InvalidRequest {
+            message: format!(
+                "failed to read rollout path `{}` through EOF: {err}",
+                rollout_path.display()
+            ),
+        })?
+        .is_some()
+    {}
+    Ok(())
 }
 
 pub(super) fn git_info_from_parts(
