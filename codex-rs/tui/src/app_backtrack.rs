@@ -691,7 +691,7 @@ fn backtrack_prompt_turn_index(
     let Some(ThreadItem::UserMessage { content, .. }) = turn.items.get(item_index) else {
         bail!("the selected prompt was not found in the persisted thread");
     };
-    let display = ChatWidget::user_message_display_from_inputs(&content);
+    let display = ChatWidget::user_message_display_from_inputs(content);
     let selected_local_images = prompt.local_images.iter().map(|image| &image.path);
     if prompt.text != display.message
         || prompt.text_elements != display.text_elements
@@ -700,7 +700,7 @@ fn backtrack_prompt_turn_index(
     {
         bail!("the selected transcript prompt no longer matches the persisted thread");
     }
-    prompt.mention_bindings = mention_bindings_from_user_inputs(&content, &display.message);
+    prompt.mention_bindings = mention_bindings_from_user_inputs(content, &display.message);
     Ok(turn_index)
 }
 
