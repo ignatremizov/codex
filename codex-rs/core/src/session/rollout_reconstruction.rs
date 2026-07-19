@@ -397,7 +397,7 @@ impl Session {
             base_compacted_item,
             previous_turn_settings,
             reference_context_item,
-            world_state_replay,
+            mut world_state_replay,
             window,
             ..
         } = replay_state;
