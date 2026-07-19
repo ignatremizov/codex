@@ -532,6 +532,7 @@ mod tests {
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            ..Default::default()
         });
 
         let first = sync

@@ -12,6 +12,13 @@ use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::compact_remote::process_compacted_history;
 use crate::compact_remote::should_keep_compacted_history_item;
+use crate::compacted_history_retention::RetainedMessageTruncation;
+use crate::compacted_history_retention::truncate_retained_message_to_token_budget;
+use crate::context::CompactedMediaSanitization;
+use crate::context::expire_compacted_media_references;
+use crate::context::is_compacted_image_omission_text;
+use crate::context::sanitize_compacted_media;
+use crate::context::standalone_compacted_image_omission_message;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -33,16 +40,15 @@ use codex_protocol::items::CONTEXT_COMPACTION_DECODING_MESSAGE;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TokenUsage;
-use codex_protocol::protocol::TruncationPolicy;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_utils_output_truncation::approx_token_count;
-use codex_utils_output_truncation::truncate_text;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -306,6 +312,7 @@ async fn run_remote_compact_task_inner_impl(
     };
     let RemoteCompactV2Attempt {
         trace_input_history,
+        compacted_prefix_len,
         prompt_input,
         compaction_output,
         token_usage,
@@ -326,10 +333,25 @@ async fn run_remote_compact_task_inner_impl(
         analytics_details.cached_input_tokens = Some(token_usage.cached_input_tokens);
         analytics_details.cache_write_input_tokens = Some(token_usage.cache_write_input_tokens);
     }
-    let (compacted_history, retained_images) =
-        build_v2_compacted_history(&prompt_input, compaction_output);
+    let (compacted_history, media_sanitization) = build_v2_compacted_history(
+        &trace_input_history,
+        compacted_prefix_len,
+        compaction_output,
+    );
     let explicit_mcp_context = crate::compact::collect_mcp_server_use_context_items(&prompt_input);
-    analytics_details.retained_image_count = Some(retained_images);
+    analytics_details.retained_image_count = Some(0);
+    analytics_details.omitted_image_count = Some(
+        analytics_details
+            .omitted_image_count
+            .unwrap_or_default()
+            .saturating_add(media_sanitization.omitted_image_count),
+    );
+    analytics_details.omitted_inline_media_bytes = Some(
+        analytics_details
+            .omitted_inline_media_bytes
+            .unwrap_or_default()
+            .saturating_add(media_sanitization.omitted_inline_media_bytes),
+    );
     let (new_window_number, new_window_ids) = sess.advance_auto_compact_window().await;
     let (mut new_history, world_state_baseline) = process_compacted_history(
         sess.as_ref(),
@@ -357,6 +379,8 @@ async fn run_remote_compact_task_inner_impl(
         first_window_id: Some(new_window_ids.first_window_id.to_string()),
         previous_window_id: new_window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(new_window_ids.window_id.to_string()),
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
     let final_history = sess
         .replace_compacted_history(
@@ -516,23 +540,107 @@ async fn collect_compaction_output(
 }
 
 fn build_v2_compacted_history(
-    prompt_input: &[ResponseItem],
+    replacement_history_input: &[ResponseItem],
+    compacted_prefix_len: usize,
     compaction_output: ResponseItem,
-) -> (Vec<ResponseItem>, usize) {
-    let retained = prompt_input
+) -> (Vec<ResponseItem>, CompactedMediaSanitization) {
+    let compacted_prefix_len = compacted_prefix_len.min(replacement_history_input.len());
+    // Partition only the cloned replacement-history candidates. The compaction request has
+    // already seen inherited paths, while the next checkpoint should keep references introduced
+    // in the current window and let older paths age out like other compacted context.
+    let mut inherited = replacement_history_input[..compacted_prefix_len].to_vec();
+    let mut current = replacement_history_input[compacted_prefix_len..].to_vec();
+    let inherited_retention = inherited
         .iter()
-        .filter(|item| is_retained_for_remote_compaction_v2(item))
-        .filter(|item| should_keep_compacted_history_item(item))
-        .cloned()
+        .map(|item| {
+            is_retained_for_remote_compaction_v2(item) && should_keep_compacted_history_item(item)
+        })
         .collect::<Vec<_>>();
-    let mut retained =
-        truncate_retained_messages_for_remote_compaction(retained, RETAINED_MESSAGE_TOKEN_BUDGET);
-    let retained_image_count = retained
+    let current_retention = current
         .iter()
-        .map(retained_input_image_count)
-        .sum::<usize>();
+        .map(|item| {
+            is_retained_for_remote_compaction_v2(item) && should_keep_compacted_history_item(item)
+        })
+        .collect::<Vec<_>>();
+
+    let mut media_sanitization = sanitize_compacted_media(&mut inherited);
+    expire_compacted_media_references(&mut inherited);
+    media_sanitization.accumulate(sanitize_compacted_media(&mut current));
+    // Sanitization can place the checkpoint-wide omission marker in a tool output because that was
+    // the latest media-bearing item. Remote-v2 retention drops tool outputs, so capture the marker
+    // before filtering and rehome it into a retained current-window message below.
+    let current_omission_text = current.iter().find_map(|item| match item {
+        ResponseItem::Message { content, .. } => content.iter().find_map(|item| match item {
+            ContentItem::InputText { text } | ContentItem::OutputText { text }
+                if is_compacted_image_omission_text(text) =>
+            {
+                Some(text.clone())
+            }
+            ContentItem::InputText { .. }
+            | ContentItem::OutputText { .. }
+            | ContentItem::InputImage { .. } => None,
+        }),
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => {
+            output.content_items().and_then(|content| {
+                content.iter().find_map(|item| match item {
+                    FunctionCallOutputContentItem::InputText { text }
+                        if is_compacted_image_omission_text(text) =>
+                    {
+                        Some(text.clone())
+                    }
+                    FunctionCallOutputContentItem::InputText { .. }
+                    | FunctionCallOutputContentItem::InputImage { .. }
+                    | FunctionCallOutputContentItem::EncryptedContent { .. } => None,
+                })
+            })
+        }
+        _ => None,
+    });
+    inherited = inherited
+        .into_iter()
+        .zip(inherited_retention)
+        .filter_map(|(item, retain)| {
+            (retain
+                && !matches!(
+                    &item,
+                    ResponseItem::Message { content, .. } if content.is_empty()
+                ))
+            .then_some(item)
+        })
+        .collect();
+    current = current
+        .into_iter()
+        .zip(current_retention)
+        .filter_map(|(item, retain)| retain.then_some(item))
+        .collect();
+    let current_has_omission = current.iter().any(|item| {
+        matches!(
+            item,
+            ResponseItem::Message { content, .. }
+                if content.iter().any(|item| {
+                    matches!(
+                        item,
+                        ContentItem::InputText { text } | ContentItem::OutputText { text }
+                            if is_compacted_image_omission_text(text)
+                    )
+                })
+        )
+    });
+    if !current_has_omission && let Some(omission_text) = current_omission_text {
+        if let Some(ResponseItem::Message { content, .. }) = current.last_mut() {
+            content.push(ContentItem::InputText {
+                text: omission_text,
+            });
+        } else {
+            current.push(standalone_compacted_image_omission_message(omission_text));
+        }
+    }
+    inherited.extend(current);
+    let mut retained =
+        truncate_retained_messages_for_remote_compaction(inherited, RETAINED_MESSAGE_TOKEN_BUDGET);
     retained.push(compaction_output);
-    (retained, retained_image_count)
+    (retained, media_sanitization)
 }
 
 fn is_retained_for_remote_compaction_v2(item: &ResponseItem) -> bool {
@@ -541,17 +649,6 @@ fn is_retained_for_remote_compaction_v2(item: &ResponseItem) -> bool {
     };
 
     matches!(role.as_str(), "user" | "developer" | "system")
-}
-
-fn retained_input_image_count(item: &ResponseItem) -> usize {
-    let ResponseItem::Message { content, .. } = item else {
-        return 0;
-    };
-
-    content
-        .iter()
-        .filter(|item| matches!(item, ContentItem::InputImage { .. }))
-        .count()
 }
 
 fn truncate_retained_messages_for_remote_compaction(
@@ -569,11 +666,15 @@ fn truncate_retained_messages_for_remote_compaction(
         if token_count <= remaining {
             truncated_reversed.push(item);
             remaining = remaining.saturating_sub(token_count);
-        } else if let Some(truncated_item) =
-            truncate_message_text_to_token_budget(item, /*max_tokens*/ remaining)
-        {
-            truncated_reversed.push(truncated_item);
-            remaining = 0;
+        } else {
+            match truncate_retained_message_to_token_budget(item, /*max_tokens*/ remaining) {
+                RetainedMessageTruncation::Retained(truncated_item) => {
+                    truncated_reversed.push(*truncated_item);
+                    remaining = 0;
+                }
+                RetainedMessageTruncation::OmissionDidNotFit => remaining = 0,
+                RetainedMessageTruncation::Empty => {}
+            }
         }
     }
     truncated_reversed.reverse();
@@ -596,62 +697,14 @@ fn message_text_token_count(item: &ResponseItem) -> usize {
         .sum()
 }
 
-fn truncate_message_text_to_token_budget(
-    item: ResponseItem,
-    max_tokens: usize,
-) -> Option<ResponseItem> {
-    let ResponseItem::Message {
-        id,
-        role,
-        content,
-        phase,
-        internal_chat_message_metadata_passthrough: metadata,
-    } = item
-    else {
-        return Some(item);
-    };
-
-    let mut remaining = max_tokens;
-    let mut truncated_content = Vec::with_capacity(content.len());
-    for mut content_item in content {
-        match &mut content_item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                if remaining == 0 {
-                    continue;
-                }
-
-                let token_count = approx_token_count(text);
-                if token_count <= remaining {
-                    remaining = remaining.saturating_sub(token_count);
-                } else {
-                    *text = truncate_text(text, TruncationPolicy::Tokens(remaining));
-                    remaining = 0;
-                }
-                if !text.is_empty() {
-                    truncated_content.push(content_item);
-                }
-            }
-            ContentItem::InputImage { .. } => truncated_content.push(content_item),
-        }
-    }
-
-    if truncated_content.is_empty() {
-        return None;
-    }
-
-    Some(ResponseItem::Message {
-        id,
-        role,
-        content: truncated_content,
-        phase,
-        internal_chat_message_metadata_passthrough: metadata,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::CompactedImageOmission;
+    use crate::context::ContextualUserFragment;
+    use crate::context::sanitize_compacted_media_prefix;
     use codex_protocol::models::ContentItem;
+    use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::MessagePhase;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;
@@ -711,7 +764,8 @@ mod tests {
             internal_chat_message_metadata_passthrough: None,
         };
 
-        let (history, _) = build_v2_compacted_history(&input, output.clone());
+        let (history, _) =
+            build_v2_compacted_history(&input, /*compacted_prefix_len*/ 0, output.clone());
 
         assert_eq!(
             history,
@@ -740,13 +794,14 @@ mod tests {
             internal_chat_message_metadata_passthrough: None,
         };
 
-        let (history, _) = build_v2_compacted_history(&input, output.clone());
+        let (history, _) =
+            build_v2_compacted_history(&input, /*compacted_prefix_len*/ 0, output.clone());
 
         assert_eq!(history, vec![old, new, output]);
     }
 
     #[test]
-    fn build_v2_compacted_history_counts_retained_input_images() {
+    fn build_v2_compacted_history_sanitizes_retained_input_images() {
         let input = vec![ResponseItem::Message {
             id: None,
             role: "user".to_string(),
@@ -772,9 +827,269 @@ mod tests {
             internal_chat_message_metadata_passthrough: None,
         };
 
-        let (_, retained_image_count) = build_v2_compacted_history(&input, output);
+        let (history, sanitization) =
+            build_v2_compacted_history(&input, /*compacted_prefix_len*/ 0, output);
 
-        assert_eq!(retained_image_count, 2);
+        assert_eq!(sanitization.omitted_image_count, 2);
+        assert_eq!(sanitization.omitted_inline_media_bytes, 50);
+        assert!(
+            history.iter().all(|item| {
+                !matches!(
+                    item,
+                    ResponseItem::Message { content, .. }
+                        if content
+                            .iter()
+                            .any(|item| matches!(item, ContentItem::InputImage { .. }))
+                )
+            }),
+            "compacted history must not retain inline image payloads"
+        );
+    }
+
+    #[test]
+    fn build_v2_compacted_history_rehomes_omission_from_filtered_tool_output() {
+        let omission = CompactedImageOmission::unavailable().render();
+        let mut input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![
+                    ContentItem::InputText {
+                        text: "user".to_string(),
+                    },
+                    ContentItem::InputImage {
+                        image_url: "data:image/png;base64,user".to_string(),
+                        detail: None,
+                    },
+                ],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: "tool-call".to_string(),
+                output: FunctionCallOutputPayload::from_content_items(vec![
+                    FunctionCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,tool".to_string(),
+                        detail: None,
+                    },
+                ]),
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ];
+        sanitize_compacted_media(&mut input);
+        let output = ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "new".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        };
+
+        let (history, _) =
+            build_v2_compacted_history(&input, /*compacted_prefix_len*/ 0, output.clone());
+
+        assert_eq!(
+            history,
+            vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![
+                        ContentItem::InputText {
+                            text: "user".to_string(),
+                        },
+                        ContentItem::InputText { text: omission },
+                    ],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                output,
+            ]
+        );
+    }
+
+    #[test]
+    fn build_v2_compacted_history_retains_tool_only_current_window_omission() {
+        let input = vec![ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: "tool-call".to_string(),
+            output: FunctionCallOutputPayload::from_content_items(vec![
+                FunctionCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,tool".to_string(),
+                    detail: None,
+                },
+            ]),
+            internal_chat_message_metadata_passthrough: None,
+        }];
+        let output = ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "new".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        };
+
+        let (history, sanitization) =
+            build_v2_compacted_history(&input, /*compacted_prefix_len*/ 0, output.clone());
+
+        assert_eq!(sanitization.omitted_image_count, 1);
+        assert_eq!(
+            history,
+            vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "developer".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: CompactedImageOmission::unavailable().render(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                output,
+            ]
+        );
+        assert!(should_keep_compacted_history_item(&history[0]));
+        assert!(!crate::context_manager::is_user_turn_boundary(&history[0]));
+    }
+
+    #[test]
+    fn build_v2_compacted_history_keeps_only_current_window_image_paths() {
+        let old_path = "/tmp/old-window.png";
+        let current_path = "/tmp/current-window.png";
+        let mut input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![
+                    ContentItem::InputText {
+                        text: format!("<image name=[Image #1] path=\"{old_path}\">"),
+                    },
+                    ContentItem::InputImage {
+                        image_url: "data:image/png;base64,old".to_string(),
+                        detail: None,
+                    },
+                    ContentItem::InputText {
+                        text: "</image>".to_string(),
+                    },
+                    ContentItem::InputText {
+                        text: "old image context".to_string(),
+                    },
+                ],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::Compaction {
+                id: None,
+                encrypted_content: "previous summary".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![
+                    ContentItem::InputText {
+                        text: format!("<image name=[Image #2] path=\"{current_path}\">"),
+                    },
+                    ContentItem::InputImage {
+                        image_url: "data:image/png;base64,current".to_string(),
+                        detail: None,
+                    },
+                    ContentItem::InputText {
+                        text: "</image>".to_string(),
+                    },
+                    ContentItem::InputText {
+                        text: "current image context".to_string(),
+                    },
+                ],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ];
+        let pre_compaction_sanitization =
+            sanitize_compacted_media_prefix(&mut input, /*prefix_len*/ 1);
+        let output = ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "new summary".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        };
+
+        let (history, sanitization) =
+            build_v2_compacted_history(&input, /*compacted_prefix_len*/ 2, output.clone());
+
+        assert_eq!(pre_compaction_sanitization.omitted_image_count, 1);
+        assert_eq!(sanitization.omitted_image_count, 1);
+        assert_eq!(
+            history,
+            vec![
+                message("user", "old image context", /*phase*/ None),
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![
+                        ContentItem::InputText {
+                            text: format!("<image name=[Image #2] path=\"{current_path}\">"),
+                        },
+                        ContentItem::InputText {
+                            text: CompactedImageOmission::reopenable_local_image().render(),
+                        },
+                        ContentItem::InputText {
+                            text: "</image>".to_string(),
+                        },
+                        ContentItem::InputText {
+                            text: "current image context".to_string(),
+                        },
+                    ],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                output,
+            ]
+        );
+    }
+
+    #[test]
+    fn build_v2_compacted_history_expires_paths_when_current_window_has_no_images() {
+        let old_path = "/tmp/old-window.png";
+        let mut input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![
+                    ContentItem::InputText {
+                        text: format!("<image name=[Image #1] path=\"{old_path}\">"),
+                    },
+                    ContentItem::InputImage {
+                        image_url: "data:image/png;base64,old".to_string(),
+                        detail: None,
+                    },
+                    ContentItem::InputText {
+                        text: "</image>".to_string(),
+                    },
+                    ContentItem::InputText {
+                        text: "old image context".to_string(),
+                    },
+                ],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            message("user", "current text only", /*phase*/ None),
+        ];
+        sanitize_compacted_media_prefix(&mut input, /*prefix_len*/ 1);
+        let output = ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "new summary".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        };
+
+        let (history, sanitization) =
+            build_v2_compacted_history(&input, /*compacted_prefix_len*/ 1, output.clone());
+
+        assert_eq!(sanitization, CompactedMediaSanitization::default());
+        assert_eq!(
+            history,
+            vec![
+                message("user", "old image context", /*phase*/ None),
+                message("user", "current text only", /*phase*/ None),
+                output,
+            ]
+        );
     }
 
     #[test]
@@ -797,6 +1112,73 @@ mod tests {
                 new,
             ]
         );
+    }
+
+    #[test]
+    fn retained_history_truncation_keeps_omission_fragments_atomic() {
+        let omission = CompactedImageOmission::unavailable().render();
+        let newest = message("user", "new", /*phase*/ None);
+        let retained = vec![
+            message("user", "older", /*phase*/ None),
+            message("user", omission.as_str(), /*phase*/ None),
+            newest.clone(),
+        ];
+
+        let truncated =
+            truncate_retained_messages_for_remote_compaction(retained, /*max_tokens*/ 2);
+
+        assert_eq!(truncated, vec![newest]);
+    }
+
+    #[test]
+    fn retained_history_truncation_drops_message_when_text_exhausts_marker_budget() {
+        let omission = CompactedImageOmission::unavailable().render();
+        let retained = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![
+                ContentItem::InputText {
+                    text: "abcdefgh".to_string(),
+                },
+                ContentItem::InputText { text: omission },
+            ],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }];
+
+        let truncated =
+            truncate_retained_messages_for_remote_compaction(retained, /*max_tokens*/ 1);
+
+        assert_eq!(truncated, Vec::<ResponseItem>::new());
+    }
+
+    #[test]
+    fn retained_history_truncation_keeps_local_image_reference_wrapper_atomic() {
+        let retained = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![
+                ContentItem::InputText {
+                    text: "<image name=[Image #1] path=\"/tmp/context.png\">".to_string(),
+                },
+                ContentItem::InputText {
+                    text: CompactedImageOmission::reopenable_local_image().render(),
+                },
+                ContentItem::InputText {
+                    text: "</image>".to_string(),
+                },
+            ],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }];
+        let wrapper_tokens = message_text_token_count(&retained[0]);
+
+        let truncated = truncate_retained_messages_for_remote_compaction(
+            retained,
+            /*max_tokens*/ wrapper_tokens.saturating_sub(1),
+        );
+
+        assert_eq!(truncated, Vec::<ResponseItem>::new());
     }
 
     #[test]

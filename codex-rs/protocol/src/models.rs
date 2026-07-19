@@ -1378,6 +1378,14 @@ pub fn is_local_image_open_tag_text(text: &str) -> bool {
         .is_some_and(|rest| rest.ends_with(LOCAL_IMAGE_OPEN_TAG_SUFFIX))
 }
 
+pub fn is_local_image_open_tag_with_path_text(text: &str) -> bool {
+    is_local_image_open_tag_text(text)
+        && text
+            .split_once(" path=\"")
+            .and_then(|(_, path)| path.strip_suffix("\">"))
+            .is_some_and(|path| !path.is_empty())
+}
+
 pub fn is_local_image_close_tag_text(text: &str) -> bool {
     is_image_close_tag_text(text)
 }

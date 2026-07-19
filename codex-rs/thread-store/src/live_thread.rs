@@ -40,6 +40,12 @@ pub struct LiveThread {
     persistence_telemetry: RolloutPersistenceTelemetry,
 }
 
+#[derive(Clone, Copy)]
+enum AppendedItemsDurability {
+    Queued,
+    Flushed,
+}
+
 /// Owns a live thread while session initialization is still fallible.
 ///
 /// If initialization returns early after persistence has been opened, dropping this guard discards
@@ -130,7 +136,7 @@ impl LiveThread {
         );
         let live_thread = Self::create(thread_store, params).await?;
         if let Err(err) = live_thread
-            .persist_appended_items(inherited_model_context)
+            .persist_appended_items(inherited_model_context, AppendedItemsDurability::Queued)
             .await
         {
             if let Err(discard_err) = live_thread.discard().await {
@@ -187,7 +193,45 @@ impl LiveThread {
         fields(item_count = raw_items.len())
     )]
     pub async fn append_items(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
-        let items = self.persist_appended_items(raw_items).await?;
+        let items = self
+            .persist_appended_items(raw_items, AppendedItemsDurability::Queued)
+            .await?;
+        self.update_metadata_for_appended_items(items.as_slice())
+            .await
+    }
+
+    /// Appends and flushes canonical rollout history before updating derived thread metadata.
+    ///
+    /// Metadata projection failures remain pending for a later retry and do not make a successful
+    /// canonical history commit appear to have failed.
+    #[tracing::instrument(
+        level = "trace",
+        skip_all,
+        fields(item_count = raw_items.len())
+    )]
+    pub async fn append_items_and_flush_canonical(
+        &self,
+        raw_items: &[RolloutItem],
+    ) -> ThreadStoreResult<()> {
+        let items = self
+            .persist_appended_items(raw_items, AppendedItemsDurability::Flushed)
+            .await?;
+        if items.is_empty() {
+            return Ok(());
+        }
+        if let Err(err) = self
+            .update_metadata_for_appended_items(items.as_slice())
+            .await
+        {
+            warn!("failed to update derived metadata after canonical history commit: {err}");
+        }
+        Ok(())
+    }
+
+    async fn update_metadata_for_appended_items(
+        &self,
+        items: &[RolloutItem],
+    ) -> ThreadStoreResult<()> {
         if items.is_empty() {
             return Ok(());
         }
@@ -195,7 +239,7 @@ impl LiveThread {
             .metadata_sync
             .lock()
             .await
-            .observe_appended_items(items.as_slice());
+            .observe_appended_items(items);
         if let Some(update) = update {
             self.thread_store
                 .update_thread_metadata(UpdateThreadMetadataParams {
@@ -215,6 +259,7 @@ impl LiveThread {
     async fn persist_appended_items(
         &self,
         raw_items: &[RolloutItem],
+        durability: AppendedItemsDurability,
     ) -> ThreadStoreResult<Vec<RolloutItem>> {
         // Empty appends are intentionally ignored rather than represented as zero-sized batches.
         if raw_items.is_empty() {
@@ -227,12 +272,16 @@ impl LiveThread {
         } else {
             (persisted_rollout_items(raw_items, self.history_mode), None)
         };
-        self.thread_store
-            .append_items(AppendThreadItemsParams {
-                thread_id: self.thread_id,
-                items: raw_items.to_vec(),
-            })
-            .await?;
+        let params = AppendThreadItemsParams {
+            thread_id: self.thread_id,
+            items: raw_items.to_vec(),
+        };
+        match durability {
+            AppendedItemsDurability::Queued => self.thread_store.append_items(params).await?,
+            AppendedItemsDurability::Flushed => {
+                self.thread_store.append_items_and_flush(params).await?
+            }
+        }
         if let Some(measurement) = measurement.as_ref() {
             self.persistence_telemetry
                 .record_batch(raw_items, measurement);
@@ -249,6 +298,18 @@ impl LiveThread {
         self.thread_store.flush_thread(self.thread_id).await?;
         self.flush_pending_metadata_update_for_existing_history()
             .await
+    }
+
+    /// Flushes canonical history while leaving derived metadata failures pending for retry.
+    pub async fn flush_canonical(&self) -> ThreadStoreResult<()> {
+        self.thread_store.flush_thread(self.thread_id).await?;
+        if let Err(err) = self
+            .flush_pending_metadata_update_for_existing_history()
+            .await
+        {
+            warn!("failed to update derived metadata after canonical history flush: {err}");
+        }
+        Ok(())
     }
 
     pub async fn shutdown(&self) -> ThreadStoreResult<()> {

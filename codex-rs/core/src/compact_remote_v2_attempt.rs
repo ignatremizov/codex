@@ -6,6 +6,7 @@ use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::compact::CompactionAnalyticsDetails;
 use crate::compact_remote::trim_function_call_history_to_fit_context_window;
+use crate::context::sanitize_compacted_media_prefix;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
@@ -22,6 +23,7 @@ use tracing::info;
 
 pub(super) struct RemoteCompactV2Attempt {
     pub(super) trace_input_history: Vec<ResponseItem>,
+    pub(super) compacted_prefix_len: usize,
     pub(super) prompt_input: Vec<ResponseItem>,
     pub(super) compaction_output: ResponseItem,
     pub(super) token_usage: Option<TokenUsage>,
@@ -63,6 +65,26 @@ pub(super) async fn run_remote_compact_v2_attempt(
                 active_context_tokens_before
                     .saturating_sub(estimated_deleted_tokens.min(max_local_deleted_tokens))
             });
+    }
+
+    let mut raw_history = history.raw_items().to_vec();
+    let compacted_prefix_len = history
+        .compacted_prefix_len()
+        .unwrap_or_default()
+        .min(raw_history.len());
+    let media_sanitization =
+        sanitize_compacted_media_prefix(raw_history.as_mut_slice(), compacted_prefix_len);
+    if media_sanitization.changed() {
+        info!(
+            turn_id = %turn_context.sub_id,
+            omitted_image_count = media_sanitization.omitted_image_count,
+            omitted_inline_media_bytes = media_sanitization.omitted_inline_media_bytes,
+            "removed previously compacted media before remote compaction v2"
+        );
+        analytics_details.omitted_image_count = Some(media_sanitization.omitted_image_count);
+        analytics_details.omitted_inline_media_bytes =
+            Some(media_sanitization.omitted_inline_media_bytes);
+        history.replace(raw_history);
     }
 
     let trace_input_history = history.raw_items().to_vec();
@@ -131,6 +153,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
     .await;
     Ok(RemoteCompactV2Attempt {
         trace_input_history,
+        compacted_prefix_len,
         prompt_input,
         compaction_output,
         token_usage,

@@ -44,6 +44,8 @@ use core_test_support::test_path_buf;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
+use image::ImageBuffer;
+use image::Rgba;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -1013,6 +1015,205 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
         follow_up_body.contains("hello remote compact"),
         "expected v2 follow-up request to preserve retained original user messages"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_v2_expires_prior_window_images_after_one_checkpoint() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+    const IMAGE_DIMENSION: u32 = 512;
+    let image = ImageBuffer::from_fn(IMAGE_DIMENSION, IMAGE_DIMENSION, |x, y| {
+        let mixed =
+            x.wrapping_mul(0x9E37_79B9).rotate_left(y % u32::BITS) ^ y.wrapping_mul(0x85EB_CA6B);
+        let [red, green, blue, _] = mixed.to_le_bytes();
+        Rgba([red, green, blue, u8::MAX])
+    });
+    let local_image_path = harness.test().cwd.path().join("compaction-context.png");
+    image.save(&local_image_path)?;
+    let local_image_path_text = local_image_path.display().to_string();
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_assistant_message("m1", "FIRST_REPLY"),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "FIRST_COMPACTION",
+                    }
+                }),
+                responses::ev_completed("resp-compact-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m2", "SECOND_REPLY"),
+                responses::ev_completed("resp-2"),
+            ]),
+            responses::sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "SECOND_COMPACTION",
+                    }
+                }),
+                responses::ev_completed("resp-compact-2"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "FINAL_REPLY"),
+                responses::ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![
+                UserInput::LocalImage {
+                    path: local_image_path.clone(),
+                    detail: None,
+                },
+                UserInput::Text {
+                    text: "inspect this image".to_string(),
+                    text_elements: Vec::new(),
+                },
+            ],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "after first compaction".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "after second compaction".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    let requests = responses_mock.requests();
+    assert_eq!(requests.len(), 5);
+    let first_compaction_image_urls = requests[1].message_input_image_urls("user");
+    assert_eq!(
+        first_compaction_image_urls.len(),
+        1,
+        "the first compactor must see the current-window image"
+    );
+    for request in &requests[2..] {
+        assert!(
+            request.message_input_image_urls("user").is_empty(),
+            "post-compaction requests must not replay prior-window image bytes"
+        );
+    }
+    assert!(
+        requests[2]
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains(local_image_path_text.as_str())),
+        "the first checkpoint should retain the current-window image path"
+    );
+    assert!(
+        requests[3]
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains(local_image_path_text.as_str())),
+        "the next compactor should get one final opportunity to use the inherited image path"
+    );
+    assert!(
+        requests[4]
+            .message_input_texts("user")
+            .iter()
+            .all(|text| !text.contains(local_image_path_text.as_str())),
+        "the second checkpoint should expire the inherited image path"
+    );
+    assert!(
+        requests[4]
+            .message_input_texts("user")
+            .iter()
+            .all(|text| !text.contains("<compacted_image_omission>")),
+        "a window without new images should not inherit the prior omission marker"
+    );
+    let rollout_path = codex.rollout_path().expect("rollout path");
+    let rollout = fs::read_to_string(rollout_path)?;
+    let compacted_lines = rollout
+        .lines()
+        .filter_map(|line| {
+            let parsed = serde_json::from_str::<RolloutLine>(line).ok()?;
+            matches!(&parsed.item, RolloutItem::Compacted(_)).then_some((line, parsed.item))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(compacted_lines.len(), 2);
+    for (index, (line, item)) in compacted_lines.into_iter().enumerate() {
+        let RolloutItem::Compacted(compacted) = item else {
+            unreachable!("filtered to compacted rollout items");
+        };
+        let replacement_history = compacted
+            .replacement_history
+            .expect("compacted replacement history");
+        assert!(
+            replacement_history.iter().all(|item| {
+                !matches!(
+                    item,
+                    ResponseItem::Message { content, .. }
+                        if content
+                            .iter()
+                            .any(|item| matches!(item, ContentItem::InputImage { .. }))
+                )
+            }),
+            "persisted compacted history must not contain inline images"
+        );
+        let serialized_history =
+            serde_json::to_string(&replacement_history).expect("serialize replacement history");
+        assert_eq!(
+            serialized_history.contains(local_image_path_text.as_str()),
+            index == 0,
+            "only the first checkpoint should retain the first window's image path"
+        );
+        assert!(
+            line.len() < first_compaction_image_urls[0].len() / 2,
+            "checkpoint size must not scale with discarded image bytes"
+        );
+    }
 
     Ok(())
 }

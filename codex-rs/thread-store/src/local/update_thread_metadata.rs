@@ -85,6 +85,7 @@ pub(super) async fn update_thread_metadata(
     if live_writer::rollout_path(store, thread_id).await.is_ok() {
         live_writer::persist_thread(store, thread_id).await?;
     }
+    let live_writer_guard = store.live_writer_locks.lock(thread_id).await;
     let mut resolved_rollout_path =
         resolve_rollout_path(store, thread_id, params.include_archived).await?;
     let name = patch.name;
@@ -163,6 +164,7 @@ pub(super) async fn update_thread_metadata(
         refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
         apply_thread_git_info(store, thread_id, sha, branch, origin_url).await?;
     }
+    drop(live_writer_guard);
 
     let mut thread = match read_thread::read_thread(
         store,

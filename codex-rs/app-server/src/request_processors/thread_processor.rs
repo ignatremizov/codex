@@ -22,10 +22,8 @@ fn without_goal_owned_context(mut items: Vec<RolloutItem>) -> Vec<RolloutItem> {
         )
     });
     for item in &mut items {
-        if let RolloutItem::Compacted(compacted) = item
-            && let Some(replacement_history) = compacted.replacement_history.as_mut()
-        {
-            replacement_history.retain(|item| !is_goal_owned_context(item));
+        if let RolloutItem::Compacted(compacted) = item {
+            compacted.retain_replacement_history_items(|item| !is_goal_owned_context(item));
         }
     }
     items

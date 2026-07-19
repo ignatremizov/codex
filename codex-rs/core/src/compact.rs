@@ -7,6 +7,9 @@ use std::time::Instant;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::compacted_history_retention::RetainedMessageTruncation;
+use crate::compacted_history_retention::contains_atomic_compacted_media;
+use crate::compacted_history_retention::truncate_retained_message_to_token_budget;
 use crate::context::world_state::WorldState;
 use crate::event_mapping::parse_turn_item;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -373,6 +376,10 @@ async fn run_compact_task_inner_impl(
         )
         .await;
     }
+    let compacted_prefix_len = history_snapshot
+        .compacted_prefix_len()
+        .unwrap_or_default()
+        .min(history_snapshot.raw_items().len());
     let history_items = history_snapshot.raw_items();
     let user_messages = collect_user_messages(history_items);
     let rollout_path = sess.current_rollout_path().await.ok().flatten();
@@ -389,7 +396,7 @@ async fn run_compact_task_inner_impl(
     let summary_for_event_text = summary_for_event(&summary_text);
 
     let mut new_history =
-        build_compacted_history_preserving_mcp_context(history_items, &summary_text);
+        build_local_compacted_history(history_items, compacted_prefix_len, &summary_text);
     if let Some(summary_item) = new_history.last_mut() {
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.
@@ -421,6 +428,8 @@ async fn run_compact_task_inner_impl(
         first_window_id: Some(window_ids.first_window_id.to_string()),
         previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(window_ids.window_id.to_string()),
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
     sess.replace_compacted_history(
         Arc::clone(&turn_context),
@@ -464,6 +473,8 @@ pub(crate) struct CompactionAnalyticsAttempt {
 pub(crate) struct CompactionAnalyticsDetails {
     pub(crate) active_context_tokens_before: Option<i64>,
     pub(crate) retained_image_count: Option<usize>,
+    pub(crate) omitted_image_count: Option<usize>,
+    pub(crate) omitted_inline_media_bytes: Option<u64>,
     pub(crate) compaction_summary_tokens: Option<i64>,
     pub(crate) cached_input_tokens: Option<i64>,
     pub(crate) cache_write_input_tokens: Option<i64>,
@@ -502,6 +513,8 @@ impl CompactionAnalyticsAttempt {
         let CompactionAnalyticsDetails {
             active_context_tokens_before,
             retained_image_count,
+            omitted_image_count,
+            omitted_inline_media_bytes,
             compaction_summary_tokens,
             cached_input_tokens,
             cache_write_input_tokens,
@@ -526,6 +539,8 @@ impl CompactionAnalyticsAttempt {
                 active_context_tokens_before,
                 active_context_tokens_after,
                 retained_image_count,
+                omitted_image_count,
+                omitted_inline_media_bytes,
                 compaction_summary_tokens,
                 cached_input_tokens,
                 cache_write_input_tokens,
@@ -741,11 +756,34 @@ fn build_compacted_history_preserving_mcp_context(
     build_compacted_history_with_limit(retained_history, &[], summary_text, 0)
 }
 
+fn build_local_compacted_history(
+    history_items: &[ResponseItem],
+    compacted_prefix_len: usize,
+    summary_text: &str,
+) -> Vec<ResponseItem> {
+    let mut replacement_history_items = history_items.to_vec();
+    let compacted_prefix_len = compacted_prefix_len.min(replacement_history_items.len());
+    let _ = crate::context::sanitize_compacted_media_prefix(
+        replacement_history_items.as_mut_slice(),
+        compacted_prefix_len,
+    );
+    crate::context::expire_compacted_media_references(
+        &mut replacement_history_items[..compacted_prefix_len],
+    );
+    let _ = crate::context::sanitize_compacted_media(
+        &mut replacement_history_items[compacted_prefix_len..],
+    );
+    build_compacted_history_preserving_mcp_context(
+        replacement_history_items.as_slice(),
+        summary_text,
+    )
+}
+
 fn collect_mcp_and_recent_user_items_with_limit(
     history_items: &[ResponseItem],
     max_tokens: usize,
 ) -> Vec<ResponseItem> {
-    let mut selected_user_messages: HashMap<usize, String> = HashMap::new();
+    let mut selected_user_items: HashMap<usize, ResponseItem> = HashMap::new();
     let mut remaining = max_tokens;
     if max_tokens > 0 {
         for (index, item) in history_items.iter().enumerate().rev() {
@@ -761,12 +799,25 @@ fn collect_mcp_and_recent_user_items_with_limit(
             }
             let tokens = approx_token_count(&message);
             if tokens <= remaining {
-                selected_user_messages.insert(index, message);
+                selected_user_items.insert(index, user_message_item(message));
                 remaining = remaining.saturating_sub(tokens);
+            } else if matches!(
+                item,
+                ResponseItem::Message { content, .. }
+                    if contains_atomic_compacted_media(content)
+            ) {
+                match truncate_retained_message_to_token_budget(item.clone(), remaining) {
+                    RetainedMessageTruncation::Retained(truncated_item) => {
+                        selected_user_items.insert(index, *truncated_item);
+                    }
+                    RetainedMessageTruncation::OmissionDidNotFit
+                    | RetainedMessageTruncation::Empty => {}
+                }
+                break;
             } else {
-                selected_user_messages.insert(
+                selected_user_items.insert(
                     index,
-                    truncate_text(&message, TruncationPolicy::Tokens(remaining)),
+                    user_message_item(truncate_text(&message, TruncationPolicy::Tokens(remaining))),
                 );
                 break;
             }
@@ -780,9 +831,7 @@ fn collect_mcp_and_recent_user_items_with_limit(
             if is_mcp_server_use_context_item(item) {
                 return Some(item.clone());
             }
-            selected_user_messages
-                .get(&index)
-                .map(|message| user_message_item(message.clone()))
+            selected_user_items.get(&index).cloned()
         })
         .collect()
 }

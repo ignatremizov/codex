@@ -3221,7 +3221,7 @@ impl WorldStateItem {
     }
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Clone, Debug, Default, PartialEq, JsonSchema, TS)]
 pub struct CompactedItem {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3241,6 +3241,46 @@ pub struct CompactedItem {
     /// UUIDv7 identity of this context window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_id: Option<String>,
+    /// Prefix of `replacement_history` covered by the media policy.
+    ///
+    /// Historic repair checkpoints can retain unsummarized suffix media after this boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_history_media_sanitized_prefix_len: Option<u64>,
+    /// Whether this checkpoint is a representation-only media repair.
+    ///
+    /// Repair checkpoints preserve the preceding context-window baselines if companion baseline
+    /// records are absent after an interrupted append.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replacement_history_media_repair: bool,
+}
+
+impl CompactedItem {
+    /// Retains replacement-history items while preserving the sanitized-prefix boundary.
+    pub fn retain_replacement_history_items(
+        &mut self,
+        mut keep: impl FnMut(&ResponseItem) -> bool,
+    ) {
+        let Some(replacement_history) = self.replacement_history.as_mut() else {
+            return;
+        };
+        let sanitized_prefix_len = self
+            .replacement_history_media_sanitized_prefix_len
+            .map(|len| usize::try_from(len).unwrap_or(usize::MAX));
+        let mut original_index = 0usize;
+        let mut retained_prefix_len = 0u64;
+        replacement_history.retain(|item| {
+            let retain = keep(item);
+            if retain && sanitized_prefix_len.is_some_and(|prefix_len| original_index < prefix_len)
+            {
+                retained_prefix_len = retained_prefix_len.saturating_add(1);
+            }
+            original_index = original_index.saturating_add(1);
+            retain
+        });
+        if sanitized_prefix_len.is_some() {
+            self.replacement_history_media_sanitized_prefix_len = Some(retained_prefix_len);
+        }
+    }
 }
 
 impl From<CompactedItem> for ResponseItem {

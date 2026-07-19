@@ -314,8 +314,11 @@ async fn write_and_project(
             warn!("failed to project durable rollout for {thread_id}: {err}");
         }
     }
-    if sync_rollout_path {
-        sync_materialized_rollout_path(store, thread_id, recorder.rollout_path()).await?;
+    if sync_rollout_path
+        && let Err(err) =
+            sync_materialized_rollout_path(store, thread_id, recorder.rollout_path()).await
+    {
+        warn!("failed to project durable rollout path for {thread_id}: {err}");
     }
     Ok(())
 }

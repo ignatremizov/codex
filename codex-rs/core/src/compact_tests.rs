@@ -452,6 +452,209 @@ fn build_compacted_history_preserving_mcp_context_keeps_invocation_order_in_reta
 }
 
 #[test]
+fn build_local_compacted_history_expires_flattened_inherited_image_paths() {
+    let inherited_path = "/tmp/inherited.png";
+    let inherited = user_message(&format!(
+        "before<image name=[Image #1] path=\"{inherited_path}\">image omitted</image>after"
+    ));
+    let current = user_message("current window");
+
+    let compacted = build_local_compacted_history(
+        &[inherited, current.clone()],
+        /*compacted_prefix_len*/ 1,
+        "summary text",
+    );
+
+    assert_eq!(
+        compacted,
+        vec![
+            user_message("beforeafter"),
+            current,
+            user_message("summary text"),
+        ]
+    );
+}
+
+#[test]
+fn build_local_compacted_history_retains_current_image_path_for_one_window() {
+    let current_path = "/tmp/current.png";
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "before".to_string(),
+            },
+            ContentItem::InputText {
+                text: format!("<image name=[Image #1] path=\"{current_path}\">"),
+            },
+            ContentItem::InputImage {
+                image_url: "data:image/png;base64,current".to_string(),
+                detail: None,
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let first_summary = format!("{SUMMARY_PREFIX}\nfirst summary");
+    let first =
+        build_local_compacted_history(&[current], /*compacted_prefix_len*/ 0, &first_summary);
+    let expected_retained = format!(
+        "before<image name=[Image #1] path=\"{current_path}\">{}</image>after",
+        crate::context::CompactedImageOmission::reopenable_local_image().render()
+    );
+    assert_eq!(
+        first,
+        vec![
+            user_message(&expected_retained),
+            user_message(&first_summary)
+        ]
+    );
+
+    let mut second_input = first;
+    let second_prefix_len = second_input.len();
+    second_input.push(user_message("next window"));
+    let second_summary = format!("{SUMMARY_PREFIX}\nsecond summary");
+    let second = build_local_compacted_history(&second_input, second_prefix_len, &second_summary);
+
+    assert_eq!(
+        second,
+        vec![
+            user_message("beforeafter"),
+            user_message("next window"),
+            user_message(&second_summary),
+        ]
+    );
+}
+
+#[test]
+fn build_local_compacted_history_drops_oversized_image_message_atomically() {
+    let huge_text = "x".repeat((COMPACT_USER_MESSAGE_MAX_TOKENS + 1) * 4);
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: huge_text.clone(),
+            },
+            ContentItem::InputText {
+                text: "<image name=[Image #1] path=\"/tmp/current.png\">".to_string(),
+            },
+            ContentItem::InputImage {
+                image_url: "data:image/png;base64,current".to_string(),
+                detail: None,
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText { text: huge_text },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+
+    let compacted =
+        build_local_compacted_history(&[current], /*compacted_prefix_len*/ 0, &summary);
+
+    assert_eq!(compacted, vec![user_message(&summary)]);
+}
+
+#[test]
+fn build_local_compacted_history_drops_oversized_text_image_wrapper_atomically() {
+    let huge_text = "x".repeat((COMPACT_USER_MESSAGE_MAX_TOKENS + 1) * 4);
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: huge_text.clone(),
+            },
+            ContentItem::InputText {
+                text: "<image name=[Image #1] path=\"/tmp/current.png\">".to_string(),
+            },
+            ContentItem::InputText {
+                text: "[Image #1]".to_string(),
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+    let expected = truncate_text(
+        &huge_text,
+        TruncationPolicy::Tokens(COMPACT_USER_MESSAGE_MAX_TOKENS),
+    );
+
+    let compacted =
+        build_local_compacted_history(&[current], /*compacted_prefix_len*/ 0, &summary);
+
+    assert_eq!(
+        compacted,
+        vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText { text: expected }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            user_message(&summary),
+        ]
+    );
+}
+
+#[test]
+fn build_local_compacted_history_preserves_whole_message_text_truncation() {
+    let leading = "x".repeat((COMPACT_USER_MESSAGE_MAX_TOKENS + 1) * 4);
+    let unmatched_opener = "<image name=[Image #1] path=\"/tmp/not-a-wrapper.png\">";
+    let trailing = "TRAILING_SENTINEL";
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: leading.clone(),
+            },
+            ContentItem::InputText {
+                text: unmatched_opener.to_string(),
+            },
+            ContentItem::InputText {
+                text: trailing.to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+    let expected = truncate_text(
+        &format!("{leading}{unmatched_opener}{trailing}"),
+        TruncationPolicy::Tokens(COMPACT_USER_MESSAGE_MAX_TOKENS),
+    );
+
+    let compacted =
+        build_local_compacted_history(&[current], /*compacted_prefix_len*/ 0, &summary);
+
+    assert!(expected.ends_with(trailing));
+    assert_eq!(
+        compacted,
+        vec![user_message(&expected), user_message(&summary)]
+    );
+}
+
+#[test]
 fn insert_mcp_server_use_context_items_at_compaction_boundary_does_not_prepend() {
     let linear =
         McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();

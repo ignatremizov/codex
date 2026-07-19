@@ -9,6 +9,7 @@ use crate::compact::compaction_status_from_result;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
 use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
+use crate::context::is_standalone_compacted_image_omission_message;
 use crate::context::world_state::WorldState;
 use crate::context_manager::ContextManager;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -305,6 +306,10 @@ async fn run_remote_compact_task_inner_impl(
         &initial_context_injection,
     )
     .await;
+    // Legacy remote compaction does not preserve a structural input/output boundary. Expire
+    // recognized references from its returned replacement before central installation sanitizes
+    // any newly returned raw images.
+    crate::context::expire_compacted_media_references(new_history.as_mut_slice());
 
     new_history = crate::compact::insert_mcp_server_use_context_items_at_compaction_boundary(
         new_history,
@@ -328,6 +333,8 @@ async fn run_remote_compact_task_inner_impl(
         first_window_id: Some(new_window_ids.first_window_id.to_string()),
         previous_window_id: new_window_ids.previous_window_id.map(|id| id.to_string()),
         window_id: Some(new_window_ids.window_id.to_string()),
+        replacement_history_media_sanitized_prefix_len: None,
+        replacement_history_media_repair: false,
     };
     // Install is the semantic boundary where the compact endpoint's output becomes live
     // thread history. Keep it distinct from the later inference request so the reducer can
@@ -408,8 +415,8 @@ pub(crate) async fn process_compacted_history(
 /// append fresh canonical context from the current session.
 ///
 /// We drop:
-/// - `developer` messages because remote output can include stale/duplicated
-///   instruction content.
+/// - `developer` messages because remote output can include stale/duplicated instruction content,
+///   except for an exact standalone compacted-image omission generated locally.
 /// - non-user-content `user` messages (session prefix/instruction wrappers),
 ///   while preserving real user messages and persisted hook prompts.
 ///
@@ -420,7 +427,9 @@ pub(crate) async fn process_compacted_history(
 ///   check.
 pub(crate) fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
     match item {
-        ResponseItem::Message { role, .. } if role == "developer" => false,
+        ResponseItem::Message { role, .. } if role == "developer" => {
+            is_standalone_compacted_image_omission_message(item)
+        }
         ResponseItem::Message { role, .. } if role == "user" => {
             matches!(
                 crate::event_mapping::parse_turn_item(item),
