@@ -1980,6 +1980,12 @@
             "kind": {
               "$ref": "#/definitions/SubAgentActivityKind"
             },
+            "prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "subAgentActivity"
