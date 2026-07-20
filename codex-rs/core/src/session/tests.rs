@@ -2743,6 +2743,7 @@ async fn session_initialization_discards_live_thread_when_media_repair_is_not_du
         let store = Arc::new(codex_thread_store::InMemoryThreadStore::default());
         store.fail_next_operation(failure).await;
         let thread_store: Arc<dyn codex_thread_store::ThreadStore> = store.clone();
+        let thread_id = ThreadId::default();
         let source_history = Arc::new(vec![RolloutItem::Compacted(CompactedItem {
             message: "legacy image checkpoint".to_string(),
             replacement_history: Some(vec![ResponseItem::Message {
@@ -2762,7 +2763,7 @@ async fn session_initialization_discards_live_thread_when_media_repair_is_not_du
         let result = make_session_with_initial_history_and_thread_store(
             config,
             InitialHistory::Resumed(ResumedHistory {
-                conversation_id: ThreadId::default(),
+                conversation_id: thread_id,
                 history: Arc::clone(&source_history),
                 rollout_path: Some(PathBuf::from("/tmp/source-rollout.jsonl")),
             }),
@@ -2803,7 +2804,7 @@ async fn session_initialization_discards_live_thread_when_media_repair_is_not_du
         let persisted = codex_thread_store::ThreadStore::load_history(
             store.as_ref(),
             codex_thread_store::LoadThreadHistoryParams {
-                thread_id: ThreadId::default(),
+                thread_id,
                 include_archived: true,
             },
         )
@@ -4573,9 +4574,18 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
                     codex_thread_store::InMemoryThreadStoreFailure::ThreadMetadataUpdate,
                 )
                 .await;
-            sess.try_persist_rollout_items(&[RolloutItem::TurnContext(tc.to_turn_context_item())])
-                .await
-                .expect_err("metadata projection should fail after persisting canonical history");
+            sess.try_persist_rollout_items(&[RolloutItem::EventMsg(EventMsg::TokenCount(
+                TokenCountEvent {
+                    info: Some(TokenUsageInfo {
+                        total_token_usage: TokenUsage::default(),
+                        last_token_usage: TokenUsage::default(),
+                        model_context_window: None,
+                    }),
+                    rate_limits: None,
+                },
+            ))])
+            .await
+            .expect_err("metadata projection should fail after persisting canonical history");
         }
         store.fail_next_operation(failure).await;
 
@@ -4627,7 +4637,11 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
                 )
             })
             .count();
-        assert_eq!(persisted_repairs, usize::from(expect_persisted_repair));
+        assert_eq!(
+            persisted_repairs,
+            usize::from(expect_persisted_repair),
+            "unexpected repair count for has_inline_media={has_inline_media}, failure={failure:?}, prime_pending_metadata_failure={prime_pending_metadata_failure}"
+        );
         let recovered = sess
             .reconstruct_history_from_rollout(tc.as_ref(), persisted.items.as_slice())
             .await;
