@@ -534,6 +534,39 @@ fn build_local_compacted_history_retains_current_image_path_for_one_window() {
 }
 
 #[test]
+fn build_local_compacted_history_drops_oversized_image_message_atomically() {
+    let huge_text = "x".repeat((COMPACT_USER_MESSAGE_MAX_TOKENS + 1) * 4);
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: huge_text.clone(),
+            },
+            ContentItem::InputText {
+                text: "<image name=[Image #1] path=\"/tmp/current.png\">".to_string(),
+            },
+            ContentItem::InputImage {
+                image_url: "data:image/png;base64,current".to_string(),
+                detail: None,
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText { text: huge_text },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+
+    let compacted =
+        build_local_compacted_history(&[current], /*compacted_prefix_len*/ 0, &summary);
+
+    assert_eq!(compacted, vec![user_message(&summary)]);
+}
+
+#[test]
 fn insert_mcp_server_use_context_items_at_compaction_boundary_does_not_prepend() {
     let linear =
         McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();

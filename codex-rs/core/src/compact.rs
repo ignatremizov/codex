@@ -7,6 +7,8 @@ use std::time::Instant;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::compacted_history_retention::RetainedMessageTruncation;
+use crate::compacted_history_retention::truncate_retained_message_to_token_budget;
 use crate::context::world_state::WorldState;
 use crate::event_mapping::parse_turn_item;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -780,7 +782,7 @@ fn collect_mcp_and_recent_user_items_with_limit(
     history_items: &[ResponseItem],
     max_tokens: usize,
 ) -> Vec<ResponseItem> {
-    let mut selected_user_messages: HashMap<usize, String> = HashMap::new();
+    let mut selected_user_items: HashMap<usize, ResponseItem> = HashMap::new();
     let mut remaining = max_tokens;
     if max_tokens > 0 {
         for (index, item) in history_items.iter().enumerate().rev() {
@@ -796,13 +798,16 @@ fn collect_mcp_and_recent_user_items_with_limit(
             }
             let tokens = approx_token_count(&message);
             if tokens <= remaining {
-                selected_user_messages.insert(index, message);
+                selected_user_items.insert(index, user_message_item(message));
                 remaining = remaining.saturating_sub(tokens);
             } else {
-                selected_user_messages.insert(
-                    index,
-                    truncate_text(&message, TruncationPolicy::Tokens(remaining)),
-                );
+                match truncate_retained_message_to_token_budget(item.clone(), remaining) {
+                    RetainedMessageTruncation::Retained(truncated_item) => {
+                        selected_user_items.insert(index, *truncated_item);
+                    }
+                    RetainedMessageTruncation::OmissionDidNotFit
+                    | RetainedMessageTruncation::Empty => {}
+                }
                 break;
             }
         }
@@ -815,9 +820,7 @@ fn collect_mcp_and_recent_user_items_with_limit(
             if is_mcp_server_use_context_item(item) {
                 return Some(item.clone());
             }
-            selected_user_messages
-                .get(&index)
-                .map(|message| user_message_item(message.clone()))
+            selected_user_items.get(&index).cloned()
         })
         .collect()
 }
