@@ -9,6 +9,7 @@ use crate::compact::compaction_status_from_result;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
 use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
+use crate::context::is_standalone_compacted_image_omission_message;
 use crate::context::world_state::WorldState;
 use crate::context_manager::ContextManager;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -410,8 +411,8 @@ pub(crate) async fn process_compacted_history(
 /// append fresh canonical context from the current session.
 ///
 /// We drop:
-/// - `developer` messages because remote output can include stale/duplicated
-///   instruction content.
+/// - `developer` messages because remote output can include stale/duplicated instruction content,
+///   except for an exact standalone compacted-image omission generated locally.
 /// - non-user-content `user` messages (session prefix/instruction wrappers),
 ///   while preserving real user messages and persisted hook prompts.
 ///
@@ -422,7 +423,9 @@ pub(crate) async fn process_compacted_history(
 ///   check.
 pub(crate) fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
     match item {
-        ResponseItem::Message { role, .. } if role == "developer" => false,
+        ResponseItem::Message { role, .. } if role == "developer" => {
+            is_standalone_compacted_image_omission_message(item)
+        }
         ResponseItem::Message { role, .. } if role == "user" => {
             matches!(
                 crate::event_mapping::parse_turn_item(item),

@@ -17,6 +17,7 @@ use crate::context::CompactedMediaSanitization;
 use crate::context::expire_compacted_media_references;
 use crate::context::is_compacted_image_omission_text;
 use crate::context::sanitize_compacted_media;
+use crate::context::standalone_compacted_image_omission_message;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -635,15 +636,7 @@ fn build_v2_compacted_history(
                 text: omission_text,
             });
         } else {
-            current.push(ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: omission_text,
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            });
+            current.push(standalone_compacted_image_omission_message(omission_text));
         }
     }
     inherited.extend(current);
@@ -828,7 +821,6 @@ mod tests {
     use super::*;
     use crate::context::CompactedImageOmission;
     use crate::context::ContextualUserFragment;
-    use crate::context::sanitize_compacted_media_before_latest_compaction;
     use crate::context::sanitize_compacted_media_prefix;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::FunctionCallOutputPayload;
@@ -1062,7 +1054,7 @@ mod tests {
             vec![
                 ResponseItem::Message {
                     id: None,
-                    role: "user".to_string(),
+                    role: "developer".to_string(),
                     content: vec![ContentItem::InputText {
                         text: CompactedImageOmission::unavailable().render(),
                     }],
@@ -1072,6 +1064,8 @@ mod tests {
                 output,
             ]
         );
+        assert!(should_keep_compacted_history_item(&history[0]));
+        assert!(!crate::context_manager::is_user_turn_boundary(&history[0]));
     }
 
     #[test]
@@ -1128,7 +1122,7 @@ mod tests {
             },
         ];
         let pre_compaction_sanitization =
-            sanitize_compacted_media_before_latest_compaction(&mut input);
+            sanitize_compacted_media_prefix(&mut input, /*prefix_len*/ 1);
         let output = ResponseItem::Compaction {
             id: None,
             encrypted_content: "new summary".to_string(),

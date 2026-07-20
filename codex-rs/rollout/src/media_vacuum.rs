@@ -54,14 +54,29 @@ pub fn vacuum_compacted_media(
     path: &Path,
     policy: &CompactedMediaVacuumPolicy,
 ) -> io::Result<CompactedMediaVacuumReport> {
-    let path = crate::compression::materialize_rollout_for_append_blocking(path)?;
-    let path = path.as_path();
-    let metadata = fs::metadata(path)?;
-    if !validate_rollout_and_find_protected_checkpoint(path)? {
+    let plain_path = crate::compression::plain_rollout_path(path);
+    let compressed_path = crate::compression::compressed_rollout_path(plain_path.as_path());
+    if !plain_path.exists() && !compressed_path.exists() {
+        recover_compacted_media_backup_if_needed(plain_path.as_path())?;
+    }
+    let physical_path = if plain_path.exists() {
+        plain_path.as_path()
+    } else {
+        compressed_path.as_path()
+    };
+    let found_protected_checkpoint = if physical_path == compressed_path.as_path() {
+        validate_compressed_rollout_and_find_protected_checkpoint(physical_path)?
+    } else {
+        validate_rollout_and_find_protected_checkpoint(physical_path)?
+    };
+    if !found_protected_checkpoint {
         return Err(io::Error::other(
             "refusing compacted-media vacuum without a sanitized replacement-history checkpoint",
         ));
     }
+    let path = crate::compression::materialize_rollout_for_append_blocking(path)?;
+    let path = path.as_path();
+    let metadata = fs::metadata(path)?;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -217,9 +232,23 @@ pub(crate) fn recover_compacted_media_backup_if_needed(path: &Path) -> io::Resul
 
 fn validate_rollout_and_find_protected_checkpoint(path: &Path) -> io::Result<bool> {
     let mut reader = BufReader::new(File::open(path)?);
+    validate_rollout_reader_and_find_protected_checkpoint(&mut reader, path)
+}
+
+fn validate_compressed_rollout_and_find_protected_checkpoint(path: &Path) -> io::Result<bool> {
+    let input = File::open(path)?;
+    let decoder = zstd::stream::read::Decoder::new(input)?;
+    let mut reader = BufReader::new(decoder);
+    validate_rollout_reader_and_find_protected_checkpoint(&mut reader, path)
+}
+
+fn validate_rollout_reader_and_find_protected_checkpoint(
+    reader: &mut impl BufRead,
+    path: &Path,
+) -> io::Result<bool> {
     let mut found_protected_checkpoint = false;
     let mut line = Vec::new();
-    while read_bounded_rollout_record(&mut reader, &mut line, path)? {
+    while read_bounded_rollout_record(reader, &mut line, path)? {
         let json = line.strip_suffix(b"\n").unwrap_or(line.as_slice());
         let json = json.strip_suffix(b"\r").unwrap_or(json);
         if !json.iter().all(u8::is_ascii_whitespace) {
@@ -580,12 +609,12 @@ struct ByteReplacement {
 }
 
 #[cfg(unix)]
-fn sync_parent_directory(parent: &Path) -> io::Result<()> {
+pub(crate) fn sync_parent_directory(parent: &Path) -> io::Result<()> {
     File::open(parent)?.sync_all()
 }
 
 #[cfg(not(unix))]
-fn sync_parent_directory(_parent: &Path) -> io::Result<()> {
+pub(crate) fn sync_parent_directory(_parent: &Path) -> io::Result<()> {
     Ok(())
 }
 

@@ -31,6 +31,18 @@ fn read_rollout(path: &Path) -> Vec<Value> {
         .collect()
 }
 
+fn compress_rollout(path: &Path) -> PathBuf {
+    let compressed_path = crate::compression::compressed_rollout_path(path);
+    let input = fs::File::open(path).expect("open rollout for compression");
+    let output = fs::File::create(&compressed_path).expect("create compressed rollout");
+    let mut encoder =
+        zstd::stream::write::Encoder::new(output, /*level*/ 3).expect("create zstd encoder");
+    std::io::copy(&mut std::io::BufReader::new(input), &mut encoder).expect("compress rollout");
+    encoder.finish().expect("finish compressed rollout");
+    fs::remove_file(path).expect("remove materialized rollout");
+    compressed_path
+}
+
 #[test]
 fn vacuum_reclaims_superseded_checkpoint_media_only() {
     let temp_dir = TempDir::new().expect("temp dir");
@@ -464,14 +476,7 @@ fn vacuum_materializes_logical_and_physical_compressed_rollout_paths() {
                 }),
             ],
         );
-        let compressed_path = crate::compression::compressed_rollout_path(path.as_path());
-        let input = fs::File::open(&path).expect("open rollout for compression");
-        let output = fs::File::create(&compressed_path).expect("create compressed rollout");
-        let mut encoder =
-            zstd::stream::write::Encoder::new(output, /*level*/ 3).expect("create zstd encoder");
-        std::io::copy(&mut std::io::BufReader::new(input), &mut encoder).expect("compress rollout");
-        encoder.finish().expect("finish compressed rollout");
-        fs::remove_file(&path).expect("remove materialized rollout");
+        let compressed_path = compress_rollout(path.as_path());
         let requested_path = if use_physical_compressed_path {
             compressed_path.as_path()
         } else {
@@ -490,6 +495,34 @@ fn vacuum_materializes_logical_and_physical_compressed_rollout_paths() {
             "image unavailable"
         );
     }
+}
+
+#[test]
+fn failed_vacuum_preserves_compressed_rollout_representation() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let path = temp_dir.path().join("rollout.jsonl");
+    write_rollout(
+        path.as_path(),
+        &[json!({
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "type": "compacted",
+            "payload": {
+                "message": "unprotected",
+                "replacement_history": []
+            }
+        })],
+    );
+    let compressed_path = compress_rollout(path.as_path());
+
+    let error = vacuum_compacted_media(path.as_path(), &policy())
+        .expect_err("vacuum should require a protected checkpoint");
+
+    assert_eq!(
+        error.to_string(),
+        "refusing compacted-media vacuum without a sanitized replacement-history checkpoint"
+    );
+    assert!(!path.exists());
+    assert!(compressed_path.exists());
 }
 
 #[test]
@@ -524,6 +557,46 @@ fn missing_canonical_rollout_recovers_the_newest_valid_vacuum_backup() {
         fs::read(backup_path).expect("read retained recovery backup"),
         expected
     );
+}
+
+#[tokio::test]
+async fn physical_compressed_path_recovers_plain_vacuum_backup() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let path = temp_dir.path().join("rollout.jsonl");
+    write_rollout(
+        path.as_path(),
+        &[json!({
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "type": "compacted",
+            "payload": {
+                "message": "repair",
+                "replacement_history_media_sanitized_prefix_len": 0,
+                "replacement_history": []
+            }
+        })],
+    );
+    let expected = fs::read_to_string(path.as_path()).expect("read canonical rollout");
+    let backup_path = path.with_file_name(format!(
+        ".rollout.jsonl.pre-media-vacuum-{}.bak",
+        Uuid::now_v7()
+    ));
+    fs::hard_link(path.as_path(), backup_path.as_path()).expect("create vacuum backup");
+    fs::remove_file(path.as_path()).expect("remove canonical rollout");
+    let compressed_path = crate::compression::compressed_rollout_path(path.as_path());
+
+    let mut reader = crate::compression::open_rollout_line_reader(compressed_path.as_path())
+        .await
+        .expect("recover through physical compressed path");
+
+    assert_eq!(
+        reader.next_line().await.expect("read recovered rollout"),
+        Some(expected.trim_end().to_string())
+    );
+    assert!(path.exists());
+    #[cfg(unix)]
+    assert!(!backup_path.exists());
+    #[cfg(not(unix))]
+    fs::remove_file(backup_path).expect("clean retained recovery backup");
 }
 
 #[test]

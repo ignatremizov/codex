@@ -4,6 +4,7 @@ use super::tests::build_world_state_from_turn_context;
 use super::tests::make_session_and_context;
 use crate::context::CompactedImageOmission;
 use crate::context::ContextualUserFragment;
+use crate::context::standalone_compacted_image_omission_message;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItem;
@@ -337,7 +338,13 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
         )),
         RolloutItem::Compacted(CompactedItem {
             message: "rejected checkpoint".to_string(),
-            replacement_history: Some(vec![rolled_back_base_image, rolled_back_message]),
+            replacement_history: Some(vec![
+                rolled_back_base_image,
+                rolled_back_message,
+                standalone_compacted_image_omission_message(
+                    CompactedImageOmission::unavailable().render(),
+                ),
+            ]),
             window_number: Some(4),
             ..Default::default()
         }),

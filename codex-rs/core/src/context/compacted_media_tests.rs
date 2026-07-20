@@ -219,8 +219,8 @@ fn sanitization_is_idempotent_and_respects_prefix_boundaries() {
         }]),
     ];
 
-    let first = sanitize_compacted_media_before_latest_compaction(&mut items);
-    let second = sanitize_compacted_media_before_latest_compaction(&mut items);
+    let first = sanitize_compacted_media_prefix(&mut items, /*prefix_len*/ 1);
+    let second = sanitize_compacted_media_prefix(&mut items, /*prefix_len*/ 1);
 
     assert_eq!(first.omitted_image_count, 1);
     assert_eq!(second, CompactedMediaSanitization::default());

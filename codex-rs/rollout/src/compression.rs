@@ -54,7 +54,7 @@ pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineRead
             Err(err) => return Err(err),
         }
     }
-    let recovery_path = path.to_path_buf();
+    let recovery_path = plain_rollout_path(path);
     tokio::task::spawn_blocking(move || {
         crate::media_vacuum::recover_compacted_media_backup_if_needed(recovery_path.as_path())
     })
@@ -64,7 +64,6 @@ pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineRead
 }
 
 /// Returns the compressed `.jsonl.zst` path for a rollout path.
-#[cfg(test)]
 pub(crate) fn compressed_rollout_path(path: &Path) -> PathBuf {
     path::compressed_rollout_path(path)
 }
@@ -96,12 +95,11 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
     }
 
     let temp_path = temp_path_for(plain_path.as_path(), "decompress");
-    if let Some(parent) = plain_path
+    let parent = plain_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)?;
-    }
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
     let result: io::Result<()> = (|| {
         let permissions = std::fs::metadata(compressed_path.as_path())?.permissions();
         {
@@ -117,12 +115,15 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
             Err(_) => persist_temp_file_noclobber(temp_path.as_path(), plain_path.as_path())?,
         }
+        // Commit the canonical plain name before removing either recovery representation.
+        crate::media_vacuum::sync_parent_directory(parent)?;
         let _ = std::fs::remove_file(temp_path.as_path());
         match std::fs::remove_file(compressed_path.as_path()) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => return Err(err),
         }
+        crate::media_vacuum::sync_parent_directory(parent)?;
         Ok(())
     })();
     if result.is_err() {

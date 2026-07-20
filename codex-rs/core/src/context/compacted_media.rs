@@ -64,6 +64,35 @@ pub(crate) fn is_compacted_image_omission_text(text: &str) -> bool {
     CompactedImageOmission::kind_from_text(text).is_some()
 }
 
+/// Builds a model-visible omission that cannot be mistaken for a user turn.
+///
+/// Omission text embedded in a real user message keeps that message's role. This standalone form
+/// is only used when remote-v2 retention removes every current-window message, such as a
+/// tool-output-only suffix.
+pub(crate) fn standalone_compacted_image_omission_message(text: String) -> ResponseItem {
+    debug_assert!(is_compacted_image_omission_text(text.as_str()));
+    ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText { text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+pub(crate) fn is_standalone_compacted_image_omission_message(item: &ResponseItem) -> bool {
+    matches!(
+        item,
+        ResponseItem::Message { role, content, .. }
+            if role == "developer"
+                && matches!(
+                    content.as_slice(),
+                    [ContentItem::InputText { text }]
+                        if is_compacted_image_omission_text(text)
+                )
+    )
+}
+
 impl ContextualUserFragment for CompactedImageOmission {
     fn role(&self) -> &'static str {
         "user"
@@ -219,20 +248,6 @@ pub(crate) fn sanitize_compacted_media_prefix(
         _ => {}
     }
     inventory.sanitization
-}
-
-pub(crate) fn sanitize_compacted_media_before_latest_compaction(
-    items: &mut [ResponseItem],
-) -> CompactedMediaSanitization {
-    let Some(compaction_index) = items.iter().rposition(|item| {
-        matches!(
-            item,
-            ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-        )
-    }) else {
-        return CompactedMediaSanitization::default();
-    };
-    sanitize_compacted_media_prefix(items, compaction_index)
 }
 
 /// Expires image references inherited from a previously compacted window.
