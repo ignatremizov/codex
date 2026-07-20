@@ -247,7 +247,9 @@ fn parse_rollout_record(json: &[u8]) -> Option<JsonSpan> {
     }
     let spans = parse_json_spans(json).ok()?;
     if is_object_type(&spans, json, "compacted")
-        && !record_validation::is_valid_compacted_rollout_record(&spans, json)
+        && !record_validation::is_valid_rollout_record_without_materializing_inline_media(
+            &spans, json,
+        )
     {
         return None;
     }

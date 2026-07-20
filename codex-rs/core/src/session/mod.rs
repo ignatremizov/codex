@@ -1530,7 +1530,8 @@ impl Session {
                     .await;
                 let previous_turn_settings = applied_reconstruction.previous_turn_settings;
                 if let Some(repair) = applied_reconstruction.repair.as_ref() {
-                    self.persist_initial_reconstruction_repair(repair).await?;
+                    self.persist_reconstruction_repair_with_policy(repair)
+                        .await?;
                 }
 
                 // If resuming, warn when the last recorded model differs from the current one.
@@ -1591,7 +1592,8 @@ impl Session {
                     self.persist_rollout_items(&rollout_items).await;
                 }
                 if let Some(repair) = applied_reconstruction.repair.as_ref() {
-                    self.persist_initial_reconstruction_repair(repair).await?;
+                    self.persist_reconstruction_repair_with_policy(repair)
+                        .await?;
                 }
                 if applied_reconstruction.should_recompute_token_usage {
                     self.recompute_token_usage(&turn_context).await;

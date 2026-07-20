@@ -8,7 +8,7 @@ use super::rollout_reconstruction::RolloutReconstructionRepairPersistence;
 use crate::context::CompactedMediaSanitization;
 
 impl Session {
-    pub(super) async fn persist_initial_reconstruction_repair(
+    pub(super) async fn persist_reconstruction_repair_with_policy(
         &self,
         repair: &AppliedRolloutReconstructionRepair,
     ) -> anyhow::Result<()> {

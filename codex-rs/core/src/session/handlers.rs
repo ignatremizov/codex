@@ -12,6 +12,7 @@ use tracing::info_span;
 
 use crate::session::SteerInputError;
 use crate::session::TurnInput;
+use crate::session::rollout_reconstruction::RolloutReconstructionRepairPersistence;
 use crate::session::session::Session;
 use crate::session::session::SessionSettingsUpdate;
 
@@ -607,24 +608,55 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         .rearm_reminder(sess.thread_id());
     sess.recompute_token_usage(turn_context.as_ref()).await;
 
-    sess.persist_rollout_items(&[RolloutItem::EventMsg(rollback_msg.clone())])
-        .await;
-    if let Err(err) = sess.flush_rollout().await {
+    let mut rollback_persistence_items = vec![RolloutItem::EventMsg(rollback_msg.clone())];
+    if let Some(repair) = applied_reconstruction.repair.as_ref() {
+        rollback_persistence_items.extend(repair.items.iter().cloned());
+    }
+    let persistence_result = match live_thread
+        .append_items(rollback_persistence_items.as_slice())
+        .await
+    {
+        Ok(()) => live_thread.flush().await,
+        Err(err) => Err(err),
+    };
+    if let Err(err) = persistence_result {
+        if applied_reconstruction
+            .repair
+            .as_ref()
+            .is_some_and(|repair| {
+                matches!(
+                    repair.persistence,
+                    RolloutReconstructionRepairPersistence::Required
+                )
+            })
+        {
+            sess.send_event_raw(Event {
+                id: turn_context.sub_id.clone(),
+                msg: EventMsg::Error(ErrorEvent {
+                    message: format!(
+                        "rolled back thread, but failed to persist required compacted-media repair: {err}"
+                    ),
+                    codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                }),
+            })
+            .await;
+            return;
+        }
         sess.send_event(
             turn_context.as_ref(),
             EventMsg::Warning(WarningEvent {
                 message: format!(
-                    "Rolled the thread back, but failed to save the rollback marker. Codex will continue retrying. Error: {err}"
+                    "Rolled the thread back, but failed to save its persistence records. Codex will continue retrying. Error: {err}"
                 ),
             }),
         )
         .await;
-    } else if let Some(repair) = applied_reconstruction.repair
-        && let Err(err) = sess
-            .persist_reconstruction_repair(repair.items.as_slice(), repair.sanitization)
-            .await
-    {
-        warn!(%err, "failed to persist compacted-media repair after rollback");
+    } else if let Some(repair) = applied_reconstruction.repair.as_ref() {
+        info!(
+            omitted_image_count = repair.sanitization.omitted_image_count,
+            omitted_inline_media_bytes = repair.sanitization.omitted_inline_media_bytes,
+            "persisted compacted-media rollout repair after rollback"
+        );
     }
 
     sess.deliver_event_raw(Event {

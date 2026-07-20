@@ -4425,6 +4425,107 @@ async fn thread_rollback_persists_compacted_media_repair_after_the_rollback_mark
 }
 
 #[tokio::test]
+async fn thread_rollback_enforces_required_media_repair_durability_only() {
+    for (has_inline_media, expect_rollback_failure) in [(true, true), (false, false)] {
+        for failure in [
+            codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairAppend,
+            codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairFlush,
+        ] {
+            let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
+            let store = attach_in_memory_thread_store(
+                Arc::get_mut(&mut sess).expect("session should not have additional references"),
+            )
+            .await;
+            let replacement_history = if has_inline_media {
+                vec![ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputImage {
+                        image_url: "data:image/png;base64,legacy".to_string(),
+                        detail: None,
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }]
+            } else {
+                vec![assistant_message("media-free summary")]
+            };
+            sess.persist_rollout_items(&[
+                RolloutItem::Compacted(CompactedItem {
+                    message: "legacy checkpoint".to_string(),
+                    replacement_history: Some(replacement_history),
+                    window_number: Some(1),
+                    ..Default::default()
+                }),
+                RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: "turn-after-checkpoint".to_string(),
+                    trace_id: None,
+                    started_at: None,
+                    model_context_window: Some(128_000),
+                    collaboration_mode_kind: ModeKind::Default,
+                })),
+                RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                    client_id: None,
+                    message: "roll this turn back".to_string(),
+                    images: None,
+                    local_images: Vec::new(),
+                    text_elements: Vec::new(),
+                    ..Default::default()
+                })),
+                RolloutItem::TurnContext(tc.to_turn_context_item()),
+                RolloutItem::ResponseItem(user_message("roll this turn back")),
+                RolloutItem::ResponseItem(assistant_message("rolled-back reply")),
+                RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "turn-after-checkpoint".to_string(),
+                    started_at: None,
+                    last_agent_message: None,
+                    error: None,
+                    completed_at: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
+                })),
+            ])
+            .await;
+            store.fail_next_operation(failure).await;
+
+            handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
+
+            if expect_rollback_failure {
+                let error = wait_for_thread_rollback_failed(&rx).await;
+                assert!(
+                    error
+                        .message
+                        .contains("failed to persist required compacted-media repair")
+                );
+                let persisted = codex_thread_store::ThreadStore::load_history(
+                    store.as_ref(),
+                    codex_thread_store::LoadThreadHistoryParams {
+                        thread_id: sess.thread_id,
+                        include_archived: true,
+                    },
+                )
+                .await
+                .expect("load failed rollback persistence");
+                assert!(!persisted.items.iter().any(|item| {
+                    matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_)))
+                }));
+            } else {
+                assert_eq!(wait_for_thread_rolled_back(&rx).await.num_turns, 1);
+            }
+            assert!(sess.clone_history().await.raw_items().iter().all(|item| {
+                !matches!(
+                    item,
+                    ResponseItem::Message { content, .. }
+                        if content
+                            .iter()
+                            .any(|item| matches!(item, ContentItem::InputImage { .. }))
+                )
+            }));
+        }
+    }
+}
+
+#[tokio::test]
 async fn thread_rollback_fails_when_turn_in_progress() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
 
