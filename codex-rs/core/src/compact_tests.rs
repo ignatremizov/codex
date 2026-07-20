@@ -567,6 +567,40 @@ fn build_local_compacted_history_drops_oversized_image_message_atomically() {
 }
 
 #[test]
+fn build_local_compacted_history_preserves_whole_message_text_truncation() {
+    let leading = "x".repeat((COMPACT_USER_MESSAGE_MAX_TOKENS + 1) * 4);
+    let trailing = "TRAILING_SENTINEL";
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: leading.clone(),
+            },
+            ContentItem::InputText {
+                text: trailing.to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+    let expected = truncate_text(
+        &format!("{leading}{trailing}"),
+        TruncationPolicy::Tokens(COMPACT_USER_MESSAGE_MAX_TOKENS),
+    );
+
+    let compacted =
+        build_local_compacted_history(&[current], /*compacted_prefix_len*/ 0, &summary);
+
+    assert!(expected.ends_with(trailing));
+    assert_eq!(
+        compacted,
+        vec![user_message(&expected), user_message(&summary)]
+    );
+}
+
+#[test]
 fn insert_mcp_server_use_context_items_at_compaction_boundary_does_not_prepend() {
     let linear =
         McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();
