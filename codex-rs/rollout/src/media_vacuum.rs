@@ -153,7 +153,7 @@ pub fn vacuum_compacted_media(
         );
         return Ok(report);
     }
-    if let Err(err) = remove_completed_backup(parent, backup_path.as_path()) {
+    if let Err(err) = cleanup_completed_backup(parent, backup_path.as_path()) {
         warn!(
             %err,
             path = %path.display(),
@@ -477,14 +477,16 @@ fn compacted_media_backup_parts(name: &str) -> Option<(&str, Uuid)> {
 }
 
 #[cfg(unix)]
-fn remove_completed_backup(parent: &Path, backup_path: &Path) -> io::Result<()> {
+fn cleanup_completed_backup(parent: &Path, backup_path: &Path) -> io::Result<()> {
     fs::remove_file(backup_path)?;
     sync_parent_directory(parent)
 }
 
 #[cfg(not(unix))]
-fn remove_completed_backup(_parent: &Path, backup_path: &Path) -> io::Result<()> {
-    fs::remove_file(backup_path)
+fn cleanup_completed_backup(_parent: &Path, _backup_path: &Path) -> io::Result<()> {
+    // Keep the recovery link when the platform cannot provide a directory durability barrier.
+    // The next manual vacuum, archive, or delete operation removes retained backups explicitly.
+    Ok(())
 }
 
 fn is_object_type(value: &JsonSpan, json: &[u8], expected: &str) -> bool {

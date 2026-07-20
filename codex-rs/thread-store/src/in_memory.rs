@@ -10,6 +10,7 @@ use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::SessionMeta;
@@ -384,6 +385,8 @@ pub struct InMemoryThreadStoreCalls {
 pub enum InMemoryThreadStoreFailure {
     CompactedMediaRepairAppend,
     CompactedMediaRepairFlush,
+    ThreadRollbackAppend,
+    ThreadMetadataUpdate,
 }
 
 impl InMemoryThreadStoreFailure {
@@ -391,8 +394,16 @@ impl InMemoryThreadStoreFailure {
         match self {
             Self::CompactedMediaRepairAppend => "compacted-media repair append",
             Self::CompactedMediaRepairFlush => "compacted-media repair flush",
+            Self::ThreadRollbackAppend => "thread rollback append",
+            Self::ThreadMetadataUpdate => "thread metadata update",
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum InMemoryAppendDurability {
+    Queued,
+    Flushed,
 }
 
 /// In-memory [`ThreadStore`] implementation for tests and debug configs.
@@ -499,7 +510,11 @@ impl InMemoryThreadStore {
         Ok(())
     }
 
-    async fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreResult<()> {
+    async fn append_items_with_durability(
+        &self,
+        params: AppendThreadItemsParams,
+        durability: InMemoryAppendDurability,
+    ) -> ThreadStoreResult<()> {
         if params.items.is_empty() {
             return Ok(());
         }
@@ -510,6 +525,9 @@ impl InMemoryThreadStore {
             return Ok(());
         }
         state.calls.append_items += 1;
+        if matches!(durability, InMemoryAppendDurability::Flushed) {
+            state.calls.flush_thread += 1;
+        }
         let appends_compacted_media_repair = persisted_items.iter().any(|item| {
             matches!(
                 item,
@@ -517,24 +535,58 @@ impl InMemoryThreadStore {
                     if compacted.replacement_history_media_repair
             )
         });
-        if appends_compacted_media_repair {
-            match state.fail_next_operation {
-                Some(InMemoryThreadStoreFailure::CompactedMediaRepairAppend) => {
-                    state.fail_next_operation = None;
-                    return Err(ThreadStoreError::Internal {
-                        message: format!(
-                            "injected in-memory thread-store {} failure",
-                            InMemoryThreadStoreFailure::CompactedMediaRepairAppend.operation()
-                        ),
-                    });
-                }
-                Some(InMemoryThreadStoreFailure::CompactedMediaRepairFlush) => {
-                    let history_len = state.histories.get(&params.thread_id).map_or(0, Vec::len);
-                    state.compacted_media_repair_flush_rollback =
-                        Some((params.thread_id, history_len));
-                }
-                None => {}
+        let appends_thread_rollback = persisted_items
+            .iter()
+            .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))));
+        match state.fail_next_operation {
+            Some(InMemoryThreadStoreFailure::CompactedMediaRepairAppend)
+                if appends_compacted_media_repair =>
+            {
+                state.fail_next_operation = None;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::CompactedMediaRepairAppend.operation()
+                    ),
+                });
             }
+            Some(InMemoryThreadStoreFailure::CompactedMediaRepairFlush)
+                if appends_compacted_media_repair =>
+            {
+                match durability {
+                    InMemoryAppendDurability::Queued => {
+                        let history_len =
+                            state.histories.get(&params.thread_id).map_or(0, Vec::len);
+                        state.compacted_media_repair_flush_rollback =
+                            Some((params.thread_id, history_len));
+                    }
+                    InMemoryAppendDurability::Flushed => {
+                        state.fail_next_operation = None;
+                        return Err(ThreadStoreError::Internal {
+                            message: format!(
+                                "injected in-memory thread-store {} failure",
+                                InMemoryThreadStoreFailure::CompactedMediaRepairFlush.operation()
+                            ),
+                        });
+                    }
+                }
+            }
+            Some(InMemoryThreadStoreFailure::ThreadRollbackAppend) if appends_thread_rollback => {
+                state.fail_next_operation = None;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::ThreadRollbackAppend.operation()
+                    ),
+                });
+            }
+            Some(
+                InMemoryThreadStoreFailure::CompactedMediaRepairAppend
+                | InMemoryThreadStoreFailure::CompactedMediaRepairFlush
+                | InMemoryThreadStoreFailure::ThreadRollbackAppend
+                | InMemoryThreadStoreFailure::ThreadMetadataUpdate,
+            )
+            | None => {}
         }
         state
             .histories
@@ -639,6 +691,18 @@ impl InMemoryThreadStore {
     ) -> ThreadStoreResult<StoredThread> {
         let mut state = self.state.lock().await;
         state.calls.update_thread_metadata += 1;
+        if matches!(
+            state.fail_next_operation,
+            Some(InMemoryThreadStoreFailure::ThreadMetadataUpdate)
+        ) {
+            state.fail_next_operation = None;
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "injected in-memory thread-store {} failure",
+                    InMemoryThreadStoreFailure::ThreadMetadataUpdate.operation()
+                ),
+            });
+        }
         if let Some(name) = params.patch.name.clone() {
             state.names.insert(params.thread_id, name);
         }
@@ -684,7 +748,11 @@ impl ThreadStore for InMemoryThreadStore {
     }
 
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
-        Box::pin(InMemoryThreadStore::append_items(self, params))
+        Box::pin(self.append_items_with_durability(params, InMemoryAppendDurability::Queued))
+    }
+
+    fn append_items_and_flush(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(self.append_items_with_durability(params, InMemoryAppendDurability::Flushed))
     }
 
     fn persist_thread(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {

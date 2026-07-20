@@ -136,6 +136,62 @@ fn vacuum_reclaims_superseded_checkpoint_media_only() {
     );
 }
 
+#[cfg(not(unix))]
+#[test]
+fn vacuum_retains_recovery_backup_without_a_directory_sync_barrier() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let path = temp_dir.path().join("rollout.jsonl");
+    write_rollout(
+        path.as_path(),
+        &[
+            json!({
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "type": "compacted",
+                "payload": {
+                    "message": "old",
+                    "replacement_history": [{
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,legacy"
+                        }]
+                    }]
+                }
+            }),
+            json!({
+                "timestamp": "2026-01-01T00:00:01.000Z",
+                "type": "compacted",
+                "payload": {
+                    "message": "repair",
+                    "replacement_history_media_sanitized_prefix_len": 0,
+                    "replacement_history": []
+                }
+            }),
+        ],
+    );
+    let original = fs::read(path.as_path()).expect("read original rollout");
+
+    vacuum_compacted_media(path.as_path(), &policy()).expect("vacuum rollout");
+
+    let backups = fs::read_dir(temp_dir.path())
+        .expect("read rollout directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| compacted_media_backup_id(name, "rollout.jsonl").is_some())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(
+        fs::read(backups[0].as_path()).expect("read retained recovery backup"),
+        original
+    );
+}
+
 #[test]
 fn vacuum_preserves_unrelated_record_bytes_and_line_endings() {
     let temp_dir = TempDir::new().expect("temp dir");

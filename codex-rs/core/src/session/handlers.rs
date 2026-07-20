@@ -602,6 +602,7 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
     let prepared_reconstruction = sess
         .prepare_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
         .await;
+    let mut persistence_items = vec![RolloutItem::EventMsg(rollback_msg.clone())];
     let required_repair_persisted = if let Some(repair) =
         prepared_reconstruction.repair.as_ref().filter(|repair| {
             matches!(
@@ -609,30 +610,32 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
                 RolloutReconstructionRepairPersistence::Required
             )
         }) {
-        let mut persistence_items = vec![RolloutItem::EventMsg(rollback_msg.clone())];
         persistence_items.extend(repair.items.iter().cloned());
-        let persistence_result = match live_thread.append_items(persistence_items.as_slice()).await
-        {
-            Ok(()) => live_thread.flush().await,
-            Err(err) => Err(err),
-        };
-        if let Err(err) = persistence_result {
-            sess.send_event_raw(Event {
-                id: turn_context.sub_id.clone(),
-                msg: EventMsg::Error(ErrorEvent {
-                    message: format!(
-                        "failed to persist required compacted-media repair before rolling back thread: {err}"
-                    ),
-                    codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
-                }),
-            })
-            .await;
-            return;
-        }
         true
     } else {
         false
     };
+    if let Err(err) = live_thread
+        .append_items_and_flush_canonical(persistence_items.as_slice())
+        .await
+    {
+        let message = if required_repair_persisted {
+            format!(
+                "failed to persist required compacted-media repair before rolling back thread: {err}"
+            )
+        } else {
+            format!("failed to persist rollback marker before rolling back thread: {err}")
+        };
+        sess.deliver_event_raw(Event {
+            id: turn_context.sub_id.clone(),
+            msg: EventMsg::Error(ErrorEvent {
+                message,
+                codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+            }),
+        })
+        .await;
+        return;
+    }
     let applied_reconstruction = sess
         .install_rollout_reconstruction(turn_context.as_ref(), prepared_reconstruction)
         .await;
@@ -649,24 +652,6 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
             "persisted compacted-media rollout repair after rollback"
         );
     } else if !required_repair_persisted {
-        let persistence_result = match live_thread
-            .append_items(&[RolloutItem::EventMsg(rollback_msg.clone())])
-            .await
-        {
-            Ok(()) => live_thread.flush().await,
-            Err(err) => Err(err),
-        };
-        if let Err(err) = persistence_result {
-            sess.send_event(
-                turn_context.as_ref(),
-                EventMsg::Warning(WarningEvent {
-                    message: format!(
-                        "Rolled the thread back, but failed to save the rollback marker. Codex will continue retrying. Error: {err}"
-                    ),
-                }),
-            )
-            .await;
-        }
         if let Some(repair) = applied_reconstruction.repair.as_ref()
             && let Err(err) = sess.persist_reconstruction_repair_with_policy(repair).await
         {
