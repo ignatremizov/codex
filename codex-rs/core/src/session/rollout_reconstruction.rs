@@ -494,15 +494,19 @@ impl Session {
                 }
                 RolloutItem::InterAgentCommunicationMetadata { .. } => {}
                 RolloutItem::Compacted(compacted) => {
+                    if base_compacted_item.is_some() && compacted.replacement_history.is_some() {
+                        // Reverse replay selected an older checkpoint because this replacement
+                        // belongs to a rolled-back user-turn segment. Replaying the replacement
+                        // would irreversibly discard the selected base before the later rollback
+                        // removes that turn's response items.
+                        continue;
+                    }
                     if let Some(replacement_history) = &compacted.replacement_history {
                         repaired_prefix_len = compacted
                             .replacement_history_media_sanitized_prefix_len
                             .map(|prefix_len| usize::try_from(prefix_len).unwrap_or(usize::MAX))
                             .unwrap_or(replacement_history.len())
                             .min(replacement_history.len());
-                        // A checkpoint from a rolled-back user turn can remain in the forward
-                        // suffix even though reverse selection chose an older surviving base.
-                        // Re-sanitize the surviving prefix after replay and rollback below.
                         history.replace(replacement_history.clone());
                     } else {
                         saw_legacy_compaction_without_replacement_history = true;

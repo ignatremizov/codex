@@ -336,6 +336,7 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
                 ..Default::default()
             },
         )),
+        RolloutItem::ResponseItem(rolled_back_message.clone()),
         RolloutItem::Compacted(CompactedItem {
             message: "rejected checkpoint".to_string(),
             replacement_history: Some(vec![
@@ -359,13 +360,7 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
 
     assert_eq!(reconstructed.history, vec![sanitized_base_image]);
     assert_eq!(reconstructed.compacted_prefix_len, Some(1));
-    assert_eq!(
-        reconstructed
-            .repair
-            .as_ref()
-            .map(|repair| repair.sanitization.omitted_image_count),
-        Some(1)
-    );
+    assert!(reconstructed.repair.is_none());
 }
 
 #[tokio::test]
