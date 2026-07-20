@@ -93,7 +93,7 @@ fn vacuum_reclaims_superseded_checkpoint_media_only() {
                 "type": "compacted",
                 "payload": {
                     "message": "repair",
-                    "replacement_history_media_sanitized_prefix_len": 1,
+                    "replacement_history_media_sanitized_prefix_len": 0,
                     "replacement_history": [{
                         "type": "message",
                         "role": "user",

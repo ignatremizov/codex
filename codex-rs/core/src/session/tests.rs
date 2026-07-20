@@ -2694,7 +2694,7 @@ async fn media_free_certification_persistence_failures_do_not_block_resume() {
 
         let retry_history = Arc::new(persisted.items);
         let retry_thread_store: Arc<dyn codex_thread_store::ThreadStore> = store.clone();
-        make_session_with_initial_history_and_thread_store(
+        let (retry_session, _rx) = make_session_with_initial_history_and_thread_store(
             config,
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: ThreadId::default(),
@@ -2708,7 +2708,7 @@ async fn media_free_certification_persistence_failures_do_not_block_resume() {
         let retried = codex_thread_store::ThreadStore::load_history(
             store.as_ref(),
             codex_thread_store::LoadThreadHistoryParams {
-                thread_id: ThreadId::default(),
+                thread_id: retry_session.thread_id,
                 include_archived: true,
             },
         )
@@ -2785,6 +2785,7 @@ async fn session_initialization_discards_live_thread_when_media_repair_is_not_du
                 append_items: 1,
                 flush_thread: expected_flushes,
                 discard_thread: 1,
+                read_thread: 1,
                 ..Default::default()
             }
         );
@@ -4325,7 +4326,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
 }
 
 #[tokio::test]
-async fn thread_rollback_persists_compacted_media_repair_after_the_rollback_marker() {
+async fn thread_rollback_persists_compacted_media_repair_before_the_rollback_marker() {
     let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
     let rollout_path = attach_thread_persistence(
         Arc::get_mut(&mut sess).expect("session should not have additional references"),
@@ -4407,7 +4408,7 @@ async fn thread_rollback_persists_compacted_media_repair_after_the_rollback_mark
         })
         .expect("media repair checkpoint");
 
-    assert!(repair_position > rollback_position);
+    assert!(repair_position < rollback_position);
     assert!(
         repair
             .replacement_history
@@ -4572,13 +4573,9 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
                     codex_thread_store::InMemoryThreadStoreFailure::ThreadMetadataUpdate,
                 )
                 .await;
-            sess.try_persist_rollout_items(&[RolloutItem::EventMsg(EventMsg::Warning(
-                WarningEvent {
-                    message: "prime pending metadata retry".to_string(),
-                },
-            ))])
-            .await
-            .expect_err("metadata projection should fail after persisting canonical history");
+            sess.try_persist_rollout_items(&[RolloutItem::TurnContext(tc.to_turn_context_item())])
+                .await
+                .expect_err("metadata projection should fail after persisting canonical history");
         }
         store.fail_next_operation(failure).await;
 
