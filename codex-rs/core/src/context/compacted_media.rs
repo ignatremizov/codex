@@ -2,7 +2,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::is_local_image_close_tag_text;
-use codex_protocol::models::is_local_image_open_tag_text;
+use codex_protocol::models::is_local_image_open_tag_with_path_text;
 
 use super::ContextualUserFragment;
 
@@ -245,7 +245,8 @@ impl CompactedMediaInventory {
                     let has_local_reference = index > 0
                         && matches!(
                             &content[index - 1],
-                            ContentItem::InputText { text } if is_local_image_open_tag_text(text)
+                            ContentItem::InputText { text }
+                                if is_local_image_open_tag_with_path_text(text)
                         )
                         && matches!(
                             content.get(index + 1),

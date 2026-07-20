@@ -1,7 +1,5 @@
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
-use codex_rollout::CompactedMediaVacuumPolicy;
-use codex_rollout::CompactedMediaVacuumReport;
 use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
@@ -62,17 +60,6 @@ pub trait ThreadStore: Any + Send + Sync {
 
     /// Flushes all queued items and returns once they are durable/readable.
     fn flush_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
-
-    /// Reclaims superseded compacted-media snapshots without changing reconstructed context.
-    ///
-    /// Stores without a local rewriteable rollout may return `Ok(None)`.
-    fn vacuum_compacted_media(
-        &self,
-        _thread_id: ThreadId,
-        _policy: CompactedMediaVacuumPolicy,
-    ) -> ThreadStoreFuture<'_, Option<CompactedMediaVacuumReport>> {
-        Box::pin(async { Ok(None) })
-    }
 
     /// Flushes pending items and closes the live thread writer.
     fn shutdown_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;

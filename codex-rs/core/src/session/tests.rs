@@ -1756,7 +1756,8 @@ async fn record_initial_history_reconstructs_resumed_transcript() {
             history: Arc::new(rollout_items),
             rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
         }))
-        .await;
+        .await
+        .expect("record initial history");
 
     let history = session.state.lock().await.clone_history();
     assert_eq!(expected, history.raw_items());
@@ -1896,7 +1897,8 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
         let (resumed_session, _resumed_turn_context) = make_session_and_context().await;
         resumed_session
             .record_initial_history(InitialHistory::Resumed(resumed))
-            .await;
+            .await
+            .expect("record initial history");
         assert_eq!(
             resumed_session.clone_history().await.raw_items(),
             std::slice::from_ref(&expected_item)
@@ -1965,7 +1967,8 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
         .await;
     resumed_session
         .record_initial_history(InitialHistory::Resumed(resumed))
-        .await;
+        .await
+        .expect("record initial history");
     let resumed_history = resumed_session.clone_history().await;
     let [resumed_item] = resumed_history.raw_items() else {
         panic!("expected exactly one resumed history item");
@@ -2073,7 +2076,8 @@ async fn prepares_resumed_history_before_installing_it() {
             history: Arc::new(vec![RolloutItem::ResponseItem(resumed_item)]),
             rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
         }))
-        .await;
+        .await
+        .expect("record initial history");
 
     assert_eq!(
         session.state.lock().await.clone_history().raw_items(),
@@ -2168,7 +2172,10 @@ fn resolve_multi_agent_version_handles_unset_and_legacy_history() {
 async fn record_initial_history_new_defers_initial_context_until_first_turn() {
     let (session, _turn_context) = make_session_and_context().await;
 
-    session.record_initial_history(InitialHistory::New).await;
+    session
+        .record_initial_history(InitialHistory::New)
+        .await
+        .expect("record initial history");
 
     let history = session.clone_history().await;
     assert_eq!(history.raw_items().to_vec(), Vec::<ResponseItem>::new());
@@ -2203,7 +2210,8 @@ async fn resumed_history_injects_initial_context_on_first_context_update_only() 
             history: Arc::new(rollout_items),
             rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
         }))
-        .await;
+        .await
+        .expect("record initial history");
 
     let history_before_seed = session.state.lock().await.clone_history();
     assert_eq!(expected, history_before_seed.raw_items());
@@ -2302,10 +2310,85 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
             history: Arc::new(rollout_items),
             rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
         }))
-        .await;
+        .await
+        .expect("record initial history");
 
     let actual = session.state.lock().await.token_info();
     assert_eq!(actual, Some(info2));
+}
+
+#[tokio::test]
+async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
+    let (session, turn_context) = make_session_and_context().await;
+    let mut replacement_history = (0..128)
+        .map(|index| ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputImage {
+                image_url: format!("data:image/png;base64,image-{index}"),
+                detail: None,
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        })
+        .collect::<Vec<_>>();
+    replacement_history.push(ResponseItem::Compaction {
+        id: None,
+        encrypted_content: "summary".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    });
+    let stale_usage = TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            total_tokens: 342_636,
+            ..Default::default()
+        },
+        last_token_usage: TokenUsage {
+            total_tokens: 342_636,
+            ..Default::default()
+        },
+        model_context_window: Some(353_400),
+    };
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: "legacy image-heavy checkpoint".to_string(),
+            replacement_history: Some(replacement_history),
+            window_number: Some(1),
+            ..Default::default()
+        }),
+        RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+            info: Some(stale_usage),
+            rate_limits: None,
+        })),
+    ];
+
+    session
+        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: ThreadId::default(),
+            history: Arc::new(rollout_items),
+            rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+        }))
+        .await
+        .expect("record repaired initial history");
+
+    let history = session.clone_history().await;
+    assert!(
+        history.raw_items().iter().all(|item| {
+            !matches!(
+                item,
+                ResponseItem::Message { content, .. }
+                    if content
+                        .iter()
+                        .any(|item| matches!(item, ContentItem::InputImage { .. }))
+            )
+        }),
+        "repaired history should not retain inline images"
+    );
+    let expected_tokens = history
+        .estimate_token_count_with_base_instructions(&session.get_base_instructions().await)
+        .expect("estimate repaired history");
+    assert_eq!(session.get_total_token_usage().await, expected_tokens);
+    let token_status = context_window::context_window_token_status(&session, &turn_context).await;
+    assert!(!token_status.token_limit_reached);
 }
 
 #[tokio::test]
@@ -2818,7 +2901,8 @@ async fn record_initial_history_reconstructs_forked_transcript() {
 
     session
         .record_initial_history(InitialHistory::Forked(rollout_items))
-        .await;
+        .await
+        .expect("record initial history");
 
     let history = session.state.lock().await.clone_history();
     assert_eq!(expected, history.raw_items());
@@ -2898,7 +2982,8 @@ async fn record_initial_history_assigns_and_persists_id_for_forked_response_item
         .record_initial_history(InitialHistory::Forked(vec![RolloutItem::ResponseItem(
             response_item,
         )]))
-        .await;
+        .await
+        .expect("record initial history");
 
     let live_history = session.clone_history().await;
     let [live_item] = live_history.raw_items() else {
@@ -3144,7 +3229,8 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
 
     session
         .record_initial_history(InitialHistory::Forked(rollout_items))
-        .await;
+        .await
+        .expect("record initial history");
 
     let history = session.clone_history().await;
     assert_eq!(

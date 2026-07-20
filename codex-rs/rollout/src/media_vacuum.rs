@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::Path;
 
 use codex_protocol::models::is_local_image_close_tag_text;
-use codex_protocol::models::is_local_image_open_tag_text;
+use codex_protocol::models::is_local_image_open_tag_with_path_text;
 use codex_protocol::protocol::RolloutLine;
 use tempfile::NamedTempFile;
 use tracing::warn;
@@ -46,7 +46,11 @@ pub struct CompactedMediaVacuumReport {
     pub omitted_inline_media_bytes: u64,
 }
 
-pub(crate) fn vacuum_compacted_media(
+/// Rewrites a closed rollout to remove media from superseded compacted checkpoints.
+///
+/// The caller must ensure no writer has the rollout open. The file must already contain a marked
+/// sanitized checkpoint produced by reconstruction or compaction.
+pub fn vacuum_compacted_media(
     path: &Path,
     policy: &CompactedMediaVacuumPolicy,
 ) -> io::Result<CompactedMediaVacuumReport> {
@@ -341,7 +345,7 @@ fn append_content_media_replacements(
             ImageReferencePolicy::CanonicalLocalWrapper
         ) && index > 0
             && content_item_text(&content[index - 1], json)
-                .is_some_and(|text| is_local_image_open_tag_text(text.as_str()))
+                .is_some_and(|text| is_local_image_open_tag_with_path_text(text.as_str()))
             && content
                 .get(index + 1)
                 .and_then(|value| content_item_text(value, json))

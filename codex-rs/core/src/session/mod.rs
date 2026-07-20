@@ -1492,7 +1492,10 @@ impl Session {
             .collect()
     }
 
-    async fn record_initial_history(&self, conversation_history: InitialHistory) {
+    async fn record_initial_history(
+        &self,
+        conversation_history: InitialHistory,
+    ) -> anyhow::Result<()> {
         let (is_subagent, is_paginated_subagent) = {
             let state = self.state.lock().await;
             let session_configuration = &state.session_configuration;
@@ -1531,9 +1534,7 @@ impl Session {
                         repair_items.as_slice(),
                         applied_reconstruction.sanitization,
                     )
-                    .await;
-                } else if applied_reconstruction.should_schedule_media_vacuum {
-                    self.schedule_compacted_media_vacuum();
+                    .await?;
                 }
 
                 // If resuming, warn when the last recorded model differs from the current one.
@@ -1561,6 +1562,9 @@ impl Session {
                 if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
+                }
+                if applied_reconstruction.should_recompute_token_usage {
+                    self.recompute_token_usage(&turn_context).await;
                 }
 
                 // Defer seeding the session's initial context until the first turn starts so
@@ -1595,9 +1599,10 @@ impl Session {
                         repair_items.as_slice(),
                         applied_reconstruction.sanitization,
                     )
-                    .await;
-                } else if applied_reconstruction.should_schedule_media_vacuum {
-                    self.schedule_compacted_media_vacuum();
+                    .await?;
+                }
+                if applied_reconstruction.should_recompute_token_usage {
+                    self.recompute_token_usage(&turn_context).await;
                 }
 
                 // Forked threads should remain file-backed immediately after startup.
@@ -1609,6 +1614,7 @@ impl Session {
                 }
             }
         }
+        Ok(())
     }
 
     #[instrument(
@@ -1627,7 +1633,7 @@ impl Session {
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
             mut repair,
-            should_schedule_media_vacuum,
+            should_recompute_token_usage,
             previous_turn_settings,
             reference_context_item,
             world_state_baseline,
@@ -1703,7 +1709,7 @@ impl Session {
             previous_turn_settings,
             repair_items,
             sanitization,
-            should_schedule_media_vacuum,
+            should_recompute_token_usage,
         }
     }
 
@@ -3726,7 +3732,6 @@ impl Session {
                 let mut state = sess.state.lock().await;
                 state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
             }
-            sess.schedule_compacted_media_vacuum();
             Ok(final_items)
         })
         .await?

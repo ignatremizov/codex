@@ -17,8 +17,6 @@ mod test_support;
 
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
-use codex_rollout::CompactedMediaVacuumPolicy;
-use codex_rollout::CompactedMediaVacuumReport;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::StateDbHandle;
 use std::collections::HashMap;
@@ -305,18 +303,6 @@ impl ThreadStore for LocalThreadStore {
 
     fn flush_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move { live_writer::flush_thread(self, thread_id).await })
-    }
-
-    fn vacuum_compacted_media(
-        &self,
-        thread_id: ThreadId,
-        policy: CompactedMediaVacuumPolicy,
-    ) -> ThreadStoreFuture<'_, Option<CompactedMediaVacuumReport>> {
-        Box::pin(async move {
-            live_writer::vacuum_compacted_media(self, thread_id, policy)
-                .await
-                .map(Some)
-        })
     }
 
     fn shutdown_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {

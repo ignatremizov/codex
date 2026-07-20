@@ -46,6 +46,7 @@ use supports_color::Stream;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
+mod debug_rollout_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod doctor;
@@ -64,6 +65,7 @@ use crate::mcp_cmd::McpCli;
 use crate::plugin_cmd::PluginCli;
 use crate::plugin_cmd::PluginSubcommand;
 use crate::remote_control_cmd::RemoteControlCommand;
+use debug_rollout_cmd::DebugRolloutCommand;
 use doctor::DoctorCommand;
 use state_db_recovery as local_state_db;
 
@@ -234,6 +236,9 @@ enum DebugSubcommand {
 
     /// Render the model-visible prompt input list as JSON.
     PromptInput(DebugPromptInputCommand),
+
+    /// Inspect and maintain local rollout files.
+    Rollout(DebugRolloutCommand),
 
     /// Replay a rollout trace bundle and write reduced state JSON.
     #[clap(hide = true)]
@@ -1546,6 +1551,14 @@ async fn cli_main(
                     arg0_paths.clone(),
                 )
                 .await?;
+            }
+            DebugSubcommand::Rollout(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug rollout",
+                )?;
+                debug_rollout_cmd::run(cmd).await?;
             }
             DebugSubcommand::TraceReduce(cmd) => {
                 reject_remote_mode_for_subcommand(
@@ -2884,6 +2897,32 @@ mod tests {
         };
 
         assert!(cmd.bundled);
+    }
+
+    #[test]
+    fn debug_rollout_vacuum_parses_rollout_path() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "debug",
+            "rollout",
+            "vacuum",
+            "/tmp/rollout.jsonl",
+        ])
+        .expect("parse");
+
+        let Some(Subcommand::Debug(DebugCommand {
+            subcommand:
+                DebugSubcommand::Rollout(DebugRolloutCommand {
+                    subcommand:
+                        debug_rollout_cmd::DebugRolloutSubcommand::Vacuum(
+                            debug_rollout_cmd::DebugRolloutVacuumCommand { rollout_path },
+                        ),
+                }),
+        })) = cli.subcommand
+        else {
+            panic!("expected debug rollout vacuum subcommand");
+        };
+        assert_eq!(rollout_path, PathBuf::from("/tmp/rollout.jsonl"));
     }
 
     #[test]

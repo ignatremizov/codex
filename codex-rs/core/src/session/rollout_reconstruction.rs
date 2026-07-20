@@ -10,7 +10,7 @@ use uuid::Uuid;
 pub(super) struct RolloutReconstruction {
     pub(super) history: Vec<ResponseItem>,
     pub(super) repair: Option<RolloutReconstructionRepair>,
-    pub(super) should_schedule_media_vacuum: bool,
+    pub(super) should_recompute_token_usage: bool,
     pub(super) previous_turn_settings: Option<PreviousTurnSettings>,
     pub(super) reference_context_item: Option<TurnContextItem>,
     pub(super) world_state_baseline: Option<WorldStateSnapshot>,
@@ -31,7 +31,7 @@ pub(super) struct AppliedRolloutReconstruction {
     pub(super) previous_turn_settings: Option<PreviousTurnSettings>,
     pub(super) repair_items: Option<Vec<RolloutItem>>,
     pub(super) sanitization: crate::context::CompactedMediaSanitization,
-    pub(super) should_schedule_media_vacuum: bool,
+    pub(super) should_recompute_token_usage: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -422,11 +422,11 @@ impl Session {
         let mut repair_checkpoint_source = None;
         let mut repair_sanitization = crate::context::CompactedMediaSanitization::default();
         let mut repaired_prefix_len = 0usize;
-        let mut should_schedule_media_vacuum = false;
+        let mut should_recompute_token_usage = false;
         if let Some(base_compacted_item) = base_compacted_item
             && let Some(base_replacement_history) = &base_compacted_item.replacement_history
         {
-            should_schedule_media_vacuum = base_compacted_item
+            should_recompute_token_usage = base_compacted_item
                 .replacement_history_media_sanitized_prefix_len
                 .is_some();
             let mut base_replacement_history = base_replacement_history.clone();
@@ -446,6 +446,7 @@ impl Session {
                 prefix_len,
             );
             repair_sanitization.accumulate(sanitization);
+            should_recompute_token_usage |= repair_sanitization.changed();
             history.replace(base_replacement_history);
         }
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
@@ -570,6 +571,7 @@ impl Session {
                 repaired_prefix_len,
             );
             repair_sanitization.accumulate(replay_sanitization);
+            should_recompute_token_usage |= repair_sanitization.changed();
         }
         let repair = repair_checkpoint_source
             .filter(|_| repair_sanitization.changed())
@@ -587,7 +589,7 @@ impl Session {
         RolloutReconstruction {
             history,
             repair,
-            should_schedule_media_vacuum,
+            should_recompute_token_usage,
             previous_turn_settings,
             reference_context_item,
             world_state_baseline,

@@ -34,6 +34,7 @@ use crate::AppendThreadItemsParams;
 use crate::CreateThreadParams;
 use crate::DeleteThreadParams;
 use crate::ListTurnsParams;
+use crate::ResumeThreadParams;
 use crate::SortDirection;
 use crate::StoredTurnItemsView;
 use crate::ThreadPersistenceMetadata;
@@ -166,7 +167,7 @@ WHERE thread_id = ?
 }
 
 #[tokio::test]
-async fn compacted_media_vacuum_rebuilds_paginated_projection_before_later_appends() {
+async fn append_after_offline_compacted_media_vacuum_rebuilds_paginated_projection() {
     let home = TempDir::new().expect("temp dir");
     let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
     let thread_id = ThreadId::default();
@@ -206,20 +207,39 @@ async fn compacted_media_vacuum_rebuilds_paginated_projection_before_later_appen
         .await
         .expect("append compacted checkpoints");
 
-    let report = store
-        .vacuum_compacted_media(
-            thread_id,
-            CompactedMediaVacuumPolicy {
-                reopenable_image_omission: "reopen image".to_string(),
-                unavailable_image_omission: "image unavailable".to_string(),
-            },
-        )
+    let rollout_path = store
+        .live_rollout_path(thread_id)
         .await
-        .expect("vacuum compacted media")
-        .expect("local vacuum report");
+        .expect("rollout path");
+    store
+        .shutdown_thread(thread_id)
+        .await
+        .expect("close rollout before offline vacuum");
+    let report = codex_rollout::vacuum_compacted_media(
+        rollout_path.as_path(),
+        &CompactedMediaVacuumPolicy {
+            reopenable_image_omission: "reopen image".to_string(),
+            unavailable_image_omission: "image unavailable".to_string(),
+        },
+    )
+    .expect("vacuum compacted media");
     assert_eq!(report.records_rewritten, 1);
     assert!(report.bytes_after < report.bytes_before);
 
+    store
+        .resume_thread(ResumeThreadParams {
+            thread_id,
+            rollout_path: Some(rollout_path.clone()),
+            history: None,
+            include_archived: false,
+            metadata: ThreadPersistenceMetadata {
+                cwd: Some(std::env::current_dir().expect("cwd")),
+                model_provider: "test-provider".to_string(),
+                memory_mode: ThreadMemoryMode::Enabled,
+            },
+        })
+        .await
+        .expect("resume vacuumed rollout");
     store
         .append_items(AppendThreadItemsParams {
             thread_id,
@@ -227,10 +247,6 @@ async fn compacted_media_vacuum_rebuilds_paginated_projection_before_later_appen
         })
         .await
         .expect("append after vacuum");
-    let rollout_path = store
-        .live_rollout_path(thread_id)
-        .await
-        .expect("rollout path");
     let pool = codex_state::open_thread_history_db(home.path())
         .await
         .expect("open thread history db");

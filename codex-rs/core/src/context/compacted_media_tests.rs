@@ -63,6 +63,39 @@ fn sanitizes_images_with_bounded_reference_aware_text() {
 }
 
 #[test]
+fn pathless_local_image_like_wrapper_is_not_reopenable() {
+    let mut items = vec![user_message(vec![
+        ContentItem::InputText {
+            text: "<image name=[Image #1]>".to_string(),
+        },
+        ContentItem::InputImage {
+            image_url: "data:image/png;base64,pasted".to_string(),
+            detail: None,
+        },
+        ContentItem::InputText {
+            text: "</image>".to_string(),
+        },
+    ])];
+
+    sanitize_compacted_media(&mut items);
+
+    assert_eq!(
+        items,
+        vec![user_message(vec![
+            ContentItem::InputText {
+                text: "<image name=[Image #1]>".to_string(),
+            },
+            ContentItem::InputText {
+                text: CompactedImageOmission::unavailable().render(),
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+        ])]
+    );
+}
+
+#[test]
 fn sanitizes_structured_tool_output_with_one_bounded_checkpoint_marker() {
     let mut items = vec![
         ResponseItem::FunctionCallOutput {
