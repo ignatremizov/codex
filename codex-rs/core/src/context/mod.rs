@@ -51,6 +51,7 @@ pub(crate) use codex_core_skills::SkillInstructions;
 pub(crate) use collaboration_mode_instructions::CollaborationModeInstructions;
 pub(crate) use compacted_media::CompactedImageOmission;
 pub(crate) use compacted_media::CompactedMediaSanitization;
+pub(crate) use compacted_media::expire_compacted_media_references;
 pub(crate) use compacted_media::is_compacted_image_omission_text;
 pub(crate) use compacted_media::sanitize_compacted_media;
 pub(crate) use compacted_media::sanitize_compacted_media_before_latest_compaction;

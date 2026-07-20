@@ -1,10 +1,7 @@
 use core_test_support::test_codex::local_selections;
 use std::fs;
-use std::io::Cursor;
 
 use anyhow::Result;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_features::Feature;
 use codex_login::CodexAuth;
@@ -47,7 +44,6 @@ use core_test_support::test_path_buf;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
-use image::DynamicImage;
 use image::ImageBuffer;
 use image::Rgba;
 use pretty_assertions::assert_eq;
@@ -1024,7 +1020,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_does_not_replay_prior_window_image_bytes() -> Result<()> {
+async fn remote_compact_v2_expires_prior_window_images_after_one_checkpoint() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -1043,12 +1039,9 @@ async fn remote_compact_v2_does_not_replay_prior_window_image_bytes() -> Result<
         let [red, green, blue, _] = mixed.to_le_bytes();
         Rgba([red, green, blue, u8::MAX])
     });
-    let mut encoded = Cursor::new(Vec::new());
-    DynamicImage::ImageRgba8(image).write_to(&mut encoded, image::ImageFormat::Png)?;
-    let image_url = format!(
-        "data:image/png;base64,{}",
-        BASE64_STANDARD.encode(encoded.into_inner())
-    );
+    let local_image_path = harness.test().cwd.path().join("compaction-context.png");
+    image.save(&local_image_path)?;
+    let local_image_path_text = local_image_path.display().to_string();
     let responses_mock = responses::mount_sse_sequence(
         harness.server(),
         vec![
@@ -1091,8 +1084,8 @@ async fn remote_compact_v2_does_not_replay_prior_window_image_bytes() -> Result<
     codex
         .submit(Op::UserInput {
             items: vec![
-                UserInput::Image {
-                    image_url: image_url.clone(),
+                UserInput::LocalImage {
+                    path: local_image_path.clone(),
                     detail: None,
                 },
                 UserInput::Text {
@@ -1140,10 +1133,11 @@ async fn remote_compact_v2_does_not_replay_prior_window_image_bytes() -> Result<
 
     let requests = responses_mock.requests();
     assert_eq!(requests.len(), 5);
+    let first_compaction_image_urls = requests[1].message_input_image_urls("user");
     assert_eq!(
-        requests[1].message_input_image_urls("user"),
-        vec![image_url.clone()],
-        "the first compactor must see current-window media"
+        first_compaction_image_urls.len(),
+        1,
+        "the first compactor must see the current-window image"
     );
     for request in &requests[2..] {
         assert!(
@@ -1155,8 +1149,29 @@ async fn remote_compact_v2_does_not_replay_prior_window_image_bytes() -> Result<
         requests[2]
             .message_input_texts("user")
             .iter()
-            .any(|text| text.contains("no durable source reference is available")),
-        "pathless media should leave a bounded unavailable marker"
+            .any(|text| text.contains(local_image_path_text.as_str())),
+        "the first checkpoint should retain the current-window image path"
+    );
+    assert!(
+        requests[3]
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains(local_image_path_text.as_str())),
+        "the next compactor should get one final opportunity to use the inherited image path"
+    );
+    assert!(
+        requests[4]
+            .message_input_texts("user")
+            .iter()
+            .all(|text| !text.contains(local_image_path_text.as_str())),
+        "the second checkpoint should expire the inherited image path"
+    );
+    assert!(
+        requests[4]
+            .message_input_texts("user")
+            .iter()
+            .all(|text| !text.contains("<compacted_image_omission>")),
+        "a window without new images should not inherit the prior omission marker"
     );
     let rollout_path = codex.rollout_path().expect("rollout path");
     let rollout = fs::read_to_string(rollout_path)?;
@@ -1168,7 +1183,7 @@ async fn remote_compact_v2_does_not_replay_prior_window_image_bytes() -> Result<
         })
         .collect::<Vec<_>>();
     assert_eq!(compacted_lines.len(), 2);
-    for (line, item) in compacted_lines {
+    for (index, (line, item)) in compacted_lines.into_iter().enumerate() {
         let RolloutItem::Compacted(compacted) = item else {
             unreachable!("filtered to compacted rollout items");
         };
@@ -1187,8 +1202,15 @@ async fn remote_compact_v2_does_not_replay_prior_window_image_bytes() -> Result<
             }),
             "persisted compacted history must not contain inline images"
         );
+        let serialized_history =
+            serde_json::to_string(&replacement_history).expect("serialize replacement history");
+        assert_eq!(
+            serialized_history.contains(local_image_path_text.as_str()),
+            index == 0,
+            "only the first checkpoint should retain the first window's image path"
+        );
         assert!(
-            line.len() < image_url.len() / 2,
+            line.len() < first_compaction_image_urls[0].len() / 2,
             "checkpoint size must not scale with discarded image bytes"
         );
     }

@@ -233,6 +233,60 @@ pub(crate) fn sanitize_compacted_media_before_latest_compaction(
     sanitize_compacted_media_prefix(items, compaction_index)
 }
 
+/// Expires image references inherited from a previously compacted window.
+///
+/// Callers sanitize the inherited items first so each canonical local-image wrapper is left as an
+/// adjacent open/close pair. The current compaction request can still contain those paths, but the
+/// newly installed replacement history should retain references only for images introduced after
+/// the latest compaction boundary.
+pub(crate) fn expire_compacted_media_references(items: &mut [ResponseItem]) {
+    for item in items {
+        match item {
+            ResponseItem::Message { content, .. } => {
+                content.retain(|item| {
+                    !matches!(
+                        item,
+                        ContentItem::InputText { text }
+                            if is_compacted_image_omission_text(text)
+                    )
+                });
+                let mut retained = Vec::with_capacity(content.len());
+                let mut content_items = std::mem::take(content).into_iter().peekable();
+                while let Some(content_item) = content_items.next() {
+                    let expires_local_reference = matches!(
+                        &content_item,
+                        ContentItem::InputText { text }
+                            if is_local_image_open_tag_with_path_text(text)
+                    ) && matches!(
+                        content_items.peek(),
+                        Some(ContentItem::InputText { text })
+                            if is_local_image_close_tag_text(text)
+                    );
+                    if expires_local_reference {
+                        let _ = content_items.next();
+                    } else {
+                        retained.push(content_item);
+                    }
+                }
+                *content = retained;
+            }
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
+                if let Some(content) = output.content_items_mut() {
+                    content.retain(|item| {
+                        !matches!(
+                            item,
+                            FunctionCallOutputContentItem::InputText { text }
+                                if is_compacted_image_omission_text(text)
+                        )
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[derive(Default)]
 struct CompactedMediaInventory {
     sanitization: CompactedMediaSanitization,

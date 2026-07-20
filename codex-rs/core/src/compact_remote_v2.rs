@@ -13,6 +13,7 @@ use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::compact_remote::process_compacted_history;
 use crate::compact_remote::should_keep_compacted_history_item;
 use crate::context::CompactedMediaSanitization;
+use crate::context::expire_compacted_media_references;
 use crate::context::is_compacted_image_omission_text;
 use crate::context::sanitize_compacted_media;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -537,45 +538,75 @@ fn build_v2_compacted_history(
     prompt_input: &[ResponseItem],
     compaction_output: ResponseItem,
 ) -> (Vec<ResponseItem>, CompactedMediaSanitization) {
-    // Defensive pre-compaction repair can place the checkpoint-wide omission marker in a tool
-    // output because that was the latest media-bearing item. Remote-v2 retention drops tool
-    // outputs, so carry the bounded marker forward and rehome it below when necessary.
-    let inherited_omission_text = prompt_input.iter().find_map(|item| match item {
-        ResponseItem::Message { content, .. } => content.iter().find_map(|item| match item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text }
-                if is_compacted_image_omission_text(text) =>
-            {
-                Some(text.clone())
-            }
-            ContentItem::InputText { .. }
-            | ContentItem::OutputText { .. }
-            | ContentItem::InputImage { .. } => None,
-        }),
-        ResponseItem::FunctionCallOutput { output, .. }
-        | ResponseItem::CustomToolCallOutput { output, .. } => {
-            output.content_items().and_then(|content| {
-                content.iter().find_map(|item| match item {
-                    FunctionCallOutputContentItem::InputText { text }
-                        if is_compacted_image_omission_text(text) =>
-                    {
-                        Some(text.clone())
-                    }
-                    FunctionCallOutputContentItem::InputText { .. }
-                    | FunctionCallOutputContentItem::InputImage { .. }
-                    | FunctionCallOutputContentItem::EncryptedContent { .. } => None,
-                })
-            })
-        }
-        _ => None,
-    });
-    let mut retained = prompt_input
+    let current_window_start = prompt_input
         .iter()
-        .filter(|item| is_retained_for_remote_compaction_v2(item))
-        .filter(|item| should_keep_compacted_history_item(item))
-        .cloned()
-        .collect::<Vec<_>>();
-    let media_sanitization = sanitize_compacted_media(&mut retained);
-    let retained_has_omission = retained.iter().any(|item| {
+        .rposition(|item| {
+            matches!(
+                item,
+                ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+            )
+        })
+        .map_or(0, |index| index.saturating_add(1));
+    // Partition only the cloned replacement-history candidates. The compaction request has
+    // already seen inherited paths, while the next checkpoint should keep references introduced
+    // in the current window and let older paths age out like other compacted context.
+    // Sanitization can place the checkpoint-wide omission marker in a tool output because that was
+    // the latest media-bearing item. Remote-v2 retention drops tool outputs, so carry forward a
+    // marker only when it belongs to the current window.
+    let current_omission_text = prompt_input[current_window_start..]
+        .iter()
+        .find_map(|item| match item {
+            ResponseItem::Message { content, .. } => content.iter().find_map(|item| match item {
+                ContentItem::InputText { text } | ContentItem::OutputText { text }
+                    if is_compacted_image_omission_text(text) =>
+                {
+                    Some(text.clone())
+                }
+                ContentItem::InputText { .. }
+                | ContentItem::OutputText { .. }
+                | ContentItem::InputImage { .. } => None,
+            }),
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
+                output.content_items().and_then(|content| {
+                    content.iter().find_map(|item| match item {
+                        FunctionCallOutputContentItem::InputText { text }
+                            if is_compacted_image_omission_text(text) =>
+                        {
+                            Some(text.clone())
+                        }
+                        FunctionCallOutputContentItem::InputText { .. }
+                        | FunctionCallOutputContentItem::InputImage { .. }
+                        | FunctionCallOutputContentItem::EncryptedContent { .. } => None,
+                    })
+                })
+            }
+            _ => None,
+        });
+    let mut inherited = Vec::new();
+    let mut current = Vec::new();
+    for (index, item) in prompt_input.iter().enumerate() {
+        if !is_retained_for_remote_compaction_v2(item) || !should_keep_compacted_history_item(item)
+        {
+            continue;
+        }
+        if index < current_window_start {
+            inherited.push(item.clone());
+        } else {
+            current.push(item.clone());
+        }
+    }
+
+    let mut media_sanitization = sanitize_compacted_media(&mut inherited);
+    expire_compacted_media_references(&mut inherited);
+    inherited.retain(|item| {
+        !matches!(
+            item,
+            ResponseItem::Message { content, .. } if content.is_empty()
+        )
+    });
+    media_sanitization.accumulate(sanitize_compacted_media(&mut current));
+    let current_has_omission = current.iter().any(|item| {
         matches!(
             item,
             ResponseItem::Message { content, .. }
@@ -588,16 +619,17 @@ fn build_v2_compacted_history(
                 })
         )
     });
-    if !retained_has_omission
-        && let Some(omission_text) = inherited_omission_text
-        && let Some(ResponseItem::Message { content, .. }) = retained.last_mut()
+    if !current_has_omission
+        && let Some(omission_text) = current_omission_text
+        && let Some(ResponseItem::Message { content, .. }) = current.last_mut()
     {
         content.push(ContentItem::InputText {
             text: omission_text,
         });
     }
+    inherited.extend(current);
     let mut retained =
-        truncate_retained_messages_for_remote_compaction(retained, RETAINED_MESSAGE_TOKEN_BUDGET);
+        truncate_retained_messages_for_remote_compaction(inherited, RETAINED_MESSAGE_TOKEN_BUDGET);
     retained.push(compaction_output);
     (retained, media_sanitization)
 }
@@ -725,6 +757,7 @@ mod tests {
     use super::*;
     use crate::context::CompactedImageOmission;
     use crate::context::ContextualUserFragment;
+    use crate::context::sanitize_compacted_media_before_latest_compaction;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::MessagePhase;
@@ -920,6 +953,152 @@ mod tests {
                     phase: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
+                output,
+            ]
+        );
+    }
+
+    #[test]
+    fn build_v2_compacted_history_keeps_only_current_window_image_paths() {
+        let old_path = "/tmp/old-window.png";
+        let current_path = "/tmp/current-window.png";
+        let mut input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![
+                    ContentItem::InputText {
+                        text: format!("<image name=[Image #1] path=\"{old_path}\">"),
+                    },
+                    ContentItem::InputImage {
+                        image_url: "data:image/png;base64,old".to_string(),
+                        detail: None,
+                    },
+                    ContentItem::InputText {
+                        text: "</image>".to_string(),
+                    },
+                    ContentItem::InputText {
+                        text: "old image context".to_string(),
+                    },
+                ],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::Compaction {
+                id: None,
+                encrypted_content: "previous summary".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![
+                    ContentItem::InputText {
+                        text: format!("<image name=[Image #2] path=\"{current_path}\">"),
+                    },
+                    ContentItem::InputImage {
+                        image_url: "data:image/png;base64,current".to_string(),
+                        detail: None,
+                    },
+                    ContentItem::InputText {
+                        text: "</image>".to_string(),
+                    },
+                    ContentItem::InputText {
+                        text: "current image context".to_string(),
+                    },
+                ],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ];
+        let pre_compaction_sanitization =
+            sanitize_compacted_media_before_latest_compaction(&mut input);
+        let output = ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "new summary".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        };
+
+        let (history, sanitization) = build_v2_compacted_history(&input, output.clone());
+
+        assert_eq!(pre_compaction_sanitization.omitted_image_count, 1);
+        assert_eq!(sanitization.omitted_image_count, 1);
+        assert_eq!(
+            history,
+            vec![
+                message("user", "old image context", /*phase*/ None),
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![
+                        ContentItem::InputText {
+                            text: format!("<image name=[Image #2] path=\"{current_path}\">"),
+                        },
+                        ContentItem::InputText {
+                            text: CompactedImageOmission::reopenable_local_image().render(),
+                        },
+                        ContentItem::InputText {
+                            text: "</image>".to_string(),
+                        },
+                        ContentItem::InputText {
+                            text: "current image context".to_string(),
+                        },
+                    ],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                output,
+            ]
+        );
+    }
+
+    #[test]
+    fn build_v2_compacted_history_expires_paths_when_current_window_has_no_images() {
+        let old_path = "/tmp/old-window.png";
+        let mut input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![
+                    ContentItem::InputText {
+                        text: format!("<image name=[Image #1] path=\"{old_path}\">"),
+                    },
+                    ContentItem::InputImage {
+                        image_url: "data:image/png;base64,old".to_string(),
+                        detail: None,
+                    },
+                    ContentItem::InputText {
+                        text: "</image>".to_string(),
+                    },
+                    ContentItem::InputText {
+                        text: "old image context".to_string(),
+                    },
+                ],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::Compaction {
+                id: None,
+                encrypted_content: "previous summary".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            message("user", "current text only", /*phase*/ None),
+        ];
+        sanitize_compacted_media_before_latest_compaction(&mut input);
+        let output = ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "new summary".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        };
+
+        let (history, sanitization) = build_v2_compacted_history(&input, output.clone());
+
+        assert_eq!(sanitization, CompactedMediaSanitization::default());
+        assert_eq!(
+            history,
+            vec![
+                message("user", "old image context", /*phase*/ None),
+                message("user", "current text only", /*phase*/ None),
                 output,
             ]
         );

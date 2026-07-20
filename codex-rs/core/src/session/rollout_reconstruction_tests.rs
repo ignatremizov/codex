@@ -282,12 +282,21 @@ async fn reconstruction_certifies_a_media_free_legacy_checkpoint_for_manual_vacu
 }
 
 #[tokio::test]
-async fn reconstruction_repairs_the_surviving_prefix_after_a_compaction_turn_is_rolled_back() {
+async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rollback() {
     let (session, turn_context) = make_session_and_context().await;
     let compacted_image_url = "data:image/png;base64,compacted";
-    let sanitized_base_image = image_message(vec![ContentItem::InputText {
-        text: CompactedImageOmission::unavailable().render(),
-    }]);
+    let restored_image_path = "/tmp/restored-window.png";
+    let sanitized_base_image = image_message(vec![
+        ContentItem::InputText {
+            text: format!("<image name=[Image #1] path=\"{restored_image_path}\">"),
+        },
+        ContentItem::InputText {
+            text: CompactedImageOmission::reopenable_local_image().render(),
+        },
+        ContentItem::InputText {
+            text: "</image>".to_string(),
+        },
+    ]);
     let rolled_back_base_image = image_message(vec![ContentItem::InputImage {
         image_url: compacted_image_url.to_string(),
         detail: None,
