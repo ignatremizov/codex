@@ -45,7 +45,8 @@ fn sub_agent_activity_is_a_terminal_tool_runtime_event() -> anyhow::Result<()> {
             "occurred_at_ms": 1234,
             "agent_thread_id": agent_thread_id,
             "agent_path": "/root/reviewer",
-            "kind": "started"
+            "kind": "started",
+            "prompt": "review the change"
         })
     );
     Ok(())
