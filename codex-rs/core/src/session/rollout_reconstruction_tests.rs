@@ -410,7 +410,10 @@ async fn reconstruction_replays_full_history_when_only_checkpoint_is_rolled_back
         RolloutItem::ResponseItem(rolled_back_message.clone()),
         RolloutItem::Compacted(CompactedItem {
             message: "rejected only checkpoint".to_string(),
-            replacement_history: Some(vec![surviving_message.clone(), rolled_back_message]),
+            replacement_history: Some(vec![
+                user_message("replacement summary"),
+                rolled_back_message,
+            ]),
             window_number: Some(1),
             ..Default::default()
         }),

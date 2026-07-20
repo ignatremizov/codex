@@ -95,6 +95,7 @@ struct ActiveReplaySegment<'a> {
     previous_turn_settings: Option<PreviousTurnSettings>,
     reference_context_item: TurnReferenceContextItem,
     world_state_replay: Vec<&'a RolloutItem>,
+    compacted_items: Vec<&'a CompactedItem>,
     base_compacted_item: Option<&'a CompactedItem>,
     rollout_suffix: Option<&'a [RolloutItem]>,
     window: Option<ReconstructedWindow>,
@@ -110,6 +111,7 @@ struct ReverseReplayState<'a> {
     window: Option<ReconstructedWindow>,
     pending_rollback_turns: usize,
     rollout_suffix: Option<&'a [RolloutItem]>,
+    skipped_compacted_items: Vec<&'a CompactedItem>,
 }
 
 fn turn_ids_are_compatible(active_turn_id: Option<&str>, item_turn_id: Option<&str>) -> bool {
@@ -125,6 +127,9 @@ fn finalize_active_segment<'a>(
     // means skipping the next finalized segments that contain a non-contextual
     // `EventMsg::UserMessage`.
     if replay_state.pending_rollback_turns > 0 {
+        replay_state
+            .skipped_compacted_items
+            .extend(active_segment.compacted_items);
         if active_segment.counts_as_user_turn {
             replay_state.pending_rollback_turns -= 1;
         }
@@ -221,6 +226,9 @@ impl Session {
                     // replay has already seen that marker, the repair may describe a semantic
                     // checkpoint from the rejected turn and must not become the surviving base.
                     let repair_precedes_pending_rollback = replay_state.pending_rollback_turns > 0;
+                    if repair_precedes_pending_rollback {
+                        replay_state.skipped_compacted_items.push(compacted);
+                    }
                     // Representation repair is appended outside a model turn. Finalize any newer
                     // turn before selecting it so an older rollback cannot consume the repair as
                     // part of the preceding user-turn segment.
@@ -293,6 +301,7 @@ impl Session {
                     let active_segment =
                         active_segment.get_or_insert_with(ActiveReplaySegment::default);
                     active_segment.world_state_replay.push(item);
+                    active_segment.compacted_items.push(compacted);
                     if active_segment.window.is_none()
                         && let Some(window_number) = compacted.window_number
                     {
@@ -439,6 +448,7 @@ impl Session {
             mut world_state_replay,
             window,
             rollout_suffix,
+            skipped_compacted_items,
             ..
         } = replay_state;
         let rollout_suffix = rollout_suffix.unwrap_or(rollout_items);
@@ -504,11 +514,10 @@ impl Session {
                 }
                 RolloutItem::InterAgentCommunicationMetadata { .. } => {}
                 RolloutItem::Compacted(compacted) => {
-                    if base_compacted_item.is_some() && compacted.replacement_history.is_some() {
-                        // Reverse replay selected an older checkpoint because this replacement
-                        // belongs to a rolled-back user-turn segment. Replaying the replacement
-                        // would irreversibly discard the selected base before the later rollback
-                        // removes that turn's response items.
+                    if skipped_compacted_items
+                        .iter()
+                        .any(|skipped| std::ptr::eq(*skipped, compacted))
+                    {
                         continue;
                     }
                     if let Some(replacement_history) = &compacted.replacement_history {
