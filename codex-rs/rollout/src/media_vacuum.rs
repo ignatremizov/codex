@@ -198,11 +198,8 @@ pub(crate) fn recover_compacted_media_backup_if_needed(path: &Path) -> io::Resul
         if validate_rollout_and_find_protected_checkpoint(backup_path.as_path())
             .is_ok_and(std::convert::identity)
         {
-            match fs::rename(backup_path, path) {
-                Ok(()) => {
-                    sync_parent_directory(parent)?;
-                    return Ok(());
-                }
+            match restore_compacted_media_backup(backup_path.as_path(), path, parent) {
+                Ok(()) => return Ok(()),
                 Err(_)
                     if validate_rollout_and_find_protected_checkpoint(path)
                         .is_ok_and(std::convert::identity) =>
@@ -259,13 +256,37 @@ fn parse_rollout_record(json: &[u8]) -> Option<JsonSpan> {
 fn is_protected_checkpoint(value: &JsonSpan, json: &[u8]) -> bool {
     is_object_type(value, json, "compacted")
         && value.object_value("payload").is_some_and(|payload| {
-            payload
+            let Some(prefix_len) = payload
                 .object_value("replacement_history_media_sanitized_prefix_len")
-                .is_some_and(|value| value.as_u64(json).is_some())
-                && payload
-                    .object_value("replacement_history")
-                    .is_some_and(|value| value.as_array().is_some())
+                .and_then(|value| value.as_u64(json))
+                .and_then(|prefix_len| usize::try_from(prefix_len).ok())
+            else {
+                return false;
+            };
+            let Some(history) = payload
+                .object_value("replacement_history")
+                .and_then(JsonSpan::as_array)
+            else {
+                return false;
+            };
+            prefix_len <= history.len()
+                && history[..prefix_len]
+                    .iter()
+                    .all(|item| !contains_inline_media(item, json))
         })
+}
+
+fn contains_inline_media(value: &JsonSpan, json: &[u8]) -> bool {
+    if is_object_type(value, json, "input_image") {
+        return true;
+    }
+    match &value.kind {
+        JsonSpanKind::Object(fields) => fields
+            .values()
+            .any(|value| contains_inline_media(value, json)),
+        JsonSpanKind::Array(items) => items.iter().any(|value| contains_inline_media(value, json)),
+        JsonSpanKind::String | JsonSpanKind::Scalar => false,
+    }
 }
 
 fn compacted_media_replacements(
@@ -474,6 +495,27 @@ fn compacted_media_backup_parts(name: &str) -> Option<(&str, Uuid)> {
         return None;
     }
     Some((file_name, Uuid::parse_str(backup_id).ok()?))
+}
+
+#[cfg(unix)]
+fn restore_compacted_media_backup(
+    backup_path: &Path,
+    path: &Path,
+    parent: &Path,
+) -> io::Result<()> {
+    fs::rename(backup_path, path)?;
+    sync_parent_directory(parent)
+}
+
+#[cfg(not(unix))]
+fn restore_compacted_media_backup(
+    backup_path: &Path,
+    path: &Path,
+    _parent: &Path,
+) -> io::Result<()> {
+    // Preserve the recovery name until a later explicit cleanup because this platform has no
+    // directory durability barrier for the newly linked canonical name.
+    fs::hard_link(backup_path, path)
 }
 
 #[cfg(unix)]

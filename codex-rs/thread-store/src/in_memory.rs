@@ -525,9 +525,6 @@ impl InMemoryThreadStore {
             return Ok(());
         }
         state.calls.append_items += 1;
-        if matches!(durability, InMemoryAppendDurability::Flushed) {
-            state.calls.flush_thread += 1;
-        }
         let appends_compacted_media_repair = persisted_items.iter().any(|item| {
             matches!(
                 item,
@@ -561,6 +558,7 @@ impl InMemoryThreadStore {
                             Some((params.thread_id, history_len));
                     }
                     InMemoryAppendDurability::Flushed => {
+                        state.calls.flush_thread += 1;
                         state.fail_next_operation = None;
                         return Err(ThreadStoreError::Internal {
                             message: format!(
@@ -587,6 +585,9 @@ impl InMemoryThreadStore {
                 | InMemoryThreadStoreFailure::ThreadMetadataUpdate,
             )
             | None => {}
+        }
+        if matches!(durability, InMemoryAppendDurability::Flushed) {
+            state.calls.flush_thread += 1;
         }
         state
             .histories

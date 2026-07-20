@@ -55,11 +55,11 @@ pub trait ThreadStore: Any + Send + Sync {
     /// replay history and before updating any implementation-owned projections.
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()>;
 
-    /// Atomically appends canonical history and completes its durability barrier.
+    /// Appends canonical history and completes its durability barrier.
     ///
-    /// An error must leave the appended batch absent from durable/readable canonical history.
     /// Rebuildable projection failures must be retained or logged separately after the canonical
-    /// commit succeeds.
+    /// history commit succeeds. Callers remain responsible for ordering multi-record batches so
+    /// any durable prefix is replay-safe after interruption.
     fn append_items_and_flush(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
         let thread_id = params.thread_id;
         Box::pin(async move {

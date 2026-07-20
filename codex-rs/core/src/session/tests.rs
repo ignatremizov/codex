@@ -4432,6 +4432,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
         expect_rollback_failure,
         expect_persisted_repair,
         expected_recovered_repair_persistence,
+        prime_pending_metadata_failure,
     ) in [
         (
             true,
@@ -4439,6 +4440,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             true,
             false,
             Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::Required),
+            false,
         ),
         (
             true,
@@ -4446,6 +4448,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             true,
             false,
             Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::Required),
+            false,
         ),
         (
             false,
@@ -4453,6 +4456,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             false,
             false,
             Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::BestEffort),
+            false,
         ),
         (
             false,
@@ -4460,6 +4464,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             false,
             false,
             Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::BestEffort),
+            false,
         ),
         (
             false,
@@ -4467,6 +4472,15 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             true,
             false,
             Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::BestEffort),
+            false,
+        ),
+        (
+            true,
+            codex_thread_store::InMemoryThreadStoreFailure::ThreadRollbackAppend,
+            true,
+            true,
+            None,
+            false,
         ),
         (
             true,
@@ -4474,6 +4488,15 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             false,
             true,
             None,
+            false,
+        ),
+        (
+            false,
+            codex_thread_store::InMemoryThreadStoreFailure::ThreadMetadataUpdate,
+            false,
+            true,
+            None,
+            true,
         ),
     ] {
         let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
@@ -4543,6 +4566,20 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
                 state.previous_turn_settings(),
             )
         };
+        if prime_pending_metadata_failure {
+            store
+                .fail_next_operation(
+                    codex_thread_store::InMemoryThreadStoreFailure::ThreadMetadataUpdate,
+                )
+                .await;
+            sess.try_persist_rollout_items(&[RolloutItem::EventMsg(EventMsg::Warning(
+                WarningEvent {
+                    message: "prime pending metadata retry".to_string(),
+                },
+            ))])
+            .await
+            .expect_err("metadata projection should fail after persisting canonical history");
+        }
         store.fail_next_operation(failure).await;
 
         handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;

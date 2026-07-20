@@ -41,8 +41,9 @@ impl Session {
         let Some(live_thread) = self.live_thread() else {
             return Ok(());
         };
-        live_thread.append_items(repair_items).await?;
-        live_thread.flush().await?;
+        live_thread
+            .append_items_and_flush_canonical(repair_items)
+            .await?;
         info!(
             omitted_image_count = sanitization.omitted_image_count,
             omitted_inline_media_bytes = sanitization.omitted_inline_media_bytes,

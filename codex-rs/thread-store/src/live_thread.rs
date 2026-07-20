@@ -300,6 +300,18 @@ impl LiveThread {
             .await
     }
 
+    /// Flushes canonical history while leaving derived metadata failures pending for retry.
+    pub async fn flush_canonical(&self) -> ThreadStoreResult<()> {
+        self.thread_store.flush_thread(self.thread_id).await?;
+        if let Err(err) = self
+            .flush_pending_metadata_update_for_existing_history()
+            .await
+        {
+            warn!("failed to update derived metadata after canonical history flush: {err}");
+        }
+        Ok(())
+    }
+
     pub async fn shutdown(&self) -> ThreadStoreResult<()> {
         self.flush_pending_metadata_update_for_existing_history()
             .await?;

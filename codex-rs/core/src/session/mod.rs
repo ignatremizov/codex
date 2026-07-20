@@ -3733,11 +3733,14 @@ impl Session {
             compacted_item.replacement_history_media_sanitized_prefix_len =
                 Some(u64::try_from(final_items.len()).unwrap_or(u64::MAX));
 
-            sess.try_persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
-                .await
-                .map_err(|err| {
-                    CodexErr::Fatal(format!("failed to persist compacted history: {err}"))
-                })?;
+            if let Some(live_thread) = sess.live_thread() {
+                live_thread
+                    .append_items_and_flush_canonical(&[RolloutItem::Compacted(compacted_item)])
+                    .await
+                    .map_err(|err| {
+                        CodexErr::Fatal(format!("failed to persist compacted history: {err}"))
+                    })?;
+            }
             {
                 let mut state = sess.state.lock().await;
                 state.replace_history(final_items.clone(), reference_context_item.clone());

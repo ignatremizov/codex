@@ -283,6 +283,73 @@ fn schema_invalid_or_duplicate_marker_records_do_not_authorize_vacuum() {
 }
 
 #[test]
+fn false_media_free_certification_does_not_authorize_vacuum() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let invalid_markers = [
+        json!({
+            "timestamp": "2026-01-01T00:00:01.000Z",
+            "type": "compacted",
+            "payload": {
+                "message": "prefix still contains media",
+                "replacement_history_media_sanitized_prefix_len": 1,
+                "replacement_history": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_image",
+                        "image_url": format!("data:image/png;base64,{}", "a".repeat(/*n*/ 4_096))
+                    }]
+                }]
+            }
+        }),
+        json!({
+            "timestamp": "2026-01-01T00:00:01.000Z",
+            "type": "compacted",
+            "payload": {
+                "message": "prefix exceeds history",
+                "replacement_history_media_sanitized_prefix_len": 2,
+                "replacement_history": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": []
+                }]
+            }
+        }),
+    ];
+
+    for (index, invalid_marker) in invalid_markers.into_iter().enumerate() {
+        let path = temp_dir.path().join(format!("rollout-{index}.jsonl"));
+        write_rollout(
+            path.as_path(),
+            &[
+                json!({
+                    "timestamp": "2026-01-01T00:00:00.000Z",
+                    "type": "compacted",
+                    "payload": {
+                        "message": "old",
+                        "replacement_history": [{
+                            "type": "message",
+                            "role": "user",
+                            "content": [{
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,old"
+                            }]
+                        }]
+                    }
+                }),
+                invalid_marker,
+            ],
+        );
+        let before = fs::read(path.as_path()).expect("read original rollout");
+
+        vacuum_compacted_media(path.as_path(), &policy())
+            .expect_err("false media-free certification must not authorize vacuum");
+
+        assert_eq!(fs::read(path).expect("read unchanged rollout"), before);
+    }
+}
+
+#[test]
 fn vacuum_preserves_schema_invalid_compacted_records() {
     let temp_dir = TempDir::new().expect("temp dir");
     let protected = r#"{"timestamp":"2026-01-01T00:00:01Z","type":"compacted","payload":{"message":"repair","replacement_history_media_sanitized_prefix_len":0,"replacement_history":[]}}"#;
@@ -381,7 +448,13 @@ fn missing_canonical_rollout_recovers_the_newest_valid_vacuum_backup() {
     recover_compacted_media_backup_if_needed(path.as_path()).expect("recover vacuum backup");
 
     assert_eq!(fs::read(path).expect("read recovered rollout"), expected);
+    #[cfg(unix)]
     assert!(!backup_path.exists());
+    #[cfg(not(unix))]
+    assert_eq!(
+        fs::read(backup_path).expect("read retained recovery backup"),
+        expected
+    );
 }
 
 #[test]
@@ -424,7 +497,16 @@ fn relative_missing_canonical_rollout_recovers_vacuum_backup() {
         fs::read(relative_path.as_path()).expect("read recovered rollout"),
         expected
     );
+    #[cfg(unix)]
     assert!(!backup_path.exists());
+    #[cfg(not(unix))]
+    {
+        assert_eq!(
+            fs::read(backup_path.as_path()).expect("read retained recovery backup"),
+            expected
+        );
+        fs::remove_file(backup_path).expect("clean retained recovery backup");
+    }
 }
 
 #[test]
