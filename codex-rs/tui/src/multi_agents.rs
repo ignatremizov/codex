@@ -496,16 +496,25 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
     })
 }
 
-pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<CollabAgentHistoryCell> {
+pub(crate) fn sub_agent_activity_history_cell(
+    item: &ThreadItem,
+    agent_prompt_preview_lines: usize,
+) -> Option<CollabAgentHistoryCell> {
     let ThreadItem::SubAgentActivity {
-        kind, agent_path, ..
+        kind,
+        agent_path,
+        prompt,
+        ..
     } = item
     else {
         return None;
     };
     Some(collab_event(
         sub_agent_activity_title(*kind, agent_path),
-        Vec::new(),
+        prompt
+            .as_deref()
+            .map(|prompt| prompt_lines(prompt, agent_prompt_preview_lines))
+            .unwrap_or_default(),
     ))
 }
 
@@ -1110,6 +1119,31 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_agent_transcript", snapshot);
+    }
+
+    #[test]
+    fn sub_agent_activity_shows_plaintext_prompt_snapshot() {
+        let item = ThreadItem::SubAgentActivity {
+            id: "call-spawn".to_string(),
+            kind: SubAgentActivityKind::Started,
+            agent_thread_id: ThreadId::new().to_string(),
+            agent_path: "/root/direct_input_demo".to_string(),
+            prompt: Some(
+                "Reply with a single sentence only, consisting of lorem ipsum placeholder prose."
+                    .to_string(),
+            ),
+        };
+
+        let cell = sub_agent_activity_history_cell(&item, UNLIMITED_AGENT_PREVIEW_ROWS)
+            .expect("activity item renders");
+
+        assert_snapshot!(
+            cell_to_text(&cell),
+            @r###"
+        • Started `/root/direct_input_demo`
+          └ Reply with a single sentence only, consisting of lorem ipsum placeholder prose.
+        "###
+        );
     }
 
     #[test]

@@ -18993,6 +18993,13 @@
               "kind": {
                 "$ref": "#/definitions/v2/SubAgentActivityKind"
               },
+              "prompt": {
+                "description": "Plaintext or audited task text, when available.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "type": {
                 "enum": [
                   "subAgentActivity"

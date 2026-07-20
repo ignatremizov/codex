@@ -25,6 +25,7 @@ use crate::protocol::v2::UserInput;
 #[cfg(test)]
 use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
+use crate::protocol::v2::inter_agent_message_thread_item;
 use crate::protocol::v2::web_search_action_from_core;
 use codex_extension_items::image_generation::ImageGenerationItem;
 use codex_protocol::items::parse_hook_prompt_message;
@@ -437,6 +438,11 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_response_item(&mut self, item: &codex_protocol::models::ResponseItem) {
+        if let Some(item) = inter_agent_message_thread_item(item) {
+            self.push_item_in_current_turn(item);
+            return;
+        }
+
         let codex_protocol::models::ResponseItem::Message {
             role, content, id, ..
         } = item
@@ -969,6 +975,7 @@ impl ThreadHistoryBuilder {
             kind: payload.kind.into(),
             agent_thread_id: payload.agent_thread_id.to_string(),
             agent_path: String::from(payload.agent_path.clone()),
+            prompt: payload.prompt.clone(),
         });
     }
 
