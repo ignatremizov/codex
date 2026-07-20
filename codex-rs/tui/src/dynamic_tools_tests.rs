@@ -9,6 +9,30 @@ use codex_protocol::ThreadId;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
+#[test]
+fn activity_task_summary_keeps_full_readable_prompt() -> color_eyre::Result<()> {
+    for prompt in [None, Some("task line\n".repeat(DEFAULT_OUTPUT_CHARS))] {
+        let item = json!({
+            "type": "subAgentActivity", "id": "activity-1", "kind": "started",
+            "agentThreadId": "child-1", "agentPath": "/root/reviewer", "prompt": prompt,
+        });
+        let turn: Turn = serde_json::from_value(json!({
+            "id": "turn-1", "status": "completed", "items": [item.clone()],
+        }))?;
+        assert_eq!(
+            turn_summary(
+                &turn, /*include_outputs*/ false, /*output_chars*/ 1
+            ),
+            json!({
+                "id": "turn-1", "status": "completed", "error": null,
+                "startedAt": null, "completedAt": null, "durationMs": null,
+                "items": [item],
+            }),
+        );
+    }
+    Ok(())
+}
+
 async fn test_server() -> color_eyre::Result<(TempDir, AppServerSession, String, String)> {
     let codex_home = tempfile::tempdir()?;
     let config = ConfigBuilder::default()

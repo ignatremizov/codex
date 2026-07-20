@@ -137,6 +137,7 @@ pub(super) async fn handle_message_string_tool(
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let prepared_message =
         prepare_agent_message(message, task_message, message_delivery, &invocation.source)?;
+    let prompt = prepared_message.visible_content().map(str::to_string);
     let ToolInvocation {
         session,
         turn,
@@ -180,6 +181,7 @@ pub(super) async fn handle_message_string_tool(
             agent_thread_id: receiver_thread_id,
             agent_path: receiver_agent_path,
             kind: SubAgentActivityKind::Interacted,
+            prompt,
         },
     )
     .await;

@@ -8,6 +8,62 @@ use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 
 #[test]
+fn activity_prompts_use_preview_limits_without_losing_source() {
+    let mut rendered = Vec::new();
+    for (kind, prompt, limit) in [
+        (
+            SubAgentActivityKind::Started,
+            Some("first\n  second\nlast"),
+            0,
+        ),
+        (
+            SubAgentActivityKind::Interacted,
+            Some("first\n  second\nlast"),
+            2,
+        ),
+        (SubAgentActivityKind::Started, None, 2),
+        (SubAgentActivityKind::Interrupted, None, 2),
+        (SubAgentActivityKind::Completed, None, 2),
+    ] {
+        let item = ThreadItem::SubAgentActivity {
+            id: "activity-1".into(),
+            kind,
+            agent_thread_id: ThreadId::new().to_string(),
+            agent_path: "/root/reviewer".into(),
+            prompt: prompt.map(str::to_string),
+        };
+        let cell = sub_agent_activity_history_cell(&item, limit).expect("activity item renders");
+        if prompt.is_some() {
+            assert_eq!(
+                cell.raw_lines()
+                    .iter()
+                    .skip(1)
+                    .map(line_to_text)
+                    .collect::<Vec<_>>(),
+                vec!["  └ first", "      second", "    last"],
+            );
+        }
+        rendered.push(cell_to_text(&cell));
+    }
+    assert_snapshot!(rendered.join("\n\n"), @r"
+    • Started `/root/reviewer`
+      └ first
+          second
+        last
+
+    • Interacted with `/root/reviewer`
+      └ first
+        … +2 rows hidden
+
+    • Started `/root/reviewer`
+
+    • Interrupted `/root/reviewer`
+
+    • Completed `/root/reviewer`
+    ");
+}
+
+#[test]
 fn wait_response_budgets_are_per_agent_and_leave_status_rows_visible() {
     let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
         .expect("valid robie thread id");

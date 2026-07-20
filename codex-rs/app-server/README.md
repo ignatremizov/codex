@@ -218,6 +218,10 @@ Failures use the normal JSON-RPC error envelope with closed `{type, reason}` dat
 `invalidRequest`, `unavailable`, `cancelled`, or `failed`. UI clients branch on
 these values rather than message text. Native diagnostic payloads stay private.
 
+## Sub-agent activity
+
+`subAgentActivity` items include a nullable `prompt` containing the readable task text for started or interacted activities. Plaintext delivery exposes the original text; encrypted-with-audit delivery exposes the supplied audit copy, never ciphertext. Fully encrypted delivery and activities without readable task content use `null`. Live item notifications and persisted history preserve the full prompt; display limits are client-side only. Older history without the field remains readable.
+
 ## Completed context compaction
 
 Completed `contextCompaction` items include nullable `summary`, `message`, and
