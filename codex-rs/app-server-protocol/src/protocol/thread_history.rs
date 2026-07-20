@@ -1127,6 +1127,7 @@ impl ThreadHistoryBuilder {
             kind: payload.kind.into(),
             agent_thread_id: payload.agent_thread_id.to_string(),
             agent_path: String::from(payload.agent_path.clone()),
+            prompt: payload.prompt.clone(),
         });
     }
 
@@ -5352,6 +5353,7 @@ mod tests {
                 kind: CoreSubAgentActivityKind::Started,
                 agent_thread_id: child_thread_id,
                 agent_path: child_path.clone(),
+                prompt: Some("Review the child task.".into()),
             }),
             started_at_ms: Some(1),
             completed_at_ms: 2,
@@ -5402,6 +5404,7 @@ mod tests {
                         kind: CoreSubAgentActivityKind::Completed,
                         agent_thread_id: child_thread_id,
                         agent_path: child_path.clone(),
+                        prompt: None,
                     }),
                     started_at_ms: None,
                     completed_at_ms: 0,
@@ -5422,6 +5425,7 @@ mod tests {
                         kind: crate::protocol::v2::SubAgentActivityKind::Completed,
                         agent_thread_id: child_thread_id.to_string(),
                         agent_path: "/root/worker".into(),
+                        prompt: None,
                     },
                 ]
             );

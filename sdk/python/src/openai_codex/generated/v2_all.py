@@ -5557,6 +5557,7 @@ class SubAgentActivityThreadItem(BaseModel):
             description="Resolved model at sub-agent creation; absent from older records and other activities."
         ),
     ] = None
+    prompt: str | None = None
     reasoning_effort: Annotated[
         ReasoningEffort | None,
         Field(
