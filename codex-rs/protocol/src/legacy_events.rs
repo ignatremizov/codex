@@ -450,6 +450,7 @@ impl SubAgentActivityItem {
             agent_thread_id: self.agent_thread_id,
             agent_path: self.agent_path.clone(),
             kind: self.kind,
+            prompt: self.prompt.clone(),
         })
     }
 }
@@ -693,3 +694,7 @@ impl HasLegacyEvent for EventMsg {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "legacy_events_tests.rs"]
+mod tests;

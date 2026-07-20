@@ -3531,28 +3531,46 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         }
     );
 
-    let sub_agent_activity_item = TurnItem::SubAgentActivity(SubAgentActivityItem {
-        model: Some("gpt-5".into()),
-        reasoning_effort: Some(ReasoningEffort::High),
-        id: "activity-1".to_string(),
-        kind: CoreSubAgentActivityKind::Started,
-        agent_thread_id: receiver_thread_id,
-        agent_path: codex_protocol::AgentPath::root()
-            .join("worker")
-            .expect("worker path"),
-    });
-
-    assert_eq!(
-        ThreadItem::from(sub_agent_activity_item),
-        ThreadItem::SubAgentActivity {
+    for prompt in [
+        None,
+        Some("Review this patch.\n  Keep the audit text.".to_string()),
+    ] {
+        let sub_agent_activity_item = TurnItem::SubAgentActivity(SubAgentActivityItem {
             model: Some("gpt-5".into()),
             reasoning_effort: Some(ReasoningEffort::High),
             id: "activity-1".to_string(),
-            kind: SubAgentActivityKind::Started,
+            kind: CoreSubAgentActivityKind::Interacted,
+            agent_thread_id: receiver_thread_id,
+            agent_path: codex_protocol::AgentPath::root()
+                .join("worker")
+                .expect("worker path"),
+            prompt: prompt.clone(),
+        });
+        let projected = ThreadItem::from(sub_agent_activity_item);
+        let expected = ThreadItem::SubAgentActivity {
+            model: Some("gpt-5".into()),
+            reasoning_effort: Some(ReasoningEffort::High),
+            id: "activity-1".to_string(),
+            kind: SubAgentActivityKind::Interacted,
             agent_thread_id: receiver_thread_id.to_string(),
             agent_path: "/root/worker".to_string(),
-        }
-    );
+            prompt: prompt.clone(),
+        };
+        assert_eq!(projected, expected);
+        assert_eq!(
+            serde_json::to_value(&projected).expect("serialize projected activity"),
+            json!({
+                "type": "subAgentActivity",
+                "model": "gpt-5",
+                "reasoningEffort": "high",
+                "id": "activity-1",
+                "kind": "interacted",
+                "agentThreadId": receiver_thread_id,
+                "agentPath": "/root/worker",
+                "prompt": prompt,
+            }),
+        );
+    }
 
     let old_activity: SubAgentActivityItem = serde_json::from_value(json!({
         "id": "old-activity",
