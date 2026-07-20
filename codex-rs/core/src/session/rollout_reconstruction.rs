@@ -96,6 +96,7 @@ struct ActiveReplaySegment<'a> {
     reference_context_item: TurnReferenceContextItem,
     world_state_replay: Vec<&'a RolloutItem>,
     base_compacted_item: Option<&'a CompactedItem>,
+    rollout_suffix: Option<&'a [RolloutItem]>,
     window: Option<ReconstructedWindow>,
 }
 
@@ -108,6 +109,7 @@ struct ReverseReplayState<'a> {
     world_state_boundary_known: bool,
     window: Option<ReconstructedWindow>,
     pending_rollback_turns: usize,
+    rollout_suffix: Option<&'a [RolloutItem]>,
 }
 
 fn turn_ids_are_compatible(active_turn_id: Option<&str>, item_turn_id: Option<&str>) -> bool {
@@ -143,6 +145,7 @@ fn finalize_active_segment<'a>(
         && let Some(segment_base_compacted_item) = active_segment.base_compacted_item
     {
         replay_state.base_compacted_item = Some(segment_base_compacted_item);
+        replay_state.rollout_suffix = active_segment.rollout_suffix;
     }
 
     if replay_state.window.is_none() {
@@ -207,9 +210,6 @@ impl Session {
         // Rollback is "drop the newest N user turns". While scanning in reverse, that becomes
         // "skip the next N user-turn segments we finalize".
         let mut replay_state = ReverseReplayState::default();
-        // Borrowed suffix of rollout items newer than the newest surviving replacement-history
-        // checkpoint. If no such checkpoint exists, this remains the full rollout.
-        let mut rollout_suffix = rollout_items;
         // Reverse replay accumulates rollout items into the newest in-progress turn segment until
         // we hit its matching `TurnStarted`, at which point the segment can be finalized.
         let mut active_segment: Option<ActiveReplaySegment<'_>> = None;
@@ -245,6 +245,7 @@ impl Session {
                             {
                                 replay_state.base_compacted_item =
                                     Some(segment_base_compacted_item);
+                                replay_state.rollout_suffix = active_segment.rollout_suffix;
                             }
                             if replay_state.window.is_none() {
                                 replay_state.window = active_segment.window;
@@ -285,7 +286,7 @@ impl Session {
                         && compacted.replacement_history.is_some()
                     {
                         replay_state.base_compacted_item = Some(compacted);
-                        rollout_suffix = &rollout_items[index + 1..];
+                        replay_state.rollout_suffix = Some(&rollout_items[index + 1..]);
                     }
                 }
                 RolloutItem::Compacted(compacted) => {
@@ -318,7 +319,7 @@ impl Session {
                         && compacted.replacement_history.is_some()
                     {
                         active_segment.base_compacted_item = Some(compacted);
-                        rollout_suffix = &rollout_items[index + 1..];
+                        active_segment.rollout_suffix = Some(&rollout_items[index + 1..]);
                     }
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
@@ -437,8 +438,10 @@ impl Session {
             reference_context_item,
             mut world_state_replay,
             window,
+            rollout_suffix,
             ..
         } = replay_state;
+        let rollout_suffix = rollout_suffix.unwrap_or(rollout_items);
 
         let fallback_window_number = u64::try_from(
             rollout_items

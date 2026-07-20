@@ -381,6 +381,53 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
 }
 
 #[tokio::test]
+async fn reconstruction_replays_full_history_when_only_checkpoint_is_rolled_back() {
+    let (session, turn_context) = make_session_and_context().await;
+    let surviving_message = user_message("surviving");
+    let rolled_back_message = user_message("rolled back");
+    let rolled_back_turn_id = "only-compaction-rolled-back";
+    let rollout_items = vec![
+        RolloutItem::ResponseItem(surviving_message.clone()),
+        RolloutItem::EventMsg(EventMsg::TurnStarted(
+            codex_protocol::protocol::TurnStartedEvent {
+                turn_id: rolled_back_turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: Some(128_000),
+                collaboration_mode_kind: ModeKind::Default,
+            },
+        )),
+        RolloutItem::EventMsg(EventMsg::UserMessage(
+            codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
+                message: "rolled back".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+                ..Default::default()
+            },
+        )),
+        RolloutItem::ResponseItem(rolled_back_message.clone()),
+        RolloutItem::Compacted(CompactedItem {
+            message: "rejected only checkpoint".to_string(),
+            replacement_history: Some(vec![surviving_message.clone(), rolled_back_message]),
+            window_number: Some(1),
+            ..Default::default()
+        }),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+        )),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, vec![surviving_message]);
+    assert_eq!(reconstructed.compacted_prefix_len, None);
+}
+
+#[tokio::test]
 async fn reconstruction_recomputes_token_usage_after_rollback_without_compaction() {
     let (session, turn_context) = make_session_and_context().await;
     let rollout_items = vec![
