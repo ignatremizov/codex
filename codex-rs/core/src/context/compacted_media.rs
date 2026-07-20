@@ -252,10 +252,10 @@ pub(crate) fn sanitize_compacted_media_prefix(
 
 /// Expires image references inherited from a previously compacted window.
 ///
-/// Callers sanitize the inherited items first so each canonical local-image wrapper is left as an
-/// adjacent open/close pair. The current compaction request can still contain those paths, but the
-/// newly installed replacement history should retain references only for images introduced after
-/// the latest compaction boundary.
+/// Callers sanitize inherited items first so structured canonical wrappers contain no raw image.
+/// This also recognizes wrappers flattened into one retained text item by local compaction. The
+/// current compaction request can still contain those paths, but the newly installed replacement
+/// history should retain references only for images introduced after the latest boundary.
 pub(crate) fn expire_compacted_media_references(items: &mut [ResponseItem]) {
     for item in items {
         match item {
@@ -269,7 +269,7 @@ pub(crate) fn expire_compacted_media_references(items: &mut [ResponseItem]) {
                 });
                 let mut retained = Vec::with_capacity(content.len());
                 let mut content_items = VecDeque::from(std::mem::take(content));
-                while let Some(content_item) = content_items.pop_front() {
+                while let Some(mut content_item) = content_items.pop_front() {
                     let wrapper_tail_len = if matches!(
                         &content_item,
                         ContentItem::InputText { text }
@@ -299,7 +299,16 @@ pub(crate) fn expire_compacted_media_references(items: &mut [ResponseItem]) {
                         0usize
                     };
                     if wrapper_tail_len == 0 {
-                        retained.push(content_item);
+                        let retain_item = match &mut content_item {
+                            ContentItem::InputText { text } => {
+                                expire_flattened_local_image_references(text);
+                                !text.is_empty()
+                            }
+                            ContentItem::OutputText { .. } | ContentItem::InputImage { .. } => true,
+                        };
+                        if retain_item {
+                            retained.push(content_item);
+                        }
                         continue;
                     }
                     for _ in 0..wrapper_tail_len {
@@ -322,6 +331,35 @@ pub(crate) fn expire_compacted_media_references(items: &mut [ResponseItem]) {
             }
             _ => {}
         }
+    }
+}
+
+fn expire_flattened_local_image_references(text: &mut String) {
+    const LOCAL_IMAGE_OPEN_PREFIX: &str = "<image name=";
+    const LOCAL_IMAGE_OPEN_SUFFIX: &str = "\">";
+    const LOCAL_IMAGE_CLOSE_TAG: &str = "</image>";
+
+    let mut search_start = 0usize;
+    while let Some(relative_start) = text[search_start..].find(LOCAL_IMAGE_OPEN_PREFIX) {
+        let wrapper_start = search_start.saturating_add(relative_start);
+        let Some(relative_open_end) = text[wrapper_start..].find(LOCAL_IMAGE_OPEN_SUFFIX) else {
+            break;
+        };
+        let open_end = wrapper_start
+            .saturating_add(relative_open_end)
+            .saturating_add(LOCAL_IMAGE_OPEN_SUFFIX.len());
+        if !is_local_image_open_tag_with_path_text(&text[wrapper_start..open_end]) {
+            search_start = open_end;
+            continue;
+        }
+        let Some(relative_close_end) = text[open_end..].find(LOCAL_IMAGE_CLOSE_TAG) else {
+            break;
+        };
+        let wrapper_end = open_end
+            .saturating_add(relative_close_end)
+            .saturating_add(LOCAL_IMAGE_CLOSE_TAG.len());
+        text.replace_range(wrapper_start..wrapper_end, "");
+        search_start = wrapper_start;
     }
 }
 

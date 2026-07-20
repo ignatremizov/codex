@@ -373,6 +373,10 @@ async fn run_compact_task_inner_impl(
         )
         .await;
     }
+    let compacted_prefix_len = history_snapshot
+        .compacted_prefix_len()
+        .unwrap_or_default()
+        .min(history_snapshot.raw_items().len());
     let history_items = history_snapshot.raw_items();
     let user_messages = collect_user_messages(history_items);
     let rollout_path = sess.current_rollout_path().await.ok().flatten();
@@ -389,7 +393,7 @@ async fn run_compact_task_inner_impl(
     let summary_for_event_text = summary_for_event(&summary_text);
 
     let mut new_history =
-        build_compacted_history_preserving_mcp_context(history_items, &summary_text);
+        build_local_compacted_history(history_items, compacted_prefix_len, &summary_text);
     if let Some(summary_item) = new_history.last_mut() {
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.
@@ -747,6 +751,26 @@ fn build_compacted_history_preserving_mcp_context(
         COMPACT_USER_MESSAGE_MAX_TOKENS,
     );
     build_compacted_history_with_limit(retained_history, &[], summary_text, 0)
+}
+
+fn build_local_compacted_history(
+    history_items: &[ResponseItem],
+    compacted_prefix_len: usize,
+    summary_text: &str,
+) -> Vec<ResponseItem> {
+    let mut replacement_history_items = history_items.to_vec();
+    let compacted_prefix_len = compacted_prefix_len.min(replacement_history_items.len());
+    let _ = crate::context::sanitize_compacted_media_prefix(
+        replacement_history_items.as_mut_slice(),
+        compacted_prefix_len,
+    );
+    crate::context::expire_compacted_media_references(
+        &mut replacement_history_items[..compacted_prefix_len],
+    );
+    build_compacted_history_preserving_mcp_context(
+        replacement_history_items.as_slice(),
+        summary_text,
+    )
 }
 
 fn collect_mcp_and_recent_user_items_with_limit(

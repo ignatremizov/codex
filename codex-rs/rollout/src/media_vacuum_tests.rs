@@ -526,6 +526,53 @@ fn failed_vacuum_preserves_compressed_rollout_representation() {
 }
 
 #[test]
+fn no_op_vacuum_preserves_compressed_rollout_representation() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    for use_physical_compressed_path in [false, true] {
+        let case_dir = temp_dir
+            .path()
+            .join(format!("no-op-compressed-{use_physical_compressed_path}"));
+        fs::create_dir(&case_dir).expect("create compressed rollout case");
+        let path = case_dir.join("rollout.jsonl");
+        write_rollout(
+            path.as_path(),
+            &[json!({
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "type": "compacted",
+                "payload": {
+                    "message": "protected",
+                    "replacement_history_media_sanitized_prefix_len": 0,
+                    "replacement_history": []
+                }
+            })],
+        );
+        let compressed_path = compress_rollout(path.as_path());
+        let compressed_bytes = fs::metadata(compressed_path.as_path())
+            .expect("compressed rollout metadata")
+            .len();
+        let requested_path = if use_physical_compressed_path {
+            compressed_path.as_path()
+        } else {
+            path.as_path()
+        };
+
+        let report =
+            vacuum_compacted_media(requested_path, &policy()).expect("no-op vacuum succeeds");
+
+        assert_eq!(
+            report,
+            CompactedMediaVacuumReport {
+                bytes_before: compressed_bytes,
+                bytes_after: compressed_bytes,
+                ..Default::default()
+            }
+        );
+        assert!(!path.exists());
+        assert!(compressed_path.exists());
+    }
+}
+
+#[test]
 fn missing_canonical_rollout_recovers_the_newest_valid_vacuum_backup() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("rollout.jsonl");

@@ -369,6 +369,28 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
 }
 
 #[tokio::test]
+async fn reconstruction_recomputes_token_usage_after_rollback_without_compaction() {
+    let (session, turn_context) = make_session_and_context().await;
+    let rollout_items = vec![
+        RolloutItem::ResponseItem(user_message("rolled back")),
+        RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+            info: Some(TokenUsageInfo::full_context_window(128_000)),
+            rate_limits: None,
+        })),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+        )),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, Vec::<ResponseItem>::new());
+    assert!(reconstructed.should_recompute_token_usage);
+}
+
+#[tokio::test]
 async fn reconstruction_does_not_roll_back_an_out_of_band_representation_repair() {
     let (session, turn_context) = make_session_and_context().await;
     let raw_image = image_message(vec![ContentItem::InputImage {

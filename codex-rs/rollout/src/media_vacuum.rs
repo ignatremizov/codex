@@ -64,15 +64,23 @@ pub fn vacuum_compacted_media(
     } else {
         compressed_path.as_path()
     };
-    let found_protected_checkpoint = if physical_path == compressed_path.as_path() {
-        validate_compressed_rollout_and_find_protected_checkpoint(physical_path)?
+    let preflight = if physical_path == compressed_path.as_path() {
+        preflight_compressed_rollout(physical_path)?
     } else {
-        validate_rollout_and_find_protected_checkpoint(physical_path)?
+        preflight_rollout(physical_path)?
     };
-    if !found_protected_checkpoint {
+    if !preflight.found_protected_checkpoint {
         return Err(io::Error::other(
             "refusing compacted-media vacuum without a sanitized replacement-history checkpoint",
         ));
+    }
+    if !preflight.found_rewritable_media {
+        let physical_bytes = fs::metadata(physical_path)?.len();
+        return Ok(CompactedMediaVacuumReport {
+            bytes_before: physical_bytes,
+            bytes_after: physical_bytes,
+            ..Default::default()
+        });
     }
     let path = crate::compression::materialize_rollout_for_append_blocking(path)?;
     let path = path.as_path();
@@ -231,22 +239,32 @@ pub(crate) fn recover_compacted_media_backup_if_needed(path: &Path) -> io::Resul
 }
 
 fn validate_rollout_and_find_protected_checkpoint(path: &Path) -> io::Result<bool> {
-    let mut reader = BufReader::new(File::open(path)?);
-    validate_rollout_reader_and_find_protected_checkpoint(&mut reader, path)
+    Ok(preflight_rollout(path)?.found_protected_checkpoint)
 }
 
-fn validate_compressed_rollout_and_find_protected_checkpoint(path: &Path) -> io::Result<bool> {
+#[derive(Debug, Default)]
+struct CompactedMediaVacuumPreflight {
+    found_protected_checkpoint: bool,
+    found_rewritable_media: bool,
+}
+
+fn preflight_rollout(path: &Path) -> io::Result<CompactedMediaVacuumPreflight> {
+    let mut reader = BufReader::new(File::open(path)?);
+    preflight_rollout_reader(&mut reader, path)
+}
+
+fn preflight_compressed_rollout(path: &Path) -> io::Result<CompactedMediaVacuumPreflight> {
     let input = File::open(path)?;
     let decoder = zstd::stream::read::Decoder::new(input)?;
     let mut reader = BufReader::new(decoder);
-    validate_rollout_reader_and_find_protected_checkpoint(&mut reader, path)
+    preflight_rollout_reader(&mut reader, path)
 }
 
-fn validate_rollout_reader_and_find_protected_checkpoint(
+fn preflight_rollout_reader(
     reader: &mut impl BufRead,
     path: &Path,
-) -> io::Result<bool> {
-    let mut found_protected_checkpoint = false;
+) -> io::Result<CompactedMediaVacuumPreflight> {
+    let mut preflight = CompactedMediaVacuumPreflight::default();
     let mut line = Vec::new();
     while read_bounded_rollout_record(reader, &mut line, path)? {
         let json = line.strip_suffix(b"\n").unwrap_or(line.as_slice());
@@ -254,14 +272,17 @@ fn validate_rollout_reader_and_find_protected_checkpoint(
         if !json.iter().all(u8::is_ascii_whitespace) {
             match parse_rollout_record(json) {
                 Some(spans) if is_protected_checkpoint(&spans, json) => {
-                    found_protected_checkpoint = true;
+                    preflight.found_protected_checkpoint = true;
+                }
+                Some(spans) if contains_rewritable_compacted_media(&spans, json) => {
+                    preflight.found_rewritable_media = true;
                 }
                 Some(_) | None => {}
             }
         }
         line.clear();
     }
-    Ok(found_protected_checkpoint)
+    Ok(preflight)
 }
 
 fn parse_rollout_record(json: &[u8]) -> Option<JsonSpan> {
@@ -318,6 +339,17 @@ fn contains_inline_media(value: &JsonSpan, json: &[u8]) -> bool {
         JsonSpanKind::Array(items) => items.iter().any(|value| contains_inline_media(value, json)),
         JsonSpanKind::String | JsonSpanKind::Scalar => false,
     }
+}
+
+fn contains_rewritable_compacted_media(value: &JsonSpan, json: &[u8]) -> bool {
+    if !is_object_type(value, json, "compacted") || is_protected_checkpoint(value, json) {
+        return false;
+    }
+    value
+        .object_value("payload")
+        .and_then(|payload| payload.object_value("replacement_history"))
+        .and_then(JsonSpan::as_array)
+        .is_some_and(|history| history.iter().any(|item| contains_inline_media(item, json)))
 }
 
 fn compacted_media_replacements(

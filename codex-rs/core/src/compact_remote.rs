@@ -306,6 +306,10 @@ async fn run_remote_compact_task_inner_impl(
         &initial_context_injection,
     )
     .await;
+    // Legacy remote compaction does not preserve a structural input/output boundary. Expire
+    // recognized references from its returned replacement before central installation sanitizes
+    // any newly returned raw images.
+    crate::context::expire_compacted_media_references(new_history.as_mut_slice());
 
     new_history = crate::compact::insert_mcp_server_use_context_items_at_compaction_boundary(
         new_history,

@@ -452,6 +452,30 @@ fn build_compacted_history_preserving_mcp_context_keeps_invocation_order_in_reta
 }
 
 #[test]
+fn build_local_compacted_history_expires_flattened_inherited_image_paths() {
+    let inherited_path = "/tmp/inherited.png";
+    let inherited = user_message(&format!(
+        "before<image name=[Image #1] path=\"{inherited_path}\">image omitted</image>after"
+    ));
+    let current = user_message("current window");
+
+    let compacted = build_local_compacted_history(
+        &[inherited, current.clone()],
+        /*compacted_prefix_len*/ 1,
+        "summary text",
+    );
+
+    assert_eq!(
+        compacted,
+        vec![
+            user_message("beforeafter"),
+            current,
+            user_message("summary text"),
+        ]
+    );
+}
+
+#[test]
 fn insert_mcp_server_use_context_items_at_compaction_boundary_does_not_prepend() {
     let linear =
         McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();

@@ -657,9 +657,28 @@ impl Session {
                     .is_some()
                     && !selected_checkpoint_has_valid_subsequent_token_info
             });
+        // User/tool suffix items after the latest server count are added by active-context
+        // accounting. Rollback is different: it can remove items already included in that count,
+        // so even a non-compacted history must replace the restored snapshot with a local estimate.
+        let restored_token_info_invalidated_by_rollback = rollout_items
+            .iter()
+            .rposition(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(EventMsg::TokenCount(event)) if event.info.is_some()
+                )
+            })
+            .is_some_and(|token_index| {
+                rollout_items[token_index.saturating_add(1)..]
+                    .iter()
+                    .any(|item| {
+                        matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_)))
+                    })
+            });
         let should_recompute_token_usage = repair_sanitization.changed()
             || needs_media_policy_certification
-            || selected_checkpoint_needs_token_recompute;
+            || selected_checkpoint_needs_token_recompute
+            || restored_token_info_invalidated_by_rollback;
         let compacted_prefix_len = repair_checkpoint_source
             .as_ref()
             .map(|_| repaired_prefix_len);

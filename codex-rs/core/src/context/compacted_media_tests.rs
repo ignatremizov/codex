@@ -257,3 +257,22 @@ fn expiration_removes_text_only_model_image_placeholders_with_their_paths() {
         }])]
     );
 }
+
+#[test]
+fn expiration_removes_flattened_local_image_wrappers_without_dropping_adjacent_text() {
+    let mut items = vec![user_message(vec![ContentItem::InputText {
+        text: format!(
+            "before<image name=[Image #1] path=\"/tmp/old.png\">{}</image>after",
+            CompactedImageOmission::reopenable_local_image().render()
+        ),
+    }])];
+
+    expire_compacted_media_references(&mut items);
+
+    assert_eq!(
+        items,
+        vec![user_message(vec![ContentItem::InputText {
+            text: "beforeafter".to_string(),
+        }])]
+    );
+}
