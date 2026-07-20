@@ -132,6 +132,14 @@ impl PreparedAgentMessage {
         }
     }
 
+    pub(super) fn visible_content(&self) -> Option<&str> {
+        match self {
+            Self::Encrypted { .. } => None,
+            Self::EncryptedWithAudit { audit_content, .. } => Some(audit_content),
+            Self::Plaintext { content } => Some(content),
+        }
+    }
+
     pub(super) fn into_communication(
         self,
         author: AgentPath,
@@ -202,6 +210,7 @@ pub(super) async fn handle_message_string_tool(
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let prepared_message =
         PreparedAgentMessage::from_tool_args(message, task_message, message_delivery)?;
+    let prompt = prepared_message.visible_content().map(str::to_string);
     let ToolInvocation {
         session,
         turn,
@@ -273,6 +282,7 @@ pub(super) async fn handle_message_string_tool(
             agent_thread_id: receiver_thread_id,
             agent_path: receiver_agent_path,
             kind: SubAgentActivityKind::Interacted,
+            prompt,
         },
     )
     .await;

@@ -66,6 +66,35 @@ fn communication_builder_honors_delivery_mode() {
 }
 
 #[test]
+fn visible_content_exposes_plaintext_and_audit_messages_only() {
+    let encrypted = PreparedAgentMessage::from_tool_args(
+        "opaque".to_string(),
+        /*task_message*/ None,
+        MultiAgentMessageDelivery::Encrypted,
+    )
+    .expect("encrypted message");
+    let encrypted_with_audit = PreparedAgentMessage::from_tool_args(
+        "opaque".to_string(),
+        Some("inspect the repository".to_string()),
+        MultiAgentMessageDelivery::EncryptedWithAudit,
+    )
+    .expect("encrypted message with audit");
+    let plaintext = PreparedAgentMessage::from_tool_args(
+        "inspect the repository".to_string(),
+        /*task_message*/ None,
+        MultiAgentMessageDelivery::Plaintext,
+    )
+    .expect("plaintext message");
+
+    assert_eq!(encrypted.visible_content(), None);
+    assert_eq!(
+        encrypted_with_audit.visible_content(),
+        Some("inspect the repository")
+    );
+    assert_eq!(plaintext.visible_content(), Some("inspect the repository"));
+}
+
+#[test]
 fn encrypted_with_audit_requires_readable_content() {
     let error = PreparedAgentMessage::from_tool_args(
         "opaque".to_string(),
