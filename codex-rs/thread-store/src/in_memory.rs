@@ -379,6 +379,22 @@ pub struct InMemoryThreadStoreCalls {
     pub delete_thread: usize,
 }
 
+/// Operation that the in-memory store should fail once for recovery-path tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InMemoryThreadStoreFailure {
+    CompactedMediaRepairAppend,
+    CompactedMediaRepairFlush,
+}
+
+impl InMemoryThreadStoreFailure {
+    fn operation(self) -> &'static str {
+        match self {
+            Self::CompactedMediaRepairAppend => "compacted-media repair append",
+            Self::CompactedMediaRepairFlush => "compacted-media repair flush",
+        }
+    }
+}
+
 /// In-memory [`ThreadStore`] implementation for tests and debug configs.
 ///
 /// Test and debug configs can select this store by id, letting tests exercise
@@ -397,6 +413,8 @@ struct InMemoryThreadStoreState {
     metadata_updates: HashMap<ThreadId, ThreadMetadataPatch>,
     names: HashMap<ThreadId, Option<String>>,
     rollout_paths: HashMap<PathBuf, ThreadId>,
+    fail_next_operation: Option<InMemoryThreadStoreFailure>,
+    compacted_media_repair_flush_armed: bool,
 }
 
 impl InMemoryThreadStore {
@@ -418,6 +436,11 @@ impl InMemoryThreadStore {
     /// Returns the calls observed by this store.
     pub async fn calls(&self) -> InMemoryThreadStoreCalls {
         self.state.lock().await.calls.clone()
+    }
+
+    /// Makes the next matching operation return an injected internal error.
+    pub async fn fail_next_operation(&self, operation: InMemoryThreadStoreFailure) {
+        self.state.lock().await.fail_next_operation = Some(operation);
     }
 
     async fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreResult<()> {
@@ -487,6 +510,30 @@ impl InMemoryThreadStore {
             return Ok(());
         }
         state.calls.append_items += 1;
+        let appends_compacted_media_repair = persisted_items.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::Compacted(compacted)
+                    if compacted.replacement_history_media_repair
+            )
+        });
+        if appends_compacted_media_repair {
+            match state.fail_next_operation {
+                Some(InMemoryThreadStoreFailure::CompactedMediaRepairAppend) => {
+                    state.fail_next_operation = None;
+                    return Err(ThreadStoreError::Internal {
+                        message: format!(
+                            "injected in-memory thread-store {} failure",
+                            InMemoryThreadStoreFailure::CompactedMediaRepairAppend.operation()
+                        ),
+                    });
+                }
+                Some(InMemoryThreadStoreFailure::CompactedMediaRepairFlush) => {
+                    state.compacted_media_repair_flush_armed = true;
+                }
+                None => {}
+            }
+        }
         state
             .histories
             .entry(params.thread_id)
@@ -647,7 +694,18 @@ impl ThreadStore for InMemoryThreadStore {
 
     fn flush_thread(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
-            self.state.lock().await.calls.flush_thread += 1;
+            let mut state = self.state.lock().await;
+            state.calls.flush_thread += 1;
+            if state.compacted_media_repair_flush_armed {
+                state.compacted_media_repair_flush_armed = false;
+                state.fail_next_operation = None;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::CompactedMediaRepairFlush.operation()
+                    ),
+                });
+            }
             Ok(())
         })
     }

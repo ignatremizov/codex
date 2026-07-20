@@ -2318,6 +2318,56 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
 }
 
 #[tokio::test]
+async fn marked_compacted_history_preserves_subsequent_server_token_usage() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let server_usage = TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            input_tokens: 2_000,
+            cached_input_tokens: 1_000,
+            cache_write_input_tokens: 100,
+            output_tokens: 300,
+            reasoning_output_tokens: 200,
+            total_tokens: 3_600,
+        },
+        last_token_usage: TokenUsage {
+            input_tokens: 900,
+            cached_input_tokens: 400,
+            cache_write_input_tokens: 50,
+            output_tokens: 200,
+            reasoning_output_tokens: 100,
+            total_tokens: 1_650,
+        },
+        model_context_window: Some(128_000),
+    };
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: "media-free checkpoint".to_string(),
+            replacement_history: Some(vec![assistant_message("summary")]),
+            window_number: Some(1),
+            replacement_history_media_sanitized_prefix_len: Some(1),
+            ..Default::default()
+        }),
+        RolloutItem::ResponseItem(user_message("new turn")),
+        RolloutItem::ResponseItem(assistant_message("new response")),
+        RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+            info: Some(server_usage.clone()),
+            rate_limits: None,
+        })),
+    ];
+
+    session
+        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: ThreadId::default(),
+            history: Arc::new(rollout_items),
+            rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+        }))
+        .await
+        .expect("record marked initial history");
+
+    assert_eq!(session.state.lock().await.token_info(), Some(server_usage));
+}
+
+#[tokio::test]
 async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
     let (session, turn_context) = make_session_and_context().await;
     let mut replacement_history = (0..128)
@@ -2355,6 +2405,7 @@ async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
             window_number: Some(1),
             ..Default::default()
         }),
+        RolloutItem::ResponseItem(user_message("incomplete follow-up")),
         RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
             info: Some(stale_usage),
             rate_limits: None,
@@ -2392,6 +2443,99 @@ async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
 }
 
 #[tokio::test]
+async fn session_initialization_discards_live_thread_when_media_repair_is_not_durable() {
+    for (failure, expected_error, expected_flushes) in [
+        (
+            codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairAppend,
+            "injected in-memory thread-store compacted-media repair append failure",
+            0,
+        ),
+        (
+            codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairFlush,
+            "injected in-memory thread-store compacted-media repair flush failure",
+            1,
+        ),
+    ] {
+        let codex_home = tempfile::tempdir().expect("create temp dir");
+        let config = Arc::new(build_test_config(codex_home.path()).await);
+        let store = Arc::new(codex_thread_store::InMemoryThreadStore::default());
+        store.fail_next_operation(failure).await;
+        let thread_store: Arc<dyn codex_thread_store::ThreadStore> = store.clone();
+        let source_history = Arc::new(vec![RolloutItem::Compacted(CompactedItem {
+            message: "legacy image checkpoint".to_string(),
+            replacement_history: Some(vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputImage {
+                    image_url: "data:image/png;base64,source".to_string(),
+                    detail: None,
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }]),
+            window_number: Some(1),
+            ..Default::default()
+        })]);
+
+        let result = make_session_with_initial_history_and_thread_store(
+            config,
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: ThreadId::default(),
+                history: Arc::clone(&source_history),
+                rollout_path: Some(PathBuf::from("/tmp/source-rollout.jsonl")),
+            }),
+            thread_store,
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("non-durable repair must fail session initialization"),
+            Err(error) => error,
+        };
+
+        assert!(
+            format!("{error:#}").contains(expected_error),
+            "unexpected initialization error: {error:#}"
+        );
+        assert_eq!(
+            store.calls().await,
+            codex_thread_store::InMemoryThreadStoreCalls {
+                resume_thread: 1,
+                append_items: 1,
+                flush_thread: expected_flushes,
+                discard_thread: 1,
+                ..Default::default()
+            }
+        );
+        assert!(matches!(
+            &source_history[0],
+            RolloutItem::Compacted(CompactedItem {
+                replacement_history: Some(history),
+                ..
+            }) if matches!(
+                history.first(),
+                Some(ResponseItem::Message { content, .. })
+                    if matches!(content.first(), Some(ContentItem::InputImage { .. }))
+            )
+        ));
+        let persisted = codex_thread_store::ThreadStore::load_history(
+            store.as_ref(),
+            codex_thread_store::LoadThreadHistoryParams {
+                thread_id: ThreadId::default(),
+                include_archived: true,
+            },
+        )
+        .await
+        .expect("failed initialization should leave resumable history");
+        let (recovery_session, recovery_turn_context) = make_session_and_context().await;
+        let recovered = recovery_session
+            .reconstruct_history_from_rollout(&recovery_turn_context, persisted.items.as_slice())
+            .await;
+        assert_eq!(recovered.history.len(), 1);
+        assert!(recovered.should_recompute_token_usage);
+    }
+}
+
+#[tokio::test]
 async fn recompute_token_usage_uses_session_base_instructions() {
     let (session, turn_context) = make_session_and_context().await;
 
@@ -2401,9 +2545,9 @@ async fn recompute_token_usage_uses_session_base_instructions() {
         state.session_configuration.base_instructions = override_instructions.clone();
     }
 
-    let item = user_message("hello");
+    let items = [user_message("hello"), assistant_message("hello")];
     session
-        .record_conversation_items(&turn_context, std::slice::from_ref(&item))
+        .record_conversation_items(&turn_context, items.as_slice())
         .await;
 
     let history = session.clone_history().await;
@@ -2906,6 +3050,128 @@ async fn record_initial_history_reconstructs_forked_transcript() {
 
     let history = session.state.lock().await.clone_history();
     assert_eq!(expected, history.raw_items());
+}
+
+#[tokio::test]
+async fn fork_persists_media_repair_and_recomputed_usage_in_child_history() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    let _store = attach_in_memory_thread_store(&mut session).await;
+    let raw_image = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputImage {
+            image_url: "data:image/png;base64,parent".to_string(),
+            detail: None,
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let source_rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: "legacy parent checkpoint".to_string(),
+            replacement_history: Some(vec![
+                raw_image,
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: "summary".to_string(),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            ]),
+            window_number: Some(1),
+            ..Default::default()
+        }),
+        RolloutItem::ResponseItem(user_message("incomplete child tail")),
+        RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+            info: Some(TokenUsageInfo {
+                total_token_usage: TokenUsage::default(),
+                last_token_usage: TokenUsage {
+                    total_tokens: 342_636,
+                    ..Default::default()
+                },
+                model_context_window: Some(353_400),
+            }),
+            rate_limits: None,
+        })),
+    ];
+    let source_rollout_copy = source_rollout_items.clone();
+
+    session
+        .record_initial_history(InitialHistory::Forked(source_rollout_items))
+        .await
+        .expect("record forked media repair");
+
+    let child_history = session.clone_history().await;
+    assert!(
+        child_history.raw_items().iter().all(|item| {
+            !matches!(
+                item,
+                ResponseItem::Message { content, .. }
+                    if content
+                        .iter()
+                        .any(|item| matches!(item, ContentItem::InputImage { .. }))
+            )
+        }),
+        "child model history should use the repaired checkpoint"
+    );
+    let expected_tokens = child_history
+        .estimate_token_count_with_base_instructions(&session.get_base_instructions().await)
+        .expect("estimate child history");
+    assert_eq!(session.get_total_token_usage().await, expected_tokens);
+
+    assert!(matches!(
+        &source_rollout_copy[0],
+        RolloutItem::Compacted(CompactedItem {
+            replacement_history: Some(history),
+            ..
+        }) if matches!(
+            history.first(),
+            Some(ResponseItem::Message { content, .. })
+                if matches!(content.first(), Some(ContentItem::InputImage { .. }))
+        )
+    ));
+
+    let persisted = session
+        .services
+        .thread_store
+        .load_history(codex_thread_store::LoadThreadHistoryParams {
+            thread_id: session.thread_id,
+            include_archived: true,
+        })
+        .await
+        .expect("load child history");
+    let repair_position = persisted
+        .items
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                RolloutItem::Compacted(compacted)
+                    if compacted.replacement_history_media_repair
+            )
+        })
+        .expect("persisted child repair");
+    let recomputed_usage_position = persisted
+        .items
+        .iter()
+        .enumerate()
+        .skip(repair_position.saturating_add(1))
+        .find_map(|(index, item)| {
+            matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent { info: Some(_), .. }))
+            )
+            .then_some(index)
+        })
+        .expect("persisted recomputed token usage");
+    assert!(recomputed_usage_position > repair_position);
+
+    let (resumed_session, resumed_turn_context) = make_session_and_context().await;
+    let reconstruction = resumed_session
+        .reconstruct_history_from_rollout(&resumed_turn_context, persisted.items.as_slice())
+        .await;
+    assert!(reconstruction.repair.is_none());
+    assert!(!reconstruction.should_recompute_token_usage);
+    assert_eq!(reconstruction.history.as_slice(), child_history.raw_items());
 }
 
 #[tokio::test]
@@ -5688,6 +5954,20 @@ async fn make_session_with_config_and_rx(
     let mut config = build_test_config(codex_home.path()).await;
     mutator(&mut config);
     let config = Arc::new(config);
+    let thread_store: Arc<dyn codex_thread_store::ThreadStore> =
+        Arc::new(codex_thread_store::LocalThreadStore::new(
+            codex_thread_store::LocalThreadStoreConfig::from_config(config.as_ref()),
+            /*state_db*/ None,
+        ));
+    make_session_with_initial_history_and_thread_store(config, InitialHistory::New, thread_store)
+        .await
+}
+
+async fn make_session_with_initial_history_and_thread_store(
+    config: Arc<Config>,
+    initial_history: InitialHistory,
+    thread_store: Arc<dyn codex_thread_store::ThreadStore>,
+) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
     let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
@@ -5759,7 +6039,7 @@ async fn make_session_with_config_and_rx(
         Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
-        InitialHistory::New,
+        initial_history,
         SessionSource::Exec,
         skills_service,
         plugins_manager,
@@ -5772,10 +6052,7 @@ async fn make_session_with_config_and_rx(
         environment_manager,
         /*inherited_environments*/ None,
         /*analytics_events_client*/ None,
-        Arc::new(codex_thread_store::LocalThreadStore::new(
-            codex_thread_store::LocalThreadStoreConfig::from_config(config.as_ref()),
-            /*state_db*/ None,
-        )),
+        thread_store,
         codex_rollout_trace::ThreadTraceContext::disabled(),
         /*attestation_provider*/ None,
         /*external_time_provider*/ None,

@@ -60,9 +60,10 @@ pub fn vacuum_compacted_media(
             "refusing compacted-media vacuum without a sanitized replacement-history checkpoint",
         ));
     }
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::other(format!("rollout path has no parent: {}", path.display()))
-    })?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())

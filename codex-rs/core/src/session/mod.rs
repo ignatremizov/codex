@@ -4423,6 +4423,14 @@ impl Session {
         else {
             return;
         };
+        // Active-context accounting adds items after the latest model-generated item separately
+        // because no server response has reported them yet. Keep the reconstructed estimate in
+        // the same shape so an incomplete resume/fork suffix is not counted twice.
+        let estimated_local_tail_tokens =
+            history.estimated_tokens_after_last_model_generated_item();
+        let estimated_last_model_tokens = estimated_total_tokens
+            .saturating_sub(estimated_local_tail_tokens)
+            .max(0);
         {
             let mut state = self.state.lock().await;
             let mut info = state.token_info().unwrap_or(TokenUsageInfo {
@@ -4437,7 +4445,7 @@ impl Session {
                 cache_write_input_tokens: 0,
                 output_tokens: 0,
                 reasoning_output_tokens: 0,
-                total_tokens: estimated_total_tokens.max(0),
+                total_tokens: estimated_last_model_tokens,
             };
 
             if let Some(model_context_window) = turn_context.model_context_window() {

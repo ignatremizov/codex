@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -198,6 +200,55 @@ fn vacuum_preserves_rejected_rollout_records() {
         .expect("vacuum should tolerate canonical rejected records");
 
     assert_eq!(fs::read(path).expect("read unchanged rollout"), before);
+}
+
+#[test]
+fn vacuum_accepts_relative_path_and_rejects_pathless_image_wrapper() {
+    let path = tempfile::Builder::new()
+        .prefix("codex-relative-media-vacuum-")
+        .suffix(".jsonl")
+        .tempfile_in(".")
+        .expect("relative rollout")
+        .into_temp_path();
+    let relative_path = PathBuf::from(path.file_name().expect("rollout file name"));
+    write_rollout(
+        relative_path.as_path(),
+        &[
+            json!({
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "type": "compacted",
+                "payload": {
+                    "message": "old",
+                    "replacement_history": [{
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "<image name=[Image #1]>"},
+                            {"type": "input_image", "image_url": "data:image/png;base64,old"},
+                            {"type": "input_text", "text": "</image>"}
+                        ]
+                    }]
+                }
+            }),
+            json!({
+                "timestamp": "2026-01-01T00:00:01.000Z",
+                "type": "compacted",
+                "payload": {
+                    "message": "repair",
+                    "replacement_history_media_sanitized_prefix_len": 0,
+                    "replacement_history": []
+                }
+            }),
+        ],
+    );
+
+    vacuum_compacted_media(relative_path.as_path(), &policy()).expect("vacuum relative rollout");
+
+    assert_eq!(
+        read_rollout(relative_path.as_path())[0]["payload"]["replacement_history"][0]["content"][1]
+            ["text"],
+        "image unavailable"
+    );
 }
 
 #[test]

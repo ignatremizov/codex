@@ -422,13 +422,9 @@ impl Session {
         let mut repair_checkpoint_source = None;
         let mut repair_sanitization = crate::context::CompactedMediaSanitization::default();
         let mut repaired_prefix_len = 0usize;
-        let mut should_recompute_token_usage = false;
         if let Some(base_compacted_item) = base_compacted_item
             && let Some(base_replacement_history) = &base_compacted_item.replacement_history
         {
-            should_recompute_token_usage = base_compacted_item
-                .replacement_history_media_sanitized_prefix_len
-                .is_some();
             let mut base_replacement_history = base_replacement_history.clone();
             let prefix_len = if let Some(prefix_len) =
                 base_compacted_item.replacement_history_media_sanitized_prefix_len
@@ -446,7 +442,6 @@ impl Session {
                 prefix_len,
             );
             repair_sanitization.accumulate(sanitization);
-            should_recompute_token_usage |= repair_sanitization.changed();
             history.replace(base_replacement_history);
         }
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
@@ -571,8 +566,41 @@ impl Session {
                 repaired_prefix_len,
             );
             repair_sanitization.accumulate(replay_sanitization);
-            should_recompute_token_usage |= repair_sanitization.changed();
         }
+        // A changed history invalidates every recorded usage snapshot. An already-marked
+        // checkpoint needs a local estimate only when no later server TokenCount can be restored.
+        let selected_checkpoint_has_subsequent_token_info =
+            base_compacted_item.is_some_and(|base_compacted_item| {
+                rollout_items
+                    .iter()
+                    .position(|item| {
+                        matches!(
+                            item,
+                            RolloutItem::Compacted(compacted)
+                                if std::ptr::eq(compacted, base_compacted_item)
+                        )
+                    })
+                    .is_some_and(|checkpoint_index| {
+                        rollout_items[checkpoint_index.saturating_add(1)..]
+                            .iter()
+                            .any(|item| {
+                                matches!(
+                                    item,
+                                    RolloutItem::EventMsg(EventMsg::TokenCount(event))
+                                        if event.info.is_some()
+                                )
+                            })
+                    })
+            });
+        let selected_checkpoint_needs_token_recompute =
+            base_compacted_item.is_some_and(|base_compacted_item| {
+                base_compacted_item
+                    .replacement_history_media_sanitized_prefix_len
+                    .is_some()
+                    && !selected_checkpoint_has_subsequent_token_info
+            });
+        let should_recompute_token_usage =
+            repair_sanitization.changed() || selected_checkpoint_needs_token_recompute;
         let repair = repair_checkpoint_source
             .filter(|_| repair_sanitization.changed())
             .map(|mut checkpoint| {
