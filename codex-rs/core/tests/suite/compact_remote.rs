@@ -1,7 +1,10 @@
 use core_test_support::test_codex::local_selections;
 use std::fs;
+use std::io::Cursor;
 
 use anyhow::Result;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_features::Feature;
 use codex_login::CodexAuth;
@@ -44,6 +47,9 @@ use core_test_support::test_path_buf;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
+use image::DynamicImage;
+use image::ImageBuffer;
+use image::Rgba;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -1030,7 +1036,19 @@ async fn remote_compact_v2_does_not_replay_prior_window_image_bytes() -> Result<
     )
     .await?;
     let codex = harness.test().codex.clone();
-    let image_url = format!("data:image/png;base64,{}", "a".repeat(/*n*/ 1_048_576));
+    const IMAGE_DIMENSION: u32 = 512;
+    let image = ImageBuffer::from_fn(IMAGE_DIMENSION, IMAGE_DIMENSION, |x, y| {
+        let mixed =
+            x.wrapping_mul(0x9E37_79B9).rotate_left(y % u32::BITS) ^ y.wrapping_mul(0x85EB_CA6B);
+        let [red, green, blue, _] = mixed.to_le_bytes();
+        Rgba([red, green, blue, u8::MAX])
+    });
+    let mut encoded = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(image).write_to(&mut encoded, image::ImageFormat::Png)?;
+    let image_url = format!(
+        "data:image/png;base64,{}",
+        BASE64_STANDARD.encode(encoded.into_inner())
+    );
     let responses_mock = responses::mount_sse_sequence(
         harness.server(),
         vec![
