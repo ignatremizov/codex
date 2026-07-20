@@ -98,7 +98,10 @@ pub(super) fn cells(
             }
         }
         item @ ThreadItemPayload::SubAgentActivity { .. } => {
-            if let Some(cell) = multi_agents::sub_agent_activity_history_cell(&item) {
+            if let Some(cell) = multi_agents::sub_agent_activity_history_cell(
+                &item,
+                agent_preview_line_limits.prompt,
+            ) {
                 cells.push(Arc::new(cell));
             }
         }

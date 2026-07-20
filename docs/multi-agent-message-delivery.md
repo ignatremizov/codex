@@ -18,6 +18,8 @@ configuration. They do not become ciphertext and do not require a second audit f
 Resuming a conversation consumes the stored message representation, not the currently
 configured delivery mode.
 
+Parent `subAgentActivity` items retain the readable task in `prompt`: plaintext deliveries expose their text, encrypted-with-audit deliveries expose only the supplied audit copy, and fully encrypted deliveries have no readable prompt. Spawn and follow-up activity carries the complete text through live notifications and persisted history; the TUI applies `tui.agent_prompt_preview_lines` only when displaying it. Older activities without this field still load with no prompt. This parent activity metadata does not change the child's encrypted model input.
+
 `list_agents` exposes each child's latest accepted readable assignment; the root displays
 the constant `"Main thread"`. Opaque assignments clear
 that text; rejected submissions and completion results do not change it. Assignment metadata

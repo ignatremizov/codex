@@ -2769,6 +2769,7 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
                 kind: codex_app_server_protocol::SubAgentActivityKind::Started,
                 agent_thread_id: waiting.to_string(),
                 agent_path: "/root/review".to_string(),
+                prompt: None,
                 model: None,
                 reasoning_effort: None,
             },

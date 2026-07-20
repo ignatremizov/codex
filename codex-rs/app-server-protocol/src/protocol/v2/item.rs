@@ -466,6 +466,7 @@ pub enum ThreadItemPayload {
         kind: SubAgentActivityKind,
         agent_thread_id: String,
         agent_path: String,
+        prompt: Option<String>,
     },
     WebSearch(WebSearchItem),
     #[serde(rename_all = "camelCase")]
@@ -1067,6 +1068,7 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                 kind: activity.kind.into(),
                 agent_thread_id: activity.agent_thread_id.to_string(),
                 agent_path: String::from(activity.agent_path),
+                prompt: activity.prompt,
             },
             CoreTurnItem::WebSearch(search) => Self::WebSearch(WebSearchItem {
                 id: search.id,
