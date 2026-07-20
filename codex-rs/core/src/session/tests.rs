@@ -2368,6 +2368,82 @@ async fn marked_compacted_history_preserves_subsequent_server_token_usage() {
 }
 
 #[tokio::test]
+async fn marked_compacted_history_recomputes_usage_invalidated_by_rollback() {
+    let (session, turn_context) = make_session_and_context().await;
+    let stale_usage = TokenUsageInfo {
+        total_token_usage: TokenUsage::default(),
+        last_token_usage: TokenUsage {
+            total_tokens: 342_636,
+            ..Default::default()
+        },
+        model_context_window: Some(353_400),
+    };
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: "media-free checkpoint".to_string(),
+            replacement_history: Some(vec![assistant_message("summary")]),
+            window_number: Some(1),
+            replacement_history_media_sanitized_prefix_len: Some(1),
+            ..Default::default()
+        }),
+        RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "rolled-back-turn".to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: Some(128_000),
+            collaboration_mode_kind: ModeKind::Default,
+        })),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
+            message: "roll this back".to_string(),
+            images: None,
+            local_images: Vec::new(),
+            text_elements: Vec::new(),
+            ..Default::default()
+        })),
+        RolloutItem::ResponseItem(user_message("roll this back")),
+        RolloutItem::ResponseItem(assistant_message("rolled-back response")),
+        RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+            info: Some(stale_usage),
+            rate_limits: None,
+        })),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "rolled-back-turn".to_string(),
+            started_at: None,
+            last_agent_message: None,
+            error: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            num_turns: 1,
+        })),
+    ];
+
+    session
+        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: ThreadId::default(),
+            history: Arc::new(rollout_items),
+            rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+        }))
+        .await
+        .expect("record rolled-back marked history");
+
+    let history = session.clone_history().await;
+    assert_eq!(history.raw_items(), &[assistant_message("summary")]);
+    let expected_tokens = history
+        .estimate_token_count_with_base_instructions(&session.get_base_instructions().await)
+        .expect("estimate rolled-back history");
+    assert_eq!(session.get_total_token_usage().await, expected_tokens);
+    assert!(
+        !context_window::context_window_token_status(&session, &turn_context)
+            .await
+            .token_limit_reached
+    );
+}
+
+#[tokio::test]
 async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
     let (session, turn_context) = make_session_and_context().await;
     let mut replacement_history = (0..128)
@@ -2382,6 +2458,13 @@ async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
             internal_chat_message_metadata_passthrough: None,
         })
         .collect::<Vec<_>>();
+    replacement_history.push(ResponseItem::Reasoning {
+        id: None,
+        summary: Vec::new(),
+        content: None,
+        encrypted_content: Some("encrypted-reasoning".repeat(256)),
+        internal_chat_message_metadata_passthrough: None,
+    });
     replacement_history.push(ResponseItem::Compaction {
         id: None,
         encrypted_content: "summary".to_string(),

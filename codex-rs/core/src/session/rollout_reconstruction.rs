@@ -568,8 +568,9 @@ impl Session {
             repair_sanitization.accumulate(replay_sanitization);
         }
         // A changed history invalidates every recorded usage snapshot. An already-marked
-        // checkpoint needs a local estimate only when no later server TokenCount can be restored.
-        let selected_checkpoint_has_subsequent_token_info =
+        // checkpoint needs a local estimate when no later server TokenCount can be restored, or
+        // when a rollback after that snapshot changed the reconstructed history it described.
+        let selected_checkpoint_has_valid_subsequent_token_info =
             base_compacted_item.is_some_and(|base_compacted_item| {
                 rollout_items
                     .iter()
@@ -581,14 +582,28 @@ impl Session {
                         )
                     })
                     .is_some_and(|checkpoint_index| {
-                        rollout_items[checkpoint_index.saturating_add(1)..]
+                        let after_checkpoint_index = checkpoint_index.saturating_add(1);
+                        rollout_items[after_checkpoint_index..]
                             .iter()
-                            .any(|item| {
+                            .rposition(|item| {
                                 matches!(
                                     item,
                                     RolloutItem::EventMsg(EventMsg::TokenCount(event))
                                         if event.info.is_some()
                                 )
+                            })
+                            .map(|relative_token_index| {
+                                after_checkpoint_index.saturating_add(relative_token_index)
+                            })
+                            .is_some_and(|token_index| {
+                                !rollout_items[token_index.saturating_add(1)..]
+                                    .iter()
+                                    .any(|item| {
+                                        matches!(
+                                            item,
+                                            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))
+                                        )
+                                    })
                             })
                     })
             });
@@ -597,7 +612,7 @@ impl Session {
                 base_compacted_item
                     .replacement_history_media_sanitized_prefix_len
                     .is_some()
-                    && !selected_checkpoint_has_subsequent_token_info
+                    && !selected_checkpoint_has_valid_subsequent_token_info
             });
         let should_recompute_token_usage =
             repair_sanitization.changed() || selected_checkpoint_needs_token_recompute;

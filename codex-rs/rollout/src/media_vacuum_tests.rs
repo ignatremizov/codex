@@ -280,6 +280,49 @@ fn missing_canonical_rollout_recovers_the_newest_valid_vacuum_backup() {
 }
 
 #[test]
+fn relative_missing_canonical_rollout_recovers_vacuum_backup() {
+    let path = tempfile::Builder::new()
+        .prefix("codex-relative-media-recovery-")
+        .suffix(".jsonl")
+        .tempfile_in(".")
+        .expect("relative rollout")
+        .into_temp_path();
+    let relative_path = PathBuf::from(path.file_name().expect("rollout file name"));
+    write_rollout(
+        relative_path.as_path(),
+        &[json!({
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "type": "compacted",
+            "payload": {
+                "message": "repair",
+                "replacement_history_media_sanitized_prefix_len": 0,
+                "replacement_history": []
+            }
+        })],
+    );
+    let expected = fs::read(relative_path.as_path()).expect("read canonical rollout");
+    let backup_path = relative_path.with_file_name(format!(
+        ".{}.pre-media-vacuum-{}.bak",
+        relative_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("UTF-8 rollout file name"),
+        Uuid::now_v7()
+    ));
+    fs::hard_link(relative_path.as_path(), backup_path.as_path()).expect("create vacuum backup");
+    fs::remove_file(relative_path.as_path()).expect("remove canonical rollout");
+
+    recover_compacted_media_backup_if_needed(relative_path.as_path())
+        .expect("recover relative vacuum backup");
+
+    assert_eq!(
+        fs::read(relative_path.as_path()).expect("read recovered rollout"),
+        expected
+    );
+    assert!(!backup_path.exists());
+}
+
+#[test]
 fn missing_canonical_rollout_without_a_parent_directory_needs_no_recovery() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("missing-parent").join("rollout.jsonl");

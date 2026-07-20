@@ -290,7 +290,7 @@ impl ContextManager {
         );
     }
 
-    fn get_non_last_reasoning_items_tokens(&self) -> i64 {
+    pub(crate) fn estimated_non_last_reasoning_items_tokens(&self) -> i64 {
         // Get reasoning items excluding all the ones after the last instruction boundary.
         let Some(last_user_index) = self.items.iter().rposition(is_user_turn_boundary) else {
             return 0;
@@ -340,7 +340,7 @@ impl ContextManager {
             last_tokens.saturating_add(items_after_last_model_generated_tokens)
         } else {
             last_tokens
-                .saturating_add(self.get_non_last_reasoning_items_tokens())
+                .saturating_add(self.estimated_non_last_reasoning_items_tokens())
                 .saturating_add(items_after_last_model_generated_tokens)
         }
     }

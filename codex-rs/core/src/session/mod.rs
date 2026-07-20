@@ -4416,7 +4416,10 @@ impl Session {
     }
 
     pub(crate) async fn recompute_token_usage(&self, turn_context: &TurnContext) {
-        let history = self.clone_history().await;
+        let (history, server_reasoning_included) = {
+            let state = self.state.lock().await;
+            (state.clone_history(), state.server_reasoning_included())
+        };
         let base_instructions = self.get_base_instructions().await;
         let Some(estimated_total_tokens) =
             history.estimate_token_count_with_base_instructions(&base_instructions)
@@ -4428,8 +4431,14 @@ impl Session {
         // the same shape so an incomplete resume/fork suffix is not counted twice.
         let estimated_local_tail_tokens =
             history.estimated_tokens_after_last_model_generated_item();
+        let estimated_reasoning_supplement = if server_reasoning_included {
+            0
+        } else {
+            history.estimated_non_last_reasoning_items_tokens()
+        };
         let estimated_last_model_tokens = estimated_total_tokens
             .saturating_sub(estimated_local_tail_tokens)
+            .saturating_sub(estimated_reasoning_supplement)
             .max(0);
         {
             let mut state = self.state.lock().await;

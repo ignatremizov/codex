@@ -36,6 +36,7 @@ use codex_protocol::items::CONTEXT_COMPACTION_DECODING_MESSAGE;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
@@ -536,6 +537,37 @@ fn build_v2_compacted_history(
     prompt_input: &[ResponseItem],
     compaction_output: ResponseItem,
 ) -> (Vec<ResponseItem>, CompactedMediaSanitization) {
+    // Defensive pre-compaction repair can place the checkpoint-wide omission marker in a tool
+    // output because that was the latest media-bearing item. Remote-v2 retention drops tool
+    // outputs, so carry the bounded marker forward and rehome it below when necessary.
+    let inherited_omission_text = prompt_input.iter().find_map(|item| match item {
+        ResponseItem::Message { content, .. } => content.iter().find_map(|item| match item {
+            ContentItem::InputText { text } | ContentItem::OutputText { text }
+                if is_compacted_image_omission_text(text) =>
+            {
+                Some(text.clone())
+            }
+            ContentItem::InputText { .. }
+            | ContentItem::OutputText { .. }
+            | ContentItem::InputImage { .. } => None,
+        }),
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => {
+            output.content_items().and_then(|content| {
+                content.iter().find_map(|item| match item {
+                    FunctionCallOutputContentItem::InputText { text }
+                        if is_compacted_image_omission_text(text) =>
+                    {
+                        Some(text.clone())
+                    }
+                    FunctionCallOutputContentItem::InputText { .. }
+                    | FunctionCallOutputContentItem::InputImage { .. }
+                    | FunctionCallOutputContentItem::EncryptedContent { .. } => None,
+                })
+            })
+        }
+        _ => None,
+    });
     let mut retained = prompt_input
         .iter()
         .filter(|item| is_retained_for_remote_compaction_v2(item))
@@ -543,6 +575,27 @@ fn build_v2_compacted_history(
         .cloned()
         .collect::<Vec<_>>();
     let media_sanitization = sanitize_compacted_media(&mut retained);
+    let retained_has_omission = retained.iter().any(|item| {
+        matches!(
+            item,
+            ResponseItem::Message { content, .. }
+                if content.iter().any(|item| {
+                    matches!(
+                        item,
+                        ContentItem::InputText { text } | ContentItem::OutputText { text }
+                            if is_compacted_image_omission_text(text)
+                    )
+                })
+        )
+    });
+    if !retained_has_omission
+        && let Some(omission_text) = inherited_omission_text
+        && let Some(ResponseItem::Message { content, .. }) = retained.last_mut()
+    {
+        content.push(ContentItem::InputText {
+            text: omission_text,
+        });
+    }
     let mut retained =
         truncate_retained_messages_for_remote_compaction(retained, RETAINED_MESSAGE_TOKEN_BUDGET);
     retained.push(compaction_output);
@@ -629,6 +682,10 @@ fn truncate_message_text_to_token_budget(
     for mut content_item in content {
         match &mut content_item {
             ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                let is_omission = is_compacted_image_omission_text(text);
+                if remaining == 0 && is_omission {
+                    return RetainedMessageTruncation::OmissionDidNotFit;
+                }
                 if remaining == 0 {
                     continue;
                 }
@@ -636,7 +693,7 @@ fn truncate_message_text_to_token_budget(
                 let token_count = approx_token_count(text);
                 if token_count <= remaining {
                     remaining = remaining.saturating_sub(token_count);
-                } else if is_compacted_image_omission_text(text) {
+                } else if is_omission {
                     return RetainedMessageTruncation::OmissionDidNotFit;
                 } else {
                     *text = truncate_text(text, TruncationPolicy::Tokens(remaining));
@@ -669,6 +726,7 @@ mod tests {
     use crate::context::CompactedImageOmission;
     use crate::context::ContextualUserFragment;
     use codex_protocol::models::ContentItem;
+    use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::MessagePhase;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;
@@ -808,6 +866,66 @@ mod tests {
     }
 
     #[test]
+    fn build_v2_compacted_history_rehomes_omission_from_filtered_tool_output() {
+        let omission = CompactedImageOmission::unavailable().render();
+        let mut input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![
+                    ContentItem::InputText {
+                        text: "user".to_string(),
+                    },
+                    ContentItem::InputImage {
+                        image_url: "data:image/png;base64,user".to_string(),
+                        detail: None,
+                    },
+                ],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: "tool-call".to_string(),
+                output: FunctionCallOutputPayload::from_content_items(vec![
+                    FunctionCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,tool".to_string(),
+                        detail: None,
+                    },
+                ]),
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ];
+        sanitize_compacted_media(&mut input);
+        let output = ResponseItem::Compaction {
+            id: None,
+            encrypted_content: "new".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        };
+
+        let (history, _) = build_v2_compacted_history(&input, output.clone());
+
+        assert_eq!(
+            history,
+            vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![
+                        ContentItem::InputText {
+                            text: "user".to_string(),
+                        },
+                        ContentItem::InputText { text: omission },
+                    ],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                output,
+            ]
+        );
+    }
+
+    #[test]
     fn retained_history_truncation_keeps_newest_messages_first() {
         let middle = message("user", "middle1234", /*phase*/ None);
         let new = message("user", "new", /*phase*/ None);
@@ -843,6 +961,28 @@ mod tests {
             truncate_retained_messages_for_remote_compaction(retained, /*max_tokens*/ 2);
 
         assert_eq!(truncated, vec![newest]);
+    }
+
+    #[test]
+    fn retained_history_truncation_drops_message_when_text_exhausts_marker_budget() {
+        let omission = CompactedImageOmission::unavailable().render();
+        let retained = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![
+                ContentItem::InputText {
+                    text: "abcdefgh".to_string(),
+                },
+                ContentItem::InputText { text: omission },
+            ],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }];
+
+        let truncated =
+            truncate_retained_messages_for_remote_compaction(retained, /*max_tokens*/ 1);
+
+        assert_eq!(truncated, Vec::<ResponseItem>::new());
     }
 
     #[test]

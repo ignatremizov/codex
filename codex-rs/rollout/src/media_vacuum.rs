@@ -169,9 +169,10 @@ pub(crate) fn recover_compacted_media_backup_if_needed(path: &Path) -> io::Resul
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
         Err(err) => return Err(err),
     }
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return Ok(());
     };
