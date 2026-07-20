@@ -95,7 +95,9 @@ pub(super) fn matching_rollout_file_name(
 ///
 /// Compression publishes `.jsonl.zst` before deleting `.jsonl`, so a crash can leave both names.
 /// Discovery prefers the plain file in that state. Archive transitions must preserve that choice
-/// instead of leaving the stale sibling discoverable in the source collection.
+/// instead of leaving the stale sibling discoverable in the source collection. Transfer the
+/// authoritative name first: the compression worker does not share the lifecycle lock, and
+/// deleting its recovery name before the rename could let it delete the remaining source.
 pub(super) fn move_rollout_representation(
     source_path: &Path,
     destination_path: &Path,
@@ -107,12 +109,20 @@ pub(super) fn move_rollout_representation(
     } else {
         plain_path
     };
+    std::fs::rename(source_path, destination_path)?;
     match std::fs::remove_file(stale_sibling) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err),
+        Err(err) => {
+            tracing::warn!(
+                %err,
+                source = %source_path.display(),
+                destination = %destination_path.display(),
+                "moved rollout but failed to remove stale source representation"
+            );
+        }
     }
-    std::fs::rename(source_path, destination_path)
+    Ok(())
 }
 
 pub(super) fn touch_modified_time(path: &Path) -> std::io::Result<()> {
