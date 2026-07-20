@@ -313,7 +313,8 @@ impl Session {
                     ) {
                         active_segment.reference_context_item = TurnReferenceContextItem::Cleared;
                     }
-                    if active_segment.base_compacted_item.is_none()
+                    if replay_state.base_compacted_item.is_none()
+                        && active_segment.base_compacted_item.is_none()
                         && compacted.replacement_history.is_some()
                     {
                         active_segment.base_compacted_item = Some(compacted);
