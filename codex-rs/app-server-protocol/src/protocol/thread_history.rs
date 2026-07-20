@@ -1297,6 +1297,7 @@ impl ThreadHistoryBuilder {
             kind: payload.kind.into(),
             agent_thread_id: payload.agent_thread_id.to_string(),
             agent_path: String::from(payload.agent_path.clone()),
+            prompt: payload.prompt.clone(),
         };
         let times = ItemTimes::legacy_completion(payload.occurred_at_ms);
         self.upsert_item(/*turn_id*/ None, item, times);
@@ -5815,6 +5816,7 @@ mod tests {
                 kind: CoreSubAgentActivityKind::Started,
                 agent_thread_id: child_thread_id,
                 agent_path: child_path.clone(),
+                prompt: Some("Review the child task.".into()),
             }),
             started_at_ms: Some(1),
             completed_at_ms: 2,
@@ -5833,7 +5835,10 @@ mod tests {
             (notification.item.payload, notification.completed_at_ms),
             (expected_spawn.clone(), 2)
         );
-        for spawn in [EventMsg::ItemCompleted(spawn), legacy_spawn] {
+        for (spawn, expected_started_at_ms) in [
+            (EventMsg::ItemCompleted(spawn), Some(1)),
+            (legacy_spawn, None),
+        ] {
             let items = vec![
                 RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                     turn_attribution: None,
@@ -5866,6 +5871,7 @@ mod tests {
                         kind: CoreSubAgentActivityKind::Completed,
                         agent_thread_id: child_thread_id,
                         agent_path: child_path.clone(),
+                        prompt: None,
                     }),
                     started_at_ms: None,
                     completed_at_ms: 0,
@@ -5875,6 +5881,14 @@ mod tests {
             let turns = build_turns_from_rollout_items(&items);
 
             assert_eq!(turns.len(), 1);
+            assert_eq!(
+                turns[0].items[0],
+                ThreadItem {
+                    payload: expected_spawn.clone(),
+                    started_at_ms: expected_started_at_ms,
+                    completed_at_ms: Some(2),
+                }
+            );
             assert_eq!(
                 turns[0].item_payloads().collect::<Vec<_>>(),
                 [
@@ -5886,6 +5900,7 @@ mod tests {
                         kind: crate::protocol::v2::SubAgentActivityKind::Completed,
                         agent_thread_id: child_thread_id.to_string(),
                         agent_path: "/root/worker".into(),
+                        prompt: None,
                     },
                 ]
             );

@@ -1503,6 +1503,12 @@
                 "null"
               ]
             },
+            "prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "reasoningEffort": {
               "anyOf": [
                 {
