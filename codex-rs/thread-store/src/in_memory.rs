@@ -414,7 +414,7 @@ struct InMemoryThreadStoreState {
     names: HashMap<ThreadId, Option<String>>,
     rollout_paths: HashMap<PathBuf, ThreadId>,
     fail_next_operation: Option<InMemoryThreadStoreFailure>,
-    compacted_media_repair_flush_armed: bool,
+    compacted_media_repair_flush_rollback: Option<(ThreadId, usize)>,
 }
 
 impl InMemoryThreadStore {
@@ -529,7 +529,9 @@ impl InMemoryThreadStore {
                     });
                 }
                 Some(InMemoryThreadStoreFailure::CompactedMediaRepairFlush) => {
-                    state.compacted_media_repair_flush_armed = true;
+                    let history_len = state.histories.get(&params.thread_id).map_or(0, Vec::len);
+                    state.compacted_media_repair_flush_rollback =
+                        Some((params.thread_id, history_len));
                 }
                 None => {}
             }
@@ -692,12 +694,17 @@ impl ThreadStore for InMemoryThreadStore {
         })
     }
 
-    fn flush_thread(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
+    fn flush_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
             let mut state = self.state.lock().await;
             state.calls.flush_thread += 1;
-            if state.compacted_media_repair_flush_armed {
-                state.compacted_media_repair_flush_armed = false;
+            if let Some((repair_thread_id, history_len)) =
+                state.compacted_media_repair_flush_rollback.take()
+                && repair_thread_id == thread_id
+            {
+                if let Some(history) = state.histories.get_mut(&thread_id) {
+                    history.truncate(history_len);
+                }
                 state.fail_next_operation = None;
                 return Err(ThreadStoreError::Internal {
                     message: format!(

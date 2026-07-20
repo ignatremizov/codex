@@ -25,13 +25,26 @@ pub(super) struct RolloutReconstruction {
 pub(super) struct RolloutReconstructionRepair {
     pub(super) checkpoint: CompactedItem,
     pub(super) sanitization: crate::context::CompactedMediaSanitization,
+    pub(super) persistence: RolloutReconstructionRepairPersistence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RolloutReconstructionRepairPersistence {
+    Required,
+    BestEffort,
+}
+
+#[derive(Debug)]
+pub(super) struct AppliedRolloutReconstructionRepair {
+    pub(super) items: Vec<RolloutItem>,
+    pub(super) sanitization: crate::context::CompactedMediaSanitization,
+    pub(super) persistence: RolloutReconstructionRepairPersistence,
 }
 
 #[derive(Debug)]
 pub(super) struct AppliedRolloutReconstruction {
     pub(super) previous_turn_settings: Option<PreviousTurnSettings>,
-    pub(super) repair_items: Option<Vec<RolloutItem>>,
-    pub(super) sanitization: crate::context::CompactedMediaSanitization,
+    pub(super) repair: Option<AppliedRolloutReconstructionRepair>,
     pub(super) should_recompute_token_usage: bool,
 }
 
@@ -642,6 +655,11 @@ impl Session {
                 RolloutReconstructionRepair {
                     checkpoint,
                     sanitization: repair_sanitization,
+                    persistence: if repair_sanitization.changed() {
+                        RolloutReconstructionRepairPersistence::Required
+                    } else {
+                        RolloutReconstructionRepairPersistence::BestEffort
+                    },
                 }
             });
         RolloutReconstruction {

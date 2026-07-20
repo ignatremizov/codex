@@ -18,6 +18,7 @@ use self::json_spans::JsonSpanKind;
 use self::json_spans::parse_json_spans;
 
 mod json_spans;
+mod record_validation;
 
 const MAX_VACUUM_ROLLOUT_RECORD_BYTES: usize = 256 * 1024 * 1024;
 
@@ -95,7 +96,7 @@ pub fn vacuum_compacted_media(
                 continue;
             }
 
-            let Some(spans) = parse_rollout_record(json, path)? else {
+            let Some(spans) = parse_rollout_record(json) else {
                 warn!(
                     path = %path.display(),
                     "preserving rejected rollout record during compacted-media vacuum"
@@ -223,7 +224,7 @@ fn validate_rollout_and_find_protected_checkpoint(path: &Path) -> io::Result<boo
         let json = line.strip_suffix(b"\n").unwrap_or(line.as_slice());
         let json = json.strip_suffix(b"\r").unwrap_or(json);
         if !json.iter().all(u8::is_ascii_whitespace) {
-            match parse_rollout_record(json, path)? {
+            match parse_rollout_record(json) {
                 Some(spans) if is_protected_checkpoint(&spans, json) => {
                     found_protected_checkpoint = true;
                 }
@@ -235,21 +236,22 @@ fn validate_rollout_and_find_protected_checkpoint(path: &Path) -> io::Result<boo
     Ok(found_protected_checkpoint)
 }
 
-fn parse_rollout_record(json: &[u8], path: &Path) -> io::Result<Option<JsonSpan>> {
+fn parse_rollout_record(json: &[u8]) -> Option<JsonSpan> {
     // Validate the complete JSON value without materializing large inline-media strings. The span
     // parser below then locates only the fields needed for the targeted rewrite.
     let mut deserializer = serde_json::Deserializer::from_slice(json);
     if <serde::de::IgnoredAny as serde::Deserialize>::deserialize(&mut deserializer).is_err()
         || deserializer.end().is_err()
     {
-        return Ok(None);
+        return None;
     }
-    parse_json_spans(json).map(Some).map_err(|err| {
-        io::Error::other(format!(
-            "failed to locate rollout fields in {}: {err}",
-            path.display()
-        ))
-    })
+    let spans = parse_json_spans(json).ok()?;
+    if is_object_type(&spans, json, "compacted")
+        && !record_validation::is_valid_compacted_rollout_record(&spans, json)
+    {
+        return None;
+    }
+    Some(spans)
 }
 
 fn is_protected_checkpoint(value: &JsonSpan, json: &[u8]) -> bool {
@@ -454,10 +456,22 @@ pub fn remove_compacted_media_vacuum_backups(path: &Path) -> io::Result<()> {
 }
 
 fn compacted_media_backup_id(name: &str, file_name: &str) -> Option<Uuid> {
-    let backup_prefix = format!(".{file_name}.pre-media-vacuum-");
-    name.strip_prefix(backup_prefix.as_str())
-        .and_then(|name| name.strip_suffix(".bak"))
-        .and_then(|backup_id| Uuid::parse_str(backup_id).ok())
+    let (backup_file_name, backup_id) = compacted_media_backup_parts(name)?;
+    (backup_file_name == file_name).then_some(backup_id)
+}
+
+pub(crate) fn compacted_media_backup_rollout_file_name(name: &str) -> Option<&str> {
+    compacted_media_backup_parts(name).map(|(file_name, _)| file_name)
+}
+
+fn compacted_media_backup_parts(name: &str) -> Option<(&str, Uuid)> {
+    let name = name.strip_prefix('.')?;
+    let (file_name, backup_id) = name.rsplit_once(".pre-media-vacuum-")?;
+    let backup_id = backup_id.strip_suffix(".bak")?;
+    if file_name.is_empty() {
+        return None;
+    }
+    Some((file_name, Uuid::parse_str(backup_id).ok()?))
 }
 
 #[cfg(unix)]

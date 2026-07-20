@@ -203,6 +203,47 @@ fn vacuum_preserves_rejected_rollout_records() {
 }
 
 #[test]
+fn schema_invalid_or_duplicate_marker_records_do_not_authorize_vacuum() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let legacy = r#"{"timestamp":"2026-01-01T00:00:00Z","type":"compacted","payload":{"message":"old","replacement_history":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,old"}]}]}}"#;
+    let invalid_markers = [
+        r#"{"type":"compacted","payload":{"message":"missing timestamp","replacement_history_media_sanitized_prefix_len":0,"replacement_history":[]}}"#,
+        r#"{"timestamp":"2026-01-01T00:00:01Z","type":"compacted","payload":{"message":"duplicate marker","replacement_history_media_sanitized_prefix_len":0,"replacement_history_media_sanitized_prefix_len":0,"replacement_history":[]}}"#,
+    ];
+
+    for (index, invalid_marker) in invalid_markers.into_iter().enumerate() {
+        let path = temp_dir.path().join(format!("rollout-{index}.jsonl"));
+        fs::write(path.as_path(), format!("{legacy}\n{invalid_marker}\n")).expect("write rollout");
+        let before = fs::read(path.as_path()).expect("read original rollout");
+
+        vacuum_compacted_media(path.as_path(), &policy())
+            .expect_err("schema-invalid marker must not authorize vacuum");
+
+        assert_eq!(fs::read(path).expect("read unchanged rollout"), before);
+    }
+}
+
+#[test]
+fn vacuum_preserves_schema_invalid_compacted_records() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let path = temp_dir.path().join("rollout.jsonl");
+    let invalid_compacted = r#"{"timestamp":"2026-01-01T00:00:00Z","type":"compacted","payload":{"replacement_history":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,old"}]}]}}"#;
+    let protected = r#"{"timestamp":"2026-01-01T00:00:01Z","type":"compacted","payload":{"message":"repair","replacement_history_media_sanitized_prefix_len":0,"replacement_history":[]}}"#;
+    fs::write(
+        path.as_path(),
+        format!("{invalid_compacted}\n{protected}\n"),
+    )
+    .expect("write rollout");
+    let before = fs::read(path.as_path()).expect("read original rollout");
+
+    let report =
+        vacuum_compacted_media(path.as_path(), &policy()).expect("valid marker authorizes vacuum");
+
+    assert_eq!(report.records_rewritten, 0);
+    assert_eq!(fs::read(path).expect("read unchanged rollout"), before);
+}
+
+#[test]
 fn vacuum_accepts_relative_path_and_rejects_pathless_image_wrapper() {
     let path = tempfile::Builder::new()
         .prefix("codex-relative-media-vacuum-")

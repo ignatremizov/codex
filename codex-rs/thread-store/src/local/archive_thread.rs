@@ -73,6 +73,10 @@ pub(super) async fn archive_thread(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::path::Path;
+    use std::path::PathBuf;
+
     use chrono::Utc;
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::SessionSource;
@@ -89,6 +93,36 @@ mod tests {
     use crate::local::test_support::test_config;
     use crate::local::test_support::write_session_file;
 
+    fn replace_canonical_with_vacuum_backup(path: &Path) -> PathBuf {
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .expect("open rollout"),
+            "{}",
+            serde_json::json!({
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "type": "compacted",
+                "payload": {
+                    "message": "media-policy certification",
+                    "replacement_history": [],
+                    "replacement_history_media_sanitized_prefix_len": 0
+                }
+            })
+        )
+        .expect("append protected checkpoint");
+        let backup_path = path.with_file_name(format!(
+            ".{}.pre-media-vacuum-{}.bak",
+            path.file_name()
+                .and_then(|file_name| file_name.to_str())
+                .expect("UTF-8 rollout file name"),
+            Uuid::now_v7()
+        ));
+        std::fs::hard_link(path, &backup_path).expect("retained vacuum backup");
+        std::fs::remove_file(path).expect("remove canonical rollout");
+        backup_path
+    }
+
     #[tokio::test]
     async fn archive_thread_moves_rollout_to_archived_collection() {
         let home = TempDir::new().expect("temp dir");
@@ -97,15 +131,7 @@ mod tests {
         let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
         let active_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
-        let backup_path = active_path.with_file_name(format!(
-            ".{}.pre-media-vacuum-{}.bak",
-            active_path
-                .file_name()
-                .and_then(|file_name| file_name.to_str())
-                .expect("UTF-8 rollout file name"),
-            Uuid::now_v7()
-        ));
-        std::fs::hard_link(&active_path, &backup_path).expect("retained vacuum backup");
+        let backup_path = replace_canonical_with_vacuum_backup(&active_path);
 
         store
             .archive_thread(ArchiveThreadParams { thread_id })
@@ -178,6 +204,7 @@ mod tests {
             .upsert_thread(&metadata)
             .await
             .expect("state db upsert should succeed");
+        let backup_path = replace_canonical_with_vacuum_backup(&active_path);
 
         store
             .archive_thread(ArchiveThreadParams { thread_id })
@@ -188,6 +215,7 @@ mod tests {
             .path()
             .join(ARCHIVED_SESSIONS_SUBDIR)
             .join(active_path.file_name().expect("file name"));
+        assert!(!backup_path.exists());
         let updated = runtime
             .get_thread(thread_id)
             .await

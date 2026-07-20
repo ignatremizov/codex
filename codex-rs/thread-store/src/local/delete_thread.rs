@@ -143,6 +143,8 @@ fn delete_rollout_path(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::ThreadHistoryMode;
     use pretty_assertions::assert_eq;
@@ -211,6 +213,50 @@ mod tests {
         std::fs::remove_file(&path).expect("remove session file");
 
         assert!(!delete_rollout_file(&store, path.as_path(), thread_id).expect("delete rollout"));
+    }
+
+    #[tokio::test]
+    async fn delete_thread_removes_a_backup_only_rollout() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(307);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open rollout"),
+            "{}",
+            serde_json::json!({
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "type": "compacted",
+                "payload": {
+                    "message": "media-policy certification",
+                    "replacement_history": [],
+                    "replacement_history_media_sanitized_prefix_len": 0
+                }
+            })
+        )
+        .expect("append protected checkpoint");
+        let backup_path = path.with_file_name(format!(
+            ".{}.pre-media-vacuum-{}.bak",
+            path.file_name()
+                .and_then(|file_name| file_name.to_str())
+                .expect("UTF-8 rollout file name"),
+            Uuid::now_v7()
+        ));
+        std::fs::hard_link(&path, &backup_path).expect("vacuum backup");
+        std::fs::remove_file(&path).expect("remove canonical rollout");
+
+        store
+            .delete_thread(DeleteThreadParams { thread_id })
+            .await
+            .expect("delete backup-only thread");
+
+        assert!(!path.exists());
+        assert!(!backup_path.exists());
     }
 
     #[tokio::test]

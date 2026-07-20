@@ -201,9 +201,9 @@ async fn reconstruction_repairs_only_the_compacted_base_and_marks_its_prefix() {
         .apply_rollout_reconstruction(&turn_context, &rollout_items)
         .await;
     let applied_checkpoint = applied
-        .repair_items
+        .repair
         .as_ref()
-        .and_then(|items| items.first())
+        .and_then(|repair| repair.items.first())
         .and_then(|item| match item {
             RolloutItem::Compacted(compacted) => Some(compacted),
             _ => None,

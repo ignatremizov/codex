@@ -619,12 +619,9 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
             }),
         )
         .await;
-    } else if let Some(repair_items) = applied_reconstruction.repair_items
+    } else if let Some(repair) = applied_reconstruction.repair
         && let Err(err) = sess
-            .persist_reconstruction_repair(
-                repair_items.as_slice(),
-                applied_reconstruction.sanitization,
-            )
+            .persist_reconstruction_repair(repair.items.as_slice(), repair.sanitization)
             .await
     {
         warn!(%err, "failed to persist compacted-media repair after rollback");

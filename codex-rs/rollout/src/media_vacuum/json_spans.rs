@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 pub(super) struct JsonSpan {
     pub(super) start: usize,
     pub(super) end: usize,
@@ -5,7 +7,7 @@ pub(super) struct JsonSpan {
 }
 
 pub(super) enum JsonSpanKind {
-    Object(Vec<(String, JsonSpan)>),
+    Object(HashMap<String, JsonSpan>),
     Array(Vec<JsonSpan>),
     String,
     Scalar,
@@ -16,9 +18,7 @@ impl JsonSpan {
         let JsonSpanKind::Object(fields) = &self.kind else {
             return None;
         };
-        fields
-            .iter()
-            .find_map(|(field, value)| (field == key).then_some(value))
+        fields.get(key)
     }
 
     pub(super) fn as_array(&self) -> Option<&[Self]> {
@@ -92,7 +92,7 @@ impl<'a> JsonSpanParser<'a> {
     fn parse_object(&mut self) -> Result<JsonSpanKind, &'static str> {
         self.offset = self.offset.saturating_add(1);
         self.skip_whitespace();
-        let mut fields = Vec::new();
+        let mut fields = HashMap::new();
         if self.consume(b'}') {
             return Ok(JsonSpanKind::Object(fields));
         }
@@ -105,7 +105,10 @@ impl<'a> JsonSpanParser<'a> {
             if !self.consume(b':') {
                 return Err("expected colon after object key");
             }
-            fields.push((key, self.parse_value()?));
+            let value = self.parse_value()?;
+            if fields.insert(key, value).is_some() {
+                return Err("duplicate object key");
+            }
             self.skip_whitespace();
             if self.consume(b'}') {
                 return Ok(JsonSpanKind::Object(fields));

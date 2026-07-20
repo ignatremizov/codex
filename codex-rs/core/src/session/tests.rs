@@ -2615,15 +2615,113 @@ async fn resume_persists_media_policy_certification_for_a_media_free_legacy_chec
             )
         })
         .expect("persisted media-policy certification");
-    assert!(persisted.items[certification_position.saturating_add(1)..]
-        .iter()
-        .any(|item| matches!(
-            item,
-            RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
-                info: Some(_),
+    assert!(
+        persisted.items[certification_position.saturating_add(1)..]
+            .iter()
+            .any(|item| matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent { info: Some(_), .. }))
+            ))
+    );
+}
+
+#[tokio::test]
+async fn media_free_certification_persistence_failures_do_not_block_resume() {
+    for failure in [
+        codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairAppend,
+        codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairFlush,
+    ] {
+        let codex_home = tempfile::tempdir().expect("create temp dir");
+        let config = Arc::new(build_test_config(codex_home.path()).await);
+        let store = Arc::new(codex_thread_store::InMemoryThreadStore::default());
+        store.fail_next_operation(failure).await;
+        let thread_store: Arc<dyn codex_thread_store::ThreadStore> = store.clone();
+        let media_free_history = vec![assistant_message("legacy summary")];
+        let source_history = Arc::new(vec![RolloutItem::Compacted(CompactedItem {
+            message: "media-free legacy checkpoint".to_string(),
+            replacement_history: Some(media_free_history.clone()),
+            window_number: Some(1),
+            ..Default::default()
+        })]);
+
+        let (session, _rx) = make_session_with_initial_history_and_thread_store(
+            Arc::clone(&config),
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: ThreadId::default(),
+                history: Arc::clone(&source_history),
+                rollout_path: Some(PathBuf::from("/tmp/source-rollout.jsonl")),
+            }),
+            thread_store,
+        )
+        .await
+        .expect("optional certification failure should not block resume");
+
+        assert_eq!(
+            session.clone_history().await.raw_items(),
+            &media_free_history
+        );
+        assert_eq!(store.calls().await.discard_thread, 0);
+        let persisted = codex_thread_store::ThreadStore::load_history(
+            store.as_ref(),
+            codex_thread_store::LoadThreadHistoryParams {
+                thread_id: session.thread_id,
+                include_archived: true,
+            },
+        )
+        .await
+        .expect("load history after optional certification failure");
+        assert!(!persisted.items.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::Compacted(compacted)
+                    if compacted.replacement_history_media_repair
+            )
+        }));
+
+        let (recovery_session, recovery_turn_context) = make_session_and_context().await;
+        let recovered = recovery_session
+            .reconstruct_history_from_rollout(&recovery_turn_context, persisted.items.as_slice())
+            .await;
+        assert_eq!(recovered.history, media_free_history);
+        assert!(matches!(
+            recovered.repair,
+            Some(rollout_reconstruction::RolloutReconstructionRepair {
+                persistence:
+                    rollout_reconstruction::RolloutReconstructionRepairPersistence::BestEffort,
                 ..
-            }))
-        )));
+            })
+        ));
+
+        let retry_history = Arc::new(persisted.items);
+        let retry_thread_store: Arc<dyn codex_thread_store::ThreadStore> = store.clone();
+        make_session_with_initial_history_and_thread_store(
+            config,
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: ThreadId::default(),
+                history: retry_history,
+                rollout_path: Some(PathBuf::from("/tmp/source-rollout.jsonl")),
+            }),
+            retry_thread_store,
+        )
+        .await
+        .expect("later resume should retry optional certification");
+        let retried = codex_thread_store::ThreadStore::load_history(
+            store.as_ref(),
+            codex_thread_store::LoadThreadHistoryParams {
+                thread_id: ThreadId::default(),
+                include_archived: true,
+            },
+        )
+        .await
+        .expect("load retried certification");
+        assert!(retried.items.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::Compacted(compacted)
+                    if compacted.replacement_history_media_repair
+            )
+        }));
+    }
 }
 
 #[tokio::test]

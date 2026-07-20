@@ -1529,12 +1529,8 @@ impl Session {
                     .apply_rollout_reconstruction(&turn_context, &rollout_items)
                     .await;
                 let previous_turn_settings = applied_reconstruction.previous_turn_settings;
-                if let Some(repair_items) = applied_reconstruction.repair_items {
-                    self.persist_reconstruction_repair(
-                        repair_items.as_slice(),
-                        applied_reconstruction.sanitization,
-                    )
-                    .await?;
+                if let Some(repair) = applied_reconstruction.repair.as_ref() {
+                    self.persist_initial_reconstruction_repair(repair).await?;
                 }
 
                 // If resuming, warn when the last recorded model differs from the current one.
@@ -1594,12 +1590,8 @@ impl Session {
                 if !rollout_items.is_empty() && !is_paginated_subagent {
                     self.persist_rollout_items(&rollout_items).await;
                 }
-                if let Some(repair_items) = applied_reconstruction.repair_items {
-                    self.persist_reconstruction_repair(
-                        repair_items.as_slice(),
-                        applied_reconstruction.sanitization,
-                    )
-                    .await?;
+                if let Some(repair) = applied_reconstruction.repair.as_ref() {
+                    self.persist_initial_reconstruction_repair(repair).await?;
                 }
                 if applied_reconstruction.should_recompute_token_usage {
                     self.recompute_token_usage(&turn_context).await;
@@ -1656,21 +1648,22 @@ impl Session {
             repair.checkpoint.previous_window_id = previous_window_id.map(|id| id.to_string());
             repair.checkpoint.window_id = Some(effective_window_id.to_string());
         }
-        let (repair_items, sanitization) = repair.map_or_else(
-            || (None, crate::context::CompactedMediaSanitization::default()),
-            |repair| {
-                let mut repair_items = vec![RolloutItem::Compacted(repair.checkpoint)];
-                if let Some(world_state_baseline) = world_state_baseline.as_ref() {
-                    repair_items.push(RolloutItem::WorldState(WorldStateItem::full(
-                        world_state_baseline.clone().into_value(),
-                    )));
-                }
-                if let Some(reference_context_item) = reference_context_item.as_ref() {
-                    repair_items.push(RolloutItem::TurnContext(reference_context_item.clone()));
-                }
-                (Some(repair_items), repair.sanitization)
-            },
-        );
+        let repair = repair.map(|repair| {
+            let mut repair_items = vec![RolloutItem::Compacted(repair.checkpoint)];
+            if let Some(world_state_baseline) = world_state_baseline.as_ref() {
+                repair_items.push(RolloutItem::WorldState(WorldStateItem::full(
+                    world_state_baseline.clone().into_value(),
+                )));
+            }
+            if let Some(reference_context_item) = reference_context_item.as_ref() {
+                repair_items.push(RolloutItem::TurnContext(reference_context_item.clone()));
+            }
+            rollout_reconstruction::AppliedRolloutReconstructionRepair {
+                items: repair_items,
+                sanitization: repair.sanitization,
+                persistence: repair.persistence,
+            }
+        });
         // Prepare unsummarized suffix media before installing reconstructed history. Historic
         // compacted media has already been replaced with bounded references; its repair checkpoint
         // is persisted separately without rewriting the source records on this critical path.
@@ -1707,8 +1700,7 @@ impl Session {
         }
         rollout_reconstruction::AppliedRolloutReconstruction {
             previous_turn_settings,
-            repair_items,
-            sanitization,
+            repair,
             should_recompute_token_usage,
         }
     }
