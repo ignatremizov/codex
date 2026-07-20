@@ -48,6 +48,20 @@ pub(super) struct AppliedRolloutReconstruction {
     pub(super) should_recompute_token_usage: bool,
 }
 
+#[derive(Debug)]
+pub(super) struct PreparedRolloutReconstruction {
+    pub(super) history: Vec<ResponseItem>,
+    pub(super) repair: Option<AppliedRolloutReconstructionRepair>,
+    pub(super) should_recompute_token_usage: bool,
+    pub(super) previous_turn_settings: Option<PreviousTurnSettings>,
+    pub(super) reference_context_item: Option<TurnContextItem>,
+    pub(super) world_state_baseline: Option<WorldStateSnapshot>,
+    pub(super) window_number: u64,
+    pub(super) first_window_id: Uuid,
+    pub(super) previous_window_id: Option<Uuid>,
+    pub(super) window_id: Uuid,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ReconstructedWindow {
     number: u64,

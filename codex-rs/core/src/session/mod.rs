@@ -1611,6 +1611,18 @@ impl Session {
         Ok(())
     }
 
+    async fn apply_rollout_reconstruction(
+        &self,
+        turn_context: &TurnContext,
+        rollout_items: &[RolloutItem],
+    ) -> rollout_reconstruction::AppliedRolloutReconstruction {
+        let reconstruction = self
+            .prepare_rollout_reconstruction(turn_context, rollout_items)
+            .await;
+        self.install_rollout_reconstruction(turn_context, reconstruction)
+            .await
+    }
+
     #[instrument(
         level = "trace",
         skip_all,
@@ -1619,11 +1631,11 @@ impl Session {
             rollout_item_count = rollout_items.len()
         )
     )]
-    async fn apply_rollout_reconstruction(
+    async fn prepare_rollout_reconstruction(
         &self,
         turn_context: &TurnContext,
         rollout_items: &[RolloutItem],
-    ) -> rollout_reconstruction::AppliedRolloutReconstruction {
+    ) -> rollout_reconstruction::PreparedRolloutReconstruction {
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
             mut repair,
@@ -1670,6 +1682,37 @@ impl Session {
         // compacted media has already been replaced with bounded references; its repair checkpoint
         // is persisted separately without rewriting the source records on this critical path.
         prepare_response_items(&mut history);
+        rollout_reconstruction::PreparedRolloutReconstruction {
+            history,
+            repair,
+            should_recompute_token_usage,
+            previous_turn_settings,
+            reference_context_item,
+            world_state_baseline,
+            window_number,
+            first_window_id: effective_first_window_id,
+            previous_window_id,
+            window_id: effective_window_id,
+        }
+    }
+
+    async fn install_rollout_reconstruction(
+        &self,
+        turn_context: &TurnContext,
+        reconstruction: rollout_reconstruction::PreparedRolloutReconstruction,
+    ) -> rollout_reconstruction::AppliedRolloutReconstruction {
+        let rollout_reconstruction::PreparedRolloutReconstruction {
+            history,
+            repair,
+            should_recompute_token_usage,
+            previous_turn_settings,
+            reference_context_item,
+            world_state_baseline,
+            window_number,
+            first_window_id,
+            previous_window_id,
+            window_id,
+        } = reconstruction;
         {
             let mut state = self.state.lock().await;
             state.replace_history(history, reference_context_item);
@@ -1679,9 +1722,9 @@ impl Session {
             state.restore_auto_compact_window(
                 window_number,
                 AutoCompactWindowIds {
-                    first_window_id: effective_first_window_id,
+                    first_window_id,
                     previous_window_id,
-                    window_id: effective_window_id,
+                    window_id,
                 },
             );
             state.set_previous_turn_settings(previous_turn_settings.clone());

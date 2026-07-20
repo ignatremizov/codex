@@ -4450,7 +4450,7 @@ async fn thread_rollback_enforces_required_media_repair_durability_only() {
             } else {
                 vec![assistant_message("media-free summary")]
             };
-            sess.persist_rollout_items(&[
+            let source_rollout = vec![
                 RolloutItem::Compacted(CompactedItem {
                     message: "legacy checkpoint".to_string(),
                     replacement_history: Some(replacement_history),
@@ -4484,8 +4484,20 @@ async fn thread_rollback_enforces_required_media_repair_durability_only() {
                     duration_ms: None,
                     time_to_first_token_ms: None,
                 })),
-            ])
-            .await;
+            ];
+            sess.persist_rollout_items(source_rollout.as_slice()).await;
+            sess.apply_rollout_reconstruction(tc.as_ref(), source_rollout.as_slice())
+                .await;
+            let live_state_before = {
+                let state = sess.state.lock().await;
+                let history = state.clone_history();
+                (
+                    history.raw_items().to_vec(),
+                    state.auto_compact_window_number(),
+                    state.auto_compact_window_ids(),
+                    state.previous_turn_settings(),
+                )
+            };
             store.fail_next_operation(failure).await;
 
             handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
@@ -4495,24 +4507,60 @@ async fn thread_rollback_enforces_required_media_repair_durability_only() {
                 assert!(
                     error
                         .message
-                        .contains("failed to persist required compacted-media repair")
+                        .contains("failed to persist required compacted-media repair before")
                 );
-                let persisted = codex_thread_store::ThreadStore::load_history(
-                    store.as_ref(),
-                    codex_thread_store::LoadThreadHistoryParams {
-                        thread_id: sess.thread_id,
-                        include_archived: true,
-                    },
-                )
-                .await
-                .expect("load failed rollback persistence");
-                assert!(!persisted.items.iter().any(|item| {
-                    matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_)))
-                }));
+                let live_state_after = {
+                    let state = sess.state.lock().await;
+                    let history = state.clone_history();
+                    (
+                        history.raw_items().to_vec(),
+                        state.auto_compact_window_number(),
+                        state.auto_compact_window_ids(),
+                        state.previous_turn_settings(),
+                    )
+                };
+                assert_eq!(live_state_after, live_state_before);
             } else {
                 assert_eq!(wait_for_thread_rolled_back(&rx).await.num_turns, 1);
             }
-            assert!(sess.clone_history().await.raw_items().iter().all(|item| {
+            let persisted = codex_thread_store::ThreadStore::load_history(
+                store.as_ref(),
+                codex_thread_store::LoadThreadHistoryParams {
+                    thread_id: sess.thread_id,
+                    include_archived: true,
+                },
+            )
+            .await
+            .expect("load rollback persistence");
+            let rollback_markers = persisted
+                .items
+                .iter()
+                .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))))
+                .count();
+            assert_eq!(rollback_markers, usize::from(!expect_rollback_failure));
+            assert!(!persisted.items.iter().any(|item| {
+                matches!(
+                    item,
+                    RolloutItem::Compacted(compacted)
+                        if compacted.replacement_history_media_repair
+                )
+            }));
+            let recovered = sess
+                .reconstruct_history_from_rollout(tc.as_ref(), persisted.items.as_slice())
+                .await;
+            let live_history = sess.clone_history().await;
+            assert_eq!(recovered.history, live_history.raw_items());
+            if !expect_rollback_failure {
+                assert!(matches!(
+                    recovered.repair,
+                    Some(rollout_reconstruction::RolloutReconstructionRepair {
+                        persistence:
+                            rollout_reconstruction::RolloutReconstructionRepairPersistence::BestEffort,
+                        ..
+                    })
+                ));
+            }
+            assert!(live_history.raw_items().iter().all(|item| {
                 !matches!(
                     item,
                     ResponseItem::Message { content, .. }
