@@ -196,22 +196,14 @@ impl Session {
         // stopping once a surviving replacement-history checkpoint and the required resume metadata
         // are both known; then replay only the buffered surviving tail forward to preserve exact
         // history semantics.
-        let has_legacy_compaction_without_window_number =
-            rollout_items.iter().any(|item| {
-                matches!(item, RolloutItem::Compacted(compacted) if compacted.window_number.is_none())
-            });
-        let initial_window = if has_legacy_compaction_without_window_number {
-            None
-        } else {
-            rollout_items.iter().find_map(|item| match item {
-                RolloutItem::SessionMeta(session_meta) => session_meta
-                    .meta
-                    .context_window
-                    .as_ref()
-                    .and_then(reconstructed_window_from_session_context_window),
-                _ => None,
-            })
-        };
+        let session_initial_window = rollout_items.iter().find_map(|item| match item {
+            RolloutItem::SessionMeta(session_meta) => session_meta
+                .meta
+                .context_window
+                .as_ref()
+                .and_then(reconstructed_window_from_session_context_window),
+            _ => None,
+        });
         // Rollback is "drop the newest N user turns". While scanning in reverse, that becomes
         // "skip the next N user-turn segments we finalize".
         let mut replay_state = ReverseReplayState::default();
@@ -452,6 +444,23 @@ impl Session {
             ..
         } = replay_state;
         let rollout_suffix = rollout_suffix.unwrap_or(rollout_items);
+        let was_skipped = |compacted: &CompactedItem| {
+            skipped_compacted_items
+                .iter()
+                .any(|skipped| std::ptr::eq(*skipped, compacted))
+        };
+        let has_legacy_compaction_without_window_number = rollout_items.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::Compacted(compacted)
+                    if compacted.window_number.is_none() && !was_skipped(compacted)
+            )
+        });
+        let initial_window = if has_legacy_compaction_without_window_number {
+            None
+        } else {
+            session_initial_window
+        };
 
         let fallback_window_number = u64::try_from(
             rollout_items
@@ -461,6 +470,7 @@ impl Session {
                         item,
                         RolloutItem::Compacted(compacted)
                             if !compacted.replacement_history_media_repair
+                                && !was_skipped(compacted)
                     )
                 })
                 .count(),

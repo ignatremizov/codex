@@ -414,7 +414,6 @@ async fn reconstruction_replays_full_history_when_only_checkpoint_is_rolled_back
                 user_message("replacement summary"),
                 rolled_back_message,
             ]),
-            window_number: Some(1),
             ..Default::default()
         }),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
@@ -428,6 +427,7 @@ async fn reconstruction_replays_full_history_when_only_checkpoint_is_rolled_back
 
     assert_eq!(reconstructed.history, vec![surviving_message]);
     assert_eq!(reconstructed.compacted_prefix_len, None);
+    assert_eq!(reconstructed.window_number, 0);
 }
 
 #[tokio::test]
