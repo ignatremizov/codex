@@ -2204,25 +2204,26 @@ mod tests {
         maybe_emit_raw_response_item_completed(conversation_id, "turn-1", item.clone(), &outgoing)
             .await;
 
+        let raw_notification = match recv_broadcast_notification(&mut rx).await? {
+            ServerNotification::RawResponseItemCompleted(notification) => notification,
+            notification => bail!("expected raw response item notification, got {notification:?}"),
+        };
         assert_eq!(
-            recv_broadcast_notification(&mut rx).await?,
-            ServerNotification::RawResponseItemCompleted(RawResponseItemCompletedNotification {
+            raw_notification,
+            RawResponseItemCompletedNotification {
                 thread_id: conversation_id.to_string(),
                 turn_id: "turn-1".to_string(),
                 item,
-            })
+            }
         );
-        let transcript_notification = recv_broadcast_notification(&mut rx).await?;
-        let completed_at_ms = match &transcript_notification {
-            ServerNotification::ItemCompleted(ItemCompletedNotification {
-                completed_at_ms,
-                ..
-            }) => *completed_at_ms,
-            _ => bail!("expected transcript item notification"),
+        let transcript_notification = match recv_broadcast_notification(&mut rx).await? {
+            ServerNotification::ItemCompleted(notification) => notification,
+            notification => bail!("expected transcript item notification, got {notification:?}"),
         };
+        let completed_at_ms = transcript_notification.completed_at_ms;
         assert_eq!(
             transcript_notification,
-            ServerNotification::ItemCompleted(ItemCompletedNotification {
+            ItemCompletedNotification {
                 thread_id: conversation_id.to_string(),
                 turn_id: "turn-1".to_string(),
                 item: ThreadItem::AgentMessage {
@@ -2232,7 +2233,7 @@ mod tests {
                     memory_citation: None,
                 },
                 completed_at_ms,
-            })
+            }
         );
         assert!(rx.try_recv().is_err(), "no extra messages expected");
         Ok(())
