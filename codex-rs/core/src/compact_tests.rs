@@ -476,6 +476,64 @@ fn build_local_compacted_history_expires_flattened_inherited_image_paths() {
 }
 
 #[test]
+fn build_local_compacted_history_retains_current_image_path_for_one_window() {
+    let current_path = "/tmp/current.png";
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "before".to_string(),
+            },
+            ContentItem::InputText {
+                text: format!("<image name=[Image #1] path=\"{current_path}\">"),
+            },
+            ContentItem::InputImage {
+                image_url: "data:image/png;base64,current".to_string(),
+                detail: None,
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let first_summary = format!("{SUMMARY_PREFIX}\nfirst summary");
+    let first =
+        build_local_compacted_history(&[current], /*compacted_prefix_len*/ 0, &first_summary);
+    let expected_retained = format!(
+        "before<image name=[Image #1] path=\"{current_path}\">{}</image>after",
+        crate::context::CompactedImageOmission::reopenable_local_image().render()
+    );
+    assert_eq!(
+        first,
+        vec![
+            user_message(&expected_retained),
+            user_message(&first_summary)
+        ]
+    );
+
+    let mut second_input = first;
+    let second_prefix_len = second_input.len();
+    second_input.push(user_message("next window"));
+    let second_summary = format!("{SUMMARY_PREFIX}\nsecond summary");
+    let second = build_local_compacted_history(&second_input, second_prefix_len, &second_summary);
+
+    assert_eq!(
+        second,
+        vec![
+            user_message("beforeafter"),
+            user_message("next window"),
+            user_message(&second_summary),
+        ]
+    );
+}
+
+#[test]
 fn insert_mcp_server_use_context_items_at_compaction_boundary_does_not_prepend() {
     let linear =
         McpServerUseInstructions::new("linear".to_string(), r#"["linear"]"#.to_string()).render();

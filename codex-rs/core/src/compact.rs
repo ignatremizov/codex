@@ -767,6 +767,9 @@ fn build_local_compacted_history(
     crate::context::expire_compacted_media_references(
         &mut replacement_history_items[..compacted_prefix_len],
     );
+    let _ = crate::context::sanitize_compacted_media(
+        &mut replacement_history_items[compacted_prefix_len..],
+    );
     build_compacted_history_preserving_mcp_context(
         replacement_history_items.as_slice(),
         summary_text,

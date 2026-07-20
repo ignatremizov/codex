@@ -91,6 +91,30 @@ pub(super) fn matching_rollout_file_name(
     }
 }
 
+/// Moves the authoritative rollout representation and removes a stale transition sibling.
+///
+/// Compression publishes `.jsonl.zst` before deleting `.jsonl`, so a crash can leave both names.
+/// Discovery prefers the plain file in that state. Archive transitions must preserve that choice
+/// instead of leaving the stale sibling discoverable in the source collection.
+pub(super) fn move_rollout_representation(
+    source_path: &Path,
+    destination_path: &Path,
+) -> std::io::Result<()> {
+    let plain_path = codex_rollout::plain_rollout_path(source_path);
+    let compressed_path = plain_path.with_extension("jsonl.zst");
+    let stale_sibling = if source_path == plain_path {
+        compressed_path
+    } else {
+        plain_path
+    };
+    match std::fs::remove_file(stale_sibling) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    std::fs::rename(source_path, destination_path)
+}
+
 pub(super) fn touch_modified_time(path: &Path) -> std::io::Result<()> {
     let times = FileTimes::new().set_modified(SystemTime::now());
     OpenOptions::new().append(true).open(path)?.set_times(times)

@@ -307,6 +307,9 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
         image_url: compacted_image_url.to_string(),
         detail: None,
     }]);
+    let repaired_rolled_back_base_image = image_message(vec![ContentItem::InputText {
+        text: CompactedImageOmission::unavailable().render(),
+    }]);
     let rolled_back_message = user_message("rolled back");
     let rolled_back_turn_id = "rolled-back-compaction";
     let rollout_items = vec![
@@ -347,6 +350,20 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
                 ),
             ]),
             window_number: Some(4),
+            ..Default::default()
+        }),
+        RolloutItem::Compacted(CompactedItem {
+            message: "pre-rollback repair of rejected checkpoint".to_string(),
+            replacement_history: Some(vec![
+                repaired_rolled_back_base_image,
+                user_message("rolled back"),
+                standalone_compacted_image_omission_message(
+                    CompactedImageOmission::unavailable().render(),
+                ),
+            ]),
+            window_number: Some(4),
+            replacement_history_media_sanitized_prefix_len: Some(3),
+            replacement_history_media_repair: true,
             ..Default::default()
         }),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(

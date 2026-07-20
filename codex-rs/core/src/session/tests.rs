@@ -4327,7 +4327,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
 }
 
 #[tokio::test]
-async fn thread_rollback_persists_compacted_media_repair_before_the_rollback_marker() {
+async fn thread_rollback_persists_required_repairs_around_the_rollback_marker() {
     let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
     let rollout_path = attach_thread_persistence(
         Arc::get_mut(&mut sess).expect("session should not have additional references"),
@@ -4396,22 +4396,24 @@ async fn thread_rollback_persists_compacted_media_repair_before_the_rollback_mar
         .iter()
         .rposition(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))))
         .expect("rollback marker");
-    let (repair_position, repair) = resumed
+    let repairs = resumed
         .history
         .iter()
         .enumerate()
-        .rev()
-        .find_map(|(index, item)| match item {
+        .filter_map(|(index, item)| match item {
             RolloutItem::Compacted(compacted) if compacted.replacement_history_media_repair => {
                 Some((index, compacted))
             }
             _ => None,
         })
-        .expect("media repair checkpoint");
+        .collect::<Vec<_>>();
 
-    assert!(repair_position < rollback_position);
+    assert_eq!(repairs.len(), 2);
+    assert!(repairs[0].0 < rollback_position);
+    assert!(repairs[1].0 > rollback_position);
     assert!(
-        repair
+        repairs[1]
+            .1
             .replacement_history
             .as_ref()
             .is_some_and(|history| history.iter().all(|item| {
@@ -4432,7 +4434,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
         has_inline_media,
         failure,
         expect_rollback_failure,
-        expect_persisted_repair,
+        expected_persisted_repairs,
         expected_recovered_repair_persistence,
         prime_pending_metadata_failure,
     ) in [
@@ -4440,7 +4442,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             true,
             codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairAppend,
             true,
-            false,
+            0,
             Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::Required),
             false,
         ),
@@ -4448,7 +4450,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             true,
             codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairFlush,
             true,
-            false,
+            0,
             Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::Required),
             false,
         ),
@@ -4456,7 +4458,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             false,
             codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairAppend,
             false,
-            false,
+            0,
             Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::BestEffort),
             false,
         ),
@@ -4464,7 +4466,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             false,
             codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairFlush,
             false,
-            false,
+            0,
             Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::BestEffort),
             false,
         ),
@@ -4472,7 +4474,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             false,
             codex_thread_store::InMemoryThreadStoreFailure::ThreadRollbackAppend,
             true,
-            false,
+            0,
             Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::BestEffort),
             false,
         ),
@@ -4480,7 +4482,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             true,
             codex_thread_store::InMemoryThreadStoreFailure::ThreadRollbackAppend,
             true,
-            true,
+            1,
             None,
             false,
         ),
@@ -4488,7 +4490,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             true,
             codex_thread_store::InMemoryThreadStoreFailure::ThreadMetadataUpdate,
             false,
-            true,
+            2,
             None,
             false,
         ),
@@ -4496,7 +4498,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             false,
             codex_thread_store::InMemoryThreadStoreFailure::ThreadMetadataUpdate,
             false,
-            true,
+            1,
             None,
             true,
         ),
@@ -4638,8 +4640,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             })
             .count();
         assert_eq!(
-            persisted_repairs,
-            usize::from(expect_persisted_repair),
+            persisted_repairs, expected_persisted_repairs,
             "unexpected repair count for has_inline_media={has_inline_media}, failure={failure:?}, prime_pending_metadata_failure={prime_pending_metadata_failure}"
         );
         let recovered = sess

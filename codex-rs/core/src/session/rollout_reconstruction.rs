@@ -217,6 +217,10 @@ impl Session {
         for (index, item) in rollout_items.iter().enumerate().rev() {
             match item {
                 RolloutItem::Compacted(compacted) if compacted.replacement_history_media_repair => {
+                    // A required repair is normally appended before the rollback marker. If reverse
+                    // replay has already seen that marker, the repair may describe a semantic
+                    // checkpoint from the rejected turn and must not become the surviving base.
+                    let repair_precedes_pending_rollback = replay_state.pending_rollback_turns > 0;
                     // Representation repair is appended outside a model turn. Finalize any newer
                     // turn before selecting it so an older rollback cannot consume the repair as
                     // part of the preceding user-turn segment.
@@ -261,7 +265,8 @@ impl Session {
                             }
                         }
                     }
-                    if replay_state.pending_rollback_turns == 0
+                    if !repair_precedes_pending_rollback
+                        && replay_state.pending_rollback_turns == 0
                         && replay_state.window.is_none()
                         && let Some(window_number) = compacted.window_number
                     {
@@ -275,7 +280,8 @@ impl Session {
                             id: compacted.window_id.as_deref().and_then(parse_uuid_v7),
                         });
                     }
-                    if replay_state.base_compacted_item.is_none()
+                    if !repair_precedes_pending_rollback
+                        && replay_state.base_compacted_item.is_none()
                         && compacted.replacement_history.is_some()
                     {
                         replay_state.base_compacted_item = Some(compacted);
