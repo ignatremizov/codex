@@ -1,5 +1,6 @@
 use chrono::Utc;
 use codex_rollout::find_thread_path_by_id_str;
+use codex_rollout::remove_compacted_media_vacuum_backups;
 
 use super::LocalThreadStore;
 use super::helpers::matching_rollout_file_name;
@@ -38,6 +39,15 @@ pub(super) async fn archive_thread(
         thread_id,
         rollout_path.as_path(),
     )?;
+    let vacuum_rollout_path = codex_rollout::plain_rollout_path(&canonical_rollout_path);
+    remove_compacted_media_vacuum_backups(vacuum_rollout_path.as_path()).map_err(|err| {
+        ThreadStoreError::Internal {
+            message: format!(
+                "failed to remove compacted-media vacuum backups before archiving `{}`: {err}",
+                vacuum_rollout_path.display()
+            ),
+        }
+    })?;
 
     let archive_folder = store
         .config
@@ -87,6 +97,15 @@ mod tests {
         let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
         let active_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let backup_path = active_path.with_file_name(format!(
+            ".{}.pre-media-vacuum-{}.bak",
+            active_path
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .expect("UTF-8 rollout file name"),
+            Uuid::now_v7()
+        ));
+        std::fs::hard_link(&active_path, &backup_path).expect("retained vacuum backup");
 
         store
             .archive_thread(ArchiveThreadParams { thread_id })
@@ -94,6 +113,7 @@ mod tests {
             .expect("archive thread");
 
         assert!(!active_path.exists());
+        assert!(!backup_path.exists());
         let archived_path = home
             .path()
             .join(ARCHIVED_SESSIONS_SUBDIR)

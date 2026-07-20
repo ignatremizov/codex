@@ -11,6 +11,8 @@ const REOPENABLE_IMAGE_OMISSION: &str =
 const UNAVAILABLE_IMAGE_OMISSION: &str =
     "Image bytes removed after compaction; no durable source reference is available.";
 const MIXED_IMAGE_OMISSION: &str = "Image bytes removed after compaction; retained paths can be reopened with view_image, while images without durable source references are unavailable.";
+const COMPACTED_IMAGE_OMISSION_OPEN_TAG: &str = "<compacted_image_omission>";
+const COMPACTED_IMAGE_OMISSION_CLOSE_TAG: &str = "</compacted_image_omission>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CompactedImageOmission {
@@ -44,7 +46,10 @@ impl CompactedImageOmission {
     }
 
     fn kind_from_text(text: &str) -> Option<CompactedImageOmissionKind> {
-        match text {
+        let body = text
+            .strip_prefix(COMPACTED_IMAGE_OMISSION_OPEN_TAG)?
+            .strip_suffix(COMPACTED_IMAGE_OMISSION_CLOSE_TAG)?;
+        match body {
             REOPENABLE_IMAGE_OMISSION => Some(CompactedImageOmissionKind::ReopenableLocalImage),
             UNAVAILABLE_IMAGE_OMISSION => Some(CompactedImageOmissionKind::Unavailable),
             MIXED_IMAGE_OMISSION => Some(CompactedImageOmissionKind::Mixed),
@@ -67,7 +72,10 @@ impl ContextualUserFragment for CompactedImageOmission {
     }
 
     fn type_markers() -> (&'static str, &'static str) {
-        ("", "")
+        (
+            COMPACTED_IMAGE_OMISSION_OPEN_TAG,
+            COMPACTED_IMAGE_OMISSION_CLOSE_TAG,
+        )
     }
 
     fn body(&self) -> String {

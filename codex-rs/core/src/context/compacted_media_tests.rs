@@ -173,6 +173,35 @@ fn coalesces_prior_omission_fragments_when_new_media_is_sanitized() {
 }
 
 #[test]
+fn preserves_user_text_that_matches_the_old_plain_omission_notice() {
+    let ordinary_user_text = UNAVAILABLE_IMAGE_OMISSION.to_string();
+    let mut items = vec![
+        user_message(vec![ContentItem::InputText {
+            text: ordinary_user_text.clone(),
+        }]),
+        user_message(vec![ContentItem::InputImage {
+            image_url: "data:image/png;base64,new".to_string(),
+            detail: None,
+        }]),
+    ];
+
+    let sanitization = sanitize_compacted_media(&mut items);
+
+    assert_eq!(sanitization.omitted_image_count, 1);
+    assert_eq!(
+        items,
+        vec![
+            user_message(vec![ContentItem::InputText {
+                text: ordinary_user_text,
+            }]),
+            user_message(vec![ContentItem::InputText {
+                text: CompactedImageOmission::unavailable().render(),
+            }]),
+        ]
+    );
+}
+
+#[test]
 fn sanitization_is_idempotent_and_respects_prefix_boundaries() {
     let mut items = vec![
         user_message(vec![ContentItem::InputImage {

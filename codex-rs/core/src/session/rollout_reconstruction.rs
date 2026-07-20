@@ -1,5 +1,6 @@
 use super::*;
 use crate::context::world_state::WorldStateSnapshot;
+use crate::context_manager::is_model_generated_item;
 use crate::context_manager::is_user_turn_boundary;
 use codex_protocol::protocol::SessionContextWindow;
 use uuid::Uuid;
@@ -567,9 +568,17 @@ impl Session {
             );
             repair_sanitization.accumulate(replay_sanitization);
         }
+        let needs_media_policy_certification =
+            base_compacted_item.is_some_and(|base_compacted_item| {
+                base_compacted_item.replacement_history.is_some()
+                    && base_compacted_item
+                        .replacement_history_media_sanitized_prefix_len
+                        .is_none()
+            });
         // A changed history invalidates every recorded usage snapshot. An already-marked
         // checkpoint needs a local estimate when no later server TokenCount can be restored, or
-        // when a rollback after that snapshot changed the reconstructed history it described.
+        // when a later model output, compaction, or rollback changed the reconstructed history it
+        // described.
         let selected_checkpoint_has_valid_subsequent_token_info =
             base_compacted_item.is_some_and(|base_compacted_item| {
                 rollout_items
@@ -602,6 +611,11 @@ impl Session {
                                         matches!(
                                             item,
                                             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))
+                                                | RolloutItem::Compacted(_)
+                                        ) || matches!(
+                                            item,
+                                            RolloutItem::ResponseItem(response_item)
+                                                if is_model_generated_item(response_item)
                                         )
                                     })
                             })
@@ -614,10 +628,11 @@ impl Session {
                     .is_some()
                     && !selected_checkpoint_has_valid_subsequent_token_info
             });
-        let should_recompute_token_usage =
-            repair_sanitization.changed() || selected_checkpoint_needs_token_recompute;
+        let should_recompute_token_usage = repair_sanitization.changed()
+            || needs_media_policy_certification
+            || selected_checkpoint_needs_token_recompute;
         let repair = repair_checkpoint_source
-            .filter(|_| repair_sanitization.changed())
+            .filter(|_| repair_sanitization.changed() || needs_media_policy_certification)
             .map(|mut checkpoint| {
                 checkpoint.replacement_history = Some(history.clone());
                 checkpoint.window_number = Some(window.number);

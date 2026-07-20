@@ -9,7 +9,6 @@ use std::path::Path;
 
 use codex_protocol::models::is_local_image_close_tag_text;
 use codex_protocol::models::is_local_image_open_tag_with_path_text;
-use codex_protocol::protocol::RolloutLine;
 use tempfile::NamedTempFile;
 use tracing::warn;
 use uuid::Uuid;
@@ -73,7 +72,7 @@ pub fn vacuum_compacted_media(
                 path.display()
             ))
         })?;
-    remove_stale_backups(parent, file_name)?;
+    remove_compacted_media_vacuum_backups(path)?;
     let mut temporary = NamedTempFile::new_in(parent)?;
     temporary
         .as_file_mut()
@@ -237,7 +236,12 @@ fn validate_rollout_and_find_protected_checkpoint(path: &Path) -> io::Result<boo
 }
 
 fn parse_rollout_record(json: &[u8], path: &Path) -> io::Result<Option<JsonSpan>> {
-    if serde_json::from_slice::<RolloutLine>(json).is_err() {
+    // Validate the complete JSON value without materializing large inline-media strings. The span
+    // parser below then locates only the fields needed for the targeted rewrite.
+    let mut deserializer = serde_json::Deserializer::from_slice(json);
+    if <serde::de::IgnoredAny as serde::Deserialize>::deserialize(&mut deserializer).is_err()
+        || deserializer.end().is_err()
+    {
         return Ok(None);
     }
     parse_json_spans(json).map(Some).map_err(|err| {
@@ -408,9 +412,31 @@ fn read_bounded_rollout_record(
     }
 }
 
-fn remove_stale_backups(parent: &Path, file_name: &str) -> io::Result<()> {
+/// Removes recoverable compacted-media vacuum backups associated with `path`.
+///
+/// Thread deletion and archival call this after validating that `path` belongs to the selected
+/// thread so a retained backup cannot later resurrect a deleted or moved rollout.
+pub fn remove_compacted_media_vacuum_backups(path: &Path) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "rollout path has no UTF-8 file name: {}",
+                path.display()
+            ))
+        })?;
     let mut removed = false;
-    for entry in fs::read_dir(parent)? {
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else {

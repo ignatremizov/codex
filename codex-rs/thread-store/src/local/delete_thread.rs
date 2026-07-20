@@ -11,6 +11,7 @@ use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
 use codex_rollout::SESSIONS_SUBDIR;
 use codex_rollout::find_archived_thread_path_by_id_str;
 use codex_rollout::find_thread_path_by_id_str;
+use codex_rollout::remove_compacted_media_vacuum_backups;
 use codex_rollout::remove_thread_name_entries;
 
 use super::LocalThreadStore;
@@ -120,6 +121,14 @@ fn delete_rollout_path(
         Ok(true) | Err(_) => Err(err),
     })?;
     matching_rollout_file_name(&canonical_rollout_path, thread_id, rollout_path)?;
+    remove_compacted_media_vacuum_backups(&canonical_rollout_path).map_err(|err| {
+        ThreadStoreError::Internal {
+            message: format!(
+                "failed to delete compacted-media vacuum backups for `{}`: {err}",
+                canonical_rollout_path.display()
+            ),
+        }
+    })?;
     match std::fs::remove_file(&canonical_rollout_path) {
         Ok(()) => Ok(true),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
@@ -172,12 +181,21 @@ mod tests {
 
         for (uuid, path) in cases {
             let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+            let backup_path = path.with_file_name(format!(
+                ".{}.pre-media-vacuum-{}.bak",
+                path.file_name()
+                    .and_then(|file_name| file_name.to_str())
+                    .expect("UTF-8 rollout file name"),
+                Uuid::now_v7()
+            ));
+            std::fs::hard_link(&path, &backup_path).expect("retained vacuum backup");
             store
                 .delete_thread(DeleteThreadParams { thread_id })
                 .await
                 .expect("delete thread");
 
             assert!(!path.exists());
+            assert!(!backup_path.exists());
         }
         assert!(!compressed_path.exists());
     }

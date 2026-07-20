@@ -226,6 +226,62 @@ async fn reconstruction_repairs_only_the_compacted_base_and_marks_its_prefix() {
 }
 
 #[tokio::test]
+async fn reconstruction_certifies_a_media_free_legacy_checkpoint_for_manual_vacuum() {
+    let (session, turn_context) = make_session_and_context().await;
+    let media_free_history = vec![user_message("latest summary")];
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: "superseded image checkpoint".to_string(),
+            replacement_history: Some(vec![image_message(vec![ContentItem::InputImage {
+                image_url: "data:image/png;base64,superseded".to_string(),
+                detail: None,
+            }])]),
+            window_number: Some(1),
+            ..Default::default()
+        }),
+        RolloutItem::Compacted(CompactedItem {
+            message: "latest media-free checkpoint".to_string(),
+            replacement_history: Some(media_free_history.clone()),
+            window_number: Some(2),
+            ..Default::default()
+        }),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    let repair = reconstructed
+        .repair
+        .expect("legacy checkpoint should be certified");
+    assert_eq!(
+        repair.checkpoint.replacement_history,
+        Some(media_free_history.clone())
+    );
+    assert_eq!(
+        repair
+            .checkpoint
+            .replacement_history_media_sanitized_prefix_len,
+        Some(1)
+    );
+    assert!(repair.checkpoint.replacement_history_media_repair);
+    assert_eq!(
+        repair.sanitization,
+        crate::context::CompactedMediaSanitization::default()
+    );
+    assert!(reconstructed.should_recompute_token_usage);
+
+    let certified = session
+        .reconstruct_history_from_rollout(
+            &turn_context,
+            &[RolloutItem::Compacted(repair.checkpoint)],
+        )
+        .await;
+    assert_eq!(certified.history, media_free_history);
+    assert!(certified.repair.is_none());
+}
+
+#[tokio::test]
 async fn reconstruction_repairs_the_surviving_prefix_after_a_compaction_turn_is_rolled_back() {
     let (session, turn_context) = make_session_and_context().await;
     let compacted_image_url = "data:image/png;base64,compacted";

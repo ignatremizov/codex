@@ -2444,6 +2444,53 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_rollback() {
 }
 
 #[tokio::test]
+async fn marked_compacted_history_recomputes_usage_invalidated_by_later_model_output() {
+    let (session, turn_context) = make_session_and_context().await;
+    let stale_usage = TokenUsageInfo {
+        total_token_usage: TokenUsage::default(),
+        last_token_usage: TokenUsage {
+            total_tokens: 342_636,
+            ..Default::default()
+        },
+        model_context_window: Some(353_400),
+    };
+    let rollout_items = vec![
+        RolloutItem::Compacted(CompactedItem {
+            message: "media-free checkpoint".to_string(),
+            replacement_history: Some(vec![assistant_message("summary")]),
+            window_number: Some(1),
+            replacement_history_media_sanitized_prefix_len: Some(1),
+            ..Default::default()
+        }),
+        RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+            info: Some(stale_usage),
+            rate_limits: None,
+        })),
+        RolloutItem::ResponseItem(assistant_message("response after stale usage")),
+    ];
+
+    session
+        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: ThreadId::default(),
+            history: Arc::new(rollout_items),
+            rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+        }))
+        .await
+        .expect("record marked history with stale usage");
+
+    let history = session.clone_history().await;
+    let expected_tokens = history
+        .estimate_token_count_with_base_instructions(&session.get_base_instructions().await)
+        .expect("estimate history with later model output");
+    assert_eq!(session.get_total_token_usage().await, expected_tokens);
+    assert!(
+        !context_window::context_window_token_status(&session, &turn_context)
+            .await
+            .token_limit_reached
+    );
+}
+
+#[tokio::test]
 async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
     let (session, turn_context) = make_session_and_context().await;
     let mut replacement_history = (0..128)
@@ -2523,6 +2570,60 @@ async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
     assert_eq!(session.get_total_token_usage().await, expected_tokens);
     let token_status = context_window::context_window_token_status(&session, &turn_context).await;
     assert!(!token_status.token_limit_reached);
+}
+
+#[tokio::test]
+async fn resume_persists_media_policy_certification_for_a_media_free_legacy_checkpoint() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    let store = attach_in_memory_thread_store(&mut session).await;
+    let media_free_history = vec![assistant_message("legacy summary")];
+    let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
+        message: "media-free legacy checkpoint".to_string(),
+        replacement_history: Some(media_free_history.clone()),
+        window_number: Some(1),
+        ..Default::default()
+    })];
+
+    session
+        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: ThreadId::default(),
+            history: Arc::new(rollout_items),
+            rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+        }))
+        .await
+        .expect("record media-policy certification");
+
+    let persisted = store
+        .load_history(codex_thread_store::LoadThreadHistoryParams {
+            thread_id: session.thread_id,
+            include_archived: true,
+        })
+        .await
+        .expect("load certified history");
+    let certification_position = persisted
+        .items
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                RolloutItem::Compacted(CompactedItem {
+                    replacement_history: Some(history),
+                    replacement_history_media_sanitized_prefix_len: Some(1),
+                    replacement_history_media_repair: true,
+                    ..
+                }) if history == &media_free_history
+            )
+        })
+        .expect("persisted media-policy certification");
+    assert!(persisted.items[certification_position.saturating_add(1)..]
+        .iter()
+        .any(|item| matches!(
+            item,
+            RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+                info: Some(_),
+                ..
+            }))
+        )));
 }
 
 #[tokio::test]
@@ -3176,8 +3277,6 @@ async fn fork_persists_media_repair_and_recomputed_usage_in_child_history() {
             rate_limits: None,
         })),
     ];
-    let source_rollout_copy = source_rollout_items.clone();
-
     session
         .record_initial_history(InitialHistory::Forked(source_rollout_items))
         .await
@@ -3201,18 +3300,6 @@ async fn fork_persists_media_repair_and_recomputed_usage_in_child_history() {
         .expect("estimate child history");
     assert_eq!(session.get_total_token_usage().await, expected_tokens);
 
-    assert!(matches!(
-        &source_rollout_copy[0],
-        RolloutItem::Compacted(CompactedItem {
-            replacement_history: Some(history),
-            ..
-        }) if matches!(
-            history.first(),
-            Some(ResponseItem::Message { content, .. })
-                if matches!(content.first(), Some(ContentItem::InputImage { .. }))
-        )
-    ));
-
     let persisted = session
         .services
         .thread_store
@@ -3222,6 +3309,20 @@ async fn fork_persists_media_repair_and_recomputed_usage_in_child_history() {
         })
         .await
         .expect("load child history");
+    assert!(persisted.items.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::Compacted(CompactedItem {
+                replacement_history: Some(history),
+                replacement_history_media_repair: false,
+                ..
+            }) if matches!(
+                history.first(),
+                Some(ResponseItem::Message { content, .. })
+                    if matches!(content.first(), Some(ContentItem::InputImage { .. }))
+            )
+        )
+    }));
     let repair_position = persisted
         .items
         .iter()

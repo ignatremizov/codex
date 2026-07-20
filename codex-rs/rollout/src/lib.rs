@@ -62,6 +62,7 @@ pub use list::read_thread_item_from_rollout;
 pub use list::rollout_date_parts;
 pub use media_vacuum::CompactedMediaVacuumPolicy;
 pub use media_vacuum::CompactedMediaVacuumReport;
+pub use media_vacuum::remove_compacted_media_vacuum_backups;
 pub use media_vacuum::vacuum_compacted_media;
 pub use metadata::builder_from_items;
 pub use model_context::ModelContextScan;
