@@ -2236,6 +2236,13 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
 #[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), true, ThreadHistoryMode::Paginated, MultiAgentMessageDelivery::EncryptedWithAudit; "trusted plaintext under audit")]
 #[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Legacy, MultiAgentMessageDelivery::Plaintext; "configured plaintext")]
 #[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Paginated, MultiAgentMessageDelivery::EncryptedWithAudit; "encrypted with audit")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Paginated, MultiAgentMessageDelivery::Encrypted; "encrypted paginated")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), true, ThreadHistoryMode::Legacy, MultiAgentMessageDelivery::Plaintext; "direct plaintext legacy")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), true, ThreadHistoryMode::Paginated, MultiAgentMessageDelivery::Encrypted; "trusted plaintext under encryption paginated")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), true, ThreadHistoryMode::Legacy, MultiAgentMessageDelivery::EncryptedWithAudit; "trusted plaintext under audit legacy")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Paginated, MultiAgentMessageDelivery::Plaintext; "configured plaintext paginated")]
+#[test_case(None, None, Some(ReasoningEffort::Ultra), Some("medium"), false, ThreadHistoryMode::Legacy, MultiAgentMessageDelivery::EncryptedWithAudit; "encrypted with audit legacy")]
+#[test_case(Some("gpt-5.5"), Some(ReasoningEffort::High), Some(ReasoningEffort::Ultra), Some("high"), false, ThreadHistoryMode::Legacy, MultiAgentMessageDelivery::Encrypted; "legacy encrypted child legacy")]
 #[tokio::test]
 async fn multi_agent_v2_spawn_sends_agent_message_to_child(
     model: Option<&str>,
@@ -2568,6 +2575,70 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
                 && log_field(line, "communication_id") == Some(communication_id)
         })
         .expect("correlated receive event");
+
+    test.codex.flush_rollout().await?;
+    let rollout = codex_rollout::RolloutRecorder::get_rollout_history(
+        &test.codex.rollout_path().expect("parent rollout path"),
+    )
+    .await?;
+    let expected_prompt = if delivers_plaintext {
+        Some(message.to_string())
+    } else {
+        audit_text.map(str::to_string)
+    };
+    let persisted_activities = rollout
+        .get_rollout_items()
+        .iter()
+        .filter_map(|item| match history_mode {
+            ThreadHistoryMode::Legacy => match item {
+                RolloutItem::EventMsg(EventMsg::SubAgentActivity(activity))
+                    if activity.event_id == SPAWN_CALL_ID
+                        && activity.kind == SubAgentActivityKind::Started =>
+                {
+                    Some(SubAgentActivityItem {
+                        model: activity.model.clone(),
+                        reasoning_effort: activity.reasoning_effort.clone(),
+                        id: activity.event_id.clone(),
+                        kind: activity.kind,
+                        agent_thread_id: activity.agent_thread_id,
+                        agent_path: activity.agent_path.clone(),
+                        prompt: activity.prompt.clone(),
+                    })
+                }
+                _ => None,
+            },
+            ThreadHistoryMode::Paginated => match item {
+                RolloutItem::EventMsg(EventMsg::ItemCompleted(completed))
+                    if matches!(
+                        &completed.item,
+                        TurnItem::SubAgentActivity(activity)
+                            if activity.id == SPAWN_CALL_ID
+                                && activity.kind == SubAgentActivityKind::Started
+                    ) =>
+                {
+                    let TurnItem::SubAgentActivity(activity) = &completed.item else {
+                        unreachable!();
+                    };
+                    Some(activity.clone())
+                }
+                _ => None,
+            },
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        persisted_activities,
+        vec![SubAgentActivityItem {
+            model: Some(model.unwrap_or(parent_model).to_string()),
+            reasoning_effort: settings.1.clone(),
+            id: SPAWN_CALL_ID.to_string(),
+            kind: SubAgentActivityKind::Started,
+            agent_thread_id: child_thread_id,
+            agent_path: codex_protocol::AgentPath::root()
+                .join("worker")
+                .expect("worker path"),
+            prompt: expected_prompt,
+        }]
+    );
 
     Ok(())
 }
@@ -2915,6 +2986,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
                 agent_path: codex_protocol::AgentPath::root()
                     .join("worker")
                     .expect("worker path"),
+                prompt: None,
             }
         );
     } else {
@@ -3234,6 +3306,7 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn(
                 agent_path: codex_protocol::AgentPath::root()
                     .join("worker")
                     .expect("worker path"),
+                prompt: None,
             },
         )
     );
