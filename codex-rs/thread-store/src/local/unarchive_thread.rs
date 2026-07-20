@@ -4,7 +4,6 @@ use codex_rollout::rollout_date_parts;
 
 use super::LocalThreadStore;
 use super::helpers::matching_rollout_file_name;
-use super::helpers::move_rollout_representation;
 use super::helpers::scoped_rollout_path;
 use super::helpers::stored_thread_from_rollout_item;
 use super::helpers::touch_modified_time;
@@ -66,7 +65,7 @@ pub(super) async fn unarchive_thread(
         message: format!("failed to unarchive thread: {err}"),
     })?;
     let restored_path = dest_dir.join(&file_name);
-    move_rollout_representation(&canonical_archived_path, &restored_path).map_err(|err| {
+    std::fs::rename(&canonical_archived_path, &restored_path).map_err(|err| {
         ThreadStoreError::Internal {
             message: format!("failed to unarchive thread: {err}"),
         }
@@ -125,9 +124,6 @@ mod tests {
         let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
         let archived_path = write_archived_session_file(home.path(), "2025-01-03T13-00-00", uuid)
             .expect("archived session file");
-        let compressed_path = archived_path.with_extension("jsonl.zst");
-        std::fs::write(&compressed_path, b"stale compressed sibling")
-            .expect("write stale compressed sibling");
 
         let thread = store
             .unarchive_thread(ArchiveThreadParams { thread_id })
@@ -135,13 +131,11 @@ mod tests {
             .expect("unarchive thread");
 
         assert!(!archived_path.exists());
-        assert!(!compressed_path.exists());
         let restored_path = home
             .path()
             .join("sessions/2025/01/03")
             .join(archived_path.file_name().expect("file name"));
         assert!(restored_path.exists());
-        assert!(!restored_path.with_extension("jsonl.zst").exists());
         assert_eq!(thread.thread_id, thread_id);
         assert_eq!(thread.rollout_path, Some(restored_path));
         assert_eq!(thread.archived_at, None);

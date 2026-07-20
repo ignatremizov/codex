@@ -4,7 +4,6 @@ use codex_rollout::remove_compacted_media_vacuum_backups;
 
 use super::LocalThreadStore;
 use super::helpers::matching_rollout_file_name;
-use super::helpers::move_rollout_representation;
 use super::helpers::scoped_rollout_path;
 use crate::ArchiveThreadParams;
 use crate::ThreadStoreError;
@@ -58,7 +57,7 @@ pub(super) async fn archive_thread(
         message: format!("failed to archive thread: {err}"),
     })?;
     let archived_path = archive_folder.join(&file_name);
-    move_rollout_representation(&canonical_rollout_path, &archived_path).map_err(|err| {
+    std::fs::rename(&canonical_rollout_path, &archived_path).map_err(|err| {
         ThreadStoreError::Internal {
             message: format!("failed to archive thread: {err}"),
         }
@@ -132,9 +131,7 @@ mod tests {
         let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
         let active_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
-        let compressed_path = active_path.with_extension("jsonl.zst");
-        std::fs::write(&compressed_path, b"stale compressed sibling")
-            .expect("write stale compressed sibling");
+        let backup_path = replace_canonical_with_vacuum_backup(&active_path);
 
         store
             .archive_thread(ArchiveThreadParams { thread_id })
@@ -142,13 +139,12 @@ mod tests {
             .expect("archive thread");
 
         assert!(!active_path.exists());
-        assert!(!compressed_path.exists());
+        assert!(!backup_path.exists());
         let archived_path = home
             .path()
             .join(ARCHIVED_SESSIONS_SUBDIR)
             .join(active_path.file_name().expect("file name"));
         assert!(archived_path.exists());
-        assert!(!archived_path.with_extension("jsonl.zst").exists());
 
         let archived = store
             .list_threads(ListThreadsParams {
