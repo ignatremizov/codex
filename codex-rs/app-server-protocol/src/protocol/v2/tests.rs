@@ -1,5 +1,6 @@
 use super::*;
 use crate::ServerNotification;
+use codex_protocol::ResponseItemId;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::items::AgentMessageContent;
@@ -25,11 +26,13 @@ use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::AdditionalPermissionProfile as CoreAdditionalPermissionProfile;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
 use codex_protocol::permissions::FileSystemAccessMode as CoreFileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath as CoreFileSystemPath;
@@ -70,6 +73,49 @@ fn absolute_path(path: &str) -> AbsolutePathBuf {
 
 fn test_absolute_path() -> AbsolutePathBuf {
     absolute_path("readable")
+}
+
+#[test]
+fn plaintext_inter_agent_message_becomes_labeled_agent_transcript_item() {
+    let item = ResponseItem::AgentMessage {
+        id: Some(ResponseItemId::with_suffix("amsg", "task")),
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "Inspect the repository.".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    assert_eq!(
+        inter_agent_message_thread_item(&item),
+        Some(ThreadItem::AgentMessage {
+            id: "amsg_task".to_string(),
+            text: "Agent message from `/root`:\n\nInspect the repository.".to_string(),
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+        })
+    );
+}
+
+#[test]
+fn encrypted_inter_agent_message_is_not_materialized_in_transcript() {
+    let item = ResponseItem::AgentMessage {
+        id: Some(ResponseItemId::with_suffix("amsg", "task")),
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![
+            AgentMessageInputContent::InputText {
+                text: "Payload:\n".to_string(),
+            },
+            AgentMessageInputContent::EncryptedContent {
+                encrypted_content: "opaque".to_string(),
+            },
+        ],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    assert_eq!(inter_agent_message_thread_item(&item), None);
 }
 
 #[test]
@@ -2816,6 +2862,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         agent_path: codex_protocol::AgentPath::root()
             .join("worker")
             .expect("worker path"),
+        prompt: Some("stop now".to_string()),
     });
 
     assert_eq!(
@@ -2825,6 +2872,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             kind: SubAgentActivityKind::Interrupted,
             agent_thread_id: receiver_thread_id.to_string(),
             agent_path: "/root/worker".to_string(),
+            prompt: Some("stop now".to_string()),
         }
     );
 

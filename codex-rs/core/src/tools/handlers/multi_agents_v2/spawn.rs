@@ -57,6 +57,7 @@ async fn handle_spawn_agent(
     let fork_mode = args.fork_mode(&turn.config.multi_agent_v2.default_fork_turns)?;
     let prepared_message =
         PreparedAgentMessage::from_tool_args(args.message, args.task_message, message_delivery)?;
+    let prompt = prepared_message.visible_content().map(str::to_string);
     let role_name = args
         .agent_type
         .as_deref()
@@ -149,6 +150,7 @@ async fn handle_spawn_agent(
             agent_thread_id: new_thread_id,
             agent_path: new_agent_path.clone(),
             kind: SubAgentActivityKind::Started,
+            prompt,
         },
     )
     .await;
