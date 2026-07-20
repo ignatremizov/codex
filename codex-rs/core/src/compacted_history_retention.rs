@@ -15,6 +15,33 @@ pub(crate) enum RetainedMessageTruncation {
     Empty,
 }
 
+pub(crate) fn contains_atomic_compacted_media(content: &[ContentItem]) -> bool {
+    content.iter().enumerate().any(|(index, content_item)| {
+        let ContentItem::InputText { text } = content_item else {
+            return false;
+        };
+        if is_compacted_image_omission_text(text) {
+            return true;
+        }
+        if !is_local_image_open_tag_with_path_text(text) {
+            return false;
+        }
+        matches!(
+            content.get(index.saturating_add(1)),
+            Some(ContentItem::InputText { text }) if is_local_image_close_tag_text(text)
+        ) || matches!(
+            (
+                content.get(index.saturating_add(1)),
+                content.get(index.saturating_add(2))
+            ),
+            (
+                Some(ContentItem::InputText { .. }),
+                Some(ContentItem::InputText { text })
+            ) if is_local_image_close_tag_text(text)
+        )
+    })
+}
+
 pub(crate) fn truncate_retained_message_to_token_budget(
     item: ResponseItem,
     max_tokens: usize,
@@ -47,12 +74,10 @@ pub(crate) fn truncate_retained_message_to_token_budget(
                         (1usize, false)
                     }
                     (
-                        Some(ContentItem::InputText { text: omission }),
+                        Some(ContentItem::InputText { text: placeholder }),
                         Some(ContentItem::InputText { text: close }),
-                    ) if is_compacted_image_omission_text(omission)
-                        && is_local_image_close_tag_text(close) =>
-                    {
-                        (2usize, true)
+                    ) if is_local_image_close_tag_text(close) => {
+                        (2usize, is_compacted_image_omission_text(placeholder))
                     }
                     _ => (0usize, false),
                 };
@@ -124,3 +149,7 @@ pub(crate) fn truncate_retained_message_to_token_budget(
         internal_chat_message_metadata_passthrough: metadata,
     }))
 }
+
+#[cfg(test)]
+#[path = "compacted_history_retention_tests.rs"]
+mod tests;

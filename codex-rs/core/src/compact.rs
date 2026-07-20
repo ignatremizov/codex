@@ -8,8 +8,8 @@ use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
 use crate::compacted_history_retention::RetainedMessageTruncation;
+use crate::compacted_history_retention::contains_atomic_compacted_media;
 use crate::compacted_history_retention::truncate_retained_message_to_token_budget;
-use crate::context::is_compacted_image_omission_text;
 use crate::context::world_state::WorldState;
 use crate::event_mapping::parse_turn_item;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -42,7 +42,6 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::models::is_local_image_open_tag_with_path_text;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MAX_SKILLS_INSTRUCTIONS_BYTES;
@@ -805,14 +804,7 @@ fn collect_mcp_and_recent_user_items_with_limit(
             } else if matches!(
                 item,
                 ResponseItem::Message { content, .. }
-                    if content.iter().any(|content_item| {
-                        matches!(
-                            content_item,
-                            ContentItem::InputText { text }
-                                if is_compacted_image_omission_text(text)
-                                    || is_local_image_open_tag_with_path_text(text)
-                        )
-                    })
+                    if contains_atomic_compacted_media(content)
             ) {
                 match truncate_retained_message_to_token_budget(item.clone(), remaining) {
                     RetainedMessageTruncation::Retained(truncated_item) => {

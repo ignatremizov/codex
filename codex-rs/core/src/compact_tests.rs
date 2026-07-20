@@ -567,8 +567,59 @@ fn build_local_compacted_history_drops_oversized_image_message_atomically() {
 }
 
 #[test]
+fn build_local_compacted_history_drops_oversized_text_image_wrapper_atomically() {
+    let huge_text = "x".repeat((COMPACT_USER_MESSAGE_MAX_TOKENS + 1) * 4);
+    let current = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: huge_text.clone(),
+            },
+            ContentItem::InputText {
+                text: "<image name=[Image #1] path=\"/tmp/current.png\">".to_string(),
+            },
+            ContentItem::InputText {
+                text: "[Image #1]".to_string(),
+            },
+            ContentItem::InputText {
+                text: "</image>".to_string(),
+            },
+            ContentItem::InputText {
+                text: "after".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+    let expected = truncate_text(
+        &huge_text,
+        TruncationPolicy::Tokens(COMPACT_USER_MESSAGE_MAX_TOKENS),
+    );
+
+    let compacted =
+        build_local_compacted_history(&[current], /*compacted_prefix_len*/ 0, &summary);
+
+    assert_eq!(
+        compacted,
+        vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText { text: expected }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            user_message(&summary),
+        ]
+    );
+}
+
+#[test]
 fn build_local_compacted_history_preserves_whole_message_text_truncation() {
     let leading = "x".repeat((COMPACT_USER_MESSAGE_MAX_TOKENS + 1) * 4);
+    let unmatched_opener = "<image name=[Image #1] path=\"/tmp/not-a-wrapper.png\">";
     let trailing = "TRAILING_SENTINEL";
     let current = ResponseItem::Message {
         id: None,
@@ -576,6 +627,9 @@ fn build_local_compacted_history_preserves_whole_message_text_truncation() {
         content: vec![
             ContentItem::InputText {
                 text: leading.clone(),
+            },
+            ContentItem::InputText {
+                text: unmatched_opener.to_string(),
             },
             ContentItem::InputText {
                 text: trailing.to_string(),
@@ -586,7 +640,7 @@ fn build_local_compacted_history_preserves_whole_message_text_truncation() {
     };
     let summary = format!("{SUMMARY_PREFIX}\nsummary");
     let expected = truncate_text(
-        &format!("{leading}{trailing}"),
+        &format!("{leading}{unmatched_opener}{trailing}"),
         TruncationPolicy::Tokens(COMPACT_USER_MESSAGE_MAX_TOKENS),
     );
 
