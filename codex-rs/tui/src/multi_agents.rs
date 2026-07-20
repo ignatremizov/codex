@@ -328,16 +328,25 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
     })
 }
 
-pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<CollabAgentHistoryCell> {
+pub(crate) fn sub_agent_activity_history_cell(
+    item: &ThreadItem,
+    agent_prompt_preview_lines: usize,
+) -> Option<CollabAgentHistoryCell> {
     let ThreadItem::SubAgentActivity {
-        kind, agent_path, ..
+        kind,
+        agent_path,
+        prompt,
+        ..
     } = item
     else {
         return None;
     };
     Some(collab_event(
         sub_agent_activity_title(*kind, agent_path),
-        Vec::new(),
+        prompt
+            .as_deref()
+            .map(|prompt| prompt_lines(prompt, agent_prompt_preview_lines))
+            .unwrap_or_default(),
     ))
 }
 
@@ -730,6 +739,7 @@ mod tests {
             kind: SubAgentActivityKind::Interacted,
             agent_thread_id: ThreadId::new().to_string(),
             agent_path: "/root/child".to_string(),
+            prompt: None,
         };
 
         assert_eq!(sub_agent_activity_display(&item), None);
@@ -743,6 +753,7 @@ mod tests {
             kind: SubAgentActivityKind::Completed,
             agent_thread_id: thread_id.to_string(),
             agent_path: "/root/child".to_string(),
+            prompt: None,
         };
 
         assert_eq!(

@@ -5,6 +5,75 @@ use crate::thread_transcript::thread_items_to_transcript_cells_with_preview_line
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn activity_prompt_live_and_replay_use_local_preview_authority() {
+    use codex_app_server_protocol::SubAgentActivityKind;
+
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.local_settings.tui.agent_prompt_preview_lines = 2;
+    chat.config.tui_agent_prompt_preview_lines = 99;
+    for kind in [
+        SubAgentActivityKind::Started,
+        SubAgentActivityKind::Interacted,
+    ] {
+        let item = AppServerThreadItem::SubAgentActivity {
+            id: format!("activity-{kind:?}"),
+            kind,
+            agent_thread_id: ThreadId::new().to_string(),
+            agent_path: "/root/reviewer".into(),
+            prompt: Some("first https://example.com\n  second\nlast".into()),
+        };
+        chat.handle_server_notification(
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".into(),
+                turn_id: "turn-1".into(),
+                completed_at_ms: 0,
+                item: item.clone(),
+            }),
+            /*replay_kind*/ None,
+        );
+        let mut live = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = event {
+                live.push(cell);
+            }
+        }
+        let replay = thread_items_to_transcript_cells_with_preview_line_limits(
+            /*thread_id*/ None,
+            &chat.config.cwd,
+            [item],
+            RawReasoningVisibility::Hidden,
+            Some(&chat.config),
+            OutputPreviewLineLimits::default(),
+            (&chat.local_settings.tui).into(),
+        );
+        assert_eq!((live.len(), replay.len()), (1, 1));
+        assert!(crate::terminal_hyperlinks::lines_with_sources_eq(
+            &live[0].display_hyperlink_lines(/*width*/ 80),
+            &replay[0].display_hyperlink_lines(/*width*/ 80),
+        ));
+        assert_eq!(live[0].raw_lines(), replay[0].raw_lines());
+        assert_eq!(
+            live[0]
+                .display_lines(/*width*/ 80)
+                .iter()
+                .skip(1)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["  └ first https://example.com", "    … +2 rows hidden"],
+        );
+        assert_eq!(
+            live[0]
+                .raw_lines()
+                .iter()
+                .skip(1)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["  └ first https://example.com", "      second", "    last"],
+        );
+    }
+}
+
+#[tokio::test]
 async fn collaboration_live_and_replay_use_local_limits_and_keep_full_raw_source() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.local_settings.tui.agent_prompt_preview_lines = 2;

@@ -73,6 +73,17 @@ pub enum AgentMessage {
     },
 }
 
+impl AgentMessage {
+    /// Returns readable content suitable for activity transcripts, excluding opaque ciphertext.
+    pub(crate) fn visible_content(&self) -> Option<&str> {
+        match self {
+            Self::Plaintext(content) => Some(content),
+            Self::Encrypted(_) => None,
+            Self::EncryptedWithAudit { audit_content, .. } => Some(audit_content),
+        }
+    }
+}
+
 /// Holds a backend-owned reservation until the turn ends or is cancelled.
 ///
 /// The permit's destructor releases capacity or arranges backend cleanup. Remote backends

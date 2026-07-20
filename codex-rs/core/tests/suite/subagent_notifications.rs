@@ -2206,19 +2206,23 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
     Ok(())
 }
 
-#[test_case(None, false, MultiAgentMessageDelivery::Encrypted; "encrypted")]
-#[test_case(None, true, MultiAgentMessageDelivery::Plaintext; "direct plaintext")]
-#[test_case(None, true, MultiAgentMessageDelivery::Encrypted; "trusted plaintext under encryption")]
-#[test_case(None, true, MultiAgentMessageDelivery::EncryptedWithAudit; "trusted plaintext under audit")]
-#[test_case(None, false, MultiAgentMessageDelivery::Plaintext; "configured plaintext")]
-#[test_case(None, false, MultiAgentMessageDelivery::EncryptedWithAudit; "encrypted with audit")]
-#[test_case(Some("gpt-5.6-luna"), false, MultiAgentMessageDelivery::Encrypted; "luna encrypted child")]
-#[test_case(Some("gpt-5.5"), false, MultiAgentMessageDelivery::Encrypted; "legacy encrypted child")]
+#[test_case(None, false, MultiAgentMessageDelivery::Encrypted, ThreadHistoryMode::Legacy; "encrypted legacy")]
+#[test_case(None, true, MultiAgentMessageDelivery::Plaintext, ThreadHistoryMode::Legacy; "direct plaintext legacy")]
+#[test_case(None, true, MultiAgentMessageDelivery::Encrypted, ThreadHistoryMode::Legacy; "trusted plaintext under encryption legacy")]
+#[test_case(None, true, MultiAgentMessageDelivery::EncryptedWithAudit, ThreadHistoryMode::Legacy; "trusted plaintext under audit legacy")]
+#[test_case(None, false, MultiAgentMessageDelivery::Plaintext, ThreadHistoryMode::Legacy; "configured plaintext legacy")]
+#[test_case(None, false, MultiAgentMessageDelivery::EncryptedWithAudit, ThreadHistoryMode::Legacy; "encrypted with audit legacy")]
+#[test_case(Some("gpt-5.6-luna"), false, MultiAgentMessageDelivery::Encrypted, ThreadHistoryMode::Legacy; "luna encrypted child legacy")]
+#[test_case(Some("gpt-5.5"), false, MultiAgentMessageDelivery::Encrypted, ThreadHistoryMode::Legacy; "legacy encrypted child legacy")]
+#[test_case(None, false, MultiAgentMessageDelivery::Plaintext, ThreadHistoryMode::Paginated; "configured plaintext paginated")]
+#[test_case(None, false, MultiAgentMessageDelivery::EncryptedWithAudit, ThreadHistoryMode::Paginated; "encrypted with audit paginated")]
+#[test_case(None, false, MultiAgentMessageDelivery::Encrypted, ThreadHistoryMode::Paginated; "encrypted paginated")]
 #[tokio::test]
 async fn multi_agent_v2_spawn_sends_agent_message_to_child(
     model: Option<&str>,
     plaintext: bool,
     message_delivery: MultiAgentMessageDelivery,
+    history_mode: ThreadHistoryMode,
 ) -> Result<()> {
     let output: &'static Mutex<Vec<u8>> = Box::leak(Box::new(Mutex::new(Vec::new())));
     let subscriber = tracing_subscriber::fmt()
@@ -2301,6 +2305,7 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
     };
     let mut builder = test_codex()
         .with_model(parent_model)
+        .with_history_mode(history_mode)
         .with_config(move |config| {
             config
                 .features
@@ -2496,6 +2501,66 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
                 && log_field(line, "communication_id") == Some(communication_id)
         })
         .expect("correlated receive event");
+
+    test.codex.flush_rollout().await?;
+    let rollout = codex_rollout::RolloutRecorder::get_rollout_history(
+        &test.codex.rollout_path().expect("parent rollout path"),
+    )
+    .await?;
+    let expected_prompt = if delivers_plaintext {
+        Some(message.to_string())
+    } else {
+        audit_text.map(str::to_string)
+    };
+    let persisted_activities = rollout
+        .get_rollout_items()
+        .iter()
+        .filter_map(|item| match history_mode {
+            ThreadHistoryMode::Legacy => match item {
+                RolloutItem::EventMsg(EventMsg::SubAgentActivity(activity))
+                    if activity.event_id == SPAWN_CALL_ID
+                        && activity.kind == SubAgentActivityKind::Started =>
+                {
+                    Some(SubAgentActivityItem {
+                        id: activity.event_id.clone(),
+                        kind: activity.kind,
+                        agent_thread_id: activity.agent_thread_id,
+                        agent_path: activity.agent_path.clone(),
+                        prompt: activity.prompt.clone(),
+                    })
+                }
+                _ => None,
+            },
+            ThreadHistoryMode::Paginated => match item {
+                RolloutItem::EventMsg(EventMsg::ItemCompleted(completed))
+                    if matches!(
+                        &completed.item,
+                        TurnItem::SubAgentActivity(activity)
+                            if activity.id == SPAWN_CALL_ID
+                                && activity.kind == SubAgentActivityKind::Started
+                    ) =>
+                {
+                    let TurnItem::SubAgentActivity(activity) = &completed.item else {
+                        unreachable!();
+                    };
+                    Some(activity.clone())
+                }
+                _ => None,
+            },
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        persisted_activities,
+        vec![SubAgentActivityItem {
+            id: SPAWN_CALL_ID.to_string(),
+            kind: SubAgentActivityKind::Started,
+            agent_thread_id: child_thread_id,
+            agent_path: codex_protocol::AgentPath::root()
+                .join("worker")
+                .expect("worker path"),
+            prompt: expected_prompt,
+        }]
+    );
 
     Ok(())
 }
@@ -2841,6 +2906,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
                 agent_path: codex_protocol::AgentPath::root()
                     .join("worker")
                     .expect("worker path"),
+                prompt: None,
             }
         );
     } else {
@@ -3107,6 +3173,7 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn() -> R
                 agent_path: codex_protocol::AgentPath::root()
                     .join("worker")
                     .expect("worker path"),
+                prompt: None,
             },
         )
     );
