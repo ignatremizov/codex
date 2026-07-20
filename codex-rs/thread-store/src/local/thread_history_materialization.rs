@@ -22,14 +22,39 @@ pub(super) async fn materialize_to_sqlite(
     thread_id: ThreadId,
     rollout_path: &Path,
 ) -> ThreadStoreResult<()> {
-    let mut start_offset =
-        super::thread_history::next_rollout_byte_offset(store, thread_id).await?;
-    if tokio::fs::metadata(rollout_path)
-        .await
-        .is_ok_and(|metadata| start_offset > metadata.len())
+    let (mut start_offset, next_ordinal) =
+        super::thread_history::projection_state(store, thread_id).await?;
+    let rollout_len = match tokio::fs::metadata(rollout_path).await {
+        Ok(metadata) => metadata.len(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound && start_offset == 0 => 0,
+        Err(err) => return Err(thread_store_io_error(err)),
+    };
+    let offset_is_valid = if start_offset == 0 {
+        next_ordinal == 0
+    } else if start_offset < rollout_len {
+        // Incremental replay below validates that this is a record boundary and that the first
+        // suffix ordinal matches `next_ordinal`. Avoid reverse-parsing the previous record on
+        // every ordinary append.
+        next_ordinal > 0
+    } else if start_offset == rollout_len
+        && let Some(expected_previous_ordinal) = next_ordinal.checked_sub(1)
     {
+        // A vacuumed rollout can shrink to exactly a lagging projection offset, leaving no suffix
+        // for incremental replay to validate. Check the preceding canonical ordinal in that case.
+        let rollout_path = rollout_path.to_path_buf();
+        let previous_ordinal = tokio::task::spawn_blocking(move || {
+            codex_rollout::last_rollout_ordinal_before_offset(rollout_path.as_path(), start_offset)
+        })
+        .await
+        .map_err(thread_history_error)?
+        .map_err(thread_store_io_error)?;
+        previous_ordinal == Some(expected_previous_ordinal)
+    } else {
+        false
+    };
+    if !offset_is_valid {
         warn!(
-            "resetting paginated history projection after canonical rollout shrank for {thread_id}"
+            "resetting paginated history projection after canonical rollout changed for {thread_id}"
         );
         return rebuild_to_sqlite(store, thread_id, rollout_path).await;
     }

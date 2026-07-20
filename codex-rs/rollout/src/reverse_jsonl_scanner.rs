@@ -30,10 +30,21 @@ where
     R: Read + Seek,
 {
     pub fn new(mut reader: R) -> io::Result<Self> {
-        let next_chunk_end = reader.seek(SeekFrom::End(0))?;
+        let end = reader.seek(SeekFrom::End(0))?;
+        Self::new_before_offset(reader, end)
+    }
+
+    pub(crate) fn new_before_offset(mut reader: R, offset: u64) -> io::Result<Self> {
+        let end = reader.seek(SeekFrom::End(0))?;
+        if offset > end {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "reverse JSONL scan offset exceeds the reader length",
+            ));
+        }
         Ok(Self {
             reader,
-            next_chunk_end,
+            next_chunk_end: offset,
             chunk_position: 0,
             chunk: vec![0; READ_CHUNK_SIZE],
             record_reversed: Vec::new(),

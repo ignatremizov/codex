@@ -206,6 +206,20 @@ async fn append_after_offline_compacted_media_vacuum_rebuilds_paginated_projecti
         })
         .await
         .expect("append compacted checkpoints");
+    let pool = codex_state::open_thread_history_db(home.path())
+        .await
+        .expect("open thread history db");
+    let stale_projection = projection_state(&pool, thread_id).await;
+    let tail_turn_count = 64usize;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: (0..tail_turn_count)
+                .map(|index| turn_started(&format!("tail-{index}")))
+                .collect(),
+        })
+        .await
+        .expect("append durable suffix after projection checkpoint");
 
     let rollout_path = store
         .live_rollout_path(thread_id)
@@ -215,6 +229,24 @@ async fn append_after_offline_compacted_media_vacuum_rebuilds_paginated_projecti
         .shutdown_thread(thread_id)
         .await
         .expect("close rollout before offline vacuum");
+    sqlx::query("DELETE FROM thread_turns WHERE thread_id = ? AND turn_id LIKE 'tail-%'")
+        .bind(thread_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("remove projected suffix rows");
+    sqlx::query(
+        r#"
+UPDATE thread_history_projection_state
+SET next_rollout_byte_offset = ?, next_rollout_ordinal = ?
+WHERE thread_id = ?
+        "#,
+    )
+    .bind(stale_projection.0)
+    .bind(stale_projection.1)
+    .bind(thread_id.to_string())
+    .execute(&pool)
+    .await
+    .expect("restore lagging projection checkpoint");
     let report = codex_rollout::vacuum_compacted_media(
         rollout_path.as_path(),
         &CompactedMediaVacuumPolicy {
@@ -225,6 +257,10 @@ async fn append_after_offline_compacted_media_vacuum_rebuilds_paginated_projecti
     .expect("vacuum compacted media");
     assert_eq!(report.records_rewritten, 1);
     assert!(report.bytes_after < report.bytes_before);
+    assert!(
+        stale_projection.0 <= i64::try_from(report.bytes_after).expect("vacuumed rollout length"),
+        "the stale projection offset should remain in range after vacuum"
+    );
 
     store
         .resume_thread(ResumeThreadParams {
@@ -247,16 +283,29 @@ async fn append_after_offline_compacted_media_vacuum_rebuilds_paginated_projecti
         })
         .await
         .expect("append after vacuum");
-    let pool = codex_state::open_thread_history_db(home.path())
-        .await
-        .expect("open thread history db");
     let expected_offset =
         i64::try_from(fs::metadata(rollout_path).expect("rollout metadata").len())
             .expect("rollout length");
+    let projected_tail_turn_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM thread_turns WHERE thread_id = ? AND turn_id LIKE 'tail-%'",
+    )
+    .bind(thread_id.to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("count rebuilt tail turns");
 
     assert_eq!(
         projection_state(&pool, thread_id).await,
-        (expected_offset, 4)
+        (
+            expected_offset,
+            i64::try_from(tail_turn_count)
+                .expect("small tail count")
+                .saturating_add(4)
+        )
+    );
+    assert_eq!(
+        projected_tail_turn_count,
+        i64::try_from(tail_turn_count).expect("small tail count")
     );
 }
 

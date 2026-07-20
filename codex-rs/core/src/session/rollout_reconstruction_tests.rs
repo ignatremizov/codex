@@ -169,6 +169,7 @@ async fn reconstruction_repairs_only_the_compacted_base_and_marks_its_prefix() {
         .repair
         .as_ref()
         .expect("historic media should produce a repair checkpoint");
+    assert_eq!(reconstructed.compacted_prefix_len, Some(base_history.len()));
     assert_eq!(repair.sanitization.omitted_image_count, 1);
     assert_eq!(
         repair
@@ -200,6 +201,10 @@ async fn reconstruction_repairs_only_the_compacted_base_and_marks_its_prefix() {
     let applied = session
         .apply_rollout_reconstruction(&turn_context, &rollout_items)
         .await;
+    assert_eq!(
+        session.clone_history().await.compacted_prefix_len(),
+        Some(base_history.len())
+    );
     let applied_checkpoint = applied
         .repair
         .as_ref()
@@ -346,6 +351,7 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
         .await;
 
     assert_eq!(reconstructed.history, vec![sanitized_base_image]);
+    assert_eq!(reconstructed.compacted_prefix_len, Some(1));
     assert_eq!(
         reconstructed
             .repair

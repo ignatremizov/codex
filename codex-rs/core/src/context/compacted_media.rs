@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseItem;
@@ -251,21 +253,42 @@ pub(crate) fn expire_compacted_media_references(items: &mut [ResponseItem]) {
                     )
                 });
                 let mut retained = Vec::with_capacity(content.len());
-                let mut content_items = std::mem::take(content).into_iter().peekable();
-                while let Some(content_item) = content_items.next() {
-                    let expires_local_reference = matches!(
+                let mut content_items = VecDeque::from(std::mem::take(content));
+                while let Some(content_item) = content_items.pop_front() {
+                    let wrapper_tail_len = if matches!(
                         &content_item,
                         ContentItem::InputText { text }
                             if is_local_image_open_tag_with_path_text(text)
                     ) && matches!(
-                        content_items.peek(),
+                        content_items.front(),
                         Some(ContentItem::InputText { text })
                             if is_local_image_close_tag_text(text)
-                    );
-                    if expires_local_reference {
-                        let _ = content_items.next();
+                    ) {
+                        1usize
+                    } else if matches!(
+                        &content_item,
+                        ContentItem::InputText { text }
+                            if is_local_image_open_tag_with_path_text(text)
+                    ) && matches!(
+                        (content_items.front(), content_items.get(1)),
+                        (
+                            Some(ContentItem::InputText { .. }),
+                            Some(ContentItem::InputText { text })
+                        ) if is_local_image_close_tag_text(text)
+                    ) {
+                        // Text-only models normalize the image between these tags into one input
+                        // text placeholder. Treat it as part of the inherited wrapper instead of
+                        // allowing its local path to survive another checkpoint.
+                        2usize
                     } else {
+                        0usize
+                    };
+                    if wrapper_tail_len == 0 {
                         retained.push(content_item);
+                        continue;
+                    }
+                    for _ in 0..wrapper_tail_len {
+                        let _ = content_items.pop_front();
                     }
                 }
                 *content = retained;

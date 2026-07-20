@@ -10,6 +10,7 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub(super) struct RolloutReconstruction {
     pub(super) history: Vec<ResponseItem>,
+    pub(super) compacted_prefix_len: Option<usize>,
     pub(super) repair: Option<RolloutReconstructionRepair>,
     pub(super) should_recompute_token_usage: bool,
     pub(super) previous_turn_settings: Option<PreviousTurnSettings>,
@@ -51,6 +52,7 @@ pub(super) struct AppliedRolloutReconstruction {
 #[derive(Debug)]
 pub(super) struct PreparedRolloutReconstruction {
     pub(super) history: Vec<ResponseItem>,
+    pub(super) compacted_prefix_len: Option<usize>,
     pub(super) repair: Option<AppliedRolloutReconstructionRepair>,
     pub(super) should_recompute_token_usage: bool,
     pub(super) previous_turn_settings: Option<PreviousTurnSettings>,
@@ -658,6 +660,9 @@ impl Session {
         let should_recompute_token_usage = repair_sanitization.changed()
             || needs_media_policy_certification
             || selected_checkpoint_needs_token_recompute;
+        let compacted_prefix_len = repair_checkpoint_source
+            .as_ref()
+            .map(|_| repaired_prefix_len);
         let repair = repair_checkpoint_source
             .filter(|_| repair_sanitization.changed() || needs_media_policy_certification)
             .map(|mut checkpoint| {
@@ -678,6 +683,7 @@ impl Session {
             });
         RolloutReconstruction {
             history,
+            compacted_prefix_len,
             repair,
             should_recompute_token_usage,
             previous_turn_settings,

@@ -1638,6 +1638,7 @@ impl Session {
     ) -> rollout_reconstruction::PreparedRolloutReconstruction {
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
+            compacted_prefix_len,
             mut repair,
             should_recompute_token_usage,
             previous_turn_settings,
@@ -1684,6 +1685,7 @@ impl Session {
         prepare_response_items(&mut history);
         rollout_reconstruction::PreparedRolloutReconstruction {
             history,
+            compacted_prefix_len,
             repair,
             should_recompute_token_usage,
             previous_turn_settings,
@@ -1703,6 +1705,7 @@ impl Session {
     ) -> rollout_reconstruction::AppliedRolloutReconstruction {
         let rollout_reconstruction::PreparedRolloutReconstruction {
             history,
+            compacted_prefix_len,
             repair,
             should_recompute_token_usage,
             previous_turn_settings,
@@ -1716,6 +1719,7 @@ impl Session {
         {
             let mut state = self.state.lock().await;
             state.replace_history(history, reference_context_item);
+            state.history.set_compacted_prefix_len(compacted_prefix_len);
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }
@@ -3744,6 +3748,9 @@ impl Session {
             {
                 let mut state = sess.state.lock().await;
                 state.replace_history(final_items.clone(), reference_context_item.clone());
+                state
+                    .history
+                    .set_compacted_prefix_len(Some(final_items.len()));
                 if let Some(world_state) = world_state_baseline {
                     let snapshot = world_state.snapshot();
                     world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));

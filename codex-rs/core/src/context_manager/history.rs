@@ -38,6 +38,12 @@ use std::sync::LazyLock;
 pub(crate) struct ContextManager {
     /// The oldest items are at the beginning of the vector.
     items: Vec<ResponseItem>,
+    /// Prefix inherited from the selected persisted compaction checkpoint.
+    ///
+    /// Media references in this prefix remain available to the current compactor but expire from
+    /// its newly installed replacement history. Items appended after the prefix belong to the
+    /// current unsummarized window.
+    compacted_prefix_len: Option<usize>,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
     token_info: Option<TokenUsageInfo>,
@@ -60,6 +66,7 @@ impl ContextManager {
     pub(crate) fn new() -> Self {
         Self {
             items: Vec::new(),
+            compacted_prefix_len: None,
             history_version: 0,
             token_info: TokenUsageInfo::new_or_append(
                 &None, &None, /*model_context_window*/ None,
@@ -148,6 +155,15 @@ impl ContextManager {
         &self.items
     }
 
+    pub(crate) fn compacted_prefix_len(&self) -> Option<usize> {
+        self.compacted_prefix_len
+    }
+
+    pub(crate) fn set_compacted_prefix_len(&mut self, compacted_prefix_len: Option<usize>) {
+        self.compacted_prefix_len =
+            compacted_prefix_len.map(|prefix_len| prefix_len.min(self.items.len()));
+    }
+
     /// Returns raw items in the history and consumes the snapshot.
     pub(crate) fn into_raw_items(self) -> Vec<ResponseItem> {
         self.items
@@ -186,6 +202,7 @@ impl ContextManager {
 
     pub(crate) fn remove_first_item(&mut self) {
         if !self.items.is_empty() {
+            let previous_len = self.items.len();
             // Remove the oldest item (front of the list). Items are ordered from
             // oldest → newest, so index 0 is the first entry recorded.
             let removed = self.items.remove(0);
@@ -193,12 +210,23 @@ impl ContextManager {
             // its corresponding counterpart to keep the invariants intact without
             // running a full normalization pass.
             normalize::remove_corresponding_for(&mut self.items, &removed);
+            if let Some(compacted_prefix_len) = self.compacted_prefix_len {
+                let removed_count = previous_len.saturating_sub(self.items.len());
+                self.compacted_prefix_len = Some(
+                    compacted_prefix_len
+                        .saturating_sub(removed_count)
+                        .min(self.items.len()),
+                );
+            }
             self.world_state_baseline = None;
         }
     }
 
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
         self.items = items;
+        self.compacted_prefix_len = self
+            .compacted_prefix_len
+            .map(|prefix_len| prefix_len.min(self.items.len()));
         self.history_version = self.history_version.saturating_add(1);
         self.world_state_baseline = None;
     }

@@ -424,6 +424,75 @@ fn vacuum_accepts_relative_path_and_rejects_pathless_image_wrapper() {
 }
 
 #[test]
+fn vacuum_materializes_logical_and_physical_compressed_rollout_paths() {
+    for use_physical_compressed_path in [false, true] {
+        let path = tempfile::Builder::new()
+            .prefix(format!(
+                "codex-relative-compressed-media-vacuum-{use_physical_compressed_path}-"
+            ))
+            .suffix(".jsonl")
+            .tempfile_in(".")
+            .expect("relative compressed rollout")
+            .into_temp_path();
+        let path = PathBuf::from(path.file_name().expect("compressed rollout file name"));
+        write_rollout(
+            path.as_path(),
+            &[
+                json!({
+                    "timestamp": "2026-01-01T00:00:00.000Z",
+                    "type": "compacted",
+                    "payload": {
+                        "message": "old",
+                        "replacement_history": [{
+                            "type": "message",
+                            "role": "user",
+                            "content": [{
+                                "type": "input_image",
+                                "image_url": format!("data:image/png;base64,{}", "a".repeat(/*n*/ 4_096))
+                            }]
+                        }]
+                    }
+                }),
+                json!({
+                    "timestamp": "2026-01-01T00:00:01.000Z",
+                    "type": "compacted",
+                    "payload": {
+                        "message": "repair",
+                        "replacement_history_media_sanitized_prefix_len": 0,
+                        "replacement_history": []
+                    }
+                }),
+            ],
+        );
+        let compressed_path = crate::compression::compressed_rollout_path(path.as_path());
+        let input = fs::File::open(&path).expect("open rollout for compression");
+        let output = fs::File::create(&compressed_path).expect("create compressed rollout");
+        let mut encoder =
+            zstd::stream::write::Encoder::new(output, /*level*/ 3).expect("create zstd encoder");
+        std::io::copy(&mut std::io::BufReader::new(input), &mut encoder).expect("compress rollout");
+        encoder.finish().expect("finish compressed rollout");
+        fs::remove_file(&path).expect("remove materialized rollout");
+        let requested_path = if use_physical_compressed_path {
+            compressed_path.as_path()
+        } else {
+            path.as_path()
+        };
+
+        let report =
+            vacuum_compacted_media(requested_path, &policy()).expect("vacuum compressed rollout");
+
+        assert_eq!(report.records_rewritten, 1);
+        assert!(report.bytes_after < report.bytes_before);
+        assert!(path.exists());
+        assert!(!compressed_path.exists());
+        assert_eq!(
+            read_rollout(path.as_path())[0]["payload"]["replacement_history"][0]["content"][0]["text"],
+            "image unavailable"
+        );
+    }
+}
+
+#[test]
 fn missing_canonical_rollout_recovers_the_newest_valid_vacuum_backup() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("rollout.jsonl");

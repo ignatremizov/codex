@@ -54,6 +54,8 @@ pub fn vacuum_compacted_media(
     path: &Path,
     policy: &CompactedMediaVacuumPolicy,
 ) -> io::Result<CompactedMediaVacuumReport> {
+    let path = crate::compression::materialize_rollout_for_append_blocking(path)?;
+    let path = path.as_path();
     let metadata = fs::metadata(path)?;
     if !validate_rollout_and_find_protected_checkpoint(path)? {
         return Err(io::Error::other(
@@ -135,7 +137,7 @@ pub fn vacuum_compacted_media(
         Ok(_) => {}
         Err(err) => {
             if !path.exists() {
-                fs::rename(backup_path.as_path(), path)?;
+                restore_compacted_media_backup(backup_path.as_path(), path, parent)?;
             } else {
                 let _ = fs::remove_file(backup_path.as_path());
             }
@@ -503,8 +505,9 @@ fn restore_compacted_media_backup(
     path: &Path,
     parent: &Path,
 ) -> io::Result<()> {
-    fs::rename(backup_path, path)?;
-    sync_parent_directory(parent)
+    fs::hard_link(backup_path, path)?;
+    sync_parent_directory(parent)?;
+    cleanup_completed_backup(parent, backup_path)
 }
 
 #[cfg(not(unix))]

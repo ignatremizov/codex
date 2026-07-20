@@ -96,7 +96,10 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
     }
 
     let temp_path = temp_path_for(plain_path.as_path(), "decompress");
-    if let Some(parent) = plain_path.parent() {
+    if let Some(parent) = plain_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         std::fs::create_dir_all(parent)?;
     }
     let result: io::Result<()> = (|| {

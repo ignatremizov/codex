@@ -67,6 +67,7 @@ pub use media_vacuum::vacuum_compacted_media;
 pub use metadata::builder_from_items;
 pub use model_context::ModelContextScan;
 pub use model_context::ModelContextScanProgress;
+pub use ordinal::last_rollout_ordinal_before_offset;
 pub use persistence_metrics::RolloutPersistenceBatchMeasurement;
 pub use persistence_metrics::RolloutPersistenceTelemetry;
 pub use persistence_metrics::measure_and_filter_rollout_items;

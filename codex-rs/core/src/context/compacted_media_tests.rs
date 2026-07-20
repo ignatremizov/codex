@@ -230,3 +230,30 @@ fn sanitization_is_idempotent_and_respects_prefix_boundaries() {
             if matches!(content.as_slice(), [ContentItem::InputImage { .. }])
     ));
 }
+
+#[test]
+fn expiration_removes_text_only_model_image_placeholders_with_their_paths() {
+    let mut items = vec![user_message(vec![
+        ContentItem::InputText {
+            text: "<image name=[Image #1] path=\"/tmp/old.png\">".to_string(),
+        },
+        ContentItem::InputText {
+            text: "image content omitted because you do not support image input".to_string(),
+        },
+        ContentItem::InputText {
+            text: "</image>".to_string(),
+        },
+        ContentItem::InputText {
+            text: "retain this instruction context".to_string(),
+        },
+    ])];
+
+    expire_compacted_media_references(&mut items);
+
+    assert_eq!(
+        items,
+        vec![user_message(vec![ContentItem::InputText {
+            text: "retain this instruction context".to_string(),
+        }])]
+    );
+}
