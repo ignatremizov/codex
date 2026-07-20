@@ -426,10 +426,10 @@ fn vacuum_accepts_relative_path_and_rejects_pathless_image_wrapper() {
 #[test]
 fn vacuum_materializes_logical_and_physical_compressed_rollout_paths() {
     for use_physical_compressed_path in [false, true] {
+        let prefix =
+            format!("codex-relative-compressed-media-vacuum-{use_physical_compressed_path}-");
         let path = tempfile::Builder::new()
-            .prefix(format!(
-                "codex-relative-compressed-media-vacuum-{use_physical_compressed_path}-"
-            ))
+            .prefix(&prefix)
             .suffix(".jsonl")
             .tempfile_in(".")
             .expect("relative compressed rollout")
