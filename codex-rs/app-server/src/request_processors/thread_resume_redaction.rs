@@ -79,6 +79,7 @@ mod tests {
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                inter_agent_source: None,
             },
             ThreadItemPayload::McpToolCall {
                 id: "mcp-1".to_string(),
@@ -140,6 +141,7 @@ mod tests {
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                inter_agent_source: None,
             }
         );
         assert_eq!(

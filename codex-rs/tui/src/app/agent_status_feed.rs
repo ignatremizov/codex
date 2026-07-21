@@ -138,7 +138,16 @@ impl AgentStatusThreadPreview {
 
 fn activity_summary(item: &ThreadItemPayload) -> Option<String> {
     let summary = match item {
-        ThreadItemPayload::AgentMessage { text, .. } | ThreadItemPayload::Plan { text, .. } => text,
+        ThreadItemPayload::AgentMessage {
+            text,
+            inter_agent_source: None,
+            ..
+        }
+        | ThreadItemPayload::Plan { text, .. } => text,
+        ThreadItemPayload::AgentMessage {
+            inter_agent_source: Some(_),
+            ..
+        } => return None,
         ThreadItemPayload::Reasoning { summary, .. } => summary.last()?,
         ThreadItemPayload::CommandExecution { command, .. } => {
             let command = truncate_text(

@@ -28,6 +28,7 @@ struct TrackedAncestors {
     failed_path: OnceLock<PathBuf>,
 }
 
+#[derive(Clone, Debug)]
 pub(super) struct FailedAncestor {
     pub(super) path: PathBuf,
     pub(super) owner: ThreadId,
@@ -88,6 +89,23 @@ impl AncestorReads {
 }
 
 impl RolloutLineage {
+    /// Recheck the candidate after acquiring its lifecycle reservations. Preserve any exclusions
+    /// so that the check does not switch back to a copy that already failed to supply its prefix.
+    pub(in crate::local) async fn is_current_history_page(
+        &self,
+        store: &LocalThreadStore,
+    ) -> ThreadStoreResult<bool> {
+        let current = store
+            .resolve_rollout_lineage_with_mode(
+                self.requested_thread_id,
+                self.mode,
+                /*initial_path*/ None,
+                &self.excluded_ancestors,
+            )
+            .await?;
+        Ok(current.segments == self.segments)
+    }
+
     /// A failed ancestor read can select another copy. An alternate may name a different
     /// parent, so resolve its lineage before retrying the read.
     pub(in crate::local) async fn read_with_fallback<T, F>(
@@ -104,7 +122,7 @@ impl RolloutLineage {
             .segments
             .last()
             .map(|segment| segment.rollout_path.clone());
-        let mut excluded = HashMap::<ThreadId, FailedAncestor>::new();
+        let mut excluded = self.excluded_ancestors.clone();
         let mut lineage = self;
         loop {
             let reads = lineage.reads.clone();

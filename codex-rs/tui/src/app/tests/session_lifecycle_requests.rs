@@ -250,6 +250,7 @@ async fn cloud_async_question_reply_uses_cloud_admission() -> Result<()> {
                 id.to_string(),
                 "active".into(),
                 ThreadItemPayload::AgentMessage {
+                    inter_agent_source: None,
                     moderation: None,
                     id: "question".into(),
                     text: title.into(),
@@ -369,6 +370,7 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
         }],
     };
     let agent_item = |id: &str, text: &str, phase| ThreadItemPayload::AgentMessage {
+        inter_agent_source: None,
         moderation: None,
         id: id.into(),
         text: text.into(),

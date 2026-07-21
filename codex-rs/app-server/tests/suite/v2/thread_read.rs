@@ -1382,11 +1382,20 @@ async fn thread_read_can_return_archived_threads_by_id() -> Result<()> {
     Ok(())
 }
 
+#[test_case::test_case(false; "existing_projection")]
+#[test_case::test_case(true; "rebuild_projection")]
 #[tokio::test]
-async fn cold_resume_pages_inherited_history_when_active_ancestor_is_short() -> Result<()> {
+async fn cold_resume_pages_inherited_history_when_active_ancestor_is_short(
+    rebuild_projection: bool,
+) -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    MockResponsesConfig::new(&server.uri())
+        .with_root_config(&format!(
+            "sqlite_home = {}",
+            serde_json::to_string(codex_home.path())?
+        ))
+        .write(codex_home.path())?;
     let filename_ts = "2025-01-05T12-00-00";
     let parent_id = create_fake_paginated_rollout(
         codex_home.path(),
@@ -1437,6 +1446,16 @@ async fn cold_resume_pages_inherited_history_when_active_ancestor_is_short() -> 
     let contents = std::fs::read_to_string(&active)?;
     let (header, _) = contents.split_once('\n').expect("rollout body");
     std::fs::write(&active, format!("{header}\n"))?;
+
+    if rebuild_projection {
+        // Leave canonical rollouts and thread metadata intact while forcing derived rows to
+        // be rebuilt from the first ancestor copy that can supply the inherited bookmark.
+        let sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
+        std::fs::rename(
+            sqlite.thread_history_db_path(),
+            codex_home.path().join("previous-thread-history.sqlite"),
+        )?;
+    }
 
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -2381,6 +2400,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                 moderation: None,
                 id: "agent-1".to_string(),
                 text: "first".to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -2586,6 +2606,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                     moderation: None,
                     id: "agent-1".to_string(),
                     text: "first".to_string(),
+                    inter_agent_source: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,
@@ -2832,6 +2853,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                     payload: ThreadItemPayload::AgentMessage {
                         moderation: None,
                         id: "agent-1".to_string(),
+                        inter_agent_source: None,
                         text: "first".to_string(),
                         phase: None,
                         memory_citation: None,

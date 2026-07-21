@@ -89,18 +89,22 @@ pub(super) fn write_session_file_with_fork(
     attached_thread: bool,
     history_mode: ThreadHistoryMode,
 ) -> std::io::Result<PathBuf> {
+    let timestamp = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H-%M-%S")
+        .map_err(std::io::Error::other)?
+        .and_utc()
+        .to_rfc3339();
     fs::create_dir_all(&day_dir)?;
     let path = day_dir.join(format!("rollout-{ts}-{uuid}.jsonl"));
     let mut file = fs::File::create(&path)?;
     let mut meta = serde_json::json!({
-        "timestamp": ts,
+        "timestamp": timestamp,
         "type": "session_meta",
         "payload": {
             "session_id": uuid,
             "id": uuid,
             "forked_from_id": forked_from_id,
             "attached_thread": attached_thread,
-            "timestamp": ts,
+            "timestamp": timestamp,
             "cwd": root,
             "originator": "test_originator",
             "cli_version": "test_version",
@@ -120,7 +124,7 @@ pub(super) fn write_session_file_with_fork(
     writeln!(file, "{meta}")?;
     if matches!(history_mode, ThreadHistoryMode::Legacy) {
         let user_event = serde_json::json!({
-            "timestamp": ts,
+            "timestamp": timestamp,
             "type": "event_msg",
             "payload": {
                 "type": "user_message",

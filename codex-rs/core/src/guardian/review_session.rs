@@ -845,7 +845,7 @@ async fn ensure_guardian_node_repl_policy(
     review_session
         .session
         .inject_client_response_items(vec![item], turn_context.as_ref())
-        .await;
+        .await?;
 
     Ok(())
 }
@@ -916,6 +916,11 @@ impl GuardianReviewSession {
 #[cfg(test)]
 impl GuardianReviewSession {
     pub(crate) async fn committed_fork_rollout_items_for_test(&self) -> Option<Vec<RolloutItem>> {
+        let _publication = self
+            .session
+            .acquire_history_publication_barrier()
+            .await
+            .expect("committed Guardian history must retain a successful publication barrier");
         let state = self.state.lock().await;
         let snapshot = state.conversation.snapshot()?;
         match &snapshot.history().initial_history {

@@ -393,6 +393,7 @@ fn turn_items_for_thread_returns_matching_turn_items() {
                 items: vec![ThreadItem::untimed(
                     AppServerThreadItemPayload::AgentMessage {
                         moderation: None,
+                        inter_agent_source: None,
                         id: "msg-1".to_string(),
                         text: "hello".to_string(),
                         phase: None,
@@ -429,6 +430,7 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         Some(vec![ThreadItem::untimed(
             AppServerThreadItemPayload::AgentMessage {
                 moderation: None,
+                inter_agent_source: None,
                 id: "msg-1".to_string(),
                 text: "hello".to_string(),
                 phase: None,

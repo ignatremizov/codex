@@ -460,6 +460,7 @@ fn final_message_from_turn_items_uses_latest_agent_message() {
             moderation: None,
             id: "msg-1".to_string(),
             text: "first".to_string(),
+            inter_agent_source: None,
             phase: None,
             memory_citation: None,
             delivery: None,
@@ -473,6 +474,7 @@ fn final_message_from_turn_items_uses_latest_agent_message() {
             moderation: None,
             id: "msg-2".to_string(),
             text: "second".to_string(),
+            inter_agent_source: None,
             phase: None,
             memory_citation: None,
             delivery: None,
@@ -481,6 +483,77 @@ fn final_message_from_turn_items_uses_latest_agent_message() {
     ]);
 
     assert_eq!(message.as_deref(), Some("second"));
+}
+
+#[test]
+fn final_message_from_turn_items_ignores_inter_agent_messages() {
+    let message = final_message_from_turn_items(&[
+        ThreadItemPayload::AgentMessage {
+            moderation: None,
+            id: "msg-1".to_string(),
+            text: "ordinary answer".to_string(),
+            inter_agent_source: None,
+            phase: None,
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+        },
+        ThreadItemPayload::AgentMessage {
+            moderation: None,
+            id: "msg-2".to_string(),
+            text: "worker transcript".to_string(),
+            inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
+                author: "/root".to_string(),
+                recipient: "/root/worker".to_string(),
+            }),
+            phase: None,
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+        },
+    ]);
+
+    assert_eq!(message.as_deref(), Some("ordinary answer"));
+}
+
+#[test]
+fn inter_agent_item_does_not_overwrite_rendered_final_message() {
+    let mut processor = EventProcessorWithHumanOutput {
+        bold: Style::new(),
+        cyan: Style::new(),
+        dimmed: Style::new(),
+        green: Style::new(),
+        italic: Style::new(),
+        magenta: Style::new(),
+        red: Style::new(),
+        yellow: Style::new(),
+        show_agent_reasoning: true,
+        show_raw_agent_reasoning: false,
+        show_compact_summary: true,
+        last_message_path: None,
+        final_message: Some("ordinary answer".to_string()),
+        final_message_rendered: true,
+        emit_final_message_on_shutdown: false,
+        last_total_token_usage: None,
+        last_turn_diff: String::new(),
+    };
+
+    processor.render_item_completed(ThreadItemPayload::AgentMessage {
+        moderation: None,
+        id: "msg-2".to_string(),
+        text: "worker transcript".to_string(),
+        inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
+            author: "/root".to_string(),
+            recipient: "/root/worker".to_string(),
+        }),
+        phase: None,
+        memory_citation: None,
+        delivery: None,
+        questions: None,
+    });
+
+    assert_eq!(processor.final_message.as_deref(), Some("ordinary answer"));
+    assert!(processor.final_message_rendered);
 }
 
 #[test]
@@ -537,6 +610,7 @@ fn turn_completed_recovers_final_message_from_turn_items() {
                     moderation: None,
                     id: "msg-1".to_string(),
                     text: "final answer".to_string(),
+                    inter_agent_source: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,
@@ -591,6 +665,7 @@ fn turn_completed_overwrites_stale_final_message_from_turn_items() {
                     moderation: None,
                     id: "msg-1".to_string(),
                     text: "final answer".to_string(),
+                    inter_agent_source: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,

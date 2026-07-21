@@ -70,7 +70,9 @@ async fn task_finish_preserves_notification_budget_and_queued_user_input() {
         tokio::pin!(inject);
         assert!(futures::poll!(inject.as_mut()).is_pending());
         drop(state);
-        inject.await;
+        inject
+            .await
+            .expect("late notification publishes after finishing");
     });
 
     let expected = vec![

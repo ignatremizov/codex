@@ -1,9 +1,11 @@
 //! Injected agent messages share native delivery boundaries while retaining their wire payloads.
 
+use anyhow::Context;
 use codex_core::InputWaitOutcome;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
 use codex_features::Feature;
+use codex_protocol::ResponseItemId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use core_test_support::context_snapshot;
@@ -17,6 +19,7 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -194,6 +197,7 @@ async fn injected_mail_respects_delivery_boundaries() -> anyhow::Result<()> {
         .map(|body| serde_json::from_slice::<Value>(body))
         .collect::<serde_json::Result<Vec<_>>>()?;
     assert_eq!(requests.len(), 3);
+    let mut admitted_ids = HashMap::new();
     for (request, expected) in requests.iter().zip([
         vec![idle_mail.clone()],
         vec![idle_mail.clone(), active_mail.clone()],
@@ -205,10 +209,7 @@ async fn injected_mail_respects_delivery_boundaries() -> anyhow::Result<()> {
             .filter(|item| item["type"] == "agent_message")
             .cloned()
             .collect::<Vec<_>>();
-        assert_eq!(
-            responses::strip_metadata_from_json(json!(actual)),
-            responses::strip_metadata_from_json(serde_json::to_value(expected)?)
-        );
+        assert_admitted_agent_mail(&actual, expected, &mut admitted_ids)?;
         assert!(!input.iter().any(|item| item["call_id"] == "stale-plan"));
     }
     let next_input = requests[2]["input"].as_array().expect("next task input");
@@ -346,10 +347,7 @@ async fn injected_agent_message_interrupting_sampling_survives_mid_turn_compacti
         .filter(|item| item["type"] == "agent_message")
         .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(
-        responses::strip_metadata_from_json(json!(actual)),
-        responses::strip_metadata_from_json(serde_json::to_value([message])?)
-    );
+    assert_admitted_agent_mail(&actual, vec![message], &mut HashMap::new())?;
     let entries = requests.iter().map(SnapshotEntry::body).collect::<Vec<_>>();
     insta::assert_snapshot!(context_snapshot::format_context_snapshot(
         "An injected agent message that interrupts sampling is included in the first request after mid-turn compaction.",
@@ -357,5 +355,37 @@ async fn injected_agent_message_interrupting_sampling_survives_mid_turn_compacti
         &ContextSnapshotOptions::default().rewrite_known_segments(),
     ));
     server.shutdown().await;
+    Ok(())
+}
+
+fn assert_admitted_agent_mail(
+    actual: &[Value],
+    mut expected: Vec<ResponseItem>,
+    admitted_ids: &mut HashMap<ResponseItemId, ResponseItemId>,
+) -> anyhow::Result<()> {
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(&mut expected) {
+        let id = actual["id"].as_str().context("admitted agent message ID")?;
+        let uuid = id
+            .strip_prefix("amsg_")
+            .context("agent message ID prefix")?;
+        assert_eq!(uuid::Uuid::parse_str(uuid)?.get_version_num(), 7);
+        let supplied = expected.id().context("fixture agent message ID")?;
+        let canonical = ResponseItemId::from_server(id.to_owned());
+        if let Some(prior) = admitted_ids.get(supplied) {
+            assert_eq!(prior, &canonical, "admitted ID survives repeat sampling");
+        } else {
+            assert!(
+                !admitted_ids.values().any(|id| id == &canonical),
+                "distinct submissions need distinct admitted IDs"
+            );
+            admitted_ids.insert(supplied.clone(), canonical.clone());
+        }
+        expected.set_id(Some(canonical));
+    }
+    assert_eq!(
+        responses::strip_metadata_from_json(json!(actual)),
+        responses::strip_metadata_from_json(serde_json::to_value(expected)?)
+    );
     Ok(())
 }

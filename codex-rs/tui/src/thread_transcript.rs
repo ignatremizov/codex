@@ -320,6 +320,17 @@ fn item_to_cells(
         }
         ThreadItemPayload::AgentMessage {
             text,
+            inter_agent_source: Some(_),
+            ..
+        } => {
+            cells.push(Arc::new(AgentMarkdownCell::new_with_inline_visualizations(
+                text,
+                cwd.as_path(),
+                inline_visualization_context,
+            )));
+        }
+        ThreadItemPayload::AgentMessage {
+            text,
             questions,
             phase,
             ..

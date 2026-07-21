@@ -3397,6 +3397,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             moderation: None,
             id: "agent-1".to_string(),
             text: "Hello world".to_string(),
+            inter_agent_source: None,
             phase: None,
             memory_citation: None,
             delivery: None,
@@ -3436,6 +3437,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             }),
             id: "agent-2".to_string(),
             text: "final".to_string(),
+            inter_agent_source: None,
             phase: Some(MessagePhase::FinalAnswer),
             memory_citation: Some(MemoryCitation {
                 entries: vec![MemoryCitationEntry {
@@ -3470,7 +3472,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         json!({
             "type": "agentMessage", "id": "async-1", "text": "Which?", "phase": "final_answer",
             "moderation": null,
-            "memoryCitation": null, "delivery": "async", "questions": [{"title": "Which?", "options": null}]
+            "memoryCitation": null, "delivery": "async", "questions": [{"title": "Which?", "options": null}], "interAgentSource": null
         })
     );
     let old_item: ThreadItemPayload = serde_json::from_value(json!({

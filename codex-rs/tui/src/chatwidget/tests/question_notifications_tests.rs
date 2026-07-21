@@ -10,6 +10,7 @@ async fn live_async_question_notifies_once_and_takes_priority_over_turn_completi
     let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     let item = AppServerThreadItemPayload::AgentMessage {
         moderation: None,
+        inter_agent_source: None,
         id: "question".into(),
         text: String::new(),
         phase: None,

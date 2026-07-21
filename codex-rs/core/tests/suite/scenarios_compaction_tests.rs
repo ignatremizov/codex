@@ -47,7 +47,7 @@ async fn remote_slash_compact_preserves_context_across_windows() -> Result<()> {
     let mut test = builder.build_with_auto_env(&server).await?;
 
     test.submit_turn("Plan the release.").await?;
-    let mail = json!({
+    let mut mail = json!({
         "type": "agent_message", "id": "agent_pending-result",
         "author": "/root/worker", "recipient": "/root",
         "content": [{"type": "input_text", "text": "Message Type: FINAL_ANSWER\nThe worker found a release blocker."}],
@@ -55,6 +55,16 @@ async fn remote_slash_compact_preserves_context_across_windows() -> Result<()> {
     test.codex
         .inject_response_items(vec![serde_json::from_value(mail.clone())?])
         .await?;
+    let admitted_history = test.codex.conversation_history_snapshot().await;
+    let admitted_id = admitted_history
+        .items()
+        .find_map(|item| match item {
+            ResponseItem::AgentMessage { id, .. } => id.as_ref(),
+            _ => None,
+        })
+        .expect("host-assigned mail ID");
+    assert!(admitted_id.starts_with("amsg_"));
+    mail["id"] = json!(admitted_id);
     for compaction in 0..2 {
         test.codex.submit(Op::Compact).await?;
         wait_for_event(&test.codex, |event| {

@@ -23,6 +23,8 @@ use crate::ThreadStoreResult;
 /// One immutable rollout range contributing to a paginated thread's history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RolloutLineageSegment {
+    /// Stable owning thread from SessionMeta; a revert can give its rollout a different ID.
+    pub(super) thread_id: ThreadId,
     pub(super) rollout_id: ThreadId,
     pub(super) rollout_path: PathBuf,
     pub(super) start_ordinal: u64,
@@ -40,6 +42,7 @@ pub(super) struct RolloutLineage {
     pub(super) reads: AncestorReads,
     requested_thread_id: ThreadId,
     mode: LineageResolutionMode,
+    excluded_ancestors: HashMap<ThreadId, FailedAncestor>,
 }
 
 impl LocalThreadStore {
@@ -172,12 +175,11 @@ impl LocalThreadStore {
                 // their owners may concurrently archive or unarchive those immutable files.
                 LineageResolutionMode::PlainForReference => rollout_path,
             };
-            if let Some(end) = end
-                && !matches!(mode, LineageResolutionMode::HistoryPage)
-            {
+            if let Some(end) = end {
                 ancestor_paths.insert(rollout_path.clone(), (end, bounds.owner));
             }
             segments.push(RolloutLineageSegment {
+                thread_id: bounds.owner,
                 rollout_id,
                 rollout_path,
                 start_ordinal: bounds.start_ordinal,
@@ -208,6 +210,7 @@ impl LocalThreadStore {
             reads: AncestorReads::new(ancestor_paths),
             requested_thread_id,
             mode,
+            excluded_ancestors: excluded.clone(),
         })
     }
 }
@@ -525,6 +528,7 @@ impl RolloutLineage {
             reads: self.reads.clone(),
             requested_thread_id: self.requested_thread_id,
             mode: LineageResolutionMode::HistoryPage,
+            excluded_ancestors: self.excluded_ancestors.clone(),
         }))
     }
 

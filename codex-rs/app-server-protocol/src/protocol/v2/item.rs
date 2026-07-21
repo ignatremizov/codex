@@ -360,6 +360,8 @@ pub enum ThreadItemPayload {
         id: String,
         text: String,
         #[serde(default)]
+        inter_agent_source: Option<InterAgentMessageSource>,
+        #[serde(default)]
         phase: Option<MessagePhase>,
         #[serde(default)]
         memory_citation: Option<MemoryCitation>,
@@ -544,6 +546,15 @@ pub enum ThreadItemPayload {
         #[serde(default)]
         available_skills: Vec<String>,
     },
+}
+
+/// Presentation provenance for incoming communication, not sender authority or a delivery receipt.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub struct InterAgentMessageSource {
+    pub author: String,
+    pub recipient: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1022,6 +1033,7 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                     moderation: agent.moderation.map(Into::into),
                     id: agent.id,
                     text,
+                    inter_agent_source: None,
                     phase: agent.phase,
                     memory_citation: agent.memory_citation.map(Into::into),
                     delivery: agent.delivery,

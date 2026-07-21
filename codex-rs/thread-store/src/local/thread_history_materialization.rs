@@ -74,18 +74,32 @@ async fn materialize_to_sqlite_with_state_db(
     let start_offset = projection_state
         .as_ref()
         .map_or(0, |state| state.next_byte_offset);
-    if rollout
-        .reads
-        .cutoff(&rollout.path)
-        .is_some_and(|end| start_offset >= end.end_byte_offset)
-    {
-        return Ok(());
-    }
     if projection_state.is_none()
         && !rollout.reads.tracks(&rollout.path)
         && codex_rollout::existing_rollout_path(&rollout.path)
             .await
             .is_none()
+    {
+        return Ok(());
+    }
+    if let Some(state) = &projection_state
+        && !super::thread_history::fork_projection_is_current(
+            store,
+            thread_id,
+            state.next_byte_offset,
+            state.next_ordinal,
+        )
+        .await?
+    {
+        // The existing prefix may have been projected by a binary without fork transcripts.
+        // Do not certify that prefix by merely appending a suffix or returning at EOF.
+        return rebuild_projection(store, thread_id, rollout).await;
+    }
+    // Even an inherited prefix at its captured end must be certified before this shortcut.
+    if rollout
+        .reads
+        .cutoff(&rollout.path)
+        .is_some_and(|end| start_offset >= end.end_byte_offset)
     {
         return Ok(());
     }

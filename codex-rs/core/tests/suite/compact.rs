@@ -4972,7 +4972,7 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
         .unwrap();
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let mail = json!({
+    let mut mail = json!({
         "type": "agent_message", "id": "agent_pending-result",
         "author": "/root/worker", "recipient": "/root",
         "content": [{"type": "input_text", "text": "Message Type: FINAL_ANSWER\nThe worker found a release blocker."}],
@@ -4981,6 +4981,16 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
         .inject_response_items(vec![serde_json::from_value(mail.clone()).unwrap()])
         .await
         .unwrap();
+    let admitted_history = codex.conversation_history_snapshot().await;
+    let admitted_id = admitted_history
+        .items()
+        .find_map(|item| match item {
+            ResponseItem::AgentMessage { id, .. } => id.as_ref(),
+            _ => None,
+        })
+        .expect("host-assigned mail ID");
+    assert!(admitted_id.starts_with("amsg_"));
+    mail["id"] = json!(admitted_id);
 
     codex.submit(Op::Compact).await.unwrap();
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;

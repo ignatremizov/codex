@@ -1175,6 +1175,7 @@ mod tests {
                 "turn".to_string(),
                 codex_app_server_protocol::ThreadItemPayload::AgentMessage {
                     moderation: None,
+                    inter_agent_source: None,
                     id: "item".to_string(),
                     text: text.to_string(),
                     phase: None,
