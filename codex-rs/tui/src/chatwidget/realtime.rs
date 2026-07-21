@@ -229,7 +229,13 @@ pub(crate) fn is_private_realtime_agent_item(item: &ThreadItemPayload) -> bool {
     if matches!(item, ThreadItemPayload::Reasoning { .. }) {
         return true;
     }
-    let ThreadItemPayload::AgentMessage { text, phase, .. } = item else {
+    let ThreadItemPayload::AgentMessage {
+        text,
+        phase,
+        inter_agent_source: None,
+        ..
+    } = item
+    else {
         return false;
     };
     let text = text.trim_start();
@@ -913,6 +919,7 @@ impl ChatWidget {
             text,
             phase,
             questions,
+            inter_agent_source: None,
             ..
         } = item
         else {
@@ -1004,7 +1011,10 @@ impl ChatWidget {
         item: &ThreadItemPayload,
     ) {
         let ThreadItemPayload::AgentMessage {
-            id: item_id, text, ..
+            id: item_id,
+            text,
+            inter_agent_source: None,
+            ..
         } = item
         else {
             return;

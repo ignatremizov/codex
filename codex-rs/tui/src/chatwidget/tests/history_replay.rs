@@ -426,6 +426,7 @@ async fn replayed_nested_review_prompts_do_not_render_or_seed_composer_history()
                     ThreadItem::untimed(user_message("review-prompt-1", review_prompt)),
                     ThreadItem::untimed(user_message("review-prompt-2", review_prompt)),
                     ThreadItem::untimed(AppServerThreadItemPayload::AgentMessage {
+                        inter_agent_source: None,
                         id: "review-result".to_string(),
                         text: "review result is retained".to_string(),
                         phase: Some(MessagePhase::FinalAnswer),
@@ -1004,6 +1005,7 @@ async fn prompt_edit_stops_streaming_without_submitting_queued_input() {
     let retained_turn = AppServerTurn {
         items: vec![
             ThreadItem::untimed(AppServerThreadItemPayload::AgentMessage {
+                inter_agent_source: None,
                 id: "retained-response".to_string(),
                 text: "retained response".to_string(),
                 phase: Some(MessagePhase::FinalAnswer),
@@ -1021,6 +1023,7 @@ async fn prompt_edit_stops_streaming_without_submitting_queued_input() {
                 }],
             }),
             ThreadItem::untimed(AppServerThreadItemPayload::AgentMessage {
+                inter_agent_source: None,
                 id: "private-commentary".to_string(),
                 text: "hidden voice commentary".to_string(),
                 phase: Some(MessagePhase::Commentary),

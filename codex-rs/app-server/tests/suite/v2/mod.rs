@@ -86,6 +86,7 @@ mod host_skills;
 mod https_mock;
 mod imagegen_extension;
 mod initialize;
+mod inter_agent_transcript;
 mod luna_reserve;
 mod marketplace_add;
 mod marketplace_remove;

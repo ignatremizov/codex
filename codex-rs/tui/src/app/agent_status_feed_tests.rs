@@ -38,6 +38,7 @@ fn agent_status_uses_bounded_buffered_activity() {
             "thread-child".to_string(),
             "turn-1".to_string(),
             ThreadItemPayload::AgentMessage {
+                inter_agent_source: None,
                 id: "message-1".to_string(),
                 text: "Finished checking the focused TUI tests.".to_string(),
                 phase: None,
@@ -50,6 +51,26 @@ fn agent_status_uses_bounded_buffered_activity() {
         ),
     ));
 
+    store.push_notification(ServerNotification::ItemCompleted(
+        ItemCompletedNotification::new(
+            "thread-child".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::AgentMessage {
+                id: "incoming-task".to_string(),
+                text: "Incoming task must not replace the agent's own activity.".to_string(),
+                inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
+                    author: "/root".to_string(),
+                    recipient: "/root/reviewer".to_string(),
+                }),
+                phase: Some(codex_protocol::models::MessagePhase::FinalAnswer),
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 3,
+        ),
+    ));
     let preview = AgentStatusThreadPreview::from_store("/root/reviewer".to_string(), &store);
     let cell = AgentStatusHistoryCell::new(vec![preview]);
     let rendered = cell

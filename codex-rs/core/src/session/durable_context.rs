@@ -30,6 +30,7 @@ pub(super) struct PublicationBatch {
     /// A settings caller may hold a lock needed by the bounded event consumer.
     /// Reply after publication, but before delivering the corresponding live event.
     pub(super) reply: Option<oneshot::Sender<CodexResult<()>>>,
+    pub(super) raw_event_guardian_thread_id: Option<codex_protocol::ThreadId>,
 }
 
 #[derive(Clone, Default)]
@@ -45,7 +46,11 @@ pub(super) struct HistoryPublicationHandle {
     live_thread: Option<codex_thread_store::LiveThread>,
     state: Arc<tokio::sync::Mutex<SessionState>>,
     event_sender: async_channel::Sender<codex_protocol::protocol::Event>,
+    parent_observer_event_tx: Option<async_channel::Sender<Event>>,
+    thread_id: codex_protocol::ThreadId,
     trace: codex_rollout_trace::ThreadTraceContext,
+    mcp_runtime: Arc<codex_mcp::McpRuntime>,
+    analytics: codex_analytics::AnalyticsEventsClient,
 }
 
 impl HistoryPublication {
@@ -108,6 +113,14 @@ impl Session {
         let _permit = thread_settings::acquire_persistence_lock(self).await;
     }
 
+    pub(crate) async fn acquire_history_publication_barrier(
+        &self,
+    ) -> CodexResult<OwnedSemaphorePermit> {
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        self.check_history_publication()?;
+        Ok(permit)
+    }
+
     pub(super) async fn close_history_publication(&self) {
         {
             let _permit = thread_settings::acquire_persistence_lock(self).await;
@@ -121,6 +134,7 @@ impl Session {
 
     /// Dispatch is synchronous while retaining the validated publication permit.
     /// Only the receiver is cancellable; accepted work is driven by the task tracker.
+    /// Its receipt confirms local publication, never observation by a client.
     pub(super) fn dispatch_history_publication<T: Send + 'static>(
         &self,
         permit: OwnedSemaphorePermit,
@@ -136,6 +150,7 @@ impl Session {
                 events: Vec::new(),
                 persist_context: None,
                 reply: None,
+                raw_event_guardian_thread_id: None,
             },
             leases,
             acknowledgement,
@@ -149,7 +164,11 @@ impl Session {
             live_thread: self.live_thread().cloned(),
             state: Arc::clone(&self.state),
             event_sender: self.tx_event.clone(),
+            parent_observer_event_tx: self.parent_observer_event_tx.get().cloned(),
+            thread_id: self.thread_id,
             trace: self.services.rollout_thread_trace.clone(),
+            mcp_runtime: Arc::clone(&self.services.mcp_runtime),
+            analytics: self.services.analytics_events_client.clone(),
         }
     }
 
@@ -215,7 +234,11 @@ impl HistoryPublicationHandle {
         let state = Arc::clone(&self.state);
         let failure = Arc::clone(&self.publication.failure);
         let event_sender = self.event_sender.clone();
+        let parent_observer_event_tx = self.parent_observer_event_tx.clone();
+        let thread_id = self.thread_id;
         let trace = self.trace.clone();
+        let mcp_runtime = Arc::clone(&self.mcp_runtime);
+        let analytics = self.analytics.clone();
         let (sender, receiver) = oneshot::channel();
         // Capture abandonment before scheduling, including a worker never polled.
         let outcome = PublicationOutcome {
@@ -230,6 +253,7 @@ impl HistoryPublicationHandle {
                 events,
                 persist_context,
                 reply: _,
+                raw_event_guardian_thread_id,
             } = batch;
             let _permit = permit;
             let _leases = leases;
@@ -268,8 +292,27 @@ impl HistoryPublicationHandle {
                 let _ = reply.send(Ok(()));
             }
             for event in events {
+                if matches!(
+                    &event.msg,
+                    codex_protocol::protocol::EventMsg::RawResponseItem(_)
+                ) {
+                    // These response items are already canonical. Preserve observer effects
+                    // without re-appending or synthesizing a runtime turn lifecycle.
+                    trace.record_codex_turn_event(&event.id, &event.msg);
+                    trace.record_tool_call_event(event.id.clone(), &event.msg);
+                    if let Some(thread_id) = raw_event_guardian_thread_id {
+                        analytics.track_guardian_session_event(thread_id, &event);
+                    }
+                    mcp_runtime.observe_event(&event.msg);
+                }
                 trace.record_protocol_event(&event.msg);
-                let _ = event_sender.send(event).await;
+                if let Some(parent_tx) = &parent_observer_event_tx {
+                    super::private_session_event::forward_to_parent(parent_tx, thread_id, &event)
+                        .await;
+                }
+                if let Err(error) = event_sender.send(event).await {
+                    tracing::debug!("dropping event because channel is closed: {error}");
+                }
             }
             outcome.finished = true;
             let _ = sender.send(Ok(result));

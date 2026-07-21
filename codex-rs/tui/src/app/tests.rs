@@ -4927,6 +4927,7 @@ async fn active_thread_file_change_approval_recovers_buffered_changes() {
                 thread_id.to_string(),
                 "turn-active-approval".to_string(),
                 ThreadItemPayload::AgentMessage {
+                    inter_agent_source: None,
                     id: "agent-1".to_string(),
                     text: "streaming".to_string(),
                     phase: None,
@@ -9549,6 +9550,7 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
                             }],
                         }),
                         ThreadItem::untimed(ThreadItemPayload::AgentMessage {
+                            inter_agent_source: None,
                             id: "assistant-2".to_string(),
                             text: "done".to_string(),
                             phase: None,

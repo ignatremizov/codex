@@ -1172,6 +1172,7 @@ mod tests {
                     memory_citation: None,
                     delivery: Some(AgentMessageDelivery::Async),
                     questions: None,
+                    inter_agent_source: None,
                 },
                 /*started_at_ms*/ None,
                 /*completed_at_ms*/ 0

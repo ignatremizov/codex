@@ -380,6 +380,9 @@ impl ChatWidget {
 
     pub(crate) fn handle_queued_item_completed_now(&mut self, item: ThreadItemPayload) {
         match item {
+            item if inter_agent_transcript::is_inter_agent_message(&item) => {
+                self.handle_inter_agent_message_now(item);
+            }
             item @ ThreadItemPayload::CommandExecution { .. } => {
                 self.handle_command_execution_completed_now(item);
             }

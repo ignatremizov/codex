@@ -6,6 +6,21 @@ impl ChatWidget {
         notification: ServerNotification,
         replay_kind: Option<ReplayKind>,
     ) {
+        // Transcript-only communication must not alter reasoning, realtime, or assistant state.
+        let notification = match notification {
+            ServerNotification::ItemStarted(notification)
+                if inter_agent_transcript::is_inter_agent_message(&notification.item.payload) =>
+            {
+                return;
+            }
+            ServerNotification::ItemCompleted(notification)
+                if inter_agent_transcript::is_inter_agent_message(&notification.item.payload) =>
+            {
+                self.on_inter_agent_message(notification.item.payload);
+                return;
+            }
+            notification => notification,
+        };
         // A stale progress event must not even clear a current retry status.
         if let ServerNotification::ContextCompactionStatus(status) = &notification
             && (replay_kind.is_some()
@@ -507,6 +522,7 @@ impl ChatWidget {
                                 id,
                                 text,
                                 phase: Some(MessagePhase::FinalAnswer) | None,
+                                inter_agent_source: None,
                                 ..
                             } if !self
                                 .is_realtime_delegated_reasoning_turn(&notification.turn.id)

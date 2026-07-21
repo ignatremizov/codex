@@ -447,9 +447,11 @@ impl App {
                                     }
                                     last_message =
                                         turn.item_payloads().rev().find_map(|item| match item {
-                                            ThreadItemPayload::AgentMessage { text, .. } => {
-                                                Some(preview_agent_message(text))
-                                            }
+                                            ThreadItemPayload::AgentMessage {
+                                                text,
+                                                inter_agent_source: None,
+                                                ..
+                                            } => Some(preview_agent_message(text)),
                                             _ => None,
                                         });
                                 }

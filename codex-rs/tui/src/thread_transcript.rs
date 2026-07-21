@@ -319,6 +319,17 @@ fn item_to_cells(
             cells.push(Arc::new(cell.with_async_replies(replies, cwd.as_path())));
         }
         ThreadItemPayload::AgentMessage {
+            text,
+            inter_agent_source: Some(_),
+            ..
+        } => {
+            cells.push(Arc::new(AgentMarkdownCell::new_with_inline_visualizations(
+                text,
+                cwd.as_path(),
+                inline_visualization_context,
+            )));
+        }
+        ThreadItemPayload::AgentMessage {
             text, questions, ..
         } => {
             let parsed = parse_assistant_markdown(&text, cwd.as_path());

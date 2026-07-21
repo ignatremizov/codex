@@ -216,7 +216,12 @@ pub(crate) async fn collect_structured_response(
     while let Some(notification) = notifications.recv().await {
         match notification {
             ServerNotification::ItemCompleted(completed) if completed.turn_id == turn_id => {
-                if let ThreadItemPayload::AgentMessage { text, .. } = completed.item.payload {
+                if let ThreadItemPayload::AgentMessage {
+                    text,
+                    inter_agent_source: None,
+                    ..
+                } = completed.item.payload
+                {
                     if text.len() > STRUCTURED_RESPONSE_MAX_BYTES {
                         return Err(eyre!(
                             "temporary structured response exceeds {STRUCTURED_RESPONSE_MAX_BYTES} bytes"

@@ -392,7 +392,11 @@ impl EventProcessorWithJsonOutput {
             .iter()
             .rev()
             .find_map(|item| match item.borrow() {
-                ThreadItemPayload::AgentMessage { text, .. } => Some(text.clone()),
+                ThreadItemPayload::AgentMessage {
+                    text,
+                    inter_agent_source: None,
+                    ..
+                } => Some(text.clone()),
                 _ => None,
             })
             .or_else(|| {
@@ -500,9 +504,17 @@ impl EventProcessorWithJsonOutput {
                         }));
                     }
                     item => {
+                        let ordinary_agent_message = matches!(
+                            &item,
+                            ThreadItemPayload::AgentMessage {
+                                inter_agent_source: None,
+                                ..
+                            }
+                        );
                         if let Some(item) = self.map_completed_item_mut(item) {
-                            if let ThreadItemDetails::AgentMessage(AgentMessageItem { text }) =
-                                &item.details
+                            if ordinary_agent_message
+                                && let ThreadItemDetails::AgentMessage(AgentMessageItem { text }) =
+                                    &item.details
                             {
                                 self.final_message = Some(text.clone());
                             }

@@ -112,15 +112,14 @@ impl Session {
             thread_settings::applied_event(self).await,
         )];
         rollout.extend(prepared.rollout_items());
+        let mut batch = self
+            .conversation_publication_batch(&context, rollout, std::slice::from_ref(&item.item))
+            .await;
+        batch.persist_context = Some(PersistContext::ThreadPreparation);
         let receiver = self
             .dispatch_history_publication_with_events(
                 permit,
-                super::durable_context::PublicationBatch {
-                    rollout,
-                    events: Vec::new(),
-                    persist_context: Some(PersistContext::ThreadPreparation),
-                    reply: None,
-                },
+                batch,
                 Vec::new(),
                 /*acknowledgement*/ None,
                 move |state| prepared.install(&mut state.history),
@@ -128,10 +127,7 @@ impl Session {
             .map_err(std::io::Error::other)?;
         self.publication_result(receiver)
             .await
-            .map_err(std::io::Error::other)?;
-        self.send_raw_response_items(&context, std::slice::from_ref(&item.item))
-            .await;
-        Ok(())
+            .map_err(std::io::Error::other)
     }
 
     pub(crate) async fn reserve_user_input_order(&self) -> u64 {
@@ -270,6 +266,7 @@ impl Session {
                         events: Vec::new(),
                         persist_context: None,
                         reply: None,
+                        raw_event_guardian_thread_id: None,
                     },
                     Vec::new(),
                     /*acknowledgement*/ None,

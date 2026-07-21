@@ -94,6 +94,25 @@ async fn revert_keeps_thread_id_and_hides_suffix_across_repeated_reverts() {
         .expect("read replacement metadata")
         .meta;
     assert_eq!(replacement_meta.id, thread_id);
+    let lineage = store
+        .resolve_rollout_lineage(thread_id, /*initial_path*/ None)
+        .await
+        .expect("resolve replacement lineage");
+    assert_eq!(
+        lineage
+            .segments()
+            .iter()
+            .map(|segment| (segment.thread_id, segment.rollout_id()))
+            .collect::<Vec<_>>(),
+        vec![
+            (thread_id, thread_id),
+            (
+                thread_id,
+                codex_rollout::rollout_id_from_path(first_replacement_path.as_path())
+                    .expect("replacement rollout ID"),
+            ),
+        ],
+    );
     assert_eq!(
         (
             replacement_meta.creator_user_id.as_deref(),

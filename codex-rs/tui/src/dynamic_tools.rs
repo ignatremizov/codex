@@ -970,7 +970,11 @@ async fn execute_inner(
                             let latest_assistant_message = latest_turn.as_ref().and_then(|turn| {
                                 turn.item_payloads().rev().find_map(|item| match item {
                                     ThreadItemPayload::AgentMessage {
-                                        id, text, phase, ..
+                                        id,
+                                        text,
+                                        phase,
+                                        inter_agent_source: None,
+                                        ..
                                     } => Some(json!({
                                         "id": id,
                                         "turnId": turn.id,
@@ -1423,9 +1427,15 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
                 }
                 item
             }
-            ThreadItemPayload::AgentMessage { id, text, phase, .. } => json!({
-                "type": "agentMessage", "id": id, "text": text, "phase": phase
-            }),
+            ThreadItemPayload::AgentMessage { id, text, phase, inter_agent_source, .. } => {
+                let mut item = json!({
+                    "type": "agentMessage", "id": id, "text": text, "phase": phase
+                });
+                if let Some(source) = inter_agent_source {
+                    item["interAgentSource"] = json!(source);
+                }
+                item
+            }
             ThreadItemPayload::Plan { id, text } => json!({
                 "type": "plan", "id": id, "text": truncate(text, DEFAULT_OUTPUT_CHARS)
             }),

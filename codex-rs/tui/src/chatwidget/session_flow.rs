@@ -367,7 +367,11 @@ impl ChatWidget {
                     continue;
                 }
                 let (markdown, source) = match item {
-                    ThreadItemPayload::AgentMessage { text, .. } => (
+                    ThreadItemPayload::AgentMessage {
+                        text,
+                        inter_agent_source: None,
+                        ..
+                    } => (
                         parse_assistant_markdown(text, self.config.cwd.as_path()).visible_markdown,
                         text,
                     ),

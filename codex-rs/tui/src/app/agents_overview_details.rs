@@ -106,7 +106,12 @@ impl App {
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 item:
                     codex_app_server_protocol::ThreadItem {
-                        payload: ThreadItemPayload::AgentMessage { text, .. },
+                        payload:
+                            ThreadItemPayload::AgentMessage {
+                                text,
+                                inter_agent_source: None,
+                                ..
+                            },
                         ..
                     },
                 ..
@@ -114,6 +119,17 @@ impl App {
                 activity.last_message = Some(preview_agent_message(text));
                 activity.reasoning = None;
                 true
+            }
+            ServerNotification::ItemStarted(notification)
+                if matches!(
+                    &notification.item.payload,
+                    ThreadItemPayload::AgentMessage {
+                        inter_agent_source: Some(_),
+                        ..
+                    }
+                ) =>
+            {
+                false
             }
             ServerNotification::TurnStarted(_)
             | ServerNotification::TurnCompleted(_)
