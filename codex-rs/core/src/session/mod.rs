@@ -107,6 +107,7 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::models::format_allow_prefixes;
@@ -129,10 +130,12 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnContextNetworkItem;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::protocol::WorldStateItem;
 use codex_protocol::request_permissions::PermissionGrantScope;
@@ -3349,7 +3352,27 @@ impl Session {
         prepare_response_items(items.to_mut());
         // Most response items get their passthrough turn ID at the durable history boundary.
         for item in items.to_mut() {
-            item.set_turn_id_if_missing(&turn_context.sub_id);
+            if let ResponseItem::AgentMessage {
+                id,
+                internal_chat_message_metadata_passthrough,
+                ..
+            } = item
+            {
+                // Agent messages are locally authored history items. Normalize caller-provided
+                // metadata so live delivery, persistence, and replay use one canonical identity.
+                *internal_chat_message_metadata_passthrough =
+                    Some(InternalChatMessageMetadataPassthrough {
+                        turn_id: Some(turn_context.sub_id.clone()),
+                    });
+                if !id.as_ref().is_some_and(|id| {
+                    id.strip_prefix("amsg_")
+                        .is_some_and(|suffix| !suffix.is_empty())
+                }) {
+                    *id = Some(ResponseItemId::new("amsg"));
+                }
+            } else {
+                item.set_turn_id_if_missing(&turn_context.sub_id);
+            }
         }
         if turn_context.item_ids_enabled() {
             Self::assign_missing_response_item_ids(items)
@@ -3418,6 +3441,64 @@ impl Session {
             );
         }
         self.send_raw_response_items(turn_context, items).await;
+    }
+
+    pub(crate) async fn acquire_durable_context_permit(
+        &self,
+    ) -> CodexResult<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.durable_context_lock)
+            .acquire_owned()
+            .await
+            .map_err(|_| CodexErr::InternalAgentDied)
+    }
+
+    /// Records model-visible items under a completed history turn without starting model work.
+    pub(crate) async fn record_history_only_conversation_items(
+        &self,
+        turn_context: &TurnContext,
+        items: &[ResponseItem],
+    ) -> Result<(), ThreadStoreError> {
+        let _permit = self.durable_context_lock.acquire().await.map_err(|err| {
+            ThreadStoreError::Internal {
+                message: format!("failed to lock history-only recording: {err}"),
+            }
+        })?;
+        let items = self
+            .prepare_conversation_items_for_history(turn_context, items)
+            .into_owned();
+        let mut rollout_items = Vec::with_capacity(items.len().saturating_add(2));
+        rollout_items.push(RolloutItem::EventMsg(EventMsg::TurnStarted(
+            TurnStartedEvent {
+                turn_id: turn_context.sub_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            },
+        )));
+        rollout_items.extend(items.iter().cloned().map(RolloutItem::ResponseItem));
+        rollout_items.push(RolloutItem::EventMsg(EventMsg::TurnComplete(
+            TurnCompleteEvent {
+                turn_id: turn_context.sub_id.clone(),
+                last_agent_message: None,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            },
+        )));
+        self.try_persist_rollout_items(&rollout_items).await?;
+        {
+            let mut state = self.state.lock().await;
+            state.current_time_reminder.note_recorded_items(&items);
+            state.record_items(
+                items.iter(),
+                turn_context.model_info.truncation_policy.into(),
+            );
+        }
+        self.send_raw_response_items(turn_context, &items).await;
+        Ok(())
     }
 
     /// Records one extension contribution only after its complete rollout batch is durable.
@@ -3554,6 +3635,9 @@ impl Session {
         turn_context: &TurnContext,
         mut communication: InterAgentCommunication,
     ) {
+        let Ok(_permit) = self.durable_context_lock.acquire().await else {
+            return;
+        };
         communication.set_turn_id_if_missing(&turn_context.sub_id);
         let response_item = communication.to_model_input_item();
         let items = self.prepare_conversation_items_for_history(

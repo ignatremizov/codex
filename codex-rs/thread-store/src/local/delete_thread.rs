@@ -386,9 +386,11 @@ mod tests {
             ThreadHistoryMode::Paginated,
         )
         .expect("session file");
-        let pool = codex_state::open_thread_history_db(home.path())
+        let pool = store
+            .thread_history_db()
             .await
-            .expect("open thread history db");
+            .expect("open thread history db")
+            .clone();
         let thread_id_string = thread_id.to_string();
         sqlx::query(
             "INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status) VALUES (?, 'turn-1', 1, 'completed')",
@@ -411,27 +413,36 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert projection state");
+        sqlx::query(
+            "INSERT INTO fork_thread_history_projection_state (thread_id, next_rollout_byte_offset, next_rollout_ordinal) VALUES (?, 3, 3)",
+        )
+        .bind(thread_id_string.as_str())
+        .execute(&pool)
+        .await
+        .expect("insert fork projection state");
 
         store
             .delete_thread(DeleteThreadParams { thread_id })
             .await
             .expect("delete thread");
 
-        let counts = sqlx::query_as::<_, (i64, i64, i64)>(
+        let counts = sqlx::query_as::<_, (i64, i64, i64, i64)>(
             r#"
 SELECT
     (SELECT COUNT(*) FROM thread_turns WHERE thread_id = ?),
     (SELECT COUNT(*) FROM thread_items WHERE thread_id = ?),
-    (SELECT COUNT(*) FROM thread_history_projection_state WHERE thread_id = ?)
+    (SELECT COUNT(*) FROM thread_history_projection_state WHERE thread_id = ?),
+    (SELECT COUNT(*) FROM fork_thread_history_projection_state WHERE thread_id = ?)
             "#,
         )
+        .bind(thread_id_string.as_str())
         .bind(thread_id_string.as_str())
         .bind(thread_id_string.as_str())
         .bind(thread_id_string.as_str())
         .fetch_one(&pool)
         .await
         .expect("read remaining history rows");
-        assert_eq!(counts, (0, 0, 0));
+        assert_eq!(counts, (0, 0, 0, 0));
     }
 
     #[tokio::test]

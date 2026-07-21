@@ -1,16 +1,22 @@
 use std::fs;
+use std::fs::FileTimes;
 use std::io::Write;
+use std::path::PathBuf;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use chrono::Utc;
 use codex_app_server_protocol::ThreadItem;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
@@ -164,6 +170,237 @@ WHERE thread_id = ?
     .await
     .expect("read projection state");
     assert_eq!(projection_state, (rollout_len, 5));
+}
+
+#[tokio::test]
+async fn fork_projection_marker_rebuilds_upstream_agent_message_checkpoint() {
+    let home = TempDir::new().expect("temp dir");
+    let upstream_pool = codex_state::open_thread_history_db(home.path())
+        .await
+        .expect("open upstream thread history db");
+    let upstream_migration_versions =
+        sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&upstream_pool)
+            .await
+            .expect("read upstream migration ledger");
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let thread_id = ThreadId::default();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .persist_thread(thread_id)
+        .await
+        .expect("persist session metadata");
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![RolloutItem::ResponseItem(ResponseItem::AgentMessage {
+                id: Some(ResponseItemId::with_suffix("amsg", "legacy")),
+                author: "/root".to_string(),
+                recipient: "/root/worker".to_string(),
+                content: vec![AgentMessageInputContent::InputText {
+                    text: "legacy task".to_string(),
+                }],
+                internal_chat_message_metadata_passthrough: Some(
+                    InternalChatMessageMetadataPassthrough {
+                        turn_id: Some("legacy-turn".to_string()),
+                    },
+                ),
+            })],
+        })
+        .await
+        .expect("append history-only agent message");
+
+    let pool = codex_state::open_thread_history_db(home.path())
+        .await
+        .expect("open thread history db");
+    let applied_migration_versions =
+        sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .expect("read upstream migration ledger");
+    assert_eq!(applied_migration_versions, upstream_migration_versions);
+    let thread_id_text = thread_id.to_string();
+    sqlx::query("DELETE FROM thread_turns WHERE thread_id = ?")
+        .bind(thread_id_text.as_str())
+        .execute(&pool)
+        .await
+        .expect("simulate upstream turn projection");
+    sqlx::query("DELETE FROM thread_items WHERE thread_id = ?")
+        .bind(thread_id_text.as_str())
+        .execute(&pool)
+        .await
+        .expect("simulate upstream item projection");
+    sqlx::query(
+        r#"
+UPDATE thread_history_projection_state
+SET next_rollout_byte_offset = next_rollout_byte_offset + 1
+WHERE thread_id = ?
+        "#,
+    )
+    .bind(thread_id_text.as_str())
+    .execute(&pool)
+    .await
+    .expect("simulate upstream checkpoint advance");
+
+    let rollout_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("rollout path");
+    super::materialize_to_sqlite(&store, thread_id, rollout_path.as_path())
+        .await
+        .expect("rebuild fork projection");
+
+    let materialized = sqlx::query_as::<_, (String, i64)>(
+        r#"
+SELECT
+    thread_turns.status,
+    (
+        SELECT COUNT(*)
+        FROM thread_items
+        WHERE thread_items.thread_id = thread_turns.thread_id
+          AND thread_items.turn_id = thread_turns.turn_id
+    )
+FROM thread_turns
+WHERE thread_id = ? AND turn_id = ?
+        "#,
+    )
+    .bind(thread_id_text.as_str())
+    .bind("legacy-turn")
+    .fetch_one(&pool)
+    .await
+    .expect("read rebuilt implicit turn and item");
+    assert_eq!(materialized, ("completed".to_string(), 1));
+    let projection_checkpoints = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+        r#"
+SELECT
+    upstream.next_rollout_byte_offset,
+    upstream.next_rollout_ordinal,
+    fork.next_rollout_byte_offset,
+    fork.next_rollout_ordinal
+FROM thread_history_projection_state AS upstream
+JOIN fork_thread_history_projection_state AS fork USING (thread_id)
+WHERE upstream.thread_id = ?
+        "#,
+    )
+    .bind(thread_id_text.as_str())
+    .fetch_one(&pool)
+    .await
+    .expect("read synchronized projection checkpoints");
+    assert_eq!(
+        (projection_checkpoints.0, projection_checkpoints.1),
+        (projection_checkpoints.2, projection_checkpoints.3),
+        "fork rebuild must synchronize both shared checkpoints"
+    );
+}
+
+#[tokio::test]
+async fn fork_projection_rebuild_preserves_compressed_rollout() {
+    let home = TempDir::new().expect("temp dir");
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let thread_id = ThreadId::default();
+    let turn_id = "compressed-turn";
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![
+                turn_started(turn_id),
+                RolloutItem::ResponseItem(ResponseItem::AgentMessage {
+                    id: Some(ResponseItemId::with_suffix("amsg", "compressed")),
+                    author: "/root".to_string(),
+                    recipient: "/root/worker".to_string(),
+                    content: vec![AgentMessageInputContent::InputText {
+                        text: "compressed task".to_string(),
+                    }],
+                    internal_chat_message_metadata_passthrough: Some(
+                        InternalChatMessageMetadataPassthrough {
+                            turn_id: Some(turn_id.to_string()),
+                        },
+                    ),
+                }),
+                turn_completed(turn_id),
+            ],
+        })
+        .await
+        .expect("append compressed projection fixture");
+    store
+        .flush_thread(thread_id)
+        .await
+        .expect("flush compressed projection fixture");
+    let rollout_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("rollout path");
+    store
+        .shutdown_thread(thread_id)
+        .await
+        .expect("shutdown rollout writer");
+
+    let pool = codex_state::open_thread_history_db(home.path())
+        .await
+        .expect("open thread history db");
+    sqlx::query("DELETE FROM thread_items WHERE thread_id = ?")
+        .bind(thread_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("simulate upstream item projection");
+    sqlx::query("DELETE FROM fork_thread_history_projection_state WHERE thread_id = ?")
+        .bind(thread_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("remove fork checkpoint");
+
+    let old = SystemTime::now()
+        .checked_sub(Duration::from_secs(8 * 24 * 60 * 60))
+        .expect("old timestamp");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(rollout_path.as_path())
+        .expect("open rollout to age")
+        .set_times(FileTimes::new().set_modified(old))
+        .expect("age rollout");
+    let mut compressed_path = rollout_path.as_os_str().to_os_string();
+    compressed_path.push(".zst");
+    let compressed_path = PathBuf::from(compressed_path);
+    codex_rollout::spawn_rollout_compression_worker(home.path().to_path_buf());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !tokio::fs::try_exists(compressed_path.as_path())
+            .await
+            .expect("check compressed rollout")
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("rollout should be compressed");
+    assert!(!rollout_path.exists());
+
+    super::materialize_to_sqlite(&store, thread_id, rollout_path.as_path())
+        .await
+        .expect("rebuild projection from compressed rollout");
+    super::materialize_to_sqlite(&store, thread_id, rollout_path.as_path())
+        .await
+        .expect("reuse current compressed projection");
+
+    assert!(!rollout_path.exists());
+    assert!(compressed_path.exists());
+    let materialized = sqlx::query_as::<_, (String, String)>(
+        r#"
+SELECT thread_turns.status, thread_items.item_id
+FROM thread_turns
+JOIN thread_items USING (thread_id, turn_id)
+WHERE thread_turns.thread_id = ? AND thread_turns.turn_id = ?
+        "#,
+    )
+    .bind(thread_id.to_string())
+    .bind(turn_id)
+    .fetch_one(&pool)
+    .await
+    .expect("read rebuilt compressed projection");
+    assert_eq!(
+        materialized,
+        ("completed".to_string(), "amsg_compressed".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1043,21 +1280,23 @@ async fn delete_waits_for_in_flight_projection_before_removing_rows() {
     let pool = codex_state::open_thread_history_db(home.path())
         .await
         .expect("open thread history db");
-    let counts = sqlx::query_as::<_, (i64, i64, i64)>(
+    let counts = sqlx::query_as::<_, (i64, i64, i64, i64)>(
         r#"
 SELECT
     (SELECT COUNT(*) FROM thread_turns WHERE thread_id = ?),
     (SELECT COUNT(*) FROM thread_items WHERE thread_id = ?),
-    (SELECT COUNT(*) FROM thread_history_projection_state WHERE thread_id = ?)
+    (SELECT COUNT(*) FROM thread_history_projection_state WHERE thread_id = ?),
+    (SELECT COUNT(*) FROM fork_thread_history_projection_state WHERE thread_id = ?)
         "#,
     )
+    .bind(thread_id.to_string())
     .bind(thread_id.to_string())
     .bind(thread_id.to_string())
     .bind(thread_id.to_string())
     .fetch_one(&pool)
     .await
     .expect("read history row counts");
-    assert_eq!(counts, (0, 0, 0));
+    assert_eq!(counts, (0, 0, 0, 0));
 }
 
 async fn create_paginated_thread(store: &LocalThreadStore, thread_id: ThreadId) {

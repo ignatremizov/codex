@@ -3372,32 +3372,6 @@ impl ThreadRequestProcessor {
                 should_redact_thread_resume_payloads(app_server_client_name.as_deref());
             let include_turns = !params.exclude_turns;
             let needs_history = include_turns || params.initial_turns_page.is_some();
-            if needs_history {
-                let source_thread_id = source_thread.thread_id.to_string();
-                let source_rollout_path = source_thread.rollout_path.clone();
-                source_thread = self
-                    .read_stored_thread_for_resume(
-                        &source_thread_id,
-                        source_rollout_path.as_ref(),
-                        /*include_history*/ true,
-                        ArchivedThreadReadPolicy::Reject,
-                    )
-                    .await?;
-            }
-            let history_items = if needs_history {
-                source_thread
-                    .history
-                    .take()
-                    .map(|history| history.items)
-                    .ok_or_else(|| {
-                        internal_error(format!(
-                            "thread {existing_thread_id} did not include persisted history"
-                        ))
-                    })?
-            } else {
-                Vec::new()
-            };
-
             let thread_state = self
                 .thread_state_manager
                 .thread_state(existing_thread_id)
@@ -3415,15 +3389,6 @@ impl ThreadRequestProcessor {
             )
             .await?;
 
-            let mut thread_summary = self.stored_thread_to_api_thread(
-                source_thread,
-                config_snapshot.model_provider_id.as_str(),
-                /*include_turns*/ false,
-            );
-            thread_summary.session_id = existing_thread.session_configured().session_id.to_string();
-            thread_summary.thread_source = config_snapshot.thread_source.clone().map(Into::into);
-            let instruction_sources = existing_thread.legacy_instruction_sources().await;
-
             let listener_command_tx = {
                 let thread_state = thread_state.lock().await;
                 thread_state.listener_command_tx()
@@ -3433,6 +3398,107 @@ impl ThreadRequestProcessor {
                     "failed to enqueue running thread resume for thread {existing_thread_id}: thread listener is not running"
                 )));
             };
+            let connection_id = request_id.connection_id;
+            if !self
+                .thread_state_manager
+                .pause_typed_transcript_for_resume(existing_thread_id, connection_id)
+                .await
+            {
+                tracing::debug!(
+                    thread_id = %existing_thread_id,
+                    connection_id = ?connection_id,
+                    "skipping running thread resume for closed connection"
+                );
+                return Ok(RunningThreadResumeResult::Handled);
+            }
+            let durable_context_permit = match existing_thread
+                .acquire_durable_context_permit()
+                .await
+            {
+                Ok(permit) => permit,
+                Err(err) => {
+                    self.thread_state_manager
+                        .resume_typed_transcript(existing_thread_id, connection_id)
+                        .await;
+                    return Err(internal_error(format!(
+                        "failed to establish running thread resume boundary for thread {existing_thread_id}: {err}"
+                    )));
+                }
+            };
+            let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+            let (barrier_release_tx, barrier_release_rx) = tokio::sync::oneshot::channel();
+            if listener_command_tx
+                .send(
+                    crate::thread_state::ThreadListenerCommand::DrainPendingEventsForResume {
+                        completion_tx,
+                        release_rx: barrier_release_rx,
+                    },
+                )
+                .is_err()
+            {
+                self.thread_state_manager
+                    .resume_typed_transcript(existing_thread_id, connection_id)
+                    .await;
+                return Err(internal_error(format!(
+                    "failed to establish running thread resume boundary for thread {existing_thread_id}: thread listener command channel is closed"
+                )));
+            }
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(10), completion_rx).await,
+                Ok(Ok(true))
+            ) {
+                self.thread_state_manager
+                    .resume_typed_transcript(existing_thread_id, connection_id)
+                    .await;
+                return Err(internal_error(format!(
+                    "failed to drain running thread events before resuming thread {existing_thread_id}"
+                )));
+            }
+            if needs_history {
+                let source_thread_id = source_thread.thread_id.to_string();
+                let source_rollout_path = source_thread.rollout_path.clone();
+                source_thread = match self
+                    .read_stored_thread_for_resume(
+                        &source_thread_id,
+                        source_rollout_path.as_ref(),
+                        /*include_history*/ true,
+                        ArchivedThreadReadPolicy::Reject,
+                    )
+                    .await
+                {
+                    Ok(source_thread) => source_thread,
+                    Err(error) => {
+                        self.thread_state_manager
+                            .resume_typed_transcript(existing_thread_id, connection_id)
+                            .await;
+                        return Err(error);
+                    }
+                };
+            }
+            let history_items = if needs_history {
+                match source_thread.history.take() {
+                    Some(history) => history.items,
+                    None => {
+                        self.thread_state_manager
+                            .resume_typed_transcript(existing_thread_id, connection_id)
+                            .await;
+                        return Err(internal_error(format!(
+                            "thread {existing_thread_id} did not include persisted history"
+                        )));
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+
+            let mut thread_summary = self.stored_thread_to_api_thread(
+                source_thread,
+                config_snapshot.model_provider_id.as_str(),
+                /*include_turns*/ false,
+            );
+            thread_summary.session_id = existing_thread.session_configured().session_id.to_string();
+            thread_summary.thread_source = config_snapshot.thread_source.clone().map(Into::into);
+            let instruction_sources = existing_thread.legacy_instruction_sources().await;
 
             let (emit_thread_goal_update, thread_goal_state_db) = self
                 .thread_goal_processor
@@ -3455,13 +3521,19 @@ impl ThreadRequestProcessor {
                     initial_turns_page: params.initial_turns_page.clone(),
                     resume_cursor_store,
                     redact_resume_payloads,
+                    durable_context_permit,
                 }),
             );
             if listener_command_tx.send(command).is_err() {
+                let _ = barrier_release_tx.send(());
+                self.thread_state_manager
+                    .resume_typed_transcript(existing_thread_id, connection_id)
+                    .await;
                 return Err(internal_error(format!(
                     "failed to enqueue running thread resume for thread {existing_thread_id}: thread listener command channel is closed"
                 )));
             }
+            let _ = barrier_release_tx.send(());
             return Ok(RunningThreadResumeResult::Handled);
         }
         Ok(RunningThreadResumeResult::NotRunning(None))

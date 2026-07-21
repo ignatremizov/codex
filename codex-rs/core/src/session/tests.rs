@@ -278,6 +278,32 @@ async fn paginated_turn_context_assigns_missing_response_item_ids_without_featur
     );
 }
 
+#[tokio::test]
+async fn agent_messages_get_local_ids_without_item_ids_feature() {
+    let (session, turn_context) = make_session_and_context().await;
+    let response_item = ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "Inspect the repository.".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let items = session.prepare_conversation_items_for_history(
+        &turn_context,
+        std::slice::from_ref(&response_item),
+    );
+
+    assert!(
+        items[0]
+            .id()
+            .is_some_and(|item_id| item_id.starts_with("amsg_"))
+    );
+    assert_eq!(items[0].turn_id(), Some(turn_context.sub_id.as_str()));
+}
+
 fn assistant_message(text: &str) -> ResponseItem {
     ResponseItem::Message {
         id: None,
@@ -1848,9 +1874,10 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     );
     encrypted_with_audit.content = "audit-visible child result".to_string();
 
-    for communication in [plaintext, encrypted, encrypted_with_audit] {
+    for mut communication in [plaintext, encrypted, encrypted_with_audit] {
         let (mut session, turn_context) = make_session_and_context().await;
         let rollout_path = attach_thread_persistence(&mut session).await;
+        communication.id = Some(ResponseItemId::with_suffix("amsg", "turn-id-test"));
         let mut expected_item = communication.to_model_input_item();
         expected_item.set_turn_id_if_missing(&turn_context.sub_id);
 
@@ -1897,7 +1924,8 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
         let (resumed_session, _resumed_turn_context) = make_session_and_context().await;
         resumed_session
             .record_initial_history(InitialHistory::Resumed(resumed))
-            .await;
+            .await
+            .expect("record initial history");
         assert_eq!(
             resumed_session.clone_history().await.raw_items(),
             std::slice::from_ref(&expected_item)
@@ -1906,17 +1934,9 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
 }
 
 #[tokio::test]
-async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resume() {
-    let (mut session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
-        CodexAuth::from_api_key("Test API Key"),
-        Vec::new(),
-        |config| {
-            let _ = config.features.enable(Feature::ItemIds);
-        },
-    )
-    .await;
-    let rollout_path =
-        attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
+async fn record_inter_agent_communication_assigns_and_preserves_item_id() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let rollout_path = attach_thread_persistence(&mut session).await;
     let communication = InterAgentCommunication::new(
         AgentPath::root().join("worker").expect("worker path"),
         AgentPath::root(),
@@ -1955,15 +1975,7 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
         Some(live_item_id.as_str())
     );
 
-    let (resumed_session, _resumed_turn_context, _rx) =
-        make_session_and_context_with_auth_and_config_and_rx(
-            CodexAuth::from_api_key("Test API Key"),
-            Vec::new(),
-            |config| {
-                let _ = config.features.enable(Feature::ItemIds);
-            },
-        )
-        .await;
+    let (resumed_session, _resumed_turn_context) = make_session_and_context().await;
     resumed_session
         .record_initial_history(InitialHistory::Resumed(resumed))
         .await
@@ -6431,7 +6443,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         agent_status: agent_status_tx,
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
-        durable_context_lock: Semaphore::new(/*permits*/ 1),
+        durable_context_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         session_start_mcp_servers: HashMap::new(),
@@ -8603,7 +8615,7 @@ where
         agent_status: agent_status_tx,
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
-        durable_context_lock: Semaphore::new(/*permits*/ 1),
+        durable_context_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         session_start_mcp_servers: HashMap::new(),

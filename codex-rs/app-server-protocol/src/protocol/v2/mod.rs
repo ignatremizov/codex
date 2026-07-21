@@ -12,6 +12,7 @@ mod experimental_feature;
 mod feedback;
 mod fs;
 mod hook;
+mod inter_agent_message;
 mod item;
 mod mcp;
 mod model;
