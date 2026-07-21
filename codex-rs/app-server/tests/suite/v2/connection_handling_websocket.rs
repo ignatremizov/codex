@@ -9,18 +9,26 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeParams;
+use codex_app_server_protocol::ItemCompletedNotification;
+use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadInjectItemsParams;
+use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_core::config::set_project_trust_level;
 use codex_protocol::config_types::TrustLevel;
+use codex_protocol::models::AgentMessageInputContent;
+use codex_protocol::models::ResponseItem;
 use futures::SinkExt;
 use futures::StreamExt;
 use hmac::Hmac;
@@ -99,6 +107,154 @@ async fn websocket_transport_routes_per_connection_handshake_and_responses() -> 
     assert_eq!(ws2_config.id, RequestId::Integer(77));
     assert!(ws1_config.result.get("config").is_some());
     assert!(ws2_config.result.get("config").is_some());
+
+    process
+        .kill()
+        .await
+        .context("failed to stop websocket app-server process")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn running_resume_separates_snapshot_and_live_agent_message_delivery() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), "never")?;
+    let (mut process, bind_addr) = spawn_websocket_server(codex_home.path()).await?;
+    let mut primary = connect_websocket(bind_addr).await?;
+    let mut resuming = connect_websocket(bind_addr).await?;
+
+    send_initialize_request(&mut primary, /*id*/ 1, "primary").await?;
+    read_response_for_id(&mut primary, /*id*/ 1).await?;
+    send_initialize_request(&mut resuming, /*id*/ 2, "resuming").await?;
+    read_response_for_id(&mut resuming, /*id*/ 2).await?;
+
+    send_request(
+        &mut primary,
+        "thread/start",
+        /*id*/ 3,
+        Some(serde_json::to_value(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })?),
+    )
+    .await?;
+    let start_response = read_response_for_id(&mut primary, /*id*/ 3).await?;
+    let ThreadStartResponse { thread, .. } = to_response(start_response)?;
+    let snapshot_item = ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "snapshot task".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    send_request(
+        &mut primary,
+        "thread/inject_items",
+        /*id*/ 4,
+        Some(serde_json::to_value(ThreadInjectItemsParams {
+            thread_id: thread.id.clone(),
+            items: vec![serde_json::to_value(snapshot_item)?],
+        })?),
+    )
+    .await?;
+    read_response_for_id(&mut primary, /*id*/ 4).await?;
+    send_request(
+        &mut resuming,
+        "thread/resume",
+        /*id*/ 5,
+        Some(serde_json::to_value(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        })?),
+    )
+    .await?;
+    let (resume_response, notifications_before_response) =
+        read_response_for_id_collecting_notifications(&mut resuming, /*id*/ 5).await?;
+    let ThreadResumeResponse {
+        thread: resumed_thread,
+        ..
+    } = to_response(resume_response)?;
+    let snapshot_items = resumed_thread
+        .turns
+        .iter()
+        .flat_map(|turn| turn.items.iter())
+        .filter(|item| {
+            matches!(
+                item,
+                ThreadItem::AgentMessage { text, .. }
+                    if text == "Agent message from `/root`:\n\nsnapshot task"
+            )
+        })
+        .collect::<Vec<_>>();
+    let [snapshot_item] = snapshot_items.as_slice() else {
+        bail!("resume snapshot must contain exactly one matching item");
+    };
+    assert!(snapshot_item.id().starts_with("amsg_"));
+    assert!(
+        notifications_before_response
+            .iter()
+            .all(|notification| notification.method != "item/started"
+                && notification.method != "item/completed"),
+        "snapshot item must not also be delivered before the resume response"
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(250),
+            read_notification_for_method(&mut resuming, "item/started"),
+        )
+        .await
+        .is_err(),
+        "snapshot item must not also be delivered after the resume response"
+    );
+
+    let live_item = ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "live task".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+    send_request(
+        &mut primary,
+        "thread/inject_items",
+        /*id*/ 6,
+        Some(serde_json::to_value(ThreadInjectItemsParams {
+            thread_id: thread.id,
+            items: vec![serde_json::to_value(live_item)?],
+        })?),
+    )
+    .await?;
+    read_response_for_id(&mut primary, /*id*/ 6).await?;
+    let started = read_notification_for_method(&mut resuming, "item/started").await?;
+    let started: ItemStartedNotification =
+        serde_json::from_value(started.params.expect("item/started params"))?;
+    let completed = read_notification_for_method(&mut resuming, "item/completed").await?;
+    let completed: ItemCompletedNotification =
+        serde_json::from_value(completed.params.expect("item/completed params"))?;
+    assert_eq!(completed.thread_id, started.thread_id);
+    assert_eq!(completed.turn_id, started.turn_id);
+    assert_eq!(completed.item, started.item);
+    assert!(matches!(
+        completed.item,
+        ThreadItem::AgentMessage { ref id, ref text, .. }
+            if id.starts_with("amsg_")
+                && text == "Agent message from `/root`:\n\nlive task"
+    ));
+    assert!(
+        timeout(
+            Duration::from_millis(250),
+            read_notification_for_method(&mut resuming, "item/completed"),
+        )
+        .await
+        .is_err(),
+        "live item must be delivered exactly once"
+    );
 
     process
         .kill()
@@ -828,6 +984,23 @@ pub(super) async fn read_response_for_id(
             && response.id == target_id
         {
             return Ok(response);
+        }
+    }
+}
+
+async fn read_response_for_id_collecting_notifications(
+    stream: &mut WsClient,
+    id: i64,
+) -> Result<(JSONRPCResponse, Vec<JSONRPCNotification>)> {
+    let target_id = RequestId::Integer(id);
+    let mut notifications = Vec::new();
+    loop {
+        match read_jsonrpc_message(stream).await? {
+            JSONRPCMessage::Response(response) if response.id == target_id => {
+                return Ok((response, notifications));
+            }
+            JSONRPCMessage::Notification(notification) => notifications.push(notification),
+            _ => {}
         }
     }
 }

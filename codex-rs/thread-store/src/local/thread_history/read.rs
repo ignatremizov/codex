@@ -217,7 +217,15 @@ async fn validate_thread_for_paginated_reads(
     }
     match metadata.history_mode {
         ThreadHistoryMode::Legacy => Err(ThreadStoreError::Unsupported { operation }),
-        ThreadHistoryMode::Paginated => Ok(()),
+        ThreadHistoryMode::Paginated => {
+            let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
+            super::super::thread_history_materialization::materialize_to_sqlite(
+                store,
+                thread_id,
+                metadata.rollout_path.as_path(),
+            )
+            .await
+        }
     }
 }
 

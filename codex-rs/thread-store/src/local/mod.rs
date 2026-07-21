@@ -152,12 +152,30 @@ impl LocalThreadStore {
     async fn thread_history_db(&self) -> ThreadStoreResult<&sqlx::SqlitePool> {
         self.thread_history_db
             .get_or_try_init(|| async {
-                codex_state::open_thread_history_db(self.config.sqlite_home.as_path()).await
+                let pool = codex_state::open_thread_history_db(self.config.sqlite_home.as_path())
+                    .await
+                    .map_err(|err| ThreadStoreError::Internal {
+                        message: format!("failed to open thread history database: {err}"),
+                    })?;
+                // Keep fork-specific cache ownership out of SQLx's migration ledger because this
+                // rebuildable database is shared with upstream Codex binaries.
+                sqlx::query(
+                    r#"
+CREATE TABLE IF NOT EXISTS fork_thread_history_projection_state (
+    thread_id TEXT PRIMARY KEY,
+    next_rollout_byte_offset INTEGER NOT NULL,
+    next_rollout_ordinal INTEGER NOT NULL
+)
+                    "#,
+                )
+                .execute(&pool)
+                .await
+                .map_err(|err| ThreadStoreError::Internal {
+                    message: format!("failed to initialize fork projection state: {err}"),
+                })?;
+                Ok(pool)
             })
             .await
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!("failed to open thread history database: {err}"),
-            })
     }
 
     /// Read a local rollout-backed thread by path.

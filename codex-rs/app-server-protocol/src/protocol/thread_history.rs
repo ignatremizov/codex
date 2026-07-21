@@ -25,7 +25,7 @@ use crate::protocol::v2::UserInput;
 #[cfg(test)]
 use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
-use crate::protocol::v2::inter_agent_message_thread_item;
+use crate::protocol::v2::inter_agent_message_thread_item_with_id;
 use crate::protocol::v2::web_search_action_from_core;
 use codex_extension_items::image_generation::ImageGenerationItem;
 use codex_protocol::items::parse_hook_prompt_message;
@@ -275,6 +275,10 @@ impl ThreadHistoryBuilder {
             .or_else(|| self.turns.last().cloned())
     }
 
+    pub fn current_turn_snapshot(&self) -> Option<Turn> {
+        self.current_turn.as_ref().map(Turn::from)
+    }
+
     pub fn turn_snapshot(&self, turn_id: &str) -> Option<Turn> {
         self.current_turn
             .as_ref()
@@ -375,6 +379,9 @@ impl ThreadHistoryBuilder {
             EventMsg::ExitedReviewMode(payload) => self.handle_exited_review_mode(payload),
             EventMsg::ItemStarted(payload) => self.handle_item_started(payload),
             EventMsg::ItemCompleted(payload) => self.handle_item_completed(payload),
+            EventMsg::RawResponseItem(payload) => {
+                self.handle_inter_agent_response_item(&payload.item, payload.item.turn_id());
+            }
             EventMsg::HookStarted(_) | EventMsg::HookCompleted(_) => {}
             EventMsg::Error(payload) => self.handle_error(payload),
             EventMsg::TokenCount(_) => {}
@@ -393,8 +400,10 @@ impl ThreadHistoryBuilder {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
             RolloutItem::ResponseItem(item) => self.handle_response_item(item),
-            RolloutItem::InterAgentCommunication(_)
-            | RolloutItem::InterAgentCommunicationMetadata { .. }
+            RolloutItem::InterAgentCommunication(communication) => {
+                self.handle_response_item(&communication.to_model_input_item());
+            }
+            RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::TurnContext(_)
             | RolloutItem::WorldState(_)
             | RolloutItem::SessionMeta(_) => {}
@@ -438,8 +447,7 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_response_item(&mut self, item: &codex_protocol::models::ResponseItem) {
-        if let Some(item) = inter_agent_message_thread_item(item) {
-            self.push_item_in_current_turn(item);
+        if self.handle_inter_agent_response_item(item, item.turn_id()) {
             return;
         }
 
@@ -466,6 +474,41 @@ impl ThreadHistoryBuilder {
                 .map(crate::protocol::v2::HookPromptFragment::from)
                 .collect(),
         });
+    }
+
+    fn handle_inter_agent_response_item(
+        &mut self,
+        item: &codex_protocol::models::ResponseItem,
+        turn_id: Option<&str>,
+    ) -> bool {
+        let codex_protocol::models::ResponseItem::AgentMessage { id, .. } = item else {
+            return false;
+        };
+        let id = id
+            .as_ref()
+            .filter(|id| !id.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| self.next_item_id());
+        let item = inter_agent_message_thread_item_with_id(item, id);
+        let Some(item) = item else {
+            return false;
+        };
+        if let Some(turn_id) = turn_id.filter(|turn_id| !turn_id.is_empty()) {
+            let current_turn_matches = self
+                .current_turn
+                .as_ref()
+                .is_some_and(|turn| turn.id == turn_id);
+            if !current_turn_matches && !self.turns.iter().any(|turn| turn.id == turn_id) {
+                self.finish_current_turn();
+                let turn = self.new_turn(Some(turn_id.to_string()));
+                self.record_changed_pending_turn(&turn);
+                self.current_turn = Some(turn);
+            }
+            self.upsert_item_in_turn_id(turn_id, item);
+        } else {
+            self.push_item_in_current_turn(item);
+        }
+        true
     }
 
     fn handle_user_message(&mut self, payload: &UserMessageEvent) {
@@ -1238,6 +1281,21 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_turn_started(&mut self, payload: &TurnStartedEvent) {
+        if let Some(turn) = self
+            .current_turn
+            .as_mut()
+            .filter(|turn| turn.id == payload.turn_id)
+        {
+            turn.status = TurnStatus::InProgress;
+            turn.error = None;
+            turn.started_at = payload.started_at;
+            turn.completed_at = None;
+            turn.duration_ms = None;
+            turn.opened_explicitly = true;
+            let changed_turn = ThreadHistoryTurnChange::from_pending_turn(turn);
+            self.record_changed_turn(changed_turn);
+            return;
+        }
         self.finish_current_turn();
         let turn = self
             .new_turn(Some(payload.turn_id.clone()))
@@ -1601,6 +1659,7 @@ mod tests {
     use crate::protocol::v2::CommandExecutionSource;
     use codex_extension_items::ExtensionItem as CoreExtensionItem;
     use codex_extension_items::sleep::SleepItem as CoreSleepItem;
+    use codex_protocol::AgentPath;
     use codex_protocol::ThreadId;
     use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
     use codex_protocol::items::CommandExecutionItem as CoreCommandExecutionItem;
@@ -1627,6 +1686,7 @@ mod tests {
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
     use codex_protocol::protocol::ExitedReviewModeEvent;
+    use codex_protocol::protocol::InterAgentCommunication;
     use codex_protocol::protocol::ItemStartedEvent;
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::McpToolCallEndEvent;
@@ -4139,6 +4199,129 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn rebuilds_legacy_idless_plaintext_agent_message() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::AgentMessage {
+                id: None,
+                author: "/root".into(),
+                recipient: "/root/worker".into(),
+                content: vec![
+                    codex_protocol::models::AgentMessageInputContent::InputText {
+                        text: "Inspect the repository.".into(),
+                    },
+                ],
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+                started_at: None,
+                last_agent_message: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(
+            turns,
+            vec![Turn {
+                id: "turn-a".into(),
+                items: vec![ThreadItem::AgentMessage {
+                    id: "item-1".into(),
+                    text: "Agent message from `/root`:\n\nInspect the repository.".into(),
+                    phase: Some(MessagePhase::Commentary),
+                    memory_citation: None,
+                }],
+                items_view: TurnItemsView::Full,
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rebuilds_legacy_inter_agent_communication_variants() {
+        let plaintext = InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root().join("worker").expect("worker path"),
+            Vec::new(),
+            "Inspect the repository.".to_string(),
+            /*trigger_turn*/ true,
+        );
+        let encrypted = InterAgentCommunication::new_encrypted(
+            AgentPath::root(),
+            AgentPath::root().join("worker").expect("worker path"),
+            Vec::new(),
+            "opaque".to_string(),
+            /*trigger_turn*/ true,
+        );
+
+        for (mut communication, expected_text) in [
+            (
+                plaintext,
+                "Agent message from `/root`:\n\nInspect the repository.",
+            ),
+            (
+                encrypted,
+                "Agent message from `/root`:\n\nInput message encrypted",
+            ),
+        ] {
+            communication.set_turn_id_if_missing("turn-a");
+            let items = vec![
+                RolloutItem::InterAgentCommunication(communication),
+                RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: "turn-a".into(),
+                    trace_id: None,
+                    started_at: None,
+                    model_context_window: None,
+                    collaboration_mode_kind: Default::default(),
+                })),
+                RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: "turn-a".into(),
+                    started_at: None,
+                    last_agent_message: None,
+                    error: None,
+                    completed_at: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
+                })),
+            ];
+
+            assert_eq!(
+                build_turns_from_rollout_items(&items),
+                vec![Turn {
+                    id: "turn-a".into(),
+                    items: vec![ThreadItem::AgentMessage {
+                        id: "item-1".into(),
+                        text: expected_text.to_string(),
+                        phase: Some(MessagePhase::Commentary),
+                        memory_citation: None,
+                    }],
+                    items_view: TurnItemsView::Full,
+                    status: TurnStatus::Completed,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                }]
+            );
+        }
     }
 
     #[test]

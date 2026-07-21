@@ -532,6 +532,7 @@ mod mcp_processor;
 mod plugins;
 mod process_exec_processor;
 mod remote_control_processor;
+mod response_item_transcript;
 mod search;
 mod thread_fork_goal;
 mod thread_processor;

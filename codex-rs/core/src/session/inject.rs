@@ -176,6 +176,18 @@ impl Session {
                 default_turn_context.as_ref()
             }
         };
-        self.record_conversation_items(turn_context, &items).await;
+        if items
+            .iter()
+            .any(|item| matches!(item, ResponseItem::AgentMessage { .. }))
+        {
+            if let Err(err) = self
+                .record_history_only_conversation_items(turn_context, &items)
+                .await
+            {
+                tracing::error!("failed to record history-only agent message: {err}");
+            }
+        } else {
+            self.record_conversation_items(turn_context, &items).await;
+        }
     }
 }

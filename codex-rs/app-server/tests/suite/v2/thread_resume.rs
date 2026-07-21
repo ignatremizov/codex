@@ -3443,14 +3443,15 @@ async fn thread_resume_rejoins_running_thread_even_with_override_mismatch() -> R
     assert_eq!(resumed_running_turn.status, TurnStatus::InProgress);
     assert!(initial_turns_page.backwards_cursor.is_some());
     assert_eq!(initial_turns_page.next_cursor, None);
-    // The running-thread resume response is queued onto the thread listener task.
-    // If the in-flight turn completes before that queued command runs, the response
-    // can legitimately observe the thread as idle.
-    match &thread.status {
-        ThreadStatus::Active { active_flags } => assert!(active_flags.is_empty()),
-        ThreadStatus::Idle => {}
-        status => panic!("unexpected thread status after running resume: {status:?}"),
-    }
+    // The listener remains behind the resume barrier until this response is queued, so a
+    // completion produced after the snapshot boundary must be delivered after the response.
+    let ThreadStatus::Active { active_flags } = &thread.status else {
+        panic!(
+            "running resume should precede the pending completion: {:?}",
+            thread.status
+        );
+    };
+    assert!(active_flags.is_empty());
 
     timeout(
         DEFAULT_READ_TIMEOUT,
