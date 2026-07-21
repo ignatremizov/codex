@@ -31,6 +31,38 @@ fn preview_line(speaker: TranscriptPreviewSpeaker, text: &str) -> TranscriptPrev
     }
 }
 
+#[test]
+fn incoming_communication_preview_preserves_literal_directives() {
+    let item = ThreadItem::AgentMessage {
+        id: "amsg-preview".into(),
+        text: "Agent message from `/root/worker`:\n\n::git-create-branch{cwd=\"/ignored\" branch=\"ignored\"}\n\nlast".into(),
+        inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
+            author: "/root/worker".into(),
+            recipient: "/root".into(),
+        }),
+        phase: Some(codex_protocol::models::MessagePhase::Commentary),
+        memory_citation: None,
+        delivery: None,
+        questions: None,
+    };
+    let mut lines = Vec::new();
+    append_transcript_preview_lines(
+        &mut lines,
+        [&item],
+        Path::new("/workspace"),
+        /*inline_visualization_context*/ None,
+    );
+    lines.reverse();
+    insta::assert_snapshot!(
+        lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>().join("\n"),
+        @r#"
+    Agent message from `/root/worker`:
+    ::git-create-branch{cwd="/ignored" branch="ignored"}
+    last
+    "#
+    );
+}
+
 fn rollout_user_message(text: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
         message: text.to_string(),
@@ -279,6 +311,7 @@ fn legacy_transcript_preview_falls_back_when_scan_budget_is_exhausted() {
 #[test]
 fn transcript_preview_reverse_scan_stops_before_older_items() {
     let newest = ThreadItem::AgentMessage {
+        inter_agent_source: None,
         id: String::from("final"),
         text: String::from("one\ntwo\nthree\nfour\nfive\nsix"),
         phase: None,

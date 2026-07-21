@@ -2639,6 +2639,22 @@
         }
       ]
     },
+    "InterAgentMessageSource": {
+      "description": "Presentation provenance for incoming communication, not sender authority or a delivery receipt.",
+      "properties": {
+        "author": {
+          "type": "string"
+        },
+        "recipient": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "author",
+        "recipient"
+      ],
+      "type": "object"
+    },
     "ItemCompletedNotification": {
       "properties": {
         "completedAtMs": {
@@ -4761,6 +4777,17 @@
             },
             "id": {
               "type": "string"
+            },
+            "interAgentSource": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/InterAgentMessageSource"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "memoryCitation": {
               "anyOf": [

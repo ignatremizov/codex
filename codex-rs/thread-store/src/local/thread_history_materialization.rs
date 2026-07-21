@@ -49,6 +49,19 @@ async fn materialize_to_sqlite_with_state_db(
     {
         return Ok(());
     }
+    if let Some(state) = &projection_state
+        && !super::thread_history::fork_projection_is_current(
+            store,
+            thread_id,
+            state.next_byte_offset,
+            state.next_ordinal,
+        )
+        .await?
+    {
+        // The existing prefix may have been projected by a binary without fork transcripts.
+        // Do not certify that prefix by merely appending a suffix or returning at EOF.
+        return rebuild_to_sqlite(store, thread_id, rollout_path).await;
+    }
     let session_meta = codex_rollout::read_session_meta_line(rollout_path)
         .await
         .map_err(thread_store_io_error)?

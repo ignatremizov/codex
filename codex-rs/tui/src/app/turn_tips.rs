@@ -45,7 +45,7 @@ pub(super) enum TipSurface {
 }
 
 fn is_final_answer(item: &ThreadItem) -> bool {
-    matches!(item, ThreadItem::AgentMessage { text, phase: Some(MessagePhase::FinalAnswer) | None, .. }
+    matches!(item, ThreadItem::AgentMessage { text, phase: Some(MessagePhase::FinalAnswer) | None, inter_agent_source: None, .. }
         if !text.trim().is_empty())
 }
 

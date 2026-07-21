@@ -2049,6 +2049,7 @@ async fn external_agent_config_import_creates_session_rollouts() -> Result<()> {
         Some(&ThreadItem::AgentMessage {
             id: "item-4".into(),
             text: "<EXTERNAL SESSION IMPORTED>".into(),
+            inter_agent_source: None,
             phase: None,
             memory_citation: None,
             delivery: None,

@@ -239,6 +239,7 @@ export type { HooksListParams } from "./HooksListParams";
 export type { HooksListResponse } from "./HooksListResponse";
 export type { InAppBrowserRequirements } from "./InAppBrowserRequirements";
 export type { InstalledApp } from "./InstalledApp";
+export type { InterAgentMessageSource } from "./InterAgentMessageSource";
 export type { ItemCompletedNotification } from "./ItemCompletedNotification";
 export type { ItemGuardianApprovalReviewCompletedNotification } from "./ItemGuardianApprovalReviewCompletedNotification";
 export type { ItemGuardianApprovalReviewStartedNotification } from "./ItemGuardianApprovalReviewStartedNotification";

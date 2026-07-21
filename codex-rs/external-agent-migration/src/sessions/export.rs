@@ -262,6 +262,7 @@ mod tests {
             ThreadItem::AgentMessage {
                 id: "item-4".into(),
                 text: EXTERNAL_SESSION_IMPORTED_MARKER.into(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -296,6 +297,7 @@ mod tests {
             Some(&ThreadItem::AgentMessage {
                 id: "item-3".into(),
                 text: EXTERNAL_SESSION_IMPORTED_MARKER.into(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,

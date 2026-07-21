@@ -2210,6 +2210,14 @@ class InstalledApp(BaseModel):
     ] = None
 
 
+class InterAgentMessageSource(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    author: str
+    recipient: str
+
+
 class InternalChatMessageMetadataPassthrough(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10137,6 +10145,9 @@ class AgentMessageThreadItem(BaseModel):
     )
     delivery: AgentMessageDelivery | None = None
     id: str
+    inter_agent_source: Annotated[
+        InterAgentMessageSource | None, Field(alias="interAgentSource")
+    ] = None
     memory_citation: Annotated[MemoryCitation | None, Field(alias="memoryCitation")] = None
     phase: MessagePhase | None = None
     questions: list[AsyncUserInputQuestion] | None = None

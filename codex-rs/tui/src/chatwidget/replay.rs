@@ -286,6 +286,10 @@ impl ChatWidget {
         turn_id: String,
         render_source: ThreadItemRenderSource,
     ) {
+        if inter_agent_transcript::is_inter_agent_message(&item) {
+            self.on_inter_agent_message(item);
+            return;
+        }
         let from_replay = render_source.is_replay();
         let replay_kind = render_source.replay_kind();
         match item {
@@ -324,6 +328,7 @@ impl ChatWidget {
                 if self.complete_realtime_delegated_agent_item(
                     &turn_id,
                     &ThreadItem::AgentMessage {
+                        inter_agent_source: None,
                         id: id.clone(),
                         text: text.clone(),
                         phase: phase.clone(),

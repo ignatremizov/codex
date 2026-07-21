@@ -14,6 +14,8 @@ use crate::ThreadStoreResult;
 /// One immutable rollout range contributing to a paginated thread's history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RolloutLineageSegment {
+    /// Stable owning thread from SessionMeta; a revert can give its rollout a different ID.
+    pub(super) thread_id: ThreadId,
     pub(super) rollout_id: ThreadId,
     pub(super) rollout_path: PathBuf,
     pub(super) start_ordinal: u64,
@@ -184,6 +186,7 @@ impl LocalThreadStore {
                 None => 1,
             };
             segments.push(RolloutLineageSegment {
+                thread_id: meta.meta.id,
                 rollout_id,
                 rollout_path,
                 start_ordinal,

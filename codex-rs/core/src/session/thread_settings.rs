@@ -213,6 +213,7 @@ pub(super) async fn emit_applied(
         PublicationBatch {
             reply,
             persist_context: None,
+            raw_event_guardian_thread_id: None,
             rollout: items,
             events: vec![Event {
                 id: submission_id,
