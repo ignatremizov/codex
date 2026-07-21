@@ -777,10 +777,10 @@ impl ThreadStateManager {
                     .typed_transcript_delivery_gate,
             )
         };
-        let _delivery_permit = delivery_gate
-            .acquire_owned()
-            .await
-            .expect("typed transcript delivery semaphore is never closed");
+        let Ok(_delivery_permit) = delivery_gate.acquire_owned().await else {
+            error!("typed transcript delivery semaphore closed unexpectedly");
+            return false;
+        };
         let mut state = self.state.lock().await;
         if !state.live_connections.contains_key(&connection_id) {
             return false;
@@ -839,7 +839,7 @@ impl ThreadStateManager {
     pub(crate) async fn acquire_typed_transcript_delivery_permit(
         &self,
         thread_id: ThreadId,
-    ) -> tokio::sync::OwnedSemaphorePermit {
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
         let delivery_gate = {
             let mut state = self.state.lock().await;
             Arc::clone(
@@ -850,10 +850,13 @@ impl ThreadStateManager {
                     .typed_transcript_delivery_gate,
             )
         };
-        delivery_gate
-            .acquire_owned()
-            .await
-            .expect("typed transcript delivery semaphore is never closed")
+        match delivery_gate.acquire_owned().await {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                error!("typed transcript delivery semaphore closed unexpectedly");
+                None
+            }
+        }
     }
 
     pub(crate) async fn remove_connection(&self, connection_id: ConnectionId) -> Vec<ThreadId> {

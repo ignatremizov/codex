@@ -471,9 +471,12 @@ async fn process_thread_listener_event(
         .await;
     }
     if !transcript_item_changes.is_empty() {
-        let _delivery_permit = thread_state_manager
+        let Some(_delivery_permit) = thread_state_manager
             .acquire_typed_transcript_delivery_permit(conversation_id)
-            .await;
+            .await
+        else {
+            return;
+        };
         let transcript_connection_ids = thread_state_manager
             .typed_transcript_connection_ids(conversation_id)
             .await;
