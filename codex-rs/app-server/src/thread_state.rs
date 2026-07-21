@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::Weak;
 use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -286,7 +287,7 @@ mod tests {
             changes.changed_items,
             vec![codex_app_server_protocol::ThreadHistoryItemChange {
                 turn_id: "turn-a".to_string(),
-                item: expected_item.clone(),
+                item: expected_item,
             }]
         );
         assert_eq!(
@@ -358,8 +359,8 @@ mod tests {
                 .try_add_connection_to_thread(thread_id, resuming_connection)
                 .await
         );
-        let delivery_guard = manager
-            .acquire_typed_transcript_delivery_guard(thread_id)
+        let delivery_permit = manager
+            .acquire_typed_transcript_delivery_permit(thread_id)
             .await;
         let (pause_started_tx, pause_started_rx) = oneshot::channel();
         let pause_manager = manager.clone();
@@ -375,7 +376,7 @@ mod tests {
             !pause_task.is_finished(),
             "pause must wait for in-flight typed transcript delivery"
         );
-        drop(delivery_guard);
+        drop(delivery_permit);
         assert!(pause_task.await.expect("pause task"));
         assert!(
             manager
@@ -465,7 +466,7 @@ struct ThreadEntry {
     state: Arc<Mutex<ThreadState>>,
     connection_ids: HashSet<ConnectionId>,
     paused_typed_transcript_connections: HashMap<ConnectionId, usize>,
-    typed_transcript_delivery_gate: Arc<Mutex<()>>,
+    typed_transcript_delivery_gate: Arc<Semaphore>,
     has_connections_watcher: watch::Sender<bool>,
 }
 
@@ -475,7 +476,7 @@ impl Default for ThreadEntry {
             state: Arc::new(Mutex::new(ThreadState::default())),
             connection_ids: HashSet::new(),
             paused_typed_transcript_connections: HashMap::new(),
-            typed_transcript_delivery_gate: Arc::new(Mutex::new(())),
+            typed_transcript_delivery_gate: Arc::new(Semaphore::new(1)),
             has_connections_watcher: watch::channel(false).0,
         }
     }
@@ -776,7 +777,10 @@ impl ThreadStateManager {
                     .typed_transcript_delivery_gate,
             )
         };
-        let _delivery_guard = delivery_gate.lock().await;
+        let _delivery_permit = delivery_gate
+            .acquire_owned()
+            .await
+            .expect("typed transcript delivery semaphore is never closed");
         let mut state = self.state.lock().await;
         if !state.live_connections.contains_key(&connection_id) {
             return false;
@@ -832,10 +836,10 @@ impl ThreadStateManager {
             .unwrap_or_default()
     }
 
-    pub(crate) async fn acquire_typed_transcript_delivery_guard(
+    pub(crate) async fn acquire_typed_transcript_delivery_permit(
         &self,
         thread_id: ThreadId,
-    ) -> tokio::sync::OwnedMutexGuard<()> {
+    ) -> tokio::sync::OwnedSemaphorePermit {
         let delivery_gate = {
             let mut state = self.state.lock().await;
             Arc::clone(
@@ -846,7 +850,10 @@ impl ThreadStateManager {
                     .typed_transcript_delivery_gate,
             )
         };
-        delivery_gate.lock_owned().await
+        delivery_gate
+            .acquire_owned()
+            .await
+            .expect("typed transcript delivery semaphore is never closed")
     }
 
     pub(crate) async fn remove_connection(&self, connection_id: ConnectionId) -> Vec<ThreadId> {
