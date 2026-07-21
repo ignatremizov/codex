@@ -36,9 +36,12 @@ impl Session {
         let mut rollout = prepared.rollout_items();
         rollout.extend(update.rollout);
         let recorded = items.clone();
-        let receiver = self.dispatch_history_publication(
+        let batch = self
+            .conversation_publication_batch(&step.turn, rollout, &items)
+            .await;
+        let receiver = self.dispatch_history_publication_with_events(
             permit,
-            rollout,
+            batch,
             Vec::new(),
             /*acknowledgement*/ None,
             move |state| {
@@ -50,9 +53,6 @@ impl Session {
                 }
             },
         )?;
-        self.publication_result(receiver).await?;
-        // Raw observers remain caller-owned until the later transcript-publication owner.
-        self.send_raw_response_items(&step.turn, &items).await;
-        Ok(())
+        self.publication_result(receiver).await
     }
 }
