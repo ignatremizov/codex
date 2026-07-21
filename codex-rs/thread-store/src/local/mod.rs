@@ -219,9 +219,6 @@ impl LocalThreadStore {
                 codex_state::open_thread_history_db(&self.config.sqlite).await
             })
             .await
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!("failed to open thread history database: {err}"),
-            })
     }
 
     /// Read a local rollout-backed thread by path.

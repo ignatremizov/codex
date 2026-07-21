@@ -85,7 +85,6 @@ use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::WarningNotification;
 use codex_app_server_protocol::build_item_from_guardian_event;
 use codex_app_server_protocol::guardian_auto_approval_review_notification;
-use codex_app_server_protocol::inter_agent_message_thread_item;
 use codex_app_server_protocol::item_event_to_server_notification;
 use codex_core::CodexThread;
 use codex_core::ThreadManager;
@@ -1446,7 +1445,6 @@ async fn maybe_emit_raw_response_item_completed(
     item: codex_protocol::models::ResponseItem,
     outgoing: &ThreadScopedOutgoingMessageSender,
 ) {
-    let transcript_item = inter_agent_message_thread_item(&item);
     let notification = RawResponseItemCompletedNotification {
         thread_id: conversation_id.to_string(),
         turn_id: turn_id.to_string(),
@@ -1455,18 +1453,6 @@ async fn maybe_emit_raw_response_item_completed(
     outgoing
         .send_server_notification(ServerNotification::RawResponseItemCompleted(notification))
         .await;
-    if let Some(item) = transcript_item {
-        outgoing
-            .send_server_notification(ServerNotification::ItemCompleted(
-                ItemCompletedNotification {
-                    thread_id: conversation_id.to_string(),
-                    turn_id: turn_id.to_string(),
-                    item,
-                    completed_at_ms: now_unix_timestamp_ms(),
-                },
-            ))
-            .await;
-    }
 }
 
 async fn find_and_remove_turn_summary(
@@ -2204,7 +2190,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plaintext_agent_message_emits_raw_and_transcript_notifications() -> Result<()> {
+    async fn plaintext_agent_message_emits_raw_notification() -> Result<()> {
         let conversation_id = ThreadId::from_string("00000000-0000-0000-0000-000000000789")?;
         let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
         let outgoing = Arc::new(OutgoingMessageSender::new(
@@ -2217,7 +2203,7 @@ mod tests {
             conversation_id,
         );
         let item = ResponseItem::AgentMessage {
-            id: Some(ResponseItemId::with_suffix("amsg", "task")),
+            id: None,
             author: "/root".to_string(),
             recipient: "/root/worker".to_string(),
             content: vec![AgentMessageInputContent::InputText {
@@ -2239,25 +2225,6 @@ mod tests {
                 thread_id: conversation_id.to_string(),
                 turn_id: "turn-1".to_string(),
                 item,
-            }
-        );
-        let transcript_notification = match recv_broadcast_notification(&mut rx).await? {
-            ServerNotification::ItemCompleted(notification) => notification,
-            notification => bail!("expected transcript item notification, got {notification:?}"),
-        };
-        let completed_at_ms = transcript_notification.completed_at_ms;
-        assert_eq!(
-            transcript_notification,
-            ItemCompletedNotification {
-                thread_id: conversation_id.to_string(),
-                turn_id: "turn-1".to_string(),
-                item: ThreadItem::AgentMessage {
-                    id: "amsg_task".to_string(),
-                    text: "Agent message from `/root`:\n\nInspect the repository.".to_string(),
-                    phase: Some(codex_protocol::models::MessagePhase::Commentary),
-                    memory_citation: None,
-                },
-                completed_at_ms,
             }
         );
         assert!(rx.try_recv().is_err(), "no extra messages expected");

@@ -797,7 +797,6 @@ SELECT
         .execute(&pool)
         .await
         .expect("insert projection state");
-
         store
             .resume_thread(ResumeThreadParams {
                 thread_id,

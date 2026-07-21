@@ -296,6 +296,32 @@ async fn default_turn_context_assigns_missing_response_item_ids() {
     );
 }
 
+#[tokio::test]
+async fn agent_messages_get_local_ids_without_item_ids_feature() {
+    let (session, turn_context) = make_session_and_context().await;
+    let response_item = ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "Inspect the repository.".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let items = session.prepare_conversation_items_for_history(
+        &turn_context,
+        std::slice::from_ref(&response_item),
+    );
+
+    assert!(
+        items[0]
+            .id()
+            .is_some_and(|item_id| item_id.starts_with("amsg_"))
+    );
+    assert_eq!(items[0].turn_id(), Some(turn_context.sub_id.as_str()));
+}
+
 fn assistant_message(text: &str) -> ResponseItem {
     ResponseItem::Message {
         id: None,
@@ -2224,9 +2250,10 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     );
     encrypted_with_audit.content = "audit-visible child result".to_string();
 
-    for communication in [plaintext, encrypted, encrypted_with_audit] {
+    for mut communication in [plaintext, encrypted, encrypted_with_audit] {
         let (mut session, turn_context) = make_session_and_context().await;
         let rollout_path = attach_thread_persistence(&mut session).await;
+        communication.id = Some(ResponseItemId::with_suffix("amsg", "turn-id-test"));
         let mut expected_item = communication.to_model_input_item();
         expected_item.set_turn_id_if_missing(&turn_context.sub_id);
 
@@ -6830,7 +6857,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         agent_status: agent_status_tx,
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
-        durable_context_lock: Semaphore::new(/*permits*/ 1),
+        durable_context_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
         features: config.features.clone(),
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
@@ -9031,7 +9058,7 @@ where
         agent_status: agent_status_tx,
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
-        durable_context_lock: Semaphore::new(/*permits*/ 1),
+        durable_context_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
         features: config.features.clone(),
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,

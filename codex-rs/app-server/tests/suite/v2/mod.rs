@@ -35,6 +35,7 @@ mod hooks_list;
 mod host_skills;
 mod imagegen_extension;
 mod initialize;
+mod inter_agent_transcript;
 mod marketplace_add;
 mod marketplace_remove;
 mod marketplace_upgrade;
