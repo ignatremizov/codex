@@ -104,12 +104,28 @@ impl App {
                 had_header || reasoning.header.is_some()
             }
             ServerNotification::ItemCompleted(ItemCompletedNotification {
-                item: ThreadItem::AgentMessage { text, .. },
+                item:
+                    ThreadItem::AgentMessage {
+                        text,
+                        inter_agent_source: None,
+                        ..
+                    },
                 ..
             }) => {
                 activity.last_message = Some(preview_agent_message(text));
                 activity.reasoning = None;
                 true
+            }
+            ServerNotification::ItemStarted(notification)
+                if matches!(
+                    &notification.item,
+                    ThreadItem::AgentMessage {
+                        inter_agent_source: Some(_),
+                        ..
+                    }
+                ) =>
+            {
+                false
             }
             ServerNotification::TurnStarted(_)
             | ServerNotification::TurnCompleted(_)

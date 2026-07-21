@@ -41,6 +41,9 @@ use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
+#[path = "thread_history_fork_projection_tests.rs"]
+mod fork_projection_tests;
+
 use super::super::LocalThreadStore;
 use super::super::LocalThreadStoreConfig;
 use super::super::test_support::test_config;
@@ -2953,34 +2956,68 @@ async fn create_paginated_subagent_thread(
     subagent_history_start_ordinal: Option<u64>,
 ) {
     store
-        .create_thread(CreateThreadParams {
-            creator_user_id: None,
-            creator_account_id: None,
-            session_id: thread_id.into(),
+        .create_thread(paginated_thread_params(
             thread_id,
-            extra_config: None,
-            forked_from_id: None,
-            parent_thread_id: None,
-            source: SessionSource::Exec,
-            thread_source: None,
-            originator: "test_originator".to_string(),
-            base_instructions: BaseInstructions::default(),
-            dynamic_tools: Vec::new(),
-            selected_capability_roots: Vec::new(),
-            multi_agent_version: None,
-            history_mode: ThreadHistoryMode::Paginated,
             history_base,
             subagent_history_start_ordinal,
-            initial_window_id: "window-1".to_string(),
-            runtime_workspace_roots: None,
-            metadata: ThreadPersistenceMetadata {
-                cwd: Some(std::env::current_dir().expect("cwd")),
-                model_provider: "test-provider".to_string(),
-                memory_mode: ThreadMemoryMode::Enabled,
-            },
-        })
+        ))
         .await
         .expect("create paginated thread");
+}
+
+async fn create_indexed_paginated_thread(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    history_base: Option<HistoryPosition>,
+) {
+    // Public list APIs need the metadata index as well as canonical/projection files.
+    // Keep raw lazy-writer tests on create_paginated_subagent_thread instead.
+    let live = crate::LiveThread::create(
+        std::sync::Arc::new(store.clone()),
+        paginated_thread_params(
+            thread_id,
+            history_base,
+            /*subagent_history_start_ordinal*/ None,
+        ),
+    )
+    .await
+    .expect("create indexed paginated fixture");
+    live.persist(PersistContext::Standard)
+        .await
+        .expect("publish the fixture metadata through the normal owner");
+}
+
+fn paginated_thread_params(
+    thread_id: ThreadId,
+    history_base: Option<HistoryPosition>,
+    subagent_history_start_ordinal: Option<u64>,
+) -> CreateThreadParams {
+    CreateThreadParams {
+        creator_user_id: None,
+        creator_account_id: None,
+        session_id: thread_id.into(),
+        thread_id,
+        extra_config: None,
+        forked_from_id: None,
+        parent_thread_id: None,
+        source: SessionSource::Exec,
+        thread_source: None,
+        originator: "test_originator".to_string(),
+        base_instructions: BaseInstructions::default(),
+        dynamic_tools: Vec::new(),
+        selected_capability_roots: Vec::new(),
+        multi_agent_version: None,
+        history_mode: ThreadHistoryMode::Paginated,
+        history_base,
+        subagent_history_start_ordinal,
+        initial_window_id: "window-1".to_string(),
+        runtime_workspace_roots: None,
+        metadata: ThreadPersistenceMetadata {
+            cwd: Some(std::env::current_dir().expect("cwd")),
+            model_provider: "test-provider".to_string(),
+            memory_mode: ThreadMemoryMode::Enabled,
+        },
+    }
 }
 
 fn turn_started(turn_id: &str) -> RolloutItem {

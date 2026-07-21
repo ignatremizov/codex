@@ -9,12 +9,15 @@ use super::LocalThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
+mod fork_projection;
 mod read;
+mod read_freshness;
 mod realtime;
 mod search;
 mod segment_paging;
 mod turn_lookup;
 
+pub(super) use fork_projection::is_current as fork_projection_is_current;
 pub(super) use read::list_items;
 pub(super) use read::list_turns;
 pub(super) use realtime::list_timeline;
@@ -115,6 +118,7 @@ pub(super) async fn apply_projection(
     mode: ProjectionMode,
 ) -> ThreadStoreResult<()> {
     let pool = store.thread_history_db().await?;
+    fork_projection::ensure_table(pool).await?;
     // Write the projected rows and advance the JSONL offset and ordinal in one transaction. If
     // SQLite fails, it stays behind the durable rollout instead of claiming data it did not
     // materialize.
@@ -129,6 +133,7 @@ pub(super) async fn apply_projection(
             "DELETE FROM thread_realtime_items WHERE thread_id = ?",
             "DELETE FROM thread_turns WHERE thread_id = ?",
             "DELETE FROM thread_history_projection_state WHERE thread_id = ?",
+            "DELETE FROM fork_thread_history_projection_state WHERE thread_id = ?",
         ] {
             sqlx::query(statement)
                 .bind(thread_id.as_str())
@@ -240,6 +245,7 @@ ON CONFLICT(thread_id, item_id) DO NOTHING
         }
     }
 
+    let next_offset = sqlite_integer(next_offset, "rollout byte offset")?;
     sqlx::query(
         r#"
 INSERT INTO thread_history_projection_state (
@@ -253,7 +259,25 @@ ON CONFLICT(thread_id) DO UPDATE SET
         "#,
     )
     .bind(thread_id.as_str())
-    .bind(sqlite_integer(next_offset, "rollout byte offset")?)
+    .bind(next_offset)
+    .bind(next_ordinal)
+    .execute(&mut *transaction)
+    .await
+    .map_err(thread_history_error)?;
+    sqlx::query(
+        r#"
+INSERT INTO fork_thread_history_projection_state (
+    thread_id,
+    next_rollout_byte_offset,
+    next_rollout_ordinal
+) VALUES (?, ?, ?)
+ON CONFLICT(thread_id) DO UPDATE SET
+    next_rollout_byte_offset = excluded.next_rollout_byte_offset,
+    next_rollout_ordinal = excluded.next_rollout_ordinal
+        "#,
+    )
+    .bind(thread_id.as_str())
+    .bind(next_offset)
     .bind(next_ordinal)
     .execute(&mut *transaction)
     .await
@@ -274,6 +298,9 @@ pub(super) async fn delete_thread(
     }
 
     let pool = store.thread_history_db().await?;
+    fork_projection::ensure_table(pool)
+        .await
+        .map_err(thread_history_delete_error)?;
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
@@ -295,6 +322,11 @@ pub(super) async fn delete_thread(
         .await
         .map_err(thread_history_delete_error)?;
     sqlx::query("DELETE FROM thread_history_projection_state WHERE thread_id = ?")
+        .bind(thread_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(thread_history_delete_error)?;
+    sqlx::query("DELETE FROM fork_thread_history_projection_state WHERE thread_id = ?")
         .bind(thread_id.as_str())
         .execute(&mut *transaction)
         .await
@@ -330,7 +362,9 @@ pub(super) async fn apply_change_set(
         };
         // The same turn can appear again as it moves from started to completed. Update its latest
         // status, error, and timestamps, but keep the rollout ordinal from the first record that
-        // created it.
+        // created it. A completed row with no lifecycle facts is only an item-created placeholder;
+        // canonical lifecycle events must still be able to replace it. Real terminal rows retain
+        // their terminal ordinal and cannot enter this update path.
         sqlx::query(
             r#"
 INSERT INTO thread_turns (
@@ -355,7 +389,16 @@ ON CONFLICT(thread_id, turn_id) DO UPDATE SET
     completed_at = excluded.completed_at,
     duration_ms = excluded.duration_ms
 WHERE thread_turns.rollout_end_ordinal IS NULL
-  AND thread_turns.status = 'inProgress'
+  AND (
+    thread_turns.status = 'inProgress'
+    OR (
+      thread_turns.status = 'completed'
+      AND thread_turns.error_json IS NULL
+      AND thread_turns.started_at IS NULL
+      AND thread_turns.completed_at IS NULL
+      AND thread_turns.duration_ms IS NULL
+    )
+  )
             "#,
         )
         .bind(thread_id)
@@ -456,6 +499,33 @@ WHERE thread_id = ?
                         "thread history projection for {thread_id} is missing an item creation timestamp"
                     ),
                 })?;
+        // Older history-only records and review flows can persist an item before any explicit
+        // turn lifecycle record. Ensure the item is always discoverable through both turn and
+        // item pagination without overwriting an existing turn's live or terminal status.
+        sqlx::query(
+            r#"
+INSERT INTO thread_turns (
+    thread_id,
+    turn_id,
+    rollout_ordinal,
+    rollout_byte_offset,
+    status,
+    error_json,
+    started_at,
+    completed_at,
+    duration_ms
+) VALUES (?, ?, ?, ?, 'completed', NULL, NULL, NULL, NULL)
+ON CONFLICT(thread_id, turn_id) DO NOTHING
+            "#,
+        )
+        .bind(thread_id)
+        .bind(item.turn_id.as_str())
+        .bind(rollout_ordinal)
+        .bind(rollout_byte_offset)
+        .execute(&mut **transaction)
+        .await
+        .map_err(thread_history_error)?;
+
         let item_id = item.item.id().to_string();
         let item_json = serde_json::to_string(&item.item).map_err(thread_history_error)?;
         // Completed items are immutable: local producers emit ItemCompleted exactly once per

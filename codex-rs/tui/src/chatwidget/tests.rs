@@ -264,6 +264,8 @@ mod history_projection;
 mod history_replay;
 #[path = "tests/home_cleanup_tests.rs"]
 mod home_cleanup_tests;
+#[path = "tests/inter_agent_transcript_tests.rs"]
+mod inter_agent_transcript_tests;
 #[path = "tests/luna_reserve_usage_tests.rs"]
 mod luna_reserve_usage_tests;
 mod mcp_startup;

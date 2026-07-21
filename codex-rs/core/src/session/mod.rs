@@ -58,7 +58,6 @@ use async_channel::Sender;
 use chrono::Local;
 use chrono::Utc;
 use codex_analytics::AnalyticsEventsClient;
-use codex_analytics::ImagePreparationFact;
 use codex_analytics::ImagePreparationMetadata;
 use codex_analytics::SubAgentThreadStartedInput;
 use codex_analytics::TurnCodexErrorFact;
@@ -139,7 +138,6 @@ use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -161,7 +159,6 @@ use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_rmcp_client::ElicitationResponse;
-use codex_rollout::should_persist_response_item;
 use codex_rollout::state_db;
 use codex_rollout_trace::ThreadStartedTraceMetadata;
 use codex_rollout_trace::ThreadTraceContext;
@@ -180,7 +177,6 @@ use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_utils_audio::prepare_response_items as prepare_audio_response_items;
 use codex_utils_git_discovery::GitRootDiscovery;
-use codex_utils_output_truncation::with_serialization_allowance;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use futures::future::Shared;
@@ -270,6 +266,7 @@ pub(crate) mod step_settings;
 mod thread_settings;
 pub(crate) mod time_reminder;
 mod token_budget;
+mod transcript_publication;
 pub(crate) mod turn;
 pub(crate) mod turn_context;
 mod turn_input;
@@ -3524,144 +3521,12 @@ impl Session {
                 items,
                 image_preparations,
                 /*acknowledgement*/ None,
+                transcript_publication::ConversationBoundary::Existing,
             )
             .await
         {
             error!("failed to publish conversation items: {error}");
         }
-    }
-
-    #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]
-    async fn record_prepared_conversation_items(
-        &self,
-        turn_context: &TurnContext,
-        model_info: &ModelInfo,
-        mut items: Vec<ResponseItemEnvelope>,
-        image_preparations: Vec<ImagePreparationMetadata>,
-        acknowledgement: Option<codex_extension_api::TurnInputContributionAcknowledgement>,
-    ) -> CodexResult<()> {
-        let permit = thread_settings::acquire_persistence_lock(self).await;
-        self.check_history_publication()?;
-        // Save the originating history budget for replay.
-        // Preserve any existing tool-specific override.
-        let policy: codex_utils_output_truncation::TruncationPolicy =
-            model_info.truncation_policy.into();
-        for envelope in &mut items {
-            if matches!(
-                envelope.item,
-                ResponseItem::FunctionCallOutput { .. } | ResponseItem::CustomToolCallOutput { .. }
-            ) {
-                envelope
-                    .metadata
-                    .get_or_insert_default()
-                    .history_truncation_token_limit
-                    .get_or_insert_with(|| with_serialization_allowance(policy).token_budget());
-            }
-        }
-        // Last-N-turn forks retain a suffix starting at a user turn boundary. Repeat the
-        // cumulative checkpoint there so the suffix remains self-contained even when the fork
-        // happens mid-turn; dirty checkpoints preserve new sources between boundaries.
-        let force_mcp_checkpoint = items
-            .iter()
-            .any(|envelope| crate::context_manager::is_user_turn_boundary(&envelope.item));
-        let mcp_revision = self
-            .services
-            .executed_tool_calls
-            .mcp_attribution_checkpoint(force_mcp_checkpoint)
-            .and_then(|(attribution, revision)| {
-                let first_persisted = items
-                    .iter()
-                    .position(|envelope| should_persist_response_item(&envelope.item))?;
-                for (index, envelope) in items.iter_mut().enumerate() {
-                    // Rollout batches may be partially written. Checkpoint the first persisted
-                    // item, and repeat the checkpoint at turn boundaries retained by forks.
-                    if index == first_persisted
-                        || crate::context_manager::is_user_turn_boundary(&envelope.item)
-                    {
-                        envelope.metadata.get_or_insert_default().mcp_attribution =
-                            Some(attribution.clone());
-                    }
-                }
-                Some(revision)
-            });
-        let response_items = items
-            .iter()
-            .map(|envelope| envelope.item.clone())
-            .collect::<Vec<_>>();
-        let prepared = {
-            let mut state = self.state.lock().await;
-            let pending_orders = turn_context
-                .extension_data
-                .get::<retained_context::PendingAssistantMessageOrders>();
-            for envelope in &mut items {
-                if envelope
-                    .metadata
-                    .as_ref()
-                    .is_some_and(|metadata| metadata.compaction_output)
-                {
-                    continue;
-                }
-                if matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "assistant")
-                    || matches!(&envelope.item, ResponseItem::FunctionCall { .. })
-                    || crate::context::is_user_authorization_message(&envelope.item)
-                {
-                    let message_order = pending_orders.as_ref().and_then(|orders| {
-                        orders
-                            .0
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .remove(envelope.item.id()?.as_str())
-                    });
-                    // Preserve input acceptance and source-message start order.
-                    // Synthetic messages still receive their order here.
-                    envelope
-                        .metadata
-                        .get_or_insert_default()
-                        .user_input_order
-                        .get_or_insert_with(|| {
-                            message_order.unwrap_or_else(|| state.history.reserve_input_order())
-                        });
-                }
-            }
-            prepared_history_items::PreparedHistoryItems::new(&state.history, items, policy)
-        };
-        let rollout_items = prepared.rollout_items();
-        // Mark external context before transferring work to the independent worker.
-        // A cancelled result waiter must not bypass the memory privacy gate.
-        if turn_context.config.memories.disable_on_external_context
-            && let Some(item) = response_items
-                .iter()
-                .find(|item| matches!(item, ResponseItem::FunctionCallOutput { call_id: None, .. }))
-        {
-            mark_thread_memory_mode_polluted_if_external_context(self, turn_context, item).await;
-        }
-        let recorded = response_items.clone();
-        let executed_tool_calls = self.services.executed_tool_calls.clone();
-        let receiver = self.dispatch_history_publication(
-            permit,
-            rollout_items,
-            Vec::new(),
-            acknowledgement,
-            move |state| {
-                state.current_time_reminder.note_recorded_items(&recorded);
-                prepared.install(&mut state.history);
-                if let Some(revision) = mcp_revision {
-                    executed_tool_calls.mark_mcp_attribution_persisted(revision);
-                }
-            },
-        )?;
-        self.publication_result(receiver).await?;
-        for image in image_preparations {
-            self.services
-                .analytics_events_client
-                .track_image_preparation(ImagePreparationFact {
-                    turn_id: turn_context.sub_id.clone(),
-                    metadata: image,
-                });
-        }
-        self.send_raw_response_items(turn_context, &response_items)
-            .await;
-        Ok(())
     }
 
     pub(crate) async fn record_durable_context_items(
@@ -3684,6 +3549,7 @@ impl Session {
                 .collect(),
             preparations,
             acknowledgement,
+            transcript_publication::ConversationBoundary::Existing,
         )
         .await
     }
@@ -4039,9 +3905,12 @@ impl Session {
         }];
         rollout.extend(prepared.rollout_items());
         let recorded = items.clone();
-        let result = match self.dispatch_history_publication(
+        let batch = self
+            .conversation_publication_batch(turn_context, rollout, &items)
+            .await;
+        let result = match self.dispatch_history_publication_with_events(
             permit,
-            rollout,
+            batch,
             Vec::new(),
             /*acknowledgement*/ None,
             move |state| {
@@ -4055,9 +3924,7 @@ impl Session {
         };
         if let Err(error) = result {
             error!("failed to publish inter-agent context: {error}");
-            return;
         }
-        self.send_raw_response_items(turn_context, &items).await;
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -4187,17 +4054,6 @@ impl Session {
         let selected = config.multi_agent_version_for_model(model_info.multi_agent_version);
 
         self.set_multi_agent_version_if_unset(selected)
-    }
-
-    #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]
-    async fn send_raw_response_items(&self, turn_context: &TurnContext, items: &[ResponseItem]) {
-        for item in items {
-            self.send_event(
-                turn_context,
-                EventMsg::RawResponseItem(RawResponseItemEvent { item: item.clone() }),
-            )
-            .await;
-        }
     }
 
     async fn build_turn_context_contribution_items(
@@ -4981,6 +4837,7 @@ impl Session {
                 prepared_items,
                 image_preparations,
                 /*acknowledgement*/ None,
+                transcript_publication::ConversationBoundary::Existing,
             )
             .await
         {

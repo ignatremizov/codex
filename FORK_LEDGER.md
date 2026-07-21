@@ -56,6 +56,20 @@ Cold restores reapply recorded role policy without replacing the current runtime
 provider, or service-tier authority. Fork notification filtering changes only child context,
 preserving canonical parent history and marking partially retained evidence incomplete.
 
+### Durable inter-agent transcript provenance
+
+Ownership anchor: `feat(multi-agent): publish durable inter-agent transcripts with typed provenance`.
+The current detached history-publication worker owns canonical writer flush, prepared source/MCP
+metadata, installation, and raw event delivery. World-state and confirmed-message publication
+use that same ordering, while settings replies keep their independent pre-event acknowledgement.
+`app-server-protocol/src/protocol/v2/inter_agent_message.rs` projects presentation provenance,
+not human authorization or a new local assistant answer. Receiving-side ciphertext remains opaque.
+Running resume retains a generation-aware per-connection snapshot/delivery boundary; cancelled
+resumes require canonical retry. Paginated readers lazily rebuild fork-owned derived transcript
+state under retained lineage reservations, without changing upstream migration versions or audit
+bytes. TUI, CLI, exports, structured replies, and voice consumers distinguish these transcripts
+from final assistant output. Generated-schema and executable qualification remain outstanding.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.

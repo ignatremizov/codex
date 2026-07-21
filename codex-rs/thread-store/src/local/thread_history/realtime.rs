@@ -43,7 +43,7 @@ pub(in crate::local) async fn list_timeline(
     store: &LocalThreadStore,
     params: ListTimelineParams,
 ) -> ThreadStoreResult<TimelinePage> {
-    validate_thread_for_paginated_reads(
+    let prepared = validate_thread_for_paginated_reads(
         store,
         params.thread_id,
         /*include_archived*/ false,
@@ -52,7 +52,7 @@ pub(in crate::local) async fn list_timeline(
     .await?;
     validate_page_size(params.page_size)?;
 
-    let lineage = store.resolve_rollout_lineage(params.thread_id).await?;
+    let lineage = &prepared.lineage;
     let pool = store.thread_history_db().await?;
     let cursor = params
         .cursor

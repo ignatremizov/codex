@@ -99,14 +99,20 @@ impl EventProcessorWithHumanOutput {
 
     fn render_item_completed(&mut self, item: ThreadItem) {
         match item {
-            ThreadItem::AgentMessage { text, .. } => {
+            ThreadItem::AgentMessage {
+                text,
+                inter_agent_source,
+                ..
+            } => {
                 eprintln!(
                     "{}\n{}",
                     "codex".style(self.italic).style(self.magenta),
                     text
                 );
-                self.final_message = Some(text);
-                self.final_message_rendered = true;
+                if inter_agent_source.is_none() {
+                    self.final_message = Some(text);
+                    self.final_message_rendered = true;
+                }
             }
             ThreadItem::Reasoning {
                 summary, content, ..
@@ -548,7 +554,11 @@ fn final_message_from_turn_items(items: &[ThreadItem]) -> Option<String> {
         .iter()
         .rev()
         .find_map(|item| match item {
-            ThreadItem::AgentMessage { text, .. } => Some(text.clone()),
+            ThreadItem::AgentMessage {
+                text,
+                inter_agent_source: None,
+                ..
+            } => Some(text.clone()),
             _ => None,
         })
         .or_else(|| {
