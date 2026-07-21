@@ -378,7 +378,7 @@ async fn run_inter_agent_input_case(
     .await;
     let _child_turn = responses::mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| {
+        move |request: &wiremock::Request| {
             body_contains(request, message_delivery.child_request_marker())
                 && !body_contains(request, SPAWN_CALL_ID)
         },
