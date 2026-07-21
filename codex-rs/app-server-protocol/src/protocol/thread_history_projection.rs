@@ -1,7 +1,7 @@
 //! Stateless projection from canonical paginated rollout records to thread-history changes.
 //!
-//! This module is only for the new paginated rollout format that persists canonical
-//! `ItemCompleted(TurnItem)` records, not legacy event-only rollouts.
+//! This module is only for the paginated rollout format that persists canonical
+//! `ItemCompleted(TurnItem)` records and identified inter-agent response items.
 
 use codex_protocol::protocol::EventMsg;
 use codex_rollout::RolloutItem;
@@ -13,6 +13,7 @@ use crate::protocol::thread_history::ThreadHistoryTurnChange;
 use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::TurnError;
 use crate::protocol::v2::TurnStatus;
+use crate::protocol::v2::inter_agent_message_thread_item;
 
 /// Project one durable rollout line without reconstructing earlier history.
 ///
@@ -76,9 +77,11 @@ pub fn project_rollout_line(line: &RolloutLine) -> ThreadHistoryChangeSet {
             }],
             ..Default::default()
         },
+        RolloutItem::ResponseItem(item) => project_inter_agent_message(item),
+        RolloutItem::InterAgentCommunication(communication) => {
+            project_inter_agent_message(&communication.to_model_input_item())
+        }
         RolloutItem::SessionMeta(_)
-        | RolloutItem::ResponseItem(_)
-        | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
         | RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
@@ -87,6 +90,28 @@ pub fn project_rollout_line(line: &RolloutLine) -> ThreadHistoryChangeSet {
         | RolloutItem::RealtimeItem(_)
         | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::EventMsg(_) => ThreadHistoryChangeSet::default(),
+    }
+}
+
+fn project_inter_agent_message(
+    item: &codex_protocol::models::ResponseItem,
+) -> ThreadHistoryChangeSet {
+    let Some(turn_id) = item.turn_id() else {
+        return ThreadHistoryChangeSet::default();
+    };
+    // Paginated writers assign IDs at the durable history boundary. Truly idless inter-agent
+    // records belong to non-paginated history and use the stateful builder's fallback IDs.
+    let Some(item) = inter_agent_message_thread_item(item) else {
+        return ThreadHistoryChangeSet::default();
+    };
+    ThreadHistoryChangeSet {
+        changed_items: vec![ThreadHistoryItemChange {
+            turn_id: turn_id.to_string(),
+            item,
+            started_at_ms: None,
+            completed_at_ms: None,
+        }],
+        ..Default::default()
     }
 }
 

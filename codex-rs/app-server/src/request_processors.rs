@@ -560,6 +560,7 @@ mod plugins;
 mod process_exec_processor;
 mod projects;
 mod remote_control_processor;
+mod response_item_transcript;
 mod search;
 mod thread_enrichment;
 mod thread_fork_goal;
