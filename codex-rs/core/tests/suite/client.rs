@@ -81,9 +81,11 @@ use dunce::canonicalize as normalize_path;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::future::Future;
 use std::io::Write;
 use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::task::Poll;
 use tempfile::TempDir;
 use toml::toml;
 use uuid::Uuid;
@@ -381,15 +383,16 @@ async fn cancelled_history_only_injection_finishes_its_detached_commit() {
         .acquire_durable_context_permit()
         .await
         .expect("durable context permit");
-    let cancelled_codex = Arc::clone(&codex);
-    let caller = tokio::spawn(async move {
-        cancelled_codex
-            .inject_response_items(vec![agent_message("commit after cancellation")])
-            .await
-    });
-    tokio::task::yield_now().await;
-    assert!(!caller.is_finished());
-    caller.abort();
+    let mut caller =
+        Box::pin(codex.inject_response_items(vec![agent_message("commit after cancellation")]));
+    std::future::poll_fn(|cx| match caller.as_mut().poll(cx) {
+        Poll::Pending => Poll::Ready(()),
+        Poll::Ready(result) => {
+            panic!("history-only injection completed while persistence was locked: {result:?}")
+        }
+    })
+    .await;
+    drop(caller);
     drop(permit);
 
     let committed = wait_for_event(&codex, |event| {

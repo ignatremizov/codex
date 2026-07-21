@@ -501,46 +501,49 @@ impl CodexThread {
             ));
         }
 
-        let turn_context = self
-            .session
-            .new_default_turn_with_sub_id(uuid::Uuid::now_v7().to_string())
-            .await;
-        if self.session.reference_context_item().await.is_none() {
-            // This history-only API runs without run_turn, so it owns its initial step.
-            let step_context = self
-                .session
-                .capture_step_context(Arc::clone(&turn_context))
+        let contains_agent_message = items
+            .iter()
+            .any(|item| matches!(item, ResponseItem::AgentMessage { .. }));
+        let session = Arc::clone(&self.session);
+        let injection = async move {
+            let turn_context = session
+                .new_default_turn_with_sub_id(uuid::Uuid::now_v7().to_string())
                 .await;
-            self.session
-                .record_context_updates_and_set_reference_context_item(step_context.as_ref())
-                .await;
-        }
-        if let Err(items) = self.session.inject_response_items(items).await {
-            if items
-                .iter()
-                .any(|item| matches!(item, ResponseItem::AgentMessage { .. }))
-            {
-                let session = Arc::clone(&self.session);
-                let turn_context = Arc::clone(&turn_context);
-                tokio::spawn(async move {
+            if session.reference_context_item().await.is_none() {
+                // This history-only API runs without run_turn, so it owns its initial step.
+                let step_context = session
+                    .capture_step_context(Arc::clone(&turn_context))
+                    .await;
+                session
+                    .record_context_updates_and_set_reference_context_item(step_context.as_ref())
+                    .await;
+            }
+            if let Err(items) = session.inject_response_items(items).await {
+                if contains_agent_message {
                     session
                         .record_history_only_conversation_items(turn_context.as_ref(), &items)
                         .await
-                })
-                .await?
-                .map_err(|err| {
-                    CodexErr::Fatal(format!(
-                        "failed to persist history-only response items: {err}"
-                    ))
-                })?;
-            } else {
-                self.session
-                    .record_conversation_items(turn_context.as_ref(), &items)
-                    .await;
+                        .map_err(|err| {
+                            CodexErr::Fatal(format!(
+                                "failed to persist history-only response items: {err}"
+                            ))
+                        })?;
+                } else {
+                    session
+                        .record_conversation_items(turn_context.as_ref(), &items)
+                        .await;
+                }
             }
+            session.flush_rollout().await?;
+            Ok(())
+        };
+        if contains_agent_message {
+            tokio::spawn(injection).await.map_err(|err| {
+                CodexErr::Fatal(format!("agent response item injection task failed: {err}"))
+            })?
+        } else {
+            injection.await
         }
-        self.session.flush_rollout().await?;
-        Ok(())
     }
 
     pub fn rollout_path(&self) -> Option<PathBuf> {
