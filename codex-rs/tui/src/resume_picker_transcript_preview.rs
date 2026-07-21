@@ -253,6 +253,15 @@ fn append_transcript_preview_lines<'a>(
                     inline_visualization_context,
                 );
             }
+            ThreadItem::AgentMessage {
+                text,
+                inter_agent_source: Some(_),
+                ..
+            } => append_visible_transcript_preview_lines(
+                lines,
+                TranscriptPreviewSpeaker::Assistant,
+                text,
+            ),
             ThreadItem::AgentMessage { text, .. } => {
                 append_transcript_preview_text(
                     lines,
@@ -301,6 +310,14 @@ fn append_transcript_preview_text(
         }
     };
 
+    append_visible_transcript_preview_lines(lines, speaker, &text);
+}
+
+fn append_visible_transcript_preview_lines(
+    lines: &mut Vec<TranscriptPreviewLine>,
+    speaker: TranscriptPreviewSpeaker,
+    text: &str,
+) {
     let remaining = MAX_TRANSCRIPT_PREVIEW_LINES - lines.len();
     lines.extend(
         text.lines()

@@ -14126,6 +14126,22 @@
         ],
         "type": "object"
       },
+      "InterAgentMessageSource": {
+        "description": "Presentation provenance for incoming communication, not sender authority or a delivery receipt.",
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "recipient": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "author",
+          "recipient"
+        ],
+        "type": "object"
+      },
       "InternalChatMessageMetadataPassthrough": {
         "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API approval and making the corresponding Responses API change.",
         "properties": {
@@ -22465,6 +22481,17 @@
               },
               "id": {
                 "type": "string"
+              },
+              "interAgentSource": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/InterAgentMessageSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "memoryCitation": {
                 "anyOf": [

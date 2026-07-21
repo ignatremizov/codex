@@ -38,6 +38,45 @@ fn deliver(app: &mut App, notification: ServerNotification) {
 }
 
 #[test]
+fn completion_tip_waits_for_a_local_answer_after_incoming_communication() {
+    let thread = ThreadId::new();
+    let now = Instant::now();
+    let mut tips = TurnTips::default();
+    for turn in 1..=3 {
+        tips.observe(
+            &notification("turn/started", thread, turn, "inProgress"),
+            now,
+        );
+    }
+    let mut incoming = answer(thread, /*turn*/ 3);
+    if let ServerNotification::ItemCompleted(completed) = &mut incoming
+        && let ThreadItem::AgentMessage {
+            inter_agent_source, ..
+        } = &mut completed.item
+    {
+        *inter_agent_source = Some(codex_app_server_protocol::InterAgentMessageSource {
+            author: "/root/worker".into(),
+            recipient: "/root".into(),
+        });
+    }
+    tips.observe(&incoming, now);
+    let completed = notification("turn/completed", thread, /*turn*/ 3, "completed");
+    assert!(tips.observe(&completed, now).is_none());
+    tips.observe(
+        &notification("turn/started", thread, /*turn*/ 4, "inProgress"),
+        now,
+    );
+    tips.observe(&answer(thread, /*turn*/ 4), now);
+    assert!(
+        tips.observe(
+            &notification("turn/completed", thread, /*turn*/ 4, "completed"),
+            now
+        )
+        .is_some()
+    );
+}
+
+#[test]
 fn completion_cadence_counts_exposure_and_ignores_duplicate_or_failed_turns() {
     let thread = ThreadId::new();
     let now = Instant::now();
