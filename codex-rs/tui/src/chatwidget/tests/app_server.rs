@@ -632,13 +632,9 @@ async fn live_app_server_inter_agent_message_renders_in_transcript() {
     assert_eq!(cells.len(), 1);
     let rendered = lines_to_single_string(&cells[0]).replace("  \n", "\n");
     insta::assert_snapshot!(
-                                                                                                rendered,
-                                                                                                @r"
-• Agent message from /root:
-
-  Inspect the repository.
-"
-                                                                                            );
+        "live_app_server_inter_agent_message_renders_in_transcript",
+        rendered
+    );
 }
 
 #[tokio::test]
