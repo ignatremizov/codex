@@ -2086,7 +2086,7 @@ async fn on_command_execution_request_approval_response(
     }
 }
 
-fn now_unix_timestamp_ms() -> i64 {
+pub(crate) fn now_unix_timestamp_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)

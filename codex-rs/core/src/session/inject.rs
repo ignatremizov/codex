@@ -1,10 +1,13 @@
 use super::TurnInput as PendingTurnInput;
 use super::session::Session;
+use super::transcript_publication::ConversationBoundary;
 use super::turn_context::TurnContext;
 use codex_analytics::ImagePreparationMetadata;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::ResponseItemId;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 
@@ -66,7 +69,8 @@ impl Session {
         Ok(())
     }
 
-    /// Preserves trusted client provenance while items wait for an active turn.
+    /// Assigns host identity to new public agent input and preserves client provenance.
+    /// Supplied agent names remain display provenance, not authorization.
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"
@@ -75,13 +79,27 @@ impl Session {
         &self,
         items: Vec<ResponseItem>,
         turn_context: &TurnContext,
-    ) {
+    ) -> CodexResult<()> {
+        self.check_history_publication()?;
         let items = items
             .into_iter()
-            .map(|item| self.annotate_client_response_item(item))
+            .map(|mut item| {
+                if let ResponseItem::AgentMessage {
+                    id,
+                    internal_chat_message_metadata_passthrough,
+                    ..
+                } = &mut item
+                {
+                    *id = Some(ResponseItemId::new("amsg"));
+                    *internal_chat_message_metadata_passthrough = None;
+                }
+                self.annotate_client_response_item(item)
+            })
             .collect::<Vec<_>>();
         let mut active = self.active_turn.lock().await;
         if let Some(active_turn) = active.as_mut() {
+            // Queue acceptance owns these fresh public items. Attribution is installed
+            // by the actual consuming turn, never trusted from caller metadata.
             self.input_queue
                 .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                     active_turn.turn_state.as_ref(),
@@ -91,11 +109,33 @@ impl Session {
                         .collect(),
                 )
                 .await;
-            return;
+            return Ok(());
         }
         drop(active);
-        self.record_annotated_conversation_items(turn_context, turn_context.model_info(), items)
+        let boundary = if items
+            .iter()
+            .any(|item| matches!(&item.item, ResponseItem::AgentMessage { .. }))
+        {
+            ConversationBoundary::HistoryOnly
+        } else {
+            ConversationBoundary::Existing
+        };
+        let (items, preparations) = self
+            .prepare_annotated_conversation_items_for_history(
+                turn_context,
+                turn_context.model_info(),
+                items,
+            )
             .await;
+        self.record_prepared_conversation_items(
+            turn_context,
+            turn_context.model_info(),
+            items,
+            preparations,
+            /*acknowledgement*/ None,
+            boundary,
+        )
+        .await
     }
 
     pub(crate) fn annotate_client_response_item(&self, item: ResponseItem) -> ResponseItemEnvelope {
@@ -135,6 +175,7 @@ impl Session {
                 annotated_items,
                 image_preparations,
                 /*acknowledgement*/ None,
+                ConversationBoundary::Existing,
             )
             .await
         {
@@ -188,8 +229,34 @@ impl Session {
                 default_turn_context.as_ref()
             }
         };
-        self.record_conversation_items(turn_context, turn_context.model_info(), &items)
+        let boundary = if items
+            .iter()
+            .any(|item| matches!(item, ResponseItem::AgentMessage { .. }))
+        {
+            ConversationBoundary::HistoryOnly
+        } else {
+            ConversationBoundary::Existing
+        };
+        let (items, preparations) = self
+            .prepare_conversation_items_for_history(turn_context, turn_context.model_info(), &items)
             .await;
+        if let Err(error) = self
+            .record_prepared_conversation_items(
+                turn_context,
+                turn_context.model_info(),
+                items
+                    .into_owned()
+                    .into_iter()
+                    .map(ResponseItemEnvelope::new)
+                    .collect(),
+                preparations,
+                /*acknowledgement*/ None,
+                boundary,
+            )
+            .await
+        {
+            tracing::error!("failed to publish injected conversation items: {error}");
+        }
     }
 }
 

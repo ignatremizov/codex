@@ -383,9 +383,11 @@ impl App {
                                     }
                                     last_message =
                                         turn.items.iter().rev().find_map(|item| match item {
-                                            ThreadItem::AgentMessage { text, .. } => {
-                                                Some(preview_agent_message(text))
-                                            }
+                                            ThreadItem::AgentMessage {
+                                                text,
+                                                inter_agent_source: None,
+                                                ..
+                                            } => Some(preview_agent_message(text)),
                                             _ => None,
                                         });
                                 }

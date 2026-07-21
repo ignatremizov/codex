@@ -909,6 +909,7 @@ pub(super) fn replay_agent_message(
 ) {
     chat.replay_thread_item(
         AppServerThreadItem::AgentMessage {
+            inter_agent_source: None,
             id: item_id.to_string(),
             text: text.into(),
             phase: Some(MessagePhase::FinalAnswer),
@@ -1067,6 +1068,7 @@ pub(super) fn complete_assistant_message(
             turn_id: "turn-1".to_string(),
             completed_at_ms: 0,
             item: AppServerThreadItem::AgentMessage {
+                inter_agent_source: None,
                 id: item_id.to_string(),
                 text: text.to_string(),
                 phase,

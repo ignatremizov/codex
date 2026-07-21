@@ -41,6 +41,9 @@ use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
+#[path = "thread_history_fork_projection_tests.rs"]
+mod fork_projection_tests;
+
 use super::super::LocalThreadStore;
 use super::super::LocalThreadStoreConfig;
 use super::super::test_support::test_config;

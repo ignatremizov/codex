@@ -1067,6 +1067,7 @@ mod tests {
             item: codex_app_server_protocol::ThreadItem::AgentMessage {
                 id: "item".to_string(),
                 text: text.to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,

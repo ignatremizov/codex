@@ -26,6 +26,7 @@ use crate::protocol::v2::UserInput;
 #[cfg(test)]
 use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
+use crate::protocol::v2::inter_agent_message_thread_item_with_id;
 use crate::protocol::v2::web_search_action_from_core;
 use codex_extension_items::image_generation::ImageGenerationItem;
 use codex_protocol::items::parse_hook_prompt_message;
@@ -445,6 +446,14 @@ impl ThreadHistoryBuilder {
             EventMsg::ExitedReviewMode(payload) => self.handle_exited_review_mode(payload),
             EventMsg::ItemStarted(payload) => self.handle_item_started(payload),
             EventMsg::ItemCompleted(payload) => self.handle_item_completed(payload),
+            EventMsg::RawResponseItem(payload)
+                if matches!(
+                    &payload.item,
+                    codex_protocol::models::ResponseItem::AgentMessage { .. }
+                ) =>
+            {
+                self.handle_response_item(&payload.item)
+            }
             EventMsg::HookStarted(_) | EventMsg::HookCompleted(_) => {}
             EventMsg::Error(payload) => self.handle_error(payload),
             EventMsg::TokenCount(_) => {}
@@ -463,14 +472,16 @@ impl ThreadHistoryBuilder {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
             RolloutItem::ResponseItem(item) => self.handle_response_item(&item.item),
+            RolloutItem::InterAgentCommunication(communication) => {
+                self.handle_response_item(&communication.to_model_input_item())
+            }
             RolloutItem::SessionMeta(meta) => self
                 .non_paginated_exec_history
                 .record_session_meta(&meta.meta, self.current_rollout_index),
             RolloutItem::TurnContext(context) => self
                 .non_paginated_exec_history
                 .record_turn_context(context, self.current_rollout_index),
-            RolloutItem::InterAgentCommunication(_)
-            | RolloutItem::InterAgentCommunicationMetadata { .. }
+            RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::WorldState(_)
             | RolloutItem::RealtimeItem(_)
@@ -516,6 +527,22 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_response_item(&mut self, item: &codex_protocol::models::ResponseItem) {
+        if let codex_protocol::models::ResponseItem::AgentMessage { id, .. } = item
+            && let Some(thread_item) = inter_agent_message_thread_item_with_id(
+                item,
+                id.as_ref()
+                    .map(ToString::to_string)
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or_else(|| format!("amsg_legacy_{}", self.current_rollout_index)),
+            )
+        {
+            let turn_id = item
+                .turn_id()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("rollout-{}", self.current_rollout_index));
+            self.upsert_inter_agent_item_in_turn_id(&turn_id, thread_item);
+            return;
+        }
         let fallback_turn_id = self
             .current_turn
             .as_ref()
@@ -564,6 +591,32 @@ impl ThreadHistoryBuilder {
         });
     }
 
+    fn upsert_inter_agent_item_in_turn_id(&mut self, turn_id: &str, item: ThreadItem) {
+        if self
+            .current_turn
+            .as_ref()
+            .is_some_and(|turn| turn.id == turn_id)
+            || self.turns.iter().any(|turn| turn.id == turn_id)
+        {
+            self.upsert_item_in_turn_id(turn_id, item);
+            return;
+        }
+
+        let mut turn = self.new_turn(Some(turn_id.to_string()));
+        turn.status = TurnStatus::Completed;
+        turn.inter_agent_placeholder = true;
+        turn.item_index.upsert(&mut turn.items, item.clone());
+        if self.current_turn.is_none() {
+            self.record_changed_pending_turn(&turn);
+            self.record_changed_item(turn.id.clone(), item);
+            self.current_turn = Some(turn);
+        } else {
+            self.record_changed_pending_turn(&turn);
+            self.turns.push(turn);
+            self.record_changed_item(turn_id.to_string(), item);
+        }
+    }
+
     fn handle_user_message(&mut self, payload: &UserMessageEvent) {
         // User messages should stay in explicitly opened turns. For backward
         // compatibility with older streams that did not open turns explicitly,
@@ -592,6 +645,7 @@ impl ThreadHistoryBuilder {
         self.push_item_in_current_turn(ThreadItem::AgentMessage {
             id,
             text: payload.message.clone(),
+            inter_agent_source: None,
             phase: payload.phase.clone(),
             memory_citation: payload.memory_citation.clone().map(Into::into),
             delivery: payload.delivery,
@@ -1334,6 +1388,7 @@ impl ThreadHistoryBuilder {
         }
         let tracking_changes = self.is_tracking_changes();
         let changed_turn = if let Some(turn) = self.current_turn.as_mut() {
+            turn.inter_agent_placeholder = false;
             turn.status = TurnStatus::Failed;
             turn.error = Some(V2TurnError {
                 misalignment: payload.misalignment.clone().map(Into::into),
@@ -1352,6 +1407,7 @@ impl ThreadHistoryBuilder {
 
     fn handle_turn_aborted(&mut self, payload: &TurnAbortedEvent) {
         let apply_abort = |turn: &mut PendingTurn| {
+            turn.inter_agent_placeholder = false;
             turn.status = TurnStatus::Interrupted;
             turn.completed_at = payload.completed_at;
             turn.duration_ms = payload.duration_ms;
@@ -1366,6 +1422,7 @@ impl ThreadHistoryBuilder {
             }
 
             if let Some(turn) = self.turns.iter_mut().find(|turn| turn.id == turn_id) {
+                turn.inter_agent_placeholder = false;
                 turn.status = TurnStatus::Interrupted;
                 turn.completed_at = payload.completed_at;
                 turn.duration_ms = payload.duration_ms;
@@ -1384,6 +1441,21 @@ impl ThreadHistoryBuilder {
 
     fn handle_turn_started(&mut self, payload: &TurnStartedEvent) {
         self.finish_current_turn();
+        if let Some(index) = self
+            .turns
+            .iter()
+            .position(|turn| turn.id == payload.turn_id && turn.inter_agent_placeholder)
+        {
+            let mut turn = self.turns.remove(index);
+            turn.status = TurnStatus::InProgress;
+            turn.inter_agent_placeholder = false;
+            turn.started_at = payload.started_at;
+            turn.root_turn_id = payload.root_turn_id.clone();
+            turn.opened_explicitly = true;
+            self.record_changed_pending_turn(&turn);
+            self.current_turn = Some(turn);
+            return;
+        }
         let mut turn = self
             .new_turn(Some(payload.turn_id.clone()))
             .with_status(TurnStatus::InProgress)
@@ -1402,6 +1474,7 @@ impl ThreadHistoryBuilder {
             additional_details: None,
         });
         let apply_completion = |turn: &mut PendingTurn| {
+            turn.inter_agent_placeholder = false;
             if let Some(error) = terminal_error.as_ref() {
                 turn.status = TurnStatus::Failed;
                 turn.error = Some(error.clone());
@@ -1430,6 +1503,7 @@ impl ThreadHistoryBuilder {
             .iter_mut()
             .find(|turn| turn.id == payload.turn_id)
         {
+            turn.inter_agent_placeholder = false;
             if let Some(error) = terminal_error.as_ref() {
                 turn.status = TurnStatus::Failed;
                 turn.error = Some(error.clone());
@@ -1526,6 +1600,7 @@ impl ThreadHistoryBuilder {
             opened_explicitly: false,
             saw_compaction: false,
             rollout_start_index: self.current_rollout_index,
+            inter_agent_placeholder: false,
         }
     }
 
@@ -1811,6 +1886,8 @@ struct PendingTurn {
     saw_compaction: bool,
     /// Index of the rollout item that opened this turn during replay.
     rollout_start_index: usize,
+    /// An item-only turn awaiting its first canonical lifecycle event.
+    inter_agent_placeholder: bool,
 }
 
 impl PendingTurn {
@@ -1864,6 +1941,9 @@ impl From<&PendingTurn> for Turn {
     }
 }
 
+#[cfg(test)]
+#[path = "thread_history_inter_agent_tests.rs"]
+mod inter_agent_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2032,6 +2112,7 @@ mod tests {
             ThreadItem::AgentMessage {
                 id: "item-2".into(),
                 text: "Hi there".into(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -2067,6 +2148,7 @@ mod tests {
             ThreadItem::AgentMessage {
                 id: "item-5".into(),
                 text: "Reply two".into(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -2730,6 +2812,7 @@ mod tests {
             ThreadItem::AgentMessage {
                 id: "item-1".into(),
                 text: "Final reply".into(),
+                inter_agent_source: None,
                 phase: Some(CoreMessagePhase::FinalAnswer),
                 memory_citation: None,
                 delivery: Some(AgentMessageDelivery::Async),
@@ -2948,6 +3031,7 @@ mod tests {
             ThreadItem::AgentMessage {
                 id: "item-2".into(),
                 text: "Working...".into(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -2974,6 +3058,7 @@ mod tests {
             ThreadItem::AgentMessage {
                 id: "item-4".into(),
                 text: "Second attempt complete.".into(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -3058,6 +3143,7 @@ mod tests {
                 ThreadItem::AgentMessage {
                     id: "item-2".into(),
                     text: "A1".into(),
+                    inter_agent_source: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,
@@ -3079,6 +3165,7 @@ mod tests {
                 ThreadItem::AgentMessage {
                     id: "item-4".into(),
                     text: "A3".into(),
+                    inter_agent_source: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,

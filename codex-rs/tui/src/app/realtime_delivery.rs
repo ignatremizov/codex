@@ -37,6 +37,7 @@ fn record_voice_item(
             id,
             text,
             phase: Some(MessagePhase::FinalAnswer) | None,
+            inter_agent_source: None,
             ..
         } if delegated.contains(turn_id)
             && !crate::chatwidget::is_private_realtime_agent_item(item)
@@ -107,6 +108,7 @@ pub(super) fn replayed_voice_texts(snapshot: &ThreadEventSnapshot) -> ReplayedVo
                         item,
                         ThreadItem::AgentMessage {
                             phase: Some(MessagePhase::FinalAnswer) | None,
+                            inter_agent_source: None,
                             ..
                         }
                     ) && !crate::chatwidget::is_private_realtime_agent_item(item)
@@ -337,7 +339,13 @@ impl App {
             return;
         };
         for (turn_id, item) in pending {
-            let ThreadItem::AgentMessage { id, text, .. } = &item else {
+            let ThreadItem::AgentMessage {
+                id,
+                text,
+                inter_agent_source: None,
+                ..
+            } = &item
+            else {
                 continue;
             };
             // A matching ID with empty text did not render the saved answer.
@@ -374,7 +382,12 @@ pub(super) fn completed_agent_items(
         };
         match notification.as_ref() {
             ServerNotification::ItemCompleted(completed_item) => {
-                if let ThreadItem::AgentMessage { id, text, .. } = &completed_item.item
+                if let ThreadItem::AgentMessage {
+                    id,
+                    text,
+                    inter_agent_source: None,
+                    ..
+                } = &completed_item.item
                     && !text.trim().is_empty()
                 {
                     completed.insert((completed_item.turn_id.clone(), id.clone()), text.clone());
@@ -384,7 +397,12 @@ pub(super) fn completed_agent_items(
                 if completed_turn.turn.status == TurnStatus::Completed =>
             {
                 for item in &completed_turn.turn.items {
-                    if let ThreadItem::AgentMessage { id, text, .. } = item
+                    if let ThreadItem::AgentMessage {
+                        id,
+                        text,
+                        inter_agent_source: None,
+                        ..
+                    } = item
                         && !text.trim().is_empty()
                     {
                         completed
@@ -404,7 +422,12 @@ pub(super) fn completed_agent_items_from_turns(
     let mut completed = HashMap::new();
     for turn in turns {
         for item in &turn.items {
-            if let ThreadItem::AgentMessage { id, text, .. } = item
+            if let ThreadItem::AgentMessage {
+                id,
+                text,
+                inter_agent_source: None,
+                ..
+            } = item
                 && !text.trim().is_empty()
             {
                 completed.insert((turn.id.clone(), id.clone()), text.clone());

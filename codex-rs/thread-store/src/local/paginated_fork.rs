@@ -1,4 +1,8 @@
 use codex_protocol::protocol::HistoryPosition;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::sync::Arc;
 
 use super::LocalThreadStore;
@@ -135,20 +139,57 @@ pub(super) async fn history_base_at_boundary(
         }
         ForkBoundary::BeforeTurn(turn_id) => {
             let row = find_source_turn(pool, lineage, turn_id.as_str()).await?;
-            if row.rollout_end_ordinal == Some(row.rollout_ordinal) {
+            let rollout_byte_offset = row
+                .rollout_byte_offset
+                .ok_or_else(|| missing_turn_position(turn_id.as_str()))?;
+            let ordinal = u64::try_from(row.rollout_ordinal)
+                .map_err(|_| invalid_turn_position(turn_id.as_str()))?;
+            let offset = u64::try_from(rollout_byte_offset)
+                .map_err(|_| invalid_turn_position(turn_id.as_str()))?;
+            let path = lineage
+                .segments()
+                .iter()
+                .find(|segment| segment.rollout_id() == row.rollout_id)
+                .ok_or_else(|| invalid_turn_position(turn_id.as_str()))?
+                .rollout_path
+                .clone();
+            let expected_turn_id = turn_id.clone();
+            // An item can create a placeholder turn before any lifecycle event. A later
+            // completion gives that row distinct start/end ordinals without proving a start.
+            // Validate the indexed boundary against the canonical record, including compressed
+            // rollouts, rather than treating the first item as an explicit TurnStarted.
+            let has_start = tokio::task::spawn_blocking(move || {
+                let mut reader =
+                    BufReader::new(codex_rollout::open_rollout_seekable_reader(&path)?);
+                reader.seek(SeekFrom::Start(offset))?;
+                let mut line = String::new();
+                reader.read_line(&mut line)?;
+                let line =
+                    codex_rollout::parse_rollout_line(&line).map_err(std::io::Error::other)?;
+                Ok::<_, std::io::Error>(
+                    line.ordinal == Some(ordinal)
+                        && matches!(line.item,
+                            codex_rollout::RolloutItem::EventMsg(
+                                codex_protocol::protocol::EventMsg::TurnStarted(event)
+                            ) if event.turn_id == expected_turn_id),
+                )
+            })
+            .await
+            .map_err(|error| ThreadStoreError::Internal {
+                message: format!("failed to read fork start boundary for {turn_id}: {error}"),
+            })?
+            .map_err(|error| ThreadStoreError::Internal {
+                message: format!("failed to read fork start boundary for {turn_id}: {error}"),
+            })?;
+            if !has_start {
                 return Err(ThreadStoreError::InvalidRequest {
                     message: format!("turn {turn_id} does not have a persisted start boundary"),
                 });
             }
-            let rollout_byte_offset = row
-                .rollout_byte_offset
-                .ok_or_else(|| missing_turn_position(turn_id.as_str()))?;
             HistoryPosition {
                 thread_id: row.rollout_id,
-                end_ordinal_exclusive: u64::try_from(row.rollout_ordinal)
-                    .map_err(|_| invalid_turn_position(turn_id.as_str()))?,
-                end_byte_offset: u64::try_from(rollout_byte_offset)
-                    .map_err(|_| invalid_turn_position(turn_id.as_str()))?,
+                end_ordinal_exclusive: ordinal,
+                end_byte_offset: offset,
             }
         }
     };

@@ -1,5 +1,4 @@
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::ThreadHistoryMode;
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::Row;
@@ -22,6 +21,8 @@ use crate::StoredTurnStatus;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use crate::TurnPage;
+
+pub(super) use super::read_freshness::prepare as validate_thread_for_paginated_reads;
 
 #[cfg(test)]
 #[path = "read_tests.rs"]
@@ -96,7 +97,7 @@ pub(in crate::local) async fn list_turns(
     store: &LocalThreadStore,
     params: ListTurnsParams,
 ) -> ThreadStoreResult<TurnPage> {
-    validate_thread_for_paginated_reads(
+    let prepared = validate_thread_for_paginated_reads(
         store,
         params.thread_id,
         params.include_archived,
@@ -104,12 +105,12 @@ pub(in crate::local) async fn list_turns(
     )
     .await?;
     validate_page_size(params.page_size)?;
-    let lineage = store.resolve_rollout_lineage(params.thread_id).await?;
+    let lineage = &prepared.lineage;
     let pool = store.thread_history_db().await?;
     let page = page_turn_rows(
         pool,
         params.thread_id,
-        &lineage,
+        lineage,
         params.cursor.as_deref(),
         params.page_size,
         params.sort_direction,
@@ -127,7 +128,7 @@ pub(in crate::local) async fn list_turns(
             {
                 // Synthetic fork-boundary rows are interrupted without local summary IDs.
                 // Load their summary from the earliest visible source turn.
-                load_inherited_summary_items(pool, &lineage, &turn).await?
+                load_inherited_summary_items(pool, lineage, &turn).await?
             }
             StoredTurnItemsView::Summary => turn.summary_items,
         };
@@ -154,7 +155,7 @@ pub(in crate::local) async fn list_items(
     store: &LocalThreadStore,
     params: ListItemsParams,
 ) -> ThreadStoreResult<ItemPage> {
-    validate_thread_for_paginated_reads(
+    let prepared = validate_thread_for_paginated_reads(
         store,
         params.thread_id,
         params.include_archived,
@@ -162,45 +163,15 @@ pub(in crate::local) async fn list_items(
     )
     .await?;
     validate_page_size(params.page_size)?;
-    let lineage = store.resolve_rollout_lineage(params.thread_id).await?;
+    let lineage = &prepared.lineage;
     let pool = store.thread_history_db().await?;
-    let page = page_item_rows(pool, &lineage, &params).await?;
+    let page = page_item_rows(pool, lineage, &params).await?;
 
     Ok(ItemPage {
         items: page.rows.into_iter().map(|row| row.item).collect(),
         next_cursor: page.next_cursor,
         backwards_cursor: page.backwards_cursor,
     })
-}
-
-pub(super) async fn validate_thread_for_paginated_reads(
-    store: &LocalThreadStore,
-    thread_id: ThreadId,
-    include_archived: bool,
-    operation: &'static str,
-) -> ThreadStoreResult<()> {
-    let Some(state_db) = store.state_db().await else {
-        return Err(ThreadStoreError::Unsupported { operation });
-    };
-    let Some(metadata) =
-        state_db
-            .get_thread(thread_id)
-            .await
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!("failed to read thread metadata: {err}"),
-            })?
-    else {
-        return Err(ThreadStoreError::Unsupported { operation });
-    };
-    if metadata.archived_at.is_some() && !include_archived {
-        return Err(ThreadStoreError::InvalidRequest {
-            message: format!("thread {thread_id} is archived"),
-        });
-    }
-    match metadata.history_mode {
-        ThreadHistoryMode::Legacy => Err(ThreadStoreError::Unsupported { operation }),
-        ThreadHistoryMode::Paginated => Ok(()),
-    }
 }
 
 async fn load_inherited_summary_items(

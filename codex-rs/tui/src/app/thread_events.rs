@@ -86,6 +86,7 @@ impl ThreadEventStore {
             && let ServerNotification::ItemCompleted(notification) = notification.as_mut()
             && let ThreadItem::AgentMessage {
                 questions: Some(_),
+                inter_agent_source: None,
                 text,
                 ..
             } = &mut notification.item

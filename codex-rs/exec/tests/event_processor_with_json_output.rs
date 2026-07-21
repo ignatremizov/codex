@@ -224,6 +224,7 @@ fn context_compaction_item_emits_context_compacted_event() {
             item: ThreadItem::AgentMessage {
                 id: "message-1".to_string(),
                 text: "final answer".to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -419,6 +420,7 @@ fn unsupported_items_do_not_consume_synthetic_ids() {
             item: ThreadItem::AgentMessage {
                 id: "message-1".to_string(),
                 text: "hello".to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -1110,6 +1112,7 @@ fn agent_message_item_updates_final_message() {
             item: ThreadItem::AgentMessage {
                 id: "msg-1".to_string(),
                 text: "hello".to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -1147,6 +1150,7 @@ fn agent_message_item_started_is_ignored() {
             item: ThreadItem::AgentMessage {
                 id: "msg-1".to_string(),
                 text: "hello".to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -1500,6 +1504,7 @@ fn turn_completion_recovers_final_message_from_turn_items() {
                 items: vec![ThreadItem::AgentMessage {
                     id: "msg-1".to_string(),
                     text: "final answer".to_string(),
+                    inter_agent_source: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,
@@ -1632,6 +1637,7 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
             item: ThreadItem::AgentMessage {
                 id: "msg-stale".to_string(),
                 text: "stale answer".to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -1652,6 +1658,7 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
                 items: vec![ThreadItem::AgentMessage {
                     id: "msg-1".to_string(),
                     text: "final answer".to_string(),
+                    inter_agent_source: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,
@@ -1686,6 +1693,7 @@ fn turn_completion_preserves_streamed_final_message_when_turn_items_are_empty() 
             item: ThreadItem::AgentMessage {
                 id: "msg-streamed".to_string(),
                 text: "streamed answer".to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -1734,6 +1742,7 @@ fn failed_turn_clears_stale_final_message() {
             item: ThreadItem::AgentMessage {
                 id: "msg-1".to_string(),
                 text: "partial answer".to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,

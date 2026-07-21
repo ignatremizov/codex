@@ -56,7 +56,6 @@ use async_channel::Sender;
 use chrono::Local;
 use chrono::Utc;
 use codex_analytics::AnalyticsEventsClient;
-use codex_analytics::ImagePreparationFact;
 use codex_analytics::ImagePreparationMetadata;
 use codex_analytics::SubAgentThreadStartedInput;
 use codex_analytics::TurnCodexErrorFact;
@@ -137,7 +136,6 @@ use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -177,7 +175,6 @@ use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_utils_audio::prepare_response_items as prepare_audio_response_items;
 use codex_utils_git_discovery::GitRootDiscovery;
-use codex_utils_output_truncation::with_serialization_allowance;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use futures::future::Shared;
@@ -263,6 +260,7 @@ pub(crate) mod step_settings;
 mod thread_settings;
 pub(crate) mod time_reminder;
 mod token_budget;
+mod transcript_publication;
 pub(crate) mod turn;
 pub(crate) mod turn_context;
 mod turn_input;
@@ -3494,102 +3492,12 @@ impl Session {
                 items,
                 image_preparations,
                 /*acknowledgement*/ None,
+                transcript_publication::ConversationBoundary::Existing,
             )
             .await
         {
             error!("failed to publish conversation items: {error}");
         }
-    }
-
-    async fn record_prepared_conversation_items(
-        &self,
-        turn_context: &TurnContext,
-        model_info: &ModelInfo,
-        mut items: Vec<ResponseItemEnvelope>,
-        image_preparations: Vec<ImagePreparationMetadata>,
-        acknowledgement: Option<codex_extension_api::TurnInputContributionAcknowledgement>,
-    ) -> CodexResult<()> {
-        let permit = thread_settings::acquire_persistence_lock(self).await;
-        self.check_history_publication()?;
-        // Save the originating history budget for replay.
-        // Preserve any existing tool-specific override.
-        let policy: codex_utils_output_truncation::TruncationPolicy =
-            model_info.truncation_policy.into();
-        for envelope in &mut items {
-            if matches!(
-                envelope.item,
-                ResponseItem::FunctionCallOutput { .. } | ResponseItem::CustomToolCallOutput { .. }
-            ) {
-                envelope
-                    .metadata
-                    .get_or_insert_default()
-                    .history_truncation_token_limit
-                    .get_or_insert_with(|| with_serialization_allowance(policy).token_budget());
-            }
-        }
-        let response_items = items
-            .iter()
-            .map(|envelope| envelope.item.clone())
-            .collect::<Vec<_>>();
-        {
-            let mut state = self.state.lock().await;
-            if self.guardian_context_mode == crate::context::GuardianContextMode::ThreadOwned {
-                for envelope in &mut items {
-                    if matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "assistant")
-                        || matches!(&envelope.item, ResponseItem::FunctionCall { .. })
-                        || crate::context::is_user_authorization_message(&envelope.item)
-                    {
-                        // Share accepted input order with recorded assistant messages and calls.
-                        // A call's result can arrive after a reply; it must not move the question.
-                        envelope
-                            .metadata
-                            .get_or_insert_default()
-                            .user_input_order
-                            .get_or_insert_with(|| state.history.reserve_input_order());
-                    }
-                }
-            }
-        }
-        let rollout_items = items
-            .iter()
-            .cloned()
-            .map(RolloutItem::ResponseItem)
-            .collect();
-        // Mark external context before transferring work to the independent worker.
-        // A cancelled result waiter must not bypass the memory privacy gate.
-        if turn_context.config.memories.disable_on_external_context
-            && let Some(item) = response_items
-                .iter()
-                .find(|item| matches!(item, ResponseItem::FunctionCallOutput { call_id: None, .. }))
-        {
-            mark_thread_memory_mode_polluted_if_external_context(self, turn_context, item).await;
-        }
-        let recorded = response_items.clone();
-        let truncation_policy = model_info.truncation_policy.into();
-        let receiver = self.dispatch_history_publication(
-            permit,
-            rollout_items,
-            Vec::new(),
-            acknowledgement,
-            move |state| {
-                state.current_time_reminder.note_recorded_items(&recorded);
-                state
-                    .history
-                    .record_annotated_items(&items, truncation_policy);
-            },
-        )?;
-        self.publication_result(receiver).await?;
-        for image in image_preparations {
-            self.services
-                .analytics_events_client
-                .track_image_preparation(ImagePreparationFact {
-                    turn_id: turn_context.sub_id.clone(),
-                    metadata: image,
-                });
-        }
-        self.send_raw_response_items(turn_context, &response_items)
-            .await;
-        Ok(())
     }
 
     pub(crate) async fn record_durable_context_items(
@@ -3612,6 +3520,7 @@ impl Session {
                 .collect(),
             preparations,
             acknowledgement,
+            transcript_publication::ConversationBoundary::Existing,
         )
         .await
     }
@@ -3891,14 +3800,21 @@ impl Session {
         let permit = thread_settings::acquire_persistence_lock(self).await;
         let recorded = items.clone();
         let policy = model_info.truncation_policy.into();
-        let result = match self.dispatch_history_publication(
+        let batch = self
+            .conversation_publication_batch(
+                turn_context,
+                vec![
+                    RolloutItem::InterAgentCommunicationMetadata {
+                        trigger_turn: communication.trigger_turn,
+                    },
+                    RolloutItem::ResponseItem(response_item.into()),
+                ],
+                &items,
+            )
+            .await;
+        let result = match self.dispatch_history_publication_with_events(
             permit,
-            vec![
-                RolloutItem::InterAgentCommunicationMetadata {
-                    trigger_turn: communication.trigger_turn,
-                },
-                RolloutItem::ResponseItem(response_item.into()),
-            ],
+            batch,
             Vec::new(),
             /*acknowledgement*/ None,
             move |state| {
@@ -3911,9 +3827,7 @@ impl Session {
         };
         if let Err(error) = result {
             error!("failed to publish inter-agent context: {error}");
-            return;
         }
-        self.send_raw_response_items(turn_context, &items).await;
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -4043,17 +3957,6 @@ impl Session {
         let selected = config.multi_agent_version_for_model(model_info.multi_agent_version);
 
         self.set_multi_agent_version_if_unset(selected)
-    }
-
-    #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]
-    async fn send_raw_response_items(&self, turn_context: &TurnContext, items: &[ResponseItem]) {
-        for item in items {
-            self.send_event(
-                turn_context,
-                EventMsg::RawResponseItem(RawResponseItemEvent { item: item.clone() }),
-            )
-            .await;
-        }
     }
 
     async fn build_turn_context_contribution_items(
@@ -4822,6 +4725,7 @@ impl Session {
                 prepared_items,
                 image_preparations,
                 /*acknowledgement*/ None,
+                transcript_publication::ConversationBoundary::Existing,
             )
             .await
         {
