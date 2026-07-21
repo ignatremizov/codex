@@ -449,10 +449,7 @@ impl CodexThread {
     pub async fn acquire_durable_context_permit(
         &self,
     ) -> CodexResult<tokio::sync::OwnedSemaphorePermit> {
-        Arc::clone(&self.session.durable_context_lock)
-            .acquire_owned()
-            .await
-            .map_err(|_| CodexErr::InternalAgentDied)
+        self.session.acquire_durable_context_permit().await
     }
 
     pub async fn agent_status(&self) -> AgentStatus {

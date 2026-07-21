@@ -822,6 +822,15 @@ impl SessionIo {
         Ok(event)
     }
 
+    pub(crate) async fn acquire_durable_context_permit(
+        &self,
+    ) -> CodexResult<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.durable_context_lock)
+            .acquire_owned()
+            .await
+            .map_err(|_| CodexErr::InternalAgentDied)
+    }
+
     pub(crate) async fn agent_status(&self) -> AgentStatus {
         self.agent_status.borrow().clone()
     }
