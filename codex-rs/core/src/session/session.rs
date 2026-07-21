@@ -55,7 +55,7 @@ pub(crate) struct Session {
     /// rebuilds from the current SessionState while holding this lock.
     pub(super) managed_network_proxy_refresh_lock: Semaphore,
     /// Serializes durable extension-context appends with compaction installation.
-    pub(super) durable_context_lock: Semaphore,
+    pub(super) durable_context_lock: Arc<Semaphore>,
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
     pub(super) features: ManagedFeatures,
@@ -1534,7 +1534,7 @@ impl Session {
                 state: Mutex::new(state),
                 thread_settings_persistence: Semaphore::new(/*permits*/ 1),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
-                durable_context_lock: Semaphore::new(/*permits*/ 1),
+                durable_context_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
                 features: config.features.clone(),
                 windows_sandbox_proxy_settings_mode,
                 multi_agent_version,
