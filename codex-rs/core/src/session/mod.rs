@@ -822,15 +822,6 @@ impl SessionIo {
         Ok(event)
     }
 
-    pub(crate) async fn acquire_durable_context_permit(
-        &self,
-    ) -> CodexResult<tokio::sync::OwnedSemaphorePermit> {
-        Arc::clone(&self.durable_context_lock)
-            .acquire_owned()
-            .await
-            .map_err(|_| CodexErr::InternalAgentDied)
-    }
-
     pub(crate) async fn agent_status(&self) -> AgentStatus {
         self.agent_status.borrow().clone()
     }
@@ -3450,6 +3441,15 @@ impl Session {
             );
         }
         self.send_raw_response_items(turn_context, items).await;
+    }
+
+    pub(crate) async fn acquire_durable_context_permit(
+        &self,
+    ) -> CodexResult<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.durable_context_lock)
+            .acquire_owned()
+            .await
+            .map_err(|_| CodexErr::InternalAgentDied)
     }
 
     /// Records model-visible items under a completed history turn without starting model work.
