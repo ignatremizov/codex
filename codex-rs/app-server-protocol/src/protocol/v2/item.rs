@@ -29,6 +29,7 @@ use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::plaintext_agent_message_content;
@@ -395,27 +396,38 @@ pub enum ThreadItem {
     },
 }
 
-/// Converts a plaintext model-visible inter-agent message into a transcript item.
+/// Converts a model-visible inter-agent message into a transcript item.
 ///
-/// Encrypted messages are intentionally omitted because their payload is not available to
-/// clients. The visible item is labeled with its agent author.
+/// The visible item is labeled with its agent author. Encrypted payloads are replaced with a
+/// fixed placeholder rather than exposing their envelope or ciphertext.
 pub fn inter_agent_message_thread_item(item: &ResponseItem) -> Option<ThreadItem> {
+    let id = item.id()?.to_string();
+    inter_agent_message_thread_item_with_id(item, id)
+}
+
+pub(crate) fn inter_agent_message_thread_item_with_id(
+    item: &ResponseItem,
+    id: String,
+) -> Option<ThreadItem> {
     let ResponseItem::AgentMessage {
-        id,
-        author,
-        content,
-        ..
+        author, content, ..
     } = item
     else {
         return None;
     };
-    let id = id.as_ref()?;
-    let text = plaintext_agent_message_content(content)?;
+    let text = if content
+        .iter()
+        .any(|part| matches!(part, AgentMessageInputContent::EncryptedContent { .. }))
+    {
+        "Input message encrypted".to_string()
+    } else {
+        plaintext_agent_message_content(content)?
+    };
     if text.trim().is_empty() {
         return None;
     }
     Some(ThreadItem::AgentMessage {
-        id: id.as_str().to_string(),
+        id,
         text: format!("Agent message from `{author}`:\n\n{text}"),
         phase: Some(MessagePhase::Commentary),
         memory_citation: None,

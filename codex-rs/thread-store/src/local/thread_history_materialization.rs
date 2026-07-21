@@ -24,11 +24,38 @@ pub(super) async fn materialize_to_sqlite(
 ) -> ThreadStoreResult<()> {
     let (mut start_offset, next_ordinal) =
         super::thread_history::projection_state(store, thread_id).await?;
-    let rollout_len = match tokio::fs::metadata(rollout_path).await {
-        Ok(metadata) => metadata.len(),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound && start_offset == 0 => 0,
-        Err(err) => return Err(thread_store_io_error(err)),
+    if !super::thread_history::fork_projection_is_current(
+        store,
+        thread_id,
+        start_offset,
+        next_ordinal,
+    )
+    .await?
+    {
+        warn!("rebuilding paginated history projection after another binary advanced {thread_id}");
+        return rebuild_to_sqlite(store, thread_id, rollout_path).await;
+    }
+    let Some(resolved_rollout_path) = codex_rollout::existing_rollout_path(rollout_path).await
+    else {
+        if start_offset == 0 {
+            return Ok(());
+        }
+        return Err(thread_store_io_error(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("rollout does not exist: {}", rollout_path.display()),
+        )));
     };
+    if codex_rollout::plain_rollout_path(resolved_rollout_path.as_path()) != resolved_rollout_path {
+        // Compression preserves the canonical uncompressed bytes and cold compressed rollouts are
+        // immutable. A future append first restores the plain file and advances the shared
+        // checkpoint, which makes the fork marker stale and enters the rebuild path above.
+        return Ok(());
+    }
+    let rollout_path = resolved_rollout_path.as_path();
+    let rollout_len = tokio::fs::metadata(rollout_path)
+        .await
+        .map_err(thread_store_io_error)?
+        .len();
     let offset_is_valid = if start_offset == 0 {
         next_ordinal == 0
     } else if start_offset < rollout_len {
@@ -138,10 +165,44 @@ pub(super) async fn rebuild_to_sqlite(
 
     let mut start_offset = 0u64;
     let mut next_ordinal = 0i64;
-    loop {
-        let (lines, next_offset, _rejected_line_count) =
-            read_complete_rollout_lines(rollout_path, start_offset).await?;
-        let projections = project_lines(lines.as_slice(), subagent_history_start_ordinal)?;
+    let mut reader = codex_rollout::open_rollout_line_reader(rollout_path)
+        .await
+        .map_err(thread_store_io_error)?;
+    while let Some(line) = reader.next_line().await.map_err(thread_store_io_error)? {
+        let record_byte_count =
+            line.len()
+                .checked_add(1)
+                .ok_or_else(|| ThreadStoreError::Internal {
+                    message: "rollout record byte count overflow".to_string(),
+                })?;
+        if record_byte_count > MAX_PROJECTION_RECORD_BYTES {
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "rollout record exceeds the {MAX_PROJECTION_RECORD_BYTES} byte history projection limit"
+                ),
+            });
+        }
+        start_offset = start_offset
+            .checked_add(u64::try_from(record_byte_count).map_err(|_| {
+                ThreadStoreError::Internal {
+                    message: "rollout record byte count exceeds u64".to_string(),
+                }
+            })?)
+            .ok_or_else(|| ThreadStoreError::Internal {
+                message: "durable rollout byte offset overflow".to_string(),
+            })?;
+        if line.is_empty() {
+            continue;
+        }
+        let line = match serde_json::from_str::<RolloutLine>(&line) {
+            Ok(line) => line,
+            Err(err) => {
+                warn!("skipping rejected rollout line while rebuilding {rollout_path:?}: {err}");
+                continue;
+            }
+        };
+        let projections =
+            project_lines(std::slice::from_ref(&line), subagent_history_start_ordinal)?;
         for (ordinal, created_at_ms, changes) in projections {
             let ordinal = ordinal
                 .ok_or_else(|| ThreadStoreError::Internal {
@@ -176,10 +237,6 @@ pub(super) async fn rebuild_to_sqlite(
                         message: "rollout ordinal exceeds SQLite integer range".to_string(),
                     })?;
         }
-        if next_offset == start_offset {
-            break;
-        }
-        start_offset = next_offset;
     }
 
     sqlx::query(
@@ -189,6 +246,28 @@ INSERT INTO thread_history_projection_state (
     next_rollout_byte_offset,
     next_rollout_ordinal
 ) VALUES (?, ?, ?)
+        "#,
+    )
+    .bind(thread_id_text.as_str())
+    .bind(
+        i64::try_from(start_offset).map_err(|_| ThreadStoreError::Internal {
+            message: "rollout byte offset exceeds SQLite integer range".to_string(),
+        })?,
+    )
+    .bind(next_ordinal)
+    .execute(&mut *transaction)
+    .await
+    .map_err(thread_history_error)?;
+    sqlx::query(
+        r#"
+INSERT INTO fork_thread_history_projection_state (
+    thread_id,
+    next_rollout_byte_offset,
+    next_rollout_ordinal
+) VALUES (?, ?, ?)
+ON CONFLICT(thread_id) DO UPDATE SET
+    next_rollout_byte_offset = excluded.next_rollout_byte_offset,
+    next_rollout_ordinal = excluded.next_rollout_ordinal
         "#,
     )
     .bind(thread_id_text.as_str())

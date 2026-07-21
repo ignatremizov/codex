@@ -431,6 +431,30 @@ impl CodexThread {
         self.io.next_event().await
     }
 
+    /// Returns the next already-buffered event without waiting for new work.
+    pub fn try_next_event(&self) -> CodexResult<Option<Event>> {
+        match self.io.rx_event.try_recv() {
+            Ok(event) => Ok(Some(event)),
+            Err(async_channel::TryRecvError::Empty) => Ok(None),
+            Err(async_channel::TryRecvError::Closed) => Err(CodexErr::InternalAgentDied),
+        }
+    }
+
+    /// Returns the number of events currently buffered for the thread listener.
+    pub fn pending_event_count(&self) -> usize {
+        self.io.rx_event.len()
+    }
+
+    /// Prevents durable context items from being appended until the returned permit is dropped.
+    pub async fn acquire_durable_context_permit(
+        &self,
+    ) -> CodexResult<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.session.durable_context_lock)
+            .acquire_owned()
+            .await
+            .map_err(|_| CodexErr::InternalAgentDied)
+    }
+
     pub async fn agent_status(&self) -> AgentStatus {
         self.io.agent_status().await
     }
@@ -480,7 +504,10 @@ impl CodexThread {
             ));
         }
 
-        let turn_context = self.session.new_default_turn().await;
+        let turn_context = self
+            .session
+            .new_default_turn_with_sub_id(uuid::Uuid::now_v7().to_string())
+            .await;
         if self.session.reference_context_item().await.is_none() {
             // This history-only API runs without run_turn, so it owns its initial step.
             let step_context = self
@@ -491,9 +518,30 @@ impl CodexThread {
                 .record_context_updates_and_set_reference_context_item(step_context.as_ref())
                 .await;
         }
-        self.session
-            .inject_no_new_turn(items, Some(turn_context.as_ref()))
-            .await;
+        if let Err(items) = self.session.inject_response_items(items).await {
+            if items
+                .iter()
+                .any(|item| matches!(item, ResponseItem::AgentMessage { .. }))
+            {
+                let session = Arc::clone(&self.session);
+                let turn_context = Arc::clone(&turn_context);
+                tokio::spawn(async move {
+                    session
+                        .record_history_only_conversation_items(turn_context.as_ref(), &items)
+                        .await
+                })
+                .await?
+                .map_err(|err| {
+                    CodexErr::Fatal(format!(
+                        "failed to persist history-only response items: {err}"
+                    ))
+                })?;
+            } else {
+                self.session
+                    .record_conversation_items(turn_context.as_ref(), &items)
+                    .await;
+            }
+        }
         self.session.flush_rollout().await?;
         Ok(())
     }

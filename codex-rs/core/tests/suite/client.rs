@@ -30,6 +30,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::error::CodexErr;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -272,6 +273,35 @@ async fn non_openai_responses_requests_omit_item_passthrough_metadata() {
         .codex;
 
     codex
+        .inject_response_items(vec![ResponseItem::AgentMessage {
+            id: None,
+            author: "/root".to_string(),
+            recipient: "/root/worker".to_string(),
+            content: vec![AgentMessageInputContent::InputText {
+                text: "locally identified task".to_string(),
+            }],
+            internal_chat_message_metadata_passthrough: None,
+        }])
+        .await
+        .unwrap();
+    let local_item = wait_for_event(&codex, |event| {
+        matches!(
+            event,
+            EventMsg::RawResponseItem(raw)
+                if matches!(&raw.item, ResponseItem::AgentMessage { .. })
+        )
+    })
+    .await;
+    let EventMsg::RawResponseItem(raw) = local_item else {
+        unreachable!("event predicate requires a raw response item");
+    };
+    let local_item_id = raw
+        .item
+        .id()
+        .expect("durable agent message should have a local ID");
+    assert!(local_item_id.starts_with("amsg_"));
+
+    codex
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "hello".into(),
@@ -291,6 +321,14 @@ async fn non_openai_responses_requests_omit_item_passthrough_metadata() {
         .as_array()
         .expect("request should include input items");
     assert!(!input.is_empty(), "request should include input items");
+    let agent_message = input
+        .iter()
+        .find(|item| item["type"] == "agent_message")
+        .expect("request should contain the durable agent message");
+    assert_eq!(
+        agent_message["content"][0]["text"].as_str(),
+        Some("locally identified task")
+    );
     for item in input {
         assert!(
             item.get("internal_chat_message_metadata_passthrough")
@@ -302,6 +340,75 @@ async fn non_openai_responses_requests_omit_item_passthrough_metadata() {
             "input item should omit generated IDs: {item}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_history_only_injection_finishes_its_detached_commit() {
+    let server = MockServer::start().await;
+    let codex = test_codex().build(&server).await.expect("test codex").codex;
+    let agent_message = |text: &str| ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: text.to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    codex
+        .inject_response_items(vec![agent_message("initialize reference context")])
+        .await
+        .expect("initial history-only injection");
+    wait_for_event(&codex, |event| {
+        matches!(
+            event,
+            EventMsg::RawResponseItem(raw)
+                if matches!(
+                    &raw.item,
+                    ResponseItem::AgentMessage { content, .. }
+                        if content.iter().any(|part| matches!(
+                            part,
+                            AgentMessageInputContent::InputText { text }
+                                if text == "initialize reference context"
+                        ))
+                )
+        )
+    })
+    .await;
+
+    let permit = codex
+        .acquire_durable_context_permit()
+        .await
+        .expect("durable context permit");
+    let cancelled_codex = Arc::clone(&codex);
+    let caller = tokio::spawn(async move {
+        cancelled_codex
+            .inject_response_items(vec![agent_message("commit after cancellation")])
+            .await
+    });
+    tokio::task::yield_now().await;
+    assert!(!caller.is_finished());
+    caller.abort();
+    drop(permit);
+
+    let committed = wait_for_event(&codex, |event| {
+        matches!(
+            event,
+            EventMsg::RawResponseItem(raw)
+                if matches!(
+                    &raw.item,
+                    ResponseItem::AgentMessage { content, .. }
+                        if content.iter().any(|part| matches!(
+                            part,
+                            AgentMessageInputContent::InputText { text }
+                                if text == "commit after cancellation"
+                        ))
+                )
+        )
+    })
+    .await;
+    assert!(matches!(committed, EventMsg::RawResponseItem(_)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

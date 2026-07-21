@@ -3,9 +3,12 @@ use crate::outgoing_message::ConnectionRequestId;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
+use codex_app_server_protocol::ThreadHistoryChangeSet;
+use codex_app_server_protocol::ThreadHistoryItemChange;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError;
+use codex_app_server_protocol::inter_agent_message_thread_item;
 use codex_core::CodexThread;
 use codex_core::ThreadConfigSnapshot;
 use codex_file_watcher::WatchRegistration;
@@ -42,10 +45,18 @@ pub(crate) struct PendingThreadResumeRequest {
         Option<codex_app_server_protocol::ThreadResumeInitialTurnsPageParams>,
     pub(crate) resume_cursor_store: Option<Arc<dyn codex_thread_store::ThreadStore>>,
     pub(crate) redact_resume_payloads: bool,
+    pub(crate) durable_context_permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 // ThreadListenerCommand is used to perform operations in the context of the thread listener, for serialization purposes.
 pub(crate) enum ThreadListenerCommand {
+    // DrainPendingEventsForResume establishes an event boundary while the caller holds the
+    // durable context permit. The listener remains behind the barrier until the caller queues the
+    // resume response, so ordinary lifecycle events cannot cross the snapshot/subscription gap.
+    DrainPendingEventsForResume {
+        completion_tx: oneshot::Sender<bool>,
+        release_rx: oneshot::Receiver<()>,
+    },
     // SendThreadResumeResponse is used to resume an already running thread by sending the thread's history to the client and atomically subscribing for new updates.
     SendThreadResumeResponse(Box<PendingThreadResumeRequest>),
     // EmitThreadGoalUpdated is used to order goal updates with running-thread resume responses and goal clears.
@@ -139,20 +150,49 @@ impl ThreadState {
     }
 
     pub(crate) fn active_turn_snapshot(&self) -> Option<Turn> {
-        self.current_turn_history.active_turn_snapshot()
+        self.current_turn_history.current_turn_snapshot()
     }
 
-    pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
+    pub(crate) fn track_current_turn_event(
+        &mut self,
+        event_turn_id: &str,
+        event: &EventMsg,
+    ) -> ThreadHistoryChangeSet {
         if let EventMsg::TurnStarted(payload) = event {
             self.turn_summary.started_at = payload.started_at;
         }
-        self.current_turn_history.handle_event(event);
+        let changes = match event {
+            EventMsg::RawResponseItem(payload) => {
+                let turn_id = payload.item.turn_id().unwrap_or(event_turn_id);
+                if self
+                    .current_turn_history
+                    .active_turn_id_if_explicit()
+                    .as_deref()
+                    == Some(turn_id)
+                {
+                    self.current_turn_history.handle_event_with_changes(event)
+                } else {
+                    inter_agent_message_thread_item(&payload.item).map_or_else(
+                        ThreadHistoryChangeSet::default,
+                        |item| ThreadHistoryChangeSet {
+                            changed_items: vec![ThreadHistoryItemChange {
+                                turn_id: turn_id.to_string(),
+                                item,
+                            }],
+                            ..Default::default()
+                        },
+                    )
+                }
+            }
+            _ => self.current_turn_history.handle_event_with_changes(event),
+        };
         if matches!(event, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_))
             && !self.current_turn_history.has_active_turn()
         {
             self.last_terminal_turn_id = Some(event_turn_id.to_string());
             self.current_turn_history.reset();
         }
+        changes
     }
 
     pub(crate) fn note_thread_settings(&mut self, thread_settings: ThreadSettings) -> bool {
@@ -200,11 +240,182 @@ mod tests {
     use codex_app_server_protocol::ApprovalsReviewer;
     use codex_app_server_protocol::AskForApproval;
     use codex_app_server_protocol::SandboxPolicy;
+    use codex_app_server_protocol::TurnStatus;
+    use codex_protocol::ResponseItemId;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::config_types::Settings;
+    use codex_protocol::models::AgentMessageInputContent;
+    use codex_protocol::models::InternalChatMessageMetadataPassthrough;
+    use codex_protocol::models::ResponseItem;
+    use codex_protocol::protocol::ErrorEvent;
+    use codex_protocol::protocol::RawResponseItemEvent;
+    use codex_protocol::protocol::TurnStartedEvent;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn raw_response_item_uses_persisted_turn_without_starting_it() {
+        let mut state = ThreadState::default();
+        let changes = state.track_current_turn_event(
+            "event-turn",
+            &EventMsg::RawResponseItem(RawResponseItemEvent {
+                item: ResponseItem::AgentMessage {
+                    id: Some(ResponseItemId::with_suffix("amsg", "task")),
+                    author: "/root".to_string(),
+                    recipient: "/root/worker".to_string(),
+                    content: vec![AgentMessageInputContent::InputText {
+                        text: "Inspect the repository.".to_string(),
+                    }],
+                    internal_chat_message_metadata_passthrough: Some(
+                        InternalChatMessageMetadataPassthrough {
+                            turn_id: Some("turn-a".to_string()),
+                        },
+                    ),
+                },
+            }),
+        );
+        let expected_item = codex_app_server_protocol::ThreadItem::AgentMessage {
+            id: "amsg_task".to_string(),
+            text: "Agent message from `/root`:\n\nInspect the repository.".to_string(),
+            phase: Some(codex_protocol::models::MessagePhase::Commentary),
+            memory_citation: None,
+        };
+
+        assert_eq!(
+            changes.changed_items,
+            vec![codex_app_server_protocol::ThreadHistoryItemChange {
+                turn_id: "turn-a".to_string(),
+                item: expected_item.clone(),
+            }]
+        );
+        assert_eq!(
+            state.active_turn_snapshot(),
+            None,
+            "history-only messages must not create a live turn"
+        );
+    }
+
+    #[test]
+    fn failed_current_turn_remains_available_to_live_snapshots() {
+        let mut state = ThreadState::default();
+        state.track_current_turn_event(
+            "turn-a",
+            &EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".to_string(),
+                trace_id: None,
+                started_at: Some(10),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+        );
+        state.track_current_turn_event(
+            "turn-a",
+            &EventMsg::Error(ErrorEvent {
+                message: "model failed".to_string(),
+                codex_error_info: None,
+            }),
+        );
+
+        assert_eq!(
+            state.active_turn_snapshot(),
+            Some(Turn {
+                id: "turn-a".to_string(),
+                items: Vec::new(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                status: TurnStatus::Failed,
+                error: Some(TurnError {
+                    message: "model failed".to_string(),
+                    codex_error_info: None,
+                    additional_details: None,
+                }),
+                started_at: Some(10),
+                completed_at: None,
+                duration_ms: None,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_pause_excludes_only_that_connection_from_typed_transcript() {
+        let manager = ThreadStateManager::new();
+        let thread_id = ThreadId::new();
+        let existing_connection = ConnectionId(7);
+        let resuming_connection = ConnectionId(8);
+        manager
+            .connection_initialized(existing_connection, ConnectionCapabilities::default())
+            .await;
+        manager
+            .connection_initialized(resuming_connection, ConnectionCapabilities::default())
+            .await;
+        assert!(
+            manager
+                .try_add_connection_to_thread(thread_id, existing_connection)
+                .await
+        );
+        assert!(
+            manager
+                .try_add_connection_to_thread(thread_id, resuming_connection)
+                .await
+        );
+        let delivery_guard = manager
+            .acquire_typed_transcript_delivery_guard(thread_id)
+            .await;
+        let (pause_started_tx, pause_started_rx) = oneshot::channel();
+        let pause_manager = manager.clone();
+        let pause_task = tokio::spawn(async move {
+            let _ = pause_started_tx.send(());
+            pause_manager
+                .pause_typed_transcript_for_resume(thread_id, resuming_connection)
+                .await
+        });
+        pause_started_rx.await.expect("pause task started");
+        tokio::task::yield_now().await;
+        assert!(
+            !pause_task.is_finished(),
+            "pause must wait for in-flight typed transcript delivery"
+        );
+        drop(delivery_guard);
+        assert!(pause_task.await.expect("pause task"));
+        assert!(
+            manager
+                .pause_typed_transcript_for_resume(thread_id, resuming_connection)
+                .await
+        );
+
+        assert_eq!(
+            manager
+                .typed_transcript_connection_ids(thread_id)
+                .await
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            [existing_connection].into_iter().collect()
+        );
+        manager
+            .resume_typed_transcript(thread_id, resuming_connection)
+            .await;
+        assert_eq!(
+            manager
+                .typed_transcript_connection_ids(thread_id)
+                .await
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            [existing_connection].into_iter().collect()
+        );
+        manager
+            .resume_typed_transcript(thread_id, resuming_connection)
+            .await;
+        assert_eq!(
+            manager
+                .typed_transcript_connection_ids(thread_id)
+                .await
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            [existing_connection, resuming_connection]
+                .into_iter()
+                .collect()
+        );
+    }
 
     #[test]
     fn note_thread_settings_reports_only_effective_changes() {
@@ -253,6 +464,8 @@ mod tests {
 struct ThreadEntry {
     state: Arc<Mutex<ThreadState>>,
     connection_ids: HashSet<ConnectionId>,
+    paused_typed_transcript_connections: HashMap<ConnectionId, usize>,
+    typed_transcript_delivery_gate: Arc<Mutex<()>>,
     has_connections_watcher: watch::Sender<bool>,
 }
 
@@ -261,6 +474,8 @@ impl Default for ThreadEntry {
         Self {
             state: Arc::new(Mutex::new(ThreadState::default())),
             connection_ids: HashSet::new(),
+            paused_typed_transcript_connections: HashMap::new(),
+            typed_transcript_delivery_gate: Arc::new(Mutex::new(())),
             has_connections_watcher: watch::channel(false).0,
         }
     }
@@ -473,6 +688,9 @@ impl ThreadStateManager {
             }
             if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
                 thread_entry.connection_ids.remove(&connection_id);
+                thread_entry
+                    .paused_typed_transcript_connections
+                    .remove(&connection_id);
                 thread_entry.update_has_connections();
             }
         };
@@ -540,6 +758,97 @@ impl ThreadStateManager {
         true
     }
 
+    pub(crate) async fn pause_typed_transcript_for_resume(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) -> bool {
+        let delivery_gate = {
+            let mut state = self.state.lock().await;
+            if !state.live_connections.contains_key(&connection_id) {
+                return false;
+            }
+            Arc::clone(
+                &state
+                    .threads
+                    .entry(thread_id)
+                    .or_default()
+                    .typed_transcript_delivery_gate,
+            )
+        };
+        let _delivery_guard = delivery_gate.lock().await;
+        let mut state = self.state.lock().await;
+        if !state.live_connections.contains_key(&connection_id) {
+            return false;
+        }
+        let pause_count = state
+            .threads
+            .entry(thread_id)
+            .or_default()
+            .paused_typed_transcript_connections
+            .entry(connection_id)
+            .or_default();
+        *pause_count = pause_count.saturating_add(1);
+        true
+    }
+
+    pub(crate) async fn resume_typed_transcript(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) {
+        let mut state = self.state.lock().await;
+        if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
+            let pauses = &mut thread_entry.paused_typed_transcript_connections;
+            if let Some(pause_count) = pauses.get_mut(&connection_id) {
+                *pause_count = pause_count.saturating_sub(1);
+                if *pause_count == 0 {
+                    pauses.remove(&connection_id);
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn typed_transcript_connection_ids(
+        &self,
+        thread_id: ThreadId,
+    ) -> Vec<ConnectionId> {
+        let state = self.state.lock().await;
+        state
+            .threads
+            .get(&thread_id)
+            .map(|thread_entry| {
+                thread_entry
+                    .connection_ids
+                    .iter()
+                    .filter(|connection_id| {
+                        !thread_entry
+                            .paused_typed_transcript_connections
+                            .contains_key(connection_id)
+                    })
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) async fn acquire_typed_transcript_delivery_guard(
+        &self,
+        thread_id: ThreadId,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let delivery_gate = {
+            let mut state = self.state.lock().await;
+            Arc::clone(
+                &state
+                    .threads
+                    .entry(thread_id)
+                    .or_default()
+                    .typed_transcript_delivery_gate,
+            )
+        };
+        delivery_gate.lock_owned().await
+    }
+
     pub(crate) async fn remove_connection(&self, connection_id: ConnectionId) -> Vec<ThreadId> {
         {
             let mut state = self.state.lock().await;
@@ -551,6 +860,9 @@ impl ThreadStateManager {
             for thread_id in &thread_ids {
                 if let Some(thread_entry) = state.threads.get_mut(thread_id) {
                     thread_entry.connection_ids.remove(&connection_id);
+                    thread_entry
+                        .paused_typed_transcript_connections
+                        .remove(&connection_id);
                     thread_entry.update_has_connections();
                 }
             }

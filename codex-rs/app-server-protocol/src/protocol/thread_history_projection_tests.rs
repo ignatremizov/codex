@@ -1,8 +1,12 @@
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
+use codex_protocol::models::AgentMessageInputContent;
+use codex_protocol::models::MessagePhase;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
@@ -139,6 +143,36 @@ fn projects_completed_canonical_turn_items() {
             turn_id: "turn-1".to_string(),
             item: ThreadItem::from(agent_item),
         }]
+    );
+}
+
+#[test]
+fn projects_inter_agent_response_items_into_paginated_history() {
+    let mut item = ResponseItem::AgentMessage {
+        id: Some(ResponseItemId::with_suffix("amsg", "task")),
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "Inspect the repository.".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+    item.set_turn_id_if_missing("turn-1");
+
+    assert_eq!(
+        project(RolloutItem::ResponseItem(item)),
+        ThreadHistoryChangeSet {
+            changed_items: vec![ThreadHistoryItemChange {
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::AgentMessage {
+                    id: "amsg_task".to_string(),
+                    text: "Agent message from `/root`:\n\nInspect the repository.".to_string(),
+                    phase: Some(MessagePhase::Commentary),
+                    memory_citation: None,
+                },
+            }],
+            ..Default::default()
+        }
     );
 }
 

@@ -99,7 +99,22 @@ fn plaintext_inter_agent_message_becomes_labeled_agent_transcript_item() {
 }
 
 #[test]
-fn encrypted_inter_agent_message_is_not_materialized_in_transcript() {
+fn idless_plaintext_inter_agent_message_needs_history_fallback_id() {
+    let item = ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "Inspect the repository.".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    assert_eq!(inter_agent_message_thread_item(&item), None);
+}
+
+#[test]
+fn encrypted_inter_agent_message_becomes_placeholder_transcript_item() {
     let item = ResponseItem::AgentMessage {
         id: Some(ResponseItemId::with_suffix("amsg", "task")),
         author: "/root".to_string(),
@@ -115,7 +130,15 @@ fn encrypted_inter_agent_message_is_not_materialized_in_transcript() {
         internal_chat_message_metadata_passthrough: None,
     };
 
-    assert_eq!(inter_agent_message_thread_item(&item), None);
+    assert_eq!(
+        inter_agent_message_thread_item(&item),
+        Some(ThreadItem::AgentMessage {
+            id: "amsg_task".to_string(),
+            text: "Agent message from `/root`:\n\nInput message encrypted".to_string(),
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+        })
+    );
 }
 
 #[test]

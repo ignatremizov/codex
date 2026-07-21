@@ -43,6 +43,25 @@ pub(super) async fn projection_state(
     Ok((offset, ordinal))
 }
 
+pub(super) async fn fork_projection_is_current(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    next_rollout_byte_offset: u64,
+    next_rollout_ordinal: u64,
+) -> ThreadStoreResult<bool> {
+    let pool = store.thread_history_db().await?;
+    let state = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT next_rollout_byte_offset, next_rollout_ordinal FROM fork_thread_history_projection_state WHERE thread_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .fetch_optional(pool)
+    .await
+    .map_err(thread_history_error)?;
+    let expected_offset = sqlite_integer(next_rollout_byte_offset, "rollout byte offset")?;
+    let expected_ordinal = sqlite_integer(next_rollout_ordinal, "rollout ordinal")?;
+    Ok(state == Some((expected_offset, expected_ordinal)))
+}
+
 pub(super) async fn apply_projection(
     store: &LocalThreadStore,
     thread_id: ThreadId,
@@ -106,6 +125,7 @@ WHERE thread_id = ?
             })?;
     }
 
+    let next_offset = sqlite_integer(next_offset, "rollout byte offset")?;
     sqlx::query(
         r#"
 INSERT INTO thread_history_projection_state (
@@ -119,7 +139,25 @@ ON CONFLICT(thread_id) DO UPDATE SET
         "#,
     )
     .bind(thread_id.as_str())
-    .bind(sqlite_integer(next_offset, "rollout byte offset")?)
+    .bind(next_offset)
+    .bind(next_ordinal)
+    .execute(&mut *transaction)
+    .await
+    .map_err(thread_history_error)?;
+    sqlx::query(
+        r#"
+INSERT INTO fork_thread_history_projection_state (
+    thread_id,
+    next_rollout_byte_offset,
+    next_rollout_ordinal
+) VALUES (?, ?, ?)
+ON CONFLICT(thread_id) DO UPDATE SET
+    next_rollout_byte_offset = excluded.next_rollout_byte_offset,
+    next_rollout_ordinal = excluded.next_rollout_ordinal
+        "#,
+    )
+    .bind(thread_id.as_str())
+    .bind(next_offset)
     .bind(next_ordinal)
     .execute(&mut *transaction)
     .await
@@ -156,6 +194,11 @@ pub(super) async fn delete_thread(
         .await
         .map_err(thread_history_delete_error)?;
     sqlx::query("DELETE FROM thread_history_projection_state WHERE thread_id = ?")
+        .bind(thread_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(thread_history_delete_error)?;
+    sqlx::query("DELETE FROM fork_thread_history_projection_state WHERE thread_id = ?")
         .bind(thread_id.as_str())
         .execute(&mut *transaction)
         .await
@@ -276,6 +319,31 @@ WHERE thread_id = ? AND turn_id = ?
     }
 
     for item in changes.changed_items {
+        // Older history-only records and review flows can persist an item before any explicit
+        // turn lifecycle record. Ensure the item is always discoverable through both turn and
+        // item pagination without overwriting an existing turn's live or terminal status.
+        sqlx::query(
+            r#"
+INSERT INTO thread_turns (
+    thread_id,
+    turn_id,
+    rollout_ordinal,
+    status,
+    error_json,
+    started_at,
+    completed_at,
+    duration_ms
+) VALUES (?, ?, ?, 'completed', NULL, NULL, NULL, NULL)
+ON CONFLICT(thread_id, turn_id) DO NOTHING
+            "#,
+        )
+        .bind(thread_id)
+        .bind(item.turn_id.as_str())
+        .bind(rollout_ordinal)
+        .execute(&mut **transaction)
+        .await
+        .map_err(thread_history_error)?;
+
         let item_id = item.item.id().to_string();
         let item_json = serde_json::to_string(&item.item).map_err(thread_history_error)?;
         // The same item can appear again with a newer snapshot. Replace its JSON, but keep the

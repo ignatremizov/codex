@@ -853,6 +853,8 @@ Invoke a plugin by including a UI mention token such as `@sample` in the text in
 
 Use `thread/inject_items` to append prebuilt Responses API items to a loaded thread’s prompt history without starting a user turn. These items are persisted to the rollout and included in subsequent model requests. Any `input_image` items must use inline data URLs; remote HTTP(S) image URLs are rejected.
 
+An injected Responses API `agent_message` receives a canonical local `amsg_*` item ID and turn ID. When the thread is idle, app-server persists it inside a synthetic completed history turn without starting model work, then emits matching `item/started` and `item/completed` notifications. Those typed notifications are independent of `experimentalRawEvents`; `rawResponseItem/completed` remains opt-in. The transcript labels plaintext with the `author`, while encrypted content is represented as `Input message encrypted` without exposing its envelope or ciphertext.
+
 ```json
 { "method": "thread/inject_items", "id": 36, "params": {
     "threadId": "thr_123",

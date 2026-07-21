@@ -610,6 +610,38 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
 }
 
 #[tokio::test]
+async fn live_app_server_inter_agent_message_renders_in_transcript() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::AgentMessage {
+                id: "item-stable".to_string(),
+                text: "Agent message from `/root`:\n\nInspect the repository.".to_string(),
+                phase: Some(MessagePhase::Commentary),
+                memory_citation: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered = lines_to_single_string(&cells[0]).replace("  \n", "\n");
+    insta::assert_snapshot!(
+                                                                                                rendered,
+                                                                                                @r"
+• Agent message from /root:
+
+  Inspect the repository.
+"
+                                                                                            );
+}
+
+#[tokio::test]
 async fn context_compacted_summary_respects_tui_toggle() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
     chat.config.show_compact_summary = false;
