@@ -229,7 +229,13 @@ pub(crate) fn is_private_realtime_agent_item(item: &ThreadItem) -> bool {
     if matches!(item, ThreadItem::Reasoning { .. }) {
         return true;
     }
-    let ThreadItem::AgentMessage { text, phase, .. } = item else {
+    let ThreadItem::AgentMessage {
+        text,
+        phase,
+        inter_agent_source: None,
+        ..
+    } = item
+    else {
         return false;
     };
     let text = text.trim_start();
@@ -910,6 +916,7 @@ impl ChatWidget {
             text,
             phase,
             questions,
+            inter_agent_source: None,
             ..
         } = item
         else {
@@ -997,7 +1004,10 @@ impl ChatWidget {
 
     pub(super) fn speak_completed_realtime_delegation(&mut self, turn_id: &str, item: &ThreadItem) {
         let ThreadItem::AgentMessage {
-            id: item_id, text, ..
+            id: item_id,
+            text,
+            inter_agent_source: None,
+            ..
         } = item
         else {
             return;
