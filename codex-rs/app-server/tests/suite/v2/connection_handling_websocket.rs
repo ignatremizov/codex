@@ -9,14 +9,20 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeParams;
+use codex_app_server_protocol::ItemCompletedNotification;
+use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadInjectItemsParams;
+use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_core::config::set_project_trust_level;
@@ -24,6 +30,8 @@ use codex_http_client::HttpClient;
 use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpResponse;
 use codex_protocol::config_types::TrustLevel;
+use codex_protocol::models::AgentMessageInputContent;
+use codex_protocol::models::ResponseItem;
 use futures::SinkExt;
 use futures::StreamExt;
 use hmac::Hmac;
@@ -103,6 +111,250 @@ async fn websocket_transport_routes_per_connection_handshake_and_responses() -> 
     assert!(ws1_config.result.get("config").is_some());
     assert!(ws2_config.result.get("config").is_some());
 
+    process
+        .kill()
+        .await
+        .context("failed to stop websocket app-server process")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn running_resume_separates_snapshot_and_live_agent_message_delivery() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), "never")?;
+    let (mut process, bind_addr) = spawn_websocket_server(codex_home.path()).await?;
+    let mut primary = connect_websocket(bind_addr).await?;
+    let mut resuming = connect_websocket(bind_addr).await?;
+
+    send_initialize_request(&mut primary, /*id*/ 1, "primary").await?;
+    read_response_for_id(&mut primary, /*id*/ 1).await?;
+    send_initialize_request(&mut resuming, /*id*/ 2, "resuming").await?;
+    read_response_for_id(&mut resuming, /*id*/ 2).await?;
+
+    send_request(
+        &mut primary,
+        "thread/start",
+        /*id*/ 3,
+        // This transport test only exercises idle injection and resume delivery; it does not
+        // start a model turn, so no automatic executor environment is required.
+        Some(serde_json::to_value(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })?),
+    )
+    .await?;
+    let start_response = read_response_for_id(&mut primary, /*id*/ 3).await?;
+    let ThreadStartResponse { thread, .. } = to_response(start_response)?;
+    let snapshot_item = ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "snapshot task".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    send_request(
+        &mut primary,
+        "thread/inject_items",
+        /*id*/ 4,
+        Some(serde_json::to_value(ThreadInjectItemsParams {
+            thread_id: thread.id.clone(),
+            items: vec![serde_json::to_value(snapshot_item)?],
+        })?),
+    )
+    .await?;
+    let (_snapshot_response, primary_snapshot_started, primary_snapshot_completed) = timeout(
+        DEFAULT_READ_TIMEOUT,
+        read_injection_response_and_items(&mut primary, /*id*/ 4, "snapshot task"),
+    )
+    .await??;
+    assert_eq!(primary_snapshot_started.len(), 1);
+    assert_eq!(primary_snapshot_completed.len(), 1);
+    assert_eq!(
+        primary_snapshot_completed[0].item,
+        primary_snapshot_started[0].item
+    );
+    send_request(
+        &mut resuming,
+        "thread/resume",
+        /*id*/ 5,
+        Some(serde_json::to_value(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        })?),
+    )
+    .await?;
+    let (resume_response, notifications_before_response) =
+        read_response_for_id_collecting_notifications(&mut resuming, /*id*/ 5).await?;
+    let ThreadResumeResponse {
+        thread: resumed_thread,
+        ..
+    } = to_response(resume_response)?;
+    let snapshot_items = resumed_thread
+        .turns
+        .iter()
+        .flat_map(|turn| turn.items.iter())
+        .filter(|item| {
+            matches!(
+                item,
+                ThreadItem::AgentMessage { text, .. }
+                    if text == "Agent message from `/root`:\n\nsnapshot task"
+            )
+        })
+        .collect::<Vec<_>>();
+    let [snapshot_item] = snapshot_items.as_slice() else {
+        bail!("resume snapshot must contain exactly one matching item");
+    };
+    assert_eq!(&primary_snapshot_completed[0].item, *snapshot_item);
+    let ThreadItem::AgentMessage {
+        id,
+        inter_agent_source: Some(source),
+        ..
+    } = *snapshot_item
+    else {
+        bail!("resume snapshot must preserve inter-agent provenance");
+    };
+    assert!(id.starts_with("amsg_"));
+    assert_eq!(
+        (source.author.as_str(), source.recipient.as_str()),
+        ("/root", "/root/worker")
+    );
+    assert!(
+        notifications_before_response
+            .iter()
+            .all(|notification| notification.method != "item/started"
+                && notification.method != "item/completed"),
+        "snapshot item must not also be delivered before the resume response"
+    );
+    let live_item = ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "live task".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+    send_request(
+        &mut primary,
+        "thread/inject_items",
+        /*id*/ 6,
+        Some(serde_json::to_value(ThreadInjectItemsParams {
+            thread_id: thread.id.clone(),
+            items: vec![serde_json::to_value(live_item)?],
+        })?),
+    )
+    .await?;
+    let (_live_response, primary_live_started, primary_live_completed) = timeout(
+        DEFAULT_READ_TIMEOUT,
+        read_injection_response_and_items(&mut primary, /*id*/ 6, "live task"),
+    )
+    .await??;
+    assert_eq!(primary_live_started.len(), 1);
+    assert_eq!(primary_live_completed.len(), 1);
+    assert_eq!(primary_live_completed[0].item, primary_live_started[0].item);
+    let primary_items = [
+        (&primary_snapshot_started[0], &primary_snapshot_completed[0]),
+        (&primary_live_started[0], &primary_live_completed[0]),
+    ];
+    assert_ne!(
+        primary_items[0].1.item.id(),
+        primary_items[1].1.item.id(),
+        "primary subscriber should receive distinct canonical items"
+    );
+    let observed_ids = primary_items
+        .iter()
+        .map(|(_, completed)| completed.item.id())
+        .collect::<Vec<_>>();
+    let started = read_notification_for_method(&mut resuming, "item/started").await?;
+    let started: ItemStartedNotification =
+        serde_json::from_value(started.params.expect("item/started params"))?;
+    let completed = read_notification_for_method(&mut resuming, "item/completed").await?;
+    let completed: ItemCompletedNotification =
+        serde_json::from_value(completed.params.expect("item/completed params"))?;
+    assert_eq!(completed.thread_id, started.thread_id);
+    assert_eq!(completed.turn_id, started.turn_id);
+    assert_eq!(completed.item, started.item);
+    assert_eq!(completed.item, primary_live_completed[0].item);
+    assert!(matches!(
+        completed.item,
+        ThreadItem::AgentMessage {
+            ref id,
+            ref text,
+            inter_agent_source: Some(ref source),
+            ..
+        }
+            if id.starts_with("amsg_")
+                && text == "Agent message from `/root`:\n\nlive task"
+                && source.author == "/root"
+                && source.recipient == "/root/worker"
+    ));
+    send_request(
+        &mut resuming,
+        "thread/resume",
+        /*id*/ 7,
+        Some(serde_json::to_value(ThreadResumeParams {
+            thread_id: thread.id,
+            ..Default::default()
+        })?),
+    )
+    .await?;
+    let (replay_response, replay_notifications) =
+        read_response_for_id_collecting_notifications(&mut resuming, /*id*/ 7).await?;
+    let duplicate_notifications = replay_notifications
+        .iter()
+        .filter(|notification| {
+            let Some(params) = notification.params.as_ref() else {
+                return false;
+            };
+            let item = match notification.method.as_str() {
+                "item/started" => {
+                    serde_json::from_value::<ItemStartedNotification>(params.clone())
+                        .expect("typed item/started notification")
+                        .item
+                }
+                "item/completed" => {
+                    serde_json::from_value::<ItemCompletedNotification>(params.clone())
+                        .expect("typed item/completed notification")
+                        .item
+                }
+                _ => return false,
+            };
+            observed_ids.contains(&item.id())
+        })
+        .count();
+    assert_eq!(
+        duplicate_notifications, 0,
+        "resume response boundary must not have duplicate typed notifications"
+    );
+    let ThreadResumeResponse {
+        thread: replayed_thread,
+        ..
+    } = to_response(replay_response)?;
+    let replayed_agent_messages = replayed_thread
+        .turns
+        .iter()
+        .flat_map(|turn| turn.items.iter())
+        .filter_map(|item| match item {
+            ThreadItem::AgentMessage { text, .. }
+                if text == "Agent message from `/root`:\n\nsnapshot task"
+                    || text == "Agent message from `/root`:\n\nlive task" =>
+            {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replayed_agent_messages,
+        vec![
+            "Agent message from `/root`:\n\nsnapshot task",
+            "Agent message from `/root`:\n\nlive task",
+        ]
+    );
     process
         .kill()
         .await
@@ -834,6 +1086,77 @@ pub(super) async fn read_response_for_id(
             && response.id == target_id
         {
             return Ok(response);
+        }
+    }
+}
+
+async fn read_injection_response_and_items(
+    stream: &mut WsClient,
+    id: i64,
+    text: &str,
+) -> Result<(
+    JSONRPCResponse,
+    Vec<ItemStartedNotification>,
+    Vec<ItemCompletedNotification>,
+)> {
+    let target_id = RequestId::Integer(id);
+    let mut response = None;
+    let mut started = Vec::new();
+    let mut completed = Vec::new();
+    loop {
+        match read_jsonrpc_message(stream).await? {
+            JSONRPCMessage::Response(candidate) if candidate.id == target_id => {
+                response = Some(candidate);
+            }
+            JSONRPCMessage::Notification(notification) if notification.method == "item/started" => {
+                let params = notification
+                    .params
+                    .context("item/started notification params")?;
+                let candidate: ItemStartedNotification = serde_json::from_value(params)?;
+                if matches!(
+                    &candidate.item,
+                    ThreadItem::AgentMessage { text: item_text, .. }
+                        if item_text.ends_with(text)
+                ) {
+                    started.push(candidate);
+                }
+            }
+            JSONRPCMessage::Notification(notification)
+                if notification.method == "item/completed" =>
+            {
+                let params = notification
+                    .params
+                    .context("item/completed notification params")?;
+                let candidate: ItemCompletedNotification = serde_json::from_value(params)?;
+                if matches!(
+                    &candidate.item,
+                    ThreadItem::AgentMessage { text: item_text, .. }
+                        if item_text.ends_with(text)
+                ) {
+                    completed.push(candidate);
+                }
+            }
+            _ => {}
+        }
+        if response.is_some() && !started.is_empty() && !completed.is_empty() {
+            return Ok((response.expect("response was checked"), started, completed));
+        }
+    }
+}
+
+async fn read_response_for_id_collecting_notifications(
+    stream: &mut WsClient,
+    id: i64,
+) -> Result<(JSONRPCResponse, Vec<JSONRPCNotification>)> {
+    let target_id = RequestId::Integer(id);
+    let mut notifications = Vec::new();
+    loop {
+        match read_jsonrpc_message(stream).await? {
+            JSONRPCMessage::Response(response) if response.id == target_id => {
+                return Ok((response, notifications));
+            }
+            JSONRPCMessage::Notification(notification) => notifications.push(notification),
+            _ => {}
         }
     }
 }

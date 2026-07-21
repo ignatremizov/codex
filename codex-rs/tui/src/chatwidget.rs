@@ -349,6 +349,7 @@ mod image_submission;
 mod input_flow;
 mod input_restore;
 mod input_submission;
+mod inter_agent_transcript;
 mod interrupts;
 mod questions;
 mod startup_submission;

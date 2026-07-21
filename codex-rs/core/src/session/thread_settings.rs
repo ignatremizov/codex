@@ -156,6 +156,7 @@ pub(super) async fn emit_applied(
     let receiver = session.dispatch_history_publication_with_events(
         permit,
         PublicationBatch {
+            raw_event_guardian_thread_id: None,
             rollout: items,
             events: vec![Event {
                 id: submission_id,

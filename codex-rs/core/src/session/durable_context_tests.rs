@@ -5,6 +5,138 @@ use codex_extension_api::TurnInputContribution;
 use codex_utils_output_truncation::TruncationPolicy;
 use tokio::sync::Semaphore;
 
+#[tokio::test]
+async fn accepted_transcript_publication_enqueues_after_flush_even_without_receipt_waiter() {
+    for phase in [
+        AppendGate::BeforeCommit,
+        AppendGate::AfterCommit,
+        AppendGate::AmbiguousFailure,
+        AppendGate::BeforeFlush,
+        AppendGate::FlushFailure,
+    ] {
+        let (mut session, store, release) = gated_session(phase).await;
+        let (sender, events) = async_channel::unbounded();
+        Arc::get_mut(&mut session)
+            .expect("no accepted worker yet")
+            .tx_event = sender;
+        let turn = session.new_default_turn().await;
+        let item = codex_protocol::models::ResponseItem::AgentMessage {
+            id: Some(codex_protocol::ResponseItemId::with_suffix(
+                "amsg", "accepted",
+            )),
+            author: "/root".into(),
+            recipient: "/root/worker".into(),
+            content: vec![
+                codex_protocol::models::AgentMessageInputContent::InputText {
+                    text: "accepted transcript".into(),
+                },
+            ],
+            internal_chat_message_metadata_passthrough: None,
+        };
+        let batch = session
+            .conversation_publication_batch(
+                &turn,
+                vec![RolloutItem::ResponseItem(item.clone().into())],
+                std::slice::from_ref(&item),
+            )
+            .await;
+        let expected = batch.events.clone();
+        let installed = Arc::new(AtomicUsize::new(0));
+        let install = Arc::clone(&installed);
+        let permit = session
+            .acquire_history_publication_barrier()
+            .await
+            .expect("barrier");
+        let receipt = session
+            .dispatch_history_publication_with_events(
+                permit,
+                batch,
+                Vec::new(),
+                /*acknowledgement*/ None,
+                move |_| {
+                    install.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .expect("accepted");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while store.gate_polls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("worker reached gate");
+        assert!(
+            events.try_recv().is_err(),
+            "no event before canonical flush"
+        );
+        assert_eq!(installed.load(Ordering::SeqCst), 0);
+        drop(receipt);
+        release.send(()).expect("worker retained ownership");
+        tokio::time::timeout(Duration::from_secs(5), session.await_history_publication())
+            .await
+            .expect("accepted publication finishes without a waiter");
+        let succeeded = !matches!(
+            phase,
+            AppendGate::AmbiguousFailure | AppendGate::FlushFailure
+        );
+        assert_eq!(installed.load(Ordering::SeqCst), usize::from(succeeded));
+        assert_eq!(store.appends.load(Ordering::SeqCst), 1);
+        assert_eq!(session.check_history_publication().is_ok(), succeeded);
+        if !succeeded {
+            assert!(session.acquire_history_publication_barrier().await.is_err());
+            assert!(
+                session
+                    .inject_client_response_items(vec![item], &turn)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(store.appends.load(Ordering::SeqCst), 1);
+        }
+        let actual = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            serde_json::to_value(actual).expect("events"),
+            serde_json::to_value(if succeeded { expected } else { Vec::new() }).expect("expected"),
+        );
+    }
+}
+
+#[tokio::test]
+async fn transcript_publication_receipt_does_not_require_a_connected_event_reader() {
+    let (mut session, store, release) = gated_session(AppendGate::BeforeCommit).await;
+    let (sender, events) = async_channel::unbounded();
+    drop(events);
+    Arc::get_mut(&mut session).expect("no worker").tx_event = sender;
+    let turn = session.new_default_turn().await;
+    let item = render_inventory("closed reader", &[]);
+    let batch = session
+        .conversation_publication_batch(
+            &turn,
+            vec![RolloutItem::ResponseItem(item.clone())],
+            std::slice::from_ref(&item.item),
+        )
+        .await;
+    let permit = session
+        .acquire_history_publication_barrier()
+        .await
+        .expect("barrier");
+    let receipt = session
+        .dispatch_history_publication_with_events(
+            permit,
+            batch,
+            Vec::new(),
+            /*acknowledgement*/ None,
+            |_| (),
+        )
+        .expect("accepted");
+    release.send(()).expect("release append");
+    tokio::time::timeout(Duration::from_secs(5), session.publication_result(receipt))
+        .await
+        .expect("publication finishes")
+        .expect("canonical success");
+    assert_eq!(store.appends.load(Ordering::SeqCst), 1);
+    assert!(session.check_history_publication().is_ok());
+}
+
 async fn gated_session(
     phase: AppendGate,
 ) -> (Arc<Session>, Arc<GatedAppendStore>, oneshot::Sender<()>) {

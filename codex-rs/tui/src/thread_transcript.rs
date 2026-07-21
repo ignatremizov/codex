@@ -310,6 +310,17 @@ fn item_to_cells(
                 remote_image_urls: item.image_urls(),
             }));
         }
+        ThreadItem::AgentMessage {
+            text,
+            inter_agent_source: Some(_),
+            ..
+        } => {
+            cells.push(Arc::new(AgentMarkdownCell::new_with_inline_visualizations(
+                text,
+                cwd.as_path(),
+                inline_visualization_context,
+            )));
+        }
         ThreadItem::AgentMessage { text, .. } => {
             let parsed = parse_assistant_markdown(&text, cwd.as_path());
             if !parsed.visible_markdown.trim().is_empty() {

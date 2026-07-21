@@ -850,7 +850,7 @@ async fn ensure_guardian_node_repl_policy(
     review_session
         .session
         .inject_client_response_items(vec![item], turn_context.as_ref())
-        .await;
+        .await?;
 
     Ok(())
 }

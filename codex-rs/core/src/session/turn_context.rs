@@ -1358,21 +1358,35 @@ impl Session {
 
     /// Builds a context without starting work or changing the current environments.
     pub(crate) async fn new_default_turn(&self) -> Arc<TurnContext> {
-        self.new_default_turn_for(TurnContextBuildMode::Full).await
+        self.new_default_turn_for(TurnContextBuildMode::Full, self.next_internal_sub_id())
+            .await
+    }
+
+    /// Captures complete recording context without activating a model turn.
+    pub(crate) async fn new_history_only_turn(&self) -> Arc<TurnContext> {
+        self.new_default_turn_for(TurnContextBuildMode::Full, uuid::Uuid::now_v7().to_string())
+            .await
     }
 
     /// Captures current recording settings without discovering skills.
     /// This context must not be used to capture or execute a step.
     pub(crate) async fn new_inject_items_context(&self) -> Arc<TurnContext> {
-        self.new_default_turn_for(TurnContextBuildMode::InjectItems)
-            .await
+        self.new_default_turn_for(
+            TurnContextBuildMode::InjectItems,
+            uuid::Uuid::now_v7().to_string(),
+        )
+        .await
     }
 
-    async fn new_default_turn_for(&self, build_mode: TurnContextBuildMode) -> Arc<TurnContext> {
+    async fn new_default_turn_for(
+        &self,
+        build_mode: TurnContextBuildMode,
+        sub_id: String,
+    ) -> Arc<TurnContext> {
         let session_configuration = self.default_turn_configuration().await;
         let turn_environments = self.services.turn_environments.snapshot().await;
         self.new_turn_context_from_configuration(
-            self.next_internal_sub_id(),
+            sub_id,
             session_configuration,
             turn_environments,
             NewTurnContextOptions::default(),

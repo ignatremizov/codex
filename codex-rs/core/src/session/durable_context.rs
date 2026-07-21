@@ -26,6 +26,7 @@ use crate::state::SessionState;
 pub(super) struct PublicationBatch {
     pub(super) rollout: Vec<RolloutItem>,
     pub(super) events: Vec<codex_protocol::protocol::Event>,
+    pub(super) raw_event_guardian_thread_id: Option<codex_protocol::ThreadId>,
 }
 
 #[derive(Default)]
@@ -91,6 +92,14 @@ impl Session {
         let _permit = thread_settings::acquire_persistence_lock(self).await;
     }
 
+    pub(crate) async fn acquire_history_publication_barrier(
+        &self,
+    ) -> CodexResult<OwnedSemaphorePermit> {
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        self.check_history_publication()?;
+        Ok(permit)
+    }
+
     pub(super) async fn close_history_publication(&self) {
         {
             let _permit = thread_settings::acquire_persistence_lock(self).await;
@@ -104,6 +113,7 @@ impl Session {
 
     /// Dispatch is synchronous while retaining the validated publication permit.
     /// Only the receiver is cancellable; accepted work is driven by the task tracker.
+    /// Its receipt confirms local publication, never observation by a client.
     pub(super) fn dispatch_history_publication<T: Send + 'static>(
         &self,
         permit: OwnedSemaphorePermit,
@@ -117,6 +127,7 @@ impl Session {
             PublicationBatch {
                 rollout: items,
                 events: Vec::new(),
+                raw_event_guardian_thread_id: None,
             },
             leases,
             acknowledgement,
@@ -143,11 +154,14 @@ impl Session {
         let failure = Arc::clone(&self.history_publication.failure);
         let event_sender = self.tx_event.clone();
         let trace = self.services.rollout_thread_trace.clone();
+        let mcp_runtime = Arc::clone(&self.services.mcp_runtime);
+        let analytics = self.services.analytics_events_client.clone();
         let (sender, receiver) = oneshot::channel();
         self.history_publication.tasks.spawn(async move {
             let PublicationBatch {
                 rollout: items,
                 events,
+                raw_event_guardian_thread_id,
             } = batch;
             let _permit = permit;
             let _leases = leases;
@@ -174,8 +188,24 @@ impl Session {
                 acknowledgement.acknowledge();
             }
             for event in events {
+                if matches!(
+                    &event.msg,
+                    codex_protocol::protocol::EventMsg::RawResponseItem(_)
+                ) {
+                    // Raw response events have no lifecycle, realtime or legacy-event effects.
+                    // Their response item was committed above; never append it a second time.
+                    trace.record_codex_turn_event(&event.id, &event.msg);
+                    trace.record_tool_call_event(event.id.clone(), &event.msg);
+                    if let Some(thread_id) = raw_event_guardian_thread_id {
+                        analytics.track_guardian_session_event(thread_id, &event);
+                    }
+                    mcp_runtime.observe_event(&event.msg);
+                }
                 trace.record_protocol_event(&event.msg);
-                let _ = event_sender.send(event).await;
+                if let Err(error) = event_sender.send(event).await {
+                    // Persistence succeeds even when its former event consumer has gone away.
+                    tracing::debug!("dropping event because channel is closed: {error}");
+                }
             }
             outcome.finished = true;
             let _ = sender.send(Ok(result));

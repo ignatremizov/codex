@@ -222,6 +222,12 @@ these values rather than message text. Native diagnostic payloads stay private.
 
 `subAgentActivity` items include a nullable `prompt` containing the readable task text for started or interacted activities. Plaintext delivery exposes the original text; encrypted-with-audit delivery exposes the supplied audit copy, never ciphertext. Fully encrypted delivery and activities without readable task content use `null`. Live item notifications and persisted history preserve the full prompt; display limits are client-side only. Older history without the field remains readable.
 
+## Inter-agent transcript items
+
+Incoming inter-agent communication is projected as typed `agentMessage` items in live `item/started` and `item/completed` notifications and saved history, independently of the experimental raw-response opt-in. `interAgentSource` is a nullable object containing `author` and `recipient`; ordinary assistant items use `null`, and older history may omit it. This is presentation provenance, not an authorization or delivery receipt. Clients must not treat these items as completion of the assistant's current answer or execute UI directives embedded in their text. Encrypted or mixed encrypted/plaintext payloads produce an opaque placeholder, including encrypted-with-audit delivery on the receiving side.
+
+Canonical item and turn IDs are retained through live and historical projection. Public `thread/inject_items` agent messages receive host-owned IDs. Idle injection creates a completed history-only turn without starting inference; active injection belongs to the receiving turn. A running `thread/resume` response establishes the history boundary for that connection before subsequent live delivery, without suppressing other subscribers. A cancelled or failed resume releases suppression but requires another canonical resume to recover notifications suppressed during the unsuccessful snapshot; clients must not assume that delta stream is complete. Accepted publication waits for the canonical writer flush before live installation and event enqueue; this is not an fsync or client-observation guarantee. See [multi-agent message delivery](../../docs/multi-agent-message-delivery.md) for plaintext wrapper and audit behavior.
+
 ## Completed context compaction
 
 Completed `contextCompaction` items include nullable `summary`, `message`, and

@@ -8,6 +8,7 @@ use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_persisted_resume_settings;
 use super::thread_enrichment::enrich_loaded_threads;
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
+use super::thread_resume_boundary::resume_retry_error;
 use super::*;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
@@ -4274,20 +4275,6 @@ impl ThreadRequestProcessor {
                     .await
                     .map_err(thread_store_resume_read_error)?;
             }
-            let history_items = if needs_history {
-                source_thread
-                    .history
-                    .take()
-                    .map(|history| history.items)
-                    .ok_or_else(|| {
-                        internal_error(format!(
-                            "thread {existing_thread_id} did not include persisted history"
-                        ))
-                    })?
-            } else {
-                Vec::new()
-            };
-
             let thread_state = self
                 .thread_state_manager
                 .thread_state(existing_thread_id)
@@ -4305,6 +4292,51 @@ impl ThreadRequestProcessor {
             )
             .await?;
 
+            let super::thread_resume_boundary::ResumeBoundary {
+                listener_command_tx,
+                listener_generation,
+                publication_permit,
+                transcript_pause,
+                release_tx: barrier_release_tx,
+            } = super::thread_resume_boundary::begin_running_resume(
+                existing_thread_id,
+                request_id.connection_id,
+                existing_thread.as_ref(),
+                &self.thread_state_manager,
+                &thread_state,
+            )
+            .await?;
+            if needs_history {
+                let source_thread_id = source_thread.thread_id.to_string();
+                let source_rollout_path = source_thread.rollout_path.clone();
+                source_thread = match self
+                    .read_stored_thread_for_resume(
+                        &source_thread_id,
+                        source_rollout_path.as_ref(),
+                        /*include_history*/ true,
+                        ArchivedThreadReadPolicy::Reject,
+                    )
+                    .await
+                {
+                    Ok(source_thread) => source_thread,
+                    Err(error) => {
+                        return Err(resume_retry_error(error));
+                    }
+                };
+            }
+            let history_items = if needs_history {
+                match source_thread.history.take() {
+                    Some(history) => history.items,
+                    None => {
+                        return Err(resume_retry_error(internal_error(format!(
+                            "thread {existing_thread_id} did not include persisted history"
+                        ))));
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+
             let mut thread_summary = self.stored_thread_to_api_thread(
                 source_thread,
                 config_snapshot.model_provider_id.as_str(),
@@ -4316,22 +4348,16 @@ impl ThreadRequestProcessor {
             thread_summary.can_accept_direct_input = Some(true);
             let instruction_sources = existing_thread.legacy_instruction_sources().await;
 
-            let listener_command_tx = {
-                let thread_state = thread_state.lock().await;
-                thread_state.listener_command_tx()
-            };
-            let Some(listener_command_tx) = listener_command_tx else {
-                return Err(internal_error(format!(
-                    "failed to enqueue running thread resume for thread {existing_thread_id}: thread listener is not running"
-                )));
-            };
-
             let (emit_thread_goal_update, thread_goal_state_db) = self
                 .thread_goal_processor
                 .pending_resume_goal_state(existing_thread.as_ref())
                 .await;
             let paginated_turns = if paginated_resume && include_turns {
-                Some(self.paginated_thread_full_turns(existing_thread_id).await?)
+                Some(
+                    self.paginated_thread_full_turns(existing_thread_id)
+                        .await
+                        .map_err(resume_retry_error)?,
+                )
             } else {
                 None
             };
@@ -4339,7 +4365,8 @@ impl ThreadRequestProcessor {
                 match params.initial_turns_page.as_ref() {
                     Some(params) => Some(
                         self.paginated_resume_initial_turns_page(existing_thread_id, params)
-                            .await?,
+                            .await
+                            .map_err(resume_retry_error)?,
                     ),
                     None => None,
                 }
@@ -4372,7 +4399,8 @@ impl ThreadRequestProcessor {
                                 existing_thread_id,
                                 params,
                             )
-                            .await?,
+                            .await
+                            .map_err(resume_retry_error)?,
                         )
                     }
                     Some(_) | None => None,
@@ -4400,14 +4428,19 @@ impl ThreadRequestProcessor {
                     paginated_initial_turns_page_with_active_slot,
                     resume_cursor_store,
                     redact_resume_payloads,
+                    publication_permit,
+                    transcript_pause,
+                    listener_generation,
                 }),
                 completion_tx,
             };
             if listener_command_tx.send(command).is_err() {
-                return Err(internal_error(format!(
+                let _ = barrier_release_tx.send(());
+                return Err(resume_retry_error(internal_error(format!(
                     "failed to enqueue running thread resume for thread {existing_thread_id}: thread listener command channel is closed"
-                )));
+                ))));
             }
+            let _ = barrier_release_tx.send(());
             return Ok(RunningThreadResumeResult::Handled(completion_rx));
         }
         Ok(RunningThreadResumeResult::NotRunning(None))

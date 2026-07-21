@@ -265,6 +265,8 @@ pub(crate) mod helpers;
 #[path = "tests/history_projection.rs"]
 mod history_projection;
 mod history_replay;
+#[path = "tests/inter_agent_transcript_tests.rs"]
+mod inter_agent_transcript_tests;
 #[path = "tests/luna_reserve_usage_tests.rs"]
 mod luna_reserve_usage_tests;
 mod mcp_startup;

@@ -1054,6 +1054,7 @@ mod tests {
                     memory_citation: None,
                     delivery: Some(AgentMessageDelivery::Async),
                     questions: None,
+                    inter_agent_source: None,
                 },
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),

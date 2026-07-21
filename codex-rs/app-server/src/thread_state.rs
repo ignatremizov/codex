@@ -3,12 +3,15 @@ use crate::outgoing_message::ConnectionRequestId;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
+use codex_app_server_protocol::ThreadHistoryChangeSet;
+use codex_app_server_protocol::ThreadHistoryItemChange;
 use codex_app_server_protocol::ThreadHistoryTurnMetadata;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError;
 use codex_app_server_protocol::TurnItemsView;
+use codex_app_server_protocol::inter_agent_message_thread_item;
 use codex_core::CodexThread;
 use codex_core::ThreadConfigSnapshot;
 use codex_file_watcher::WatchRegistration;
@@ -28,12 +31,19 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::Weak;
 use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tracing::error;
 
 type PendingInterruptQueue = Vec<ConnectionRequestId>;
+
+mod transcript_delivery;
+pub(crate) use transcript_delivery::TranscriptResumePause;
+#[cfg(test)]
+#[path = "thread_state/transcript_tests.rs"]
+mod transcript_tests;
 
 pub(crate) struct PendingThreadResumeRequest {
     pub(crate) request_id: ConnectionRequestId,
@@ -54,10 +64,21 @@ pub(crate) struct PendingThreadResumeRequest {
         Option<codex_app_server_protocol::TurnsPage>,
     pub(crate) resume_cursor_store: Option<Arc<dyn codex_thread_store::ThreadStore>>,
     pub(crate) redact_resume_payloads: bool,
+    pub(crate) publication_permit: tokio::sync::OwnedSemaphorePermit,
+    pub(crate) transcript_pause: TranscriptResumePause,
+    pub(crate) listener_generation: u64,
 }
 
 // ThreadListenerCommand is used to perform operations in the context of the thread listener, for serialization purposes.
 pub(crate) enum ThreadListenerCommand {
+    // DrainPendingEventsForResume establishes an event boundary while the caller holds the
+    // publication permit. The listener remains behind the barrier until the caller queues the
+    // resume response, so ordinary lifecycle events cannot cross the snapshot/subscription gap.
+    DrainPendingEventsForResume {
+        listener_generation: u64,
+        completion_tx: oneshot::Sender<bool>,
+        release_rx: oneshot::Receiver<()>,
+    },
     // SendThreadResumeResponse is used to resume an already running thread by sending the thread's history to the client and atomically subscribing for new updates.
     SendThreadResumeResponse {
         request: Box<PendingThreadResumeRequest>,
@@ -194,7 +215,11 @@ impl ThreadState {
         self.shutdown_drain_waiter.take()
     }
 
-    pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
+    pub(crate) fn track_current_turn_event(
+        &mut self,
+        event_turn_id: &str,
+        event: &EventMsg,
+    ) -> ThreadHistoryChangeSet {
         if let EventMsg::TurnStarted(payload) = event {
             self.turn_summary.started_at = payload.started_at;
         }
@@ -208,13 +233,47 @@ impl ThreadState {
             self.turn_summary.last_agent_message =
                 Some(ThreadItem::from(CoreTurnItem::AgentMessage(item.clone())));
         }
-        self.current_turn_history.handle_event(event);
+        let changes = match event {
+            EventMsg::RawResponseItem(payload)
+                if matches!(
+                    &payload.item,
+                    codex_protocol::models::ResponseItem::AgentMessage { .. }
+                ) =>
+            {
+                let turn_id = payload.item.turn_id().unwrap_or(event_turn_id);
+                if self
+                    .current_turn_history
+                    .active_turn_id_if_explicit()
+                    .as_deref()
+                    == Some(turn_id)
+                {
+                    self.current_turn_history.handle_event_with_changes(event)
+                } else {
+                    inter_agent_message_thread_item(&payload.item).map_or_else(
+                        ThreadHistoryChangeSet::default,
+                        |item| ThreadHistoryChangeSet {
+                            changed_items: vec![ThreadHistoryItemChange {
+                                turn_id: turn_id.to_string(),
+                                item,
+                                started_at_ms: None,
+                                completed_at_ms: None,
+                            }],
+                            ..Default::default()
+                        },
+                    )
+                }
+            }
+            // Other raw items retain their existing typed lifecycle owners.
+            EventMsg::RawResponseItem(_) => ThreadHistoryChangeSet::default(),
+            _ => self.current_turn_history.handle_event_with_changes(event),
+        };
         if matches!(event, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_)) {
             self.last_terminal_turn_id = Some(event_turn_id.to_string());
             if !self.current_turn_history.has_active_turn() {
                 self.current_turn_history.reset();
             }
         }
+        changes
     }
 
     pub(crate) fn note_thread_settings(&mut self, thread_settings: ThreadSettings) -> bool {
@@ -316,6 +375,8 @@ mod tests {
 struct ThreadEntry {
     state: Arc<Mutex<ThreadState>>,
     connection_ids: HashSet<ConnectionId>,
+    paused_typed_transcript_connections: HashMap<ConnectionId, Vec<Weak<()>>>,
+    typed_transcript_delivery_gate: Arc<Semaphore>,
     has_connections_watcher: watch::Sender<bool>,
 }
 
@@ -324,6 +385,8 @@ impl Default for ThreadEntry {
         Self {
             state: Arc::new(Mutex::new(ThreadState::default())),
             connection_ids: HashSet::new(),
+            paused_typed_transcript_connections: HashMap::new(),
+            typed_transcript_delivery_gate: Arc::new(Semaphore::new(/*permits*/ 1)),
             has_connections_watcher: watch::channel(false).0,
         }
     }
@@ -536,6 +599,9 @@ impl ThreadStateManager {
             }
             if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
                 thread_entry.connection_ids.remove(&connection_id);
+                thread_entry
+                    .paused_typed_transcript_connections
+                    .remove(&connection_id);
                 thread_entry.update_has_connections();
             }
         };
@@ -607,6 +673,12 @@ impl ThreadStateManager {
         {
             let mut state = self.state.lock().await;
             state.live_connections.remove(&connection_id);
+            // A resume can pause a connection before its subscription is installed.
+            for thread_entry in state.threads.values_mut() {
+                thread_entry
+                    .paused_typed_transcript_connections
+                    .remove(&connection_id);
+            }
             let thread_ids = state
                 .thread_ids_by_connection
                 .remove(&connection_id)

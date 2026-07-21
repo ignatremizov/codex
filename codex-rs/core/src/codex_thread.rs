@@ -677,6 +677,22 @@ impl CodexThread {
         self.io.rx_event.len()
     }
 
+    /// Reads an event already queued for the sole thread listener.
+    pub fn try_next_event(&self) -> CodexResult<Option<Event>> {
+        match self.io.rx_event.try_recv() {
+            Ok(event) => Ok(Some(event)),
+            Err(async_channel::TryRecvError::Empty) => Ok(None),
+            Err(async_channel::TryRecvError::Closed) => Err(CodexErr::InternalAgentDied),
+        }
+    }
+
+    /// Holds accepted history publication behind a snapshot/subscription boundary.
+    pub async fn acquire_history_publication_barrier(
+        &self,
+    ) -> CodexResult<tokio::sync::OwnedSemaphorePermit> {
+        self.session.acquire_history_publication_barrier().await
+    }
+
     pub async fn agent_status(&self) -> AgentStatus {
         self.io.agent_status().await
     }
@@ -738,13 +754,13 @@ impl CodexThread {
         let mut turn_context = if had_reference_context {
             self.session.new_inject_items_context().await
         } else {
-            self.session.new_default_turn().await
+            self.session.new_history_only_turn().await
         };
         if self.session.reference_context_item().await.is_none() {
             // Compaction can clear the reference while the recording context is built.
             // Initial context must capture a step with a complete skills snapshot.
             if had_reference_context {
-                turn_context = self.session.new_default_turn().await;
+                turn_context = self.session.new_history_only_turn().await;
             }
             // This history-only API runs without run_turn, so it owns its initial step.
             let step_context = self
@@ -757,8 +773,7 @@ impl CodexThread {
         }
         self.session
             .inject_client_response_items(items, turn_context.as_ref())
-            .await;
-        Ok(())
+            .await
     }
 
     pub fn rollout_path(&self) -> Option<PathBuf> {

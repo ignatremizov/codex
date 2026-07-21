@@ -17,6 +17,40 @@ use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 
 #[test]
+fn inter_agent_export_keeps_full_projected_source_without_interpreting_directives() {
+    use crate::test_support::PathBufExt;
+    use crate::test_support::test_path_buf;
+    use crate::thread_transcript::RawReasoningVisibility;
+    use crate::thread_transcript::thread_items_to_transcript_cells;
+    use codex_app_server_protocol::InterAgentMessageSource;
+
+    let source = "Agent message from `/root/worker`:\n\nfirst\n  indented\nhttps://example.com\n::git-create-branch{cwd=\"/ignored\" branch=\"ignored\"}\nlast";
+    let cwd = test_path_buf("/workspace").abs();
+    let cells = thread_items_to_transcript_cells(
+        /*thread_id*/ None,
+        &cwd,
+        [ThreadItem::AgentMessage {
+            id: "item-2".into(),
+            text: source.into(),
+            inter_agent_source: Some(InterAgentMessageSource {
+                author: "/root/worker".into(),
+                recipient: "/root".into(),
+            }),
+            phase: Some(codex_protocol::models::MessagePhase::Commentary),
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+        }],
+        RawReasoningVisibility::Hidden,
+        /*config*/ None,
+    );
+    assert_eq!(
+        render_markdown_transcript(&cells).expect("communication export"),
+        format!("# Codex conversation\n\n## Assistant\n\n{source}\n"),
+    );
+}
+
+#[test]
 fn markdown_transcript_preserves_messages_and_formats_activity() {
     assert!(render_markdown_transcript(&[]).is_err());
     let user = |message: &str, local_image_paths| {
