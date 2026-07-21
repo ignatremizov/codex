@@ -59,7 +59,10 @@ pub(super) async fn fork_projection_is_current(
     .map_err(thread_history_error)?;
     let expected_offset = sqlite_integer(next_rollout_byte_offset, "rollout byte offset")?;
     let expected_ordinal = sqlite_integer(next_rollout_ordinal, "rollout ordinal")?;
-    Ok(state == Some((expected_offset, expected_ordinal)))
+    match state {
+        Some(state) => Ok(state == (expected_offset, expected_ordinal)),
+        None => Ok(expected_offset == 0 && expected_ordinal == 0),
+    }
 }
 
 pub(super) async fn apply_projection(

@@ -272,9 +272,11 @@ mod tests {
             ThreadHistoryMode::Paginated,
         )
         .expect("session file");
-        let pool = codex_state::open_thread_history_db(home.path())
+        let pool = store
+            .thread_history_db()
             .await
-            .expect("open thread history db");
+            .expect("open thread history db")
+            .clone();
         let thread_id_string = thread_id.to_string();
         sqlx::query(
             "INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status) VALUES (?, 'turn-1', 1, 'completed')",
