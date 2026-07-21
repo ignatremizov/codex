@@ -4108,6 +4108,7 @@ mod tests {
                             }],
                         },
                         codex_app_server_protocol::ThreadItem::AgentMessage {
+                            inter_agent_source: None,
                             id: "assistant-1".to_string(),
                             text: "assistant reply".to_string(),
                             phase: None,

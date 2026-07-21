@@ -744,6 +744,7 @@ fn title_user_message(id: &str, text: &str) -> ThreadItem {
 
 fn title_agent_message(id: &str, text: &str, phase: Option<MessagePhase>) -> ThreadItem {
     ThreadItem::AgentMessage {
+        inter_agent_source: None,
         id: id.to_string(),
         text: text.to_string(),
         phase,

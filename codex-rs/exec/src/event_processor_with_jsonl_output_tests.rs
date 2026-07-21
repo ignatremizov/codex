@@ -16,6 +16,7 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
             item: ThreadItem::AgentMessage {
                 id: "msg-1".to_string(),
                 text: "partial answer".to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -60,6 +61,94 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
         std::fs::read_to_string(&output_path).expect("read output file"),
         "keep existing contents"
     );
+}
+
+#[test]
+fn inter_agent_item_remains_visible_without_replacing_final_message() {
+    let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+    let ordinary = processor.collect_thread_events(ServerNotification::ItemCompleted(
+        codex_app_server_protocol::ItemCompletedNotification {
+            item: ThreadItem::AgentMessage {
+                id: "ordinary".to_string(),
+                text: "ordinary answer".to_string(),
+                inter_agent_source: None,
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+        },
+    ));
+    let transcript = processor.collect_thread_events(ServerNotification::ItemCompleted(
+        codex_app_server_protocol::ItemCompletedNotification {
+            item: ThreadItem::AgentMessage {
+                id: "transcript".to_string(),
+                text: "worker transcript".to_string(),
+                inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
+                    author: "/root".to_string(),
+                    recipient: "/root/worker".to_string(),
+                }),
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+        },
+    ));
+
+    assert_eq!(ordinary.events.len(), 1);
+    assert_eq!(
+        transcript.events,
+        vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ExecThreadItem {
+                id: "item_1".to_string(),
+                details: ThreadItemDetails::AgentMessage(AgentMessageItem {
+                    text: "worker transcript".to_string(),
+                }),
+            },
+        })]
+    );
+    assert_eq!(processor.final_message(), Some("ordinary answer"));
+}
+
+#[test]
+fn transcript_only_completed_turn_has_no_final_message() {
+    let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+    let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
+        TurnCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: Turn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: vec![ThreadItem::AgentMessage {
+                    id: "transcript".to_string(),
+                    text: "worker transcript".to_string(),
+                    inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
+                        author: "/root".to_string(),
+                        recipient: "/root/worker".to_string(),
+                    }),
+                    phase: None,
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                }],
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+        },
+    ));
+
+    assert_eq!(completed.status, CodexStatus::InitiateShutdown);
+    assert_eq!(processor.final_message(), None);
 }
 
 #[test]

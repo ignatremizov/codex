@@ -37,6 +37,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::error::CodexErr;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -415,6 +416,35 @@ async fn non_openai_responses_requests_include_item_ids_without_passthrough_meta
         .codex;
 
     codex
+        .inject_response_items(vec![ResponseItem::AgentMessage {
+            id: None,
+            author: "/root".to_string(),
+            recipient: "/root/worker".to_string(),
+            content: vec![AgentMessageInputContent::InputText {
+                text: "locally identified task".to_string(),
+            }],
+            internal_chat_message_metadata_passthrough: None,
+        }])
+        .await
+        .unwrap();
+    let local_item = wait_for_event(&codex, |event| {
+        matches!(
+            event,
+            EventMsg::RawResponseItem(raw)
+                if matches!(&raw.item, ResponseItem::AgentMessage { .. })
+        )
+    })
+    .await;
+    let EventMsg::RawResponseItem(raw) = local_item else {
+        unreachable!("event predicate requires a raw response item");
+    };
+    let local_item_id = raw
+        .item
+        .id()
+        .expect("durable agent message should have a local ID");
+    assert!(local_item_id.starts_with("amsg_"));
+
+    codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "hello".into(),
             text_elements: Vec::new(),
@@ -432,6 +462,14 @@ async fn non_openai_responses_requests_include_item_ids_without_passthrough_meta
         .as_array()
         .expect("request should include input items");
     assert!(!input.is_empty(), "request should include input items");
+    let agent_message = input
+        .iter()
+        .find(|item| item["type"] == "agent_message")
+        .expect("request should contain the durable agent message");
+    assert_eq!(
+        agent_message["content"][0]["text"].as_str(),
+        Some("locally identified task")
+    );
     for item in input {
         assert!(
             item.get("internal_chat_message_metadata_passthrough")
@@ -550,6 +588,76 @@ async fn sends_local_audio_to_responses() -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_history_only_injection_does_not_start_model_work() {
+    let server = MockServer::start().await;
+    let codex = test_codex()
+        .build_with_auto_env(&server)
+        .await
+        .expect("test codex")
+        .codex;
+    let agent_message = |text: &str| ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".to_string(),
+        recipient: "/root/worker".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: text.to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    codex
+        .inject_response_items(vec![agent_message("initialize reference context")])
+        .await
+        .expect("initial history-only injection");
+    wait_for_event(&codex, |event| {
+        matches!(
+            event,
+            EventMsg::RawResponseItem(raw)
+                if matches!(
+                    &raw.item,
+                    ResponseItem::AgentMessage { content, .. }
+                        if content.iter().any(|part| matches!(
+                            part,
+                            AgentMessageInputContent::InputText { text }
+                                if text == "initialize reference context"
+                        ))
+                )
+        )
+    })
+    .await;
+
+    codex
+        .inject_response_items(vec![agent_message("idle history item")])
+        .await
+        .expect("idle history-only injection");
+    wait_for_event(&codex, |event| {
+        matches!(
+            event,
+            EventMsg::RawResponseItem(raw)
+                if matches!(
+                    &raw.item,
+                    ResponseItem::AgentMessage { content, .. }
+                        if content.iter().any(|part| matches!(
+                            part,
+                            AgentMessageInputContent::InputText { text }
+                                if text == "idle history item"
+                        ))
+                )
+        )
+    })
+    .await;
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .expect("response request log")
+            .iter()
+            .any(|request| request.url.path() == "/v1/responses"),
+        "history-only injection must not start model work"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

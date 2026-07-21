@@ -24,6 +24,7 @@ use tokio::sync::mpsc::unbounded_channel;
 fn agent_message_notification(turn_id: &str, text: &str) -> ServerNotification {
     ServerNotification::ItemCompleted(ItemCompletedNotification {
         item: ThreadItem::AgentMessage {
+            inter_agent_source: None,
             id: "message-1".to_string(),
             text: text.to_string(),
             phase: None,
@@ -51,6 +52,30 @@ fn turn_completed_notification(turn_id: &str, status: TurnStatus) -> ServerNotif
             duration_ms: None,
         },
     })
+}
+
+#[tokio::test]
+async fn incoming_communication_does_not_replace_the_structured_answer() -> color_eyre::Result<()> {
+    let (tx, rx) = unbounded_channel();
+    tx.send(agent_message_notification("turn-1", "{\"answer\":42}"))?;
+    let mut incoming = agent_message_notification("turn-1", "Incoming task, not the answer");
+    if let ServerNotification::ItemCompleted(notification) = &mut incoming
+        && let ThreadItem::AgentMessage {
+            inter_agent_source, ..
+        } = &mut notification.item
+    {
+        *inter_agent_source = Some(codex_app_server_protocol::InterAgentMessageSource {
+            author: "/root/worker".into(),
+            recipient: "/root".into(),
+        });
+    }
+    tx.send(incoming)?;
+    tx.send(turn_completed_notification("turn-1", TurnStatus::Completed))?;
+    assert_eq!(
+        collect_structured_response(rx, "turn-1").await?,
+        "{\"answer\":42}"
+    );
+    Ok(())
 }
 
 #[tokio::test]

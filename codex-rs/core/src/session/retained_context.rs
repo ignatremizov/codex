@@ -224,6 +224,7 @@ impl Session {
                         rollout: vec![RolloutItem::RetainedContext(event.clone())],
                         events: Vec::new(),
                         reply: None,
+                        raw_event_guardian_thread_id: None,
                     },
                     Vec::new(),
                     /*acknowledgement*/ None,
