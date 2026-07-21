@@ -398,8 +398,10 @@ pub enum ThreadItem {
 
 /// Converts a model-visible inter-agent message into a transcript item.
 ///
-/// The visible item is labeled with its agent author. Encrypted payloads are replaced with a
-/// fixed placeholder rather than exposing their envelope or ciphertext.
+/// The visible item is labeled with its agent author. Canonical final-answer envelopes are
+/// collapsed because their sender and recipient labels duplicate structured item fields.
+/// Encrypted payloads are replaced with a fixed placeholder rather than exposing their envelope
+/// or ciphertext.
 pub fn inter_agent_message_thread_item(item: &ResponseItem) -> Option<ThreadItem> {
     let id = item.id()?.to_string();
     inter_agent_message_thread_item_with_id(item, id)
@@ -410,7 +412,10 @@ pub(crate) fn inter_agent_message_thread_item_with_id(
     id: String,
 ) -> Option<ThreadItem> {
     let ResponseItem::AgentMessage {
-        author, content, ..
+        author,
+        recipient,
+        content,
+        ..
     } = item
     else {
         return None;
@@ -428,7 +433,7 @@ pub(crate) fn inter_agent_message_thread_item_with_id(
     }
     Some(ThreadItem::AgentMessage {
         id,
-        text: format!("Agent message from `{author}`:\n\n{text}"),
+        text: super::inter_agent_message::transcript_text(author, recipient, &text),
         phase: Some(MessagePhase::Commentary),
         memory_citation: None,
     })

@@ -262,6 +262,15 @@ async fn resume_rebuilds_legacy_inter_agent_communication_variants() -> Result<(
         /*trigger_turn*/ false,
     );
     encrypted.set_turn_id_if_missing("legacy-encrypted");
+    let mut final_answer = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nDone."
+            .to_string(),
+        /*trigger_turn*/ false,
+    );
+    final_answer.set_turn_id_if_missing("legacy-final-answer");
     append_rollout_item_to_path(
         &rollout_path,
         &RolloutItem::InterAgentCommunication(plaintext),
@@ -270,6 +279,11 @@ async fn resume_rebuilds_legacy_inter_agent_communication_variants() -> Result<(
     append_rollout_item_to_path(
         &rollout_path,
         &RolloutItem::InterAgentCommunication(encrypted),
+    )
+    .await?;
+    append_rollout_item_to_path(
+        &rollout_path,
+        &RolloutItem::InterAgentCommunication(final_answer),
     )
     .await?;
 
@@ -315,6 +329,11 @@ async fn resume_rebuilds_legacy_inter_agent_communication_variants() -> Result<(
                 "item-3",
                 "Agent message from `/root/worker`:\n\nInput message encrypted",
             ),
+            (
+                "legacy-final-answer",
+                "item-4",
+                "Agent final answer from `/root/worker`:\n\nDone.",
+            ),
         ]
     );
 
@@ -322,7 +341,9 @@ async fn resume_rebuilds_legacy_inter_agent_communication_variants() -> Result<(
         .turns
         .iter()
         .filter_map(|turn| match turn.id.as_str() {
-            "legacy-plaintext" | "legacy-encrypted" => Some((turn.id.clone(), turn.status.clone())),
+            "legacy-plaintext" | "legacy-encrypted" | "legacy-final-answer" => {
+                Some((turn.id.clone(), turn.status.clone()))
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -331,6 +352,7 @@ async fn resume_rebuilds_legacy_inter_agent_communication_variants() -> Result<(
         vec![
             ("legacy-plaintext".to_string(), TurnStatus::Completed),
             ("legacy-encrypted".to_string(), TurnStatus::Completed),
+            ("legacy-final-answer".to_string(), TurnStatus::Completed),
         ]
     );
 

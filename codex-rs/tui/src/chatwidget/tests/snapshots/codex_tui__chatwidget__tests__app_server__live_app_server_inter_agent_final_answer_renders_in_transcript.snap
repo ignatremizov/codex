@@ -1,0 +1,7 @@
+---
+source: tui/src/chatwidget/tests/app_server.rs
+expression: rendered
+---
+• Agent final answer from /root/direct_input_demo:
+
+  Lorem ipsum dolor sit amet.
