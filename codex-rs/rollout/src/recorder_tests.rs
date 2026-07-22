@@ -16,6 +16,7 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::UserMessageEvent;
 use pretty_assertions::assert_eq;
@@ -809,6 +810,94 @@ async fn resumed_paginated_rollout_repairs_unsafe_tail() -> std::io::Result<()> 
 }
 
 #[tokio::test]
+async fn writer_recovery_reconciles_ordinal_after_complete_unterminated_write()
+-> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    write_paginated_rollout(&rollout_path, ThreadId::new(), &[4])?;
+
+    let committed_marker = RolloutLine {
+        timestamp: "2026-07-09T00:00:05Z".to_string(),
+        ordinal: Some(5),
+        item: RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            num_turns: 1,
+            ..Default::default()
+        })),
+    };
+    let mut file = fs::OpenOptions::new().append(true).open(&rollout_path)?;
+    write!(file, "{}", serde_json::to_string(&committed_marker)?)?;
+    drop(file);
+
+    // Model the writer state after write_all persisted the JSON object but failed on its newline.
+    let mut state = RolloutWriterState {
+        writer: None,
+        deferred_log_file_info: None,
+        pending_items: vec![agent_message_item("after-recovery")],
+        meta: None,
+        cwd: home.path().to_path_buf(),
+        rollout_path: rollout_path.clone(),
+        ordinal_state: RolloutOrdinalState::Paginated { next: Some(5) },
+        last_logged_error: Some("injected partial write".to_string()),
+    };
+
+    state.flush().await?;
+
+    let lines = read_rollout_lines(&rollout_path)?;
+    assert_eq!(
+        lines.iter().map(|line| line.ordinal).collect::<Vec<_>>(),
+        vec![Some(0), Some(4), Some(5), Some(6)]
+    );
+    assert!(fs::read_to_string(&rollout_path)?.ends_with('\n'));
+    Ok(())
+}
+
+#[tokio::test]
+async fn writer_recovery_reconciles_initial_metadata_write() -> std::io::Result<()> {
+    for (name, complete_record) in [("complete", true), ("partial", false)] {
+        let home = TempDir::new().expect("temp dir");
+        let rollout_path = home.path().join(format!("{name}.jsonl"));
+        let thread_id = ThreadId::new();
+        let session_meta_item = paginated_session_meta_item(thread_id, home.path());
+        let RolloutItem::SessionMeta(session_meta_line) = session_meta_item.clone() else {
+            panic!("fixture should contain session metadata");
+        };
+        if complete_record {
+            let line = RolloutLine {
+                timestamp: "2026-07-09T00:00:00Z".to_string(),
+                ordinal: Some(0),
+                item: session_meta_item,
+            };
+            fs::write(&rollout_path, serde_json::to_vec(&line)?)?;
+        } else {
+            fs::write(&rollout_path, b"{\"timestamp\":\"2026-07-09")?;
+        }
+
+        let mut state = RolloutWriterState {
+            writer: None,
+            deferred_log_file_info: None,
+            pending_items: Vec::new(),
+            meta: Some(session_meta_line.meta),
+            cwd: home.path().to_path_buf(),
+            rollout_path: rollout_path.clone(),
+            ordinal_state: RolloutOrdinalState::Paginated { next: Some(0) },
+            last_logged_error: Some("injected initial write failure".to_string()),
+        };
+
+        state.flush().await?;
+
+        let lines = read_rollout_lines(&rollout_path)?;
+        assert_eq!(
+            lines.len(),
+            1,
+            "{name} metadata recovery duplicated a record"
+        );
+        assert_eq!(lines[0].ordinal, Some(0));
+        assert!(matches!(&lines[0].item, RolloutItem::SessionMeta(_)));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn paginated_ordinal_overflow_fails_without_appending() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
     let config = test_config(home.path());
@@ -826,6 +915,67 @@ async fn paginated_ordinal_overflow_fails_without_appending() -> std::io::Result
         .await
         .expect_err("ordinal overflow should fail the append");
     assert!(err.to_string().contains("overflow"));
+    assert_eq!(fs::read(&rollout_path)?, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn single_item_barrier_does_not_write_initial_session_metadata() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let recorder = RolloutRecorder::new(
+        &config,
+        RolloutRecorderParams::new(
+            ThreadId::new(),
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test_originator".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let rollout_path = recorder.rollout_path().to_path_buf();
+
+    let err = recorder
+        .record_canonical_item_and_flush(&agent_message_item("rejected-item"))
+        .await
+        .expect_err("the special barrier must not create a rollout");
+
+    assert!(err.to_string().contains("persisted session metadata"));
+    assert!(!rollout_path.exists());
+    recorder.shutdown().await
+}
+
+#[tokio::test]
+async fn failed_single_item_barrier_does_not_retry_after_filesystem_recovers() -> std::io::Result<()>
+{
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    File::create(&rollout_path)?;
+    let before = fs::read(&rollout_path)?;
+    let read_only_file = std::fs::OpenOptions::new().read(true).open(&rollout_path)?;
+    let mut state = RolloutWriterState {
+        writer: Some(JsonlWriter {
+            file: tokio::fs::File::from_std(read_only_file),
+        }),
+        deferred_log_file_info: None,
+        pending_items: Vec::new(),
+        meta: None,
+        cwd: home.path().to_path_buf(),
+        rollout_path: rollout_path.clone(),
+        ordinal_state: RolloutOrdinalState::Legacy,
+        last_logged_error: None,
+    };
+
+    state
+        .add_item_and_flush(agent_message_item("rejected-item"))
+        .await
+        .expect_err("read-only writer should reject the item");
+
+    state.flush().await?;
     assert_eq!(fs::read(&rollout_path)?, before);
     Ok(())
 }

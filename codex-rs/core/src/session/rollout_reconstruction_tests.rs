@@ -367,7 +367,10 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
             ..Default::default()
         }),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
         )),
     ];
 
@@ -417,7 +420,10 @@ async fn reconstruction_replays_full_history_when_only_checkpoint_is_rolled_back
             ..Default::default()
         }),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
         )),
     ];
 
@@ -440,7 +446,10 @@ async fn reconstruction_recomputes_token_usage_after_rollback_without_compaction
             rate_limits: None,
         })),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
         )),
     ];
 
@@ -491,7 +500,10 @@ async fn reconstruction_does_not_roll_back_an_out_of_band_representation_repair(
         )),
         RolloutItem::ResponseItem(user_message("rolled back")),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
         )),
         RolloutItem::Compacted(CompactedItem {
             message: "out-of-band representation repair".to_string(),
@@ -879,7 +891,10 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
             },
         )),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
         )),
     ];
 
@@ -909,6 +924,88 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
         serde_json::to_value(reconstructed.world_state_baseline)
             .expect("serialize reconstructed world state"),
         json!({"test": {"environment": "first"}})
+    );
+}
+
+#[tokio::test]
+async fn reconstruction_preserves_checkpoint_before_partial_segment_rollback() {
+    let (session, turn_context) = make_session_and_context().await;
+    let surviving_user = user_message("surviving user");
+    let surviving_assistant = assistant_message("surviving assistant");
+    let mut surviving_context = turn_context.to_turn_context_item();
+    surviving_context.turn_id = Some("surviving-turn".to_string());
+    let mut rollout_items = completed_user_turn_rollout(
+        surviving_context,
+        vec![
+            RolloutItem::ResponseItem(surviving_user.clone()),
+            RolloutItem::ResponseItem(surviving_assistant.clone()),
+            RolloutItem::Compacted(CompactedItem {
+                message: "checkpoint before steer".to_string(),
+                replacement_history: Some(vec![
+                    surviving_user.clone(),
+                    surviving_assistant.clone(),
+                ]),
+                ..Default::default()
+            }),
+            RolloutItem::ResponseItem(user_message("rolled back steer")),
+            RolloutItem::ResponseItem(assistant_message("reply after steer")),
+        ],
+    );
+    rollout_items.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+        codex_protocol::protocol::ThreadRolledBackEvent {
+            num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: Some(6),
+        },
+    )));
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(
+        reconstructed.history,
+        vec![surviving_user, surviving_assistant]
+    );
+    assert_eq!(reconstructed.compacted_prefix_len, Some(2));
+}
+
+#[tokio::test]
+async fn newer_exact_rollback_removes_legacy_marker_in_its_raw_range() {
+    let (session, turn_context) = make_session_and_context().await;
+    let surviving_user = user_message("surviving user");
+    let surviving_assistant = assistant_message("surviving assistant");
+    let mut rollout_items = vec![
+        RolloutItem::ResponseItem(surviving_user.clone()),
+        RolloutItem::ResponseItem(surviving_assistant.clone()),
+        RolloutItem::ResponseItem(user_message("removed user one")),
+        RolloutItem::ResponseItem(assistant_message("removed assistant one")),
+        RolloutItem::ResponseItem(user_message("removed user two")),
+        RolloutItem::ResponseItem(assistant_message("removed assistant two")),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
+        )),
+        RolloutItem::ResponseItem(user_message("removed user three")),
+        RolloutItem::ResponseItem(assistant_message("removed assistant three")),
+    ];
+    rollout_items.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+        codex_protocol::protocol::ThreadRolledBackEvent {
+            num_turns: 2,
+            rollback_start_index: Some(2),
+            ..Default::default()
+        },
+    )));
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(
+        reconstructed.history,
+        vec![surviving_user, surviving_assistant]
     );
 }
 
@@ -980,7 +1077,10 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_inc
         )),
         RolloutItem::ResponseItem(turn_two_user),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
         )),
     ];
 
@@ -1112,7 +1212,10 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
             },
         )),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
         )),
     ];
 
@@ -1214,7 +1317,10 @@ async fn reconstruct_history_rollback_counts_inter_agent_assistant_turns() {
             },
         )),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
         )),
     ];
 
@@ -1288,7 +1394,10 @@ async fn reconstruct_history_rollback_clears_history_and_metadata_when_exceeding
             },
         )),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 99 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 99,
+                ..Default::default()
+            },
         )),
     ];
 
@@ -1364,7 +1473,10 @@ async fn record_initial_history_resumed_rollback_skips_only_user_turns() {
             },
         )),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
         )),
     ];
 
@@ -1453,7 +1565,10 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
             ..Default::default()
         }),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                ..Default::default()
+            },
         )),
     ];
 

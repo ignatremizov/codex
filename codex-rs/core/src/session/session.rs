@@ -59,6 +59,7 @@ pub(crate) struct Session {
     pub(super) idle_pending_mcp_server_use: Mutex<Vec<String>>,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
+    pub(crate) submission_admission: Arc<SubmissionAdmission>,
     pub(super) next_internal_sub_id: AtomicU64,
 }
 
@@ -1210,6 +1211,7 @@ impl Session {
                 idle_pending_mcp_server_use: Mutex::new(Vec::new()),
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
+                submission_admission: Arc::new(SubmissionAdmission::default()),
                 next_internal_sub_id: AtomicU64::new(0),
             });
             if let Some(network_policy_decider_session) = network_policy_decider_session {

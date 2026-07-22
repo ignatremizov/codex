@@ -20045,6 +20045,22 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "description": "DEPRECATED: `thread/rollback` will be removed soon.",
         "properties": {
+          "expectedStartTurnId": {
+            "description": "Optional first turn expected in the selected rollback suffix.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expectedTurnCount": {
+            "description": "Optional materialized turn count observed when the rollback target was selected.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "numTurns": {
             "description": "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
             "format": "uint32",

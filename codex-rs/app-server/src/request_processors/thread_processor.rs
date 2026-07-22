@@ -7,6 +7,7 @@ use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -1814,6 +1815,8 @@ impl ThreadRequestProcessor {
         let ThreadRollbackParams {
             thread_id,
             num_turns,
+            expected_start_turn_id,
+            expected_turn_count,
         } = params;
 
         if num_turns == 0 {
@@ -1829,7 +1832,6 @@ impl ThreadRequestProcessor {
                 "paginated threads do not support thread/rollback",
             ));
         }
-
         let request = request_id.clone();
 
         let rollback_already_in_progress = {
@@ -1852,7 +1854,11 @@ impl ThreadRequestProcessor {
             .submit_core_op(
                 request_id,
                 thread.as_ref(),
-                Op::ThreadRollback { num_turns },
+                Op::ThreadRollbackMaterialized {
+                    num_turns,
+                    expected_start_turn_id,
+                    expected_turn_count,
+                },
             )
             .await
         {
@@ -3898,7 +3904,8 @@ impl ThreadRequestProcessor {
                     "thread {source_thread_id} did not include persisted history"
                 ))
             })?;
-        let history_items = without_goal_owned_context(history_items);
+        let history_items =
+            without_goal_owned_context(rollout_without_exact_rollback_ranges(&history_items));
         let history_items = match (last_turn_id.as_deref(), before_turn_id.as_deref()) {
             (Some(last_turn_id), None) => Arc::new(
                 truncate_rollout_after_turn_id(&history_items, last_turn_id)

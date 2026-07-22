@@ -64,6 +64,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 use codex_rollout::state_db::StateDbHandle;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::LoadThreadHistoryParams;
@@ -1975,6 +1976,17 @@ fn fork_history_from_snapshot(
     history: InitialHistory,
     interrupted_marker: InterruptedTurnHistoryMarker,
 ) -> InitialHistory {
+    let history = match history {
+        InitialHistory::New => InitialHistory::New,
+        InitialHistory::Cleared => InitialHistory::Cleared,
+        InitialHistory::Forked(items) => {
+            InitialHistory::Forked(rollout_without_exact_rollback_ranges(&items))
+        }
+        InitialHistory::Resumed(resumed) => InitialHistory::Resumed(ResumedHistory {
+            history: Arc::new(rollout_without_exact_rollback_ranges(&resumed.history)),
+            ..resumed
+        }),
+    };
     let snapshot_state = snapshot_turn_state(&history);
     match snapshot {
         ForkSnapshot::TruncateBeforeNthUserMessage(nth_user_message) => {

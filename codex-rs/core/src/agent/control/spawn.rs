@@ -3,6 +3,7 @@ use super::*;
 use crate::agent::role::apply_role_to_config;
 use crate::config::PermissionProfileSnapshot;
 use codex_extension_api::ExtensionDataInit;
+use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
 
@@ -630,7 +631,7 @@ impl AgentControl {
         let destination_history_mode =
             matches!(parent_metadata.history_mode, ThreadHistoryMode::Paginated)
                 .then_some(ThreadHistoryMode::Paginated);
-        let mut forked_rollout_items =
+        let forked_rollout_items =
             load_agent_model_context(state, parent_thread_id, parent_metadata.history_mode)
                 .await?
                 .ok_or_else(|| {
@@ -638,6 +639,7 @@ impl AgentControl {
                         "parent thread history unavailable for fork: {parent_thread_id}"
                     ))
                 })?;
+        let mut forked_rollout_items = rollout_without_exact_rollback_ranges(&forked_rollout_items);
 
         let selected_capability_roots = forked_rollout_items
             .iter()

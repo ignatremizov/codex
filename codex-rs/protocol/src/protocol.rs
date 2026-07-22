@@ -664,6 +664,16 @@ pub enum Op {
     /// responsible for undoing any edits on disk.
     ThreadRollback { num_turns: u32 },
 
+    /// Request Codex to drop the last N materialized app-server turns.
+    ///
+    /// Core resolves those turns to their exact rollout cutoff and model-visible
+    /// instruction boundaries under the rollback persistence barrier.
+    ThreadRollbackMaterialized {
+        num_turns: u32,
+        expected_start_turn_id: Option<String>,
+        expected_turn_count: Option<u32>,
+    },
+
     /// Request a code review from the agent.
     Review { review_request: ReviewRequest },
 
@@ -885,7 +895,9 @@ impl Op {
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact => "compact",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
-            Self::ThreadRollback { .. } => "thread_rollback",
+            Self::ThreadRollback { .. } | Self::ThreadRollbackMaterialized { .. } => {
+                "thread_rollback"
+            }
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
             Self::Shutdown => "shutdown",
@@ -1785,6 +1797,7 @@ pub enum CodexErrorInfo {
         turn_kind: NonSteerableTurnKind,
     },
     ThreadRollbackFailed,
+    ThreadRollbackCommitUnknown,
     Other,
 }
 
@@ -1792,7 +1805,9 @@ impl CodexErrorInfo {
     /// Whether this error should mark the current turn as failed when replaying history.
     pub fn affects_turn_status(&self) -> bool {
         match self {
-            Self::ThreadRollbackFailed | Self::ActiveTurnNotSteerable { .. } => false,
+            Self::ThreadRollbackFailed
+            | Self::ThreadRollbackCommitUnknown
+            | Self::ActiveTurnNotSteerable { .. } => false,
             Self::ContextWindowExceeded
             | Self::SessionBudgetExceeded
             | Self::UsageLimitExceeded
@@ -3682,10 +3697,18 @@ pub struct DeprecationNoticeEvent {
     pub details: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ThreadRolledBackEvent {
-    /// Number of user turns that were removed from context.
+    /// Number of model-visible instruction boundaries that were removed from context.
     pub num_turns: u32,
+    /// Number of materialized app-server turns selected by the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub materialized_turns: Option<u32>,
+    /// Zero-based rollout item index where the removed suffix begins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub rollback_start_index: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

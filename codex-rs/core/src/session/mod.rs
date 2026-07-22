@@ -6,6 +6,8 @@ use std::fmt::Debug;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicU64;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -403,11 +405,72 @@ use codex_utils_stream_parser::ProposedPlanSegment;
 pub(crate) struct SessionIo {
     pub(crate) tx_sub: Sender<Submission>,
     pub(crate) rx_event: Receiver<Event>,
+    /// Serializes enqueueing with rollback reservation and reload quarantine transitions.
+    pub(crate) submission_admission: Arc<SubmissionAdmission>,
     // Last known status of the agent.
     pub(crate) agent_status: watch::Receiver<AgentStatus>,
     // Shared future for the background submission loop completion so multiple
     // callers can wait for shutdown.
     pub(crate) session_loop_termination: SessionLoopTermination,
+}
+
+#[derive(Default)]
+pub(crate) struct SubmissionAdmission {
+    send_lock: Mutex<()>,
+    state: StdMutex<SubmissionAdmissionState>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SubmissionAdmissionState {
+    #[default]
+    Ready,
+    RollbackPending,
+    ReloadRequired,
+}
+
+impl SubmissionAdmission {
+    pub(crate) fn rollback_completed(&self) {
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) =
+            SubmissionAdmissionState::Ready;
+    }
+
+    pub(crate) fn rollback_requires_reload(&self) {
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) =
+            SubmissionAdmissionState::ReloadRequired;
+    }
+}
+
+struct RollbackAdmissionGuard {
+    admission: Arc<SubmissionAdmission>,
+    armed: bool,
+}
+
+impl RollbackAdmissionGuard {
+    fn new(admission: Arc<SubmissionAdmission>) -> Self {
+        Self {
+            admission,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RollbackAdmissionGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut state = self
+                .admission
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if matches!(*state, SubmissionAdmissionState::RollbackPending) {
+                *state = SubmissionAdmissionState::Ready;
+            }
+        }
+    }
 }
 
 pub(crate) type SessionLoopTermination = Shared<BoxFuture<'static, ()>>;
@@ -742,6 +805,7 @@ impl Session {
         let io = SessionIo {
             tx_sub,
             rx_event,
+            submission_admission: Arc::clone(&session.submission_admission),
             agent_status: agent_status_rx,
             session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
         };
@@ -791,15 +855,62 @@ impl SessionIo {
     }
 
     /// Use sparingly: prefer `submit()` so submission IDs are generated consistently.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the send lock must preserve admission checks and bounded-channel queue ordering"
+    )]
     pub(crate) async fn submit_with_id(&self, mut sub: Submission) -> CodexResult<()> {
+        let is_shutdown = matches!(&sub.op, Op::Shutdown);
+        let is_rollback = matches!(
+            &sub.op,
+            Op::ThreadRollback { .. } | Op::ThreadRollbackMaterialized { .. }
+        );
+        // Serialize channel sends so their queue order cannot cross a rollback reservation. The
+        // state lock is released before awaiting bounded-channel capacity, allowing the rollback
+        // handler to complete or quarantine the session without deadlocking on a blocked sender.
+        let _send_guard = self.submission_admission.send_lock.lock().await;
+        let mut rollback_guard = {
+            let mut state = self
+                .submission_admission
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            match *state {
+                SubmissionAdmissionState::Ready => {}
+                SubmissionAdmissionState::RollbackPending if !is_shutdown => {
+                    return Err(CodexErr::InvalidRequest(
+                        "thread rollback is already in progress".to_string(),
+                    ));
+                }
+                SubmissionAdmissionState::ReloadRequired if !is_shutdown => {
+                    return Err(CodexErr::InvalidRequest(
+                        "thread history must be reloaded before accepting more work".to_string(),
+                    ));
+                }
+                SubmissionAdmissionState::RollbackPending
+                | SubmissionAdmissionState::ReloadRequired => {}
+            }
+            if is_rollback {
+                *state = SubmissionAdmissionState::RollbackPending;
+                Some(RollbackAdmissionGuard::new(Arc::clone(
+                    &self.submission_admission,
+                )))
+            } else {
+                None
+            }
+        };
         if sub.trace.is_none() {
             sub.trace = current_span_w3c_trace_context();
         }
-        self.tx_sub
-            .send(sub)
-            .await
-            .map_err(|_| CodexErr::InternalAgentDied)?;
-        Ok(())
+        match self.tx_sub.send(sub).await {
+            Ok(()) => {
+                if let Some(rollback_guard) = rollback_guard.as_mut() {
+                    rollback_guard.disarm();
+                }
+                Ok(())
+            }
+            Err(_) => Err(CodexErr::InternalAgentDied),
+        }
     }
 
     pub(crate) async fn shutdown_and_wait(&self) -> CodexResult<()> {

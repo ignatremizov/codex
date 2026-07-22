@@ -7,8 +7,10 @@ use super::resize_reflow::trailing_run_start;
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
 use crate::app_server_session::ForkGoalContinuation;
+use crate::app_server_session::ThreadRollbackOutcome;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
+use codex_app_server_protocol::ThreadRollbackResponse;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
@@ -236,6 +238,8 @@ impl App {
             AppEvent::RollbackSessionForPromptEdit {
                 thread_id,
                 nth_user_message,
+                prompt_occurrences,
+                prompt_occurrence,
                 mut prompt,
             } => {
                 if self.chat_widget.thread_id() != Some(thread_id)
@@ -249,27 +253,56 @@ impl App {
                     .thread_read(thread_id, /*include_turns*/ true)
                     .await
                 {
-                    Ok(thread) => match crate::app_backtrack::backtrack_rollback_turn_count(
+                    Ok(mut thread) => match crate::app_backtrack::backtrack_rollback_target(
                         &thread.turns,
                         nth_user_message,
+                        prompt_occurrences,
+                        prompt_occurrence,
                         &mut prompt,
                     ) {
-                        Ok(num_turns) => app_server.thread_rollback(thread_id, num_turns).await,
+                        Ok(target) => {
+                            match crate::app_backtrack::truncate_turns_for_rollback_fallback(
+                                &mut thread.turns,
+                                &target,
+                            ) {
+                                Ok(()) => {
+                                    let fallback_response = ThreadRollbackResponse { thread };
+                                    let rollback = app_server
+                                        .thread_rollback(
+                                            thread_id,
+                                            target.num_turns,
+                                            target.expected_start_turn_id,
+                                            target.expected_turn_count,
+                                        )
+                                        .await;
+                                    rollback.map(|outcome| (outcome, fallback_response))
+                                }
+                                Err(err) => Err(err),
+                            }
+                        }
                         Err(err) => Err(err),
                     },
                     Err(err) => Err(err),
                 };
-                self.chat_widget.restore_user_message_to_composer(prompt);
                 match rollback {
-                    Ok(response) => {
+                    Ok((ThreadRollbackOutcome::Refreshed(response), _)) => {
+                        self.chat_widget.restore_user_message_to_composer(prompt);
                         self.handle_backtrack_thread_rollback_response(thread_id, &response)
                             .await;
                     }
+                    Ok((ThreadRollbackOutcome::CommittedRefreshRequired, fallback_response)) => {
+                        self.chat_widget.restore_user_message_to_composer(prompt);
+                        self.handle_backtrack_thread_rollback_response(
+                            thread_id,
+                            &fallback_response,
+                        )
+                        .await;
+                    }
+                    Ok((ThreadRollbackOutcome::OutcomeUnknownRefreshRequired, _)) => {
+                        self.restore_backtrack_prompt_after_unknown_rollback(prompt);
+                    }
                     Err(err) => {
-                        self.handle_backtrack_rollback_failed();
-                        self.chat_widget.add_error_message(format!(
-                            "Failed to roll back before the selected prompt: {err}"
-                        ));
+                        self.restore_backtrack_prompt_after_rollback_error(prompt, err);
                     }
                 }
                 tui.frame_requester().schedule_frame();
@@ -277,6 +310,8 @@ impl App {
             AppEvent::ForkSessionForPromptEdit {
                 thread_id,
                 nth_user_message,
+                prompt_occurrences,
+                prompt_occurrence,
                 mut prompt,
             } => {
                 if self.chat_widget.thread_id() != Some(thread_id) {
@@ -297,6 +332,8 @@ impl App {
                     Ok(thread) => match crate::app_backtrack::backtrack_fork_before_turn_id(
                         &thread.turns,
                         nth_user_message,
+                        prompt_occurrences,
+                        prompt_occurrence,
                         &mut prompt,
                     ) {
                         Ok(Some(before_turn_id)) => {

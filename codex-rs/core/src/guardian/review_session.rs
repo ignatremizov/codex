@@ -1153,6 +1153,7 @@ mod tests {
             session.get_config().await.as_ref(),
             session.user_instructions().await,
         );
+        let submission_admission = Arc::clone(&session.submission_admission);
 
         (
             GuardianReviewSession {
@@ -1160,6 +1161,7 @@ mod tests {
                 io: SessionIo {
                     tx_sub,
                     rx_event,
+                    submission_admission,
                     agent_status,
                     session_loop_termination: crate::session::completed_session_loop_termination(),
                 },

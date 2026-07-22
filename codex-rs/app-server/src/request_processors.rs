@@ -455,6 +455,7 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::protocol::strip_user_message_prefix;
+use codex_protocol::rollout::exact_rollback_removed_items;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::UserInput as CoreInputItem;
 use codex_rmcp_client::perform_oauth_login_return_url_with_http_client;
@@ -665,8 +666,13 @@ pub(crate) use self::thread_summary::thread_settings_from_core_snapshot;
 
 pub(crate) fn build_legacy_api_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<Turn> {
     let mut builder = ThreadHistoryBuilder::new();
-    for item in items {
-        if is_persisted_rollout_item(item, codex_protocol::protocol::ThreadHistoryMode::Legacy) {
+    for (item, removed) in items.iter().zip(exact_rollback_removed_items(items)) {
+        if removed {
+            builder.skip_rollout_item();
+        } else if is_persisted_rollout_item(
+            item,
+            codex_protocol::protocol::ThreadHistoryMode::Legacy,
+        ) {
             builder.handle_rollout_item(item);
         }
     }

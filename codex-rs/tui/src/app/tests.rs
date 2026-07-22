@@ -5345,6 +5345,8 @@ async fn backtrack_selection_rolls_back_in_place_by_default() {
     app.apply_backtrack_selection(BacktrackSelection {
         thread_id,
         nth_user_message: 1,
+        prompt_occurrences: 1,
+        prompt_occurrence: 0,
         prompt: crate::chatwidget::UserMessage::from("second prompt"),
     });
 
@@ -5353,6 +5355,8 @@ async fn backtrack_selection_rolls_back_in_place_by_default() {
         Ok(AppEvent::RollbackSessionForPromptEdit {
             thread_id: event_thread_id,
             nth_user_message: 1,
+            prompt_occurrences: 1,
+            prompt_occurrence: 0,
             prompt,
         }) if event_thread_id == thread_id
             && prompt == crate::chatwidget::UserMessage::from("second prompt")
@@ -5500,6 +5504,8 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch_when_
     let expected = BacktrackSelection {
         thread_id: base_id,
         nth_user_message: 1,
+        prompt_occurrences: 1,
+        prompt_occurrence: 0,
         prompt: crate::chatwidget::UserMessage {
             text: edited_text,
             local_images: vec![crate::bottom_pane::LocalImageAttachment {
@@ -5523,9 +5529,13 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch_when_
         AppEvent::ForkSessionForPromptEdit {
             thread_id,
             nth_user_message,
+            prompt_occurrences,
+            prompt_occurrence,
             prompt,
         } if thread_id == expected.thread_id
             && nth_user_message == expected.nth_user_message
+            && prompt_occurrences == expected.prompt_occurrences
+            && prompt_occurrence == expected.prompt_occurrence
             && prompt == expected.prompt
     );
     assert_matches!(
@@ -5685,6 +5695,51 @@ async fn backtrack_branch_failure_restores_selected_prompt_snapshot() {
 }
 
 #[tokio::test]
+async fn backtrack_rollback_failure_restores_selected_prompt_snapshot() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+
+    app.restore_backtrack_prompt_after_rollback_error(
+        crate::chatwidget::UserMessage::from("edit this prompt"),
+        "history changed",
+    );
+
+    let cell = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell event, got {other:?}"),
+    };
+    let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+    let rendered_with_composer = format!(
+        "{rendered}\ncomposer: {}",
+        app.chat_widget.composer_text_with_pending()
+    );
+    assert_snapshot!(rendered_with_composer, @"■ Failed to roll back before the selected prompt: history changed
+composer: edit this prompt
+");
+}
+
+#[tokio::test]
+async fn unknown_backtrack_rollback_restores_prompt_and_requires_refresh_snapshot() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+
+    app.restore_backtrack_prompt_after_unknown_rollback(crate::chatwidget::UserMessage::from(
+        "edit this prompt",
+    ));
+
+    let cell = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell event, got {other:?}"),
+    };
+    let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+    let rendered_with_composer = format!(
+        "{rendered}\ncomposer: {}",
+        app.chat_widget.composer_text_with_pending()
+    );
+    assert_snapshot!(rendered_with_composer, @"■ Could not verify whether rollback was applied. Reopen this thread before retrying.
+composer: edit this prompt
+");
+}
+
+#[tokio::test]
 async fn prompt_edit_rolls_back_selected_prompt_in_place_by_default() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let config = app.chat_widget.config_ref().clone();
@@ -5762,6 +5817,8 @@ async fn prompt_edit_rolls_back_selected_prompt_in_place_by_default() -> Result<
     app.apply_backtrack_selection(BacktrackSelection {
         thread_id: source_thread_id,
         nth_user_message: 1,
+        prompt_occurrences: 1,
+        prompt_occurrence: 0,
         prompt: crate::chatwidget::UserMessage::from("second prompt"),
     });
     let rollback_event = std::iter::from_fn(|| app_event_rx.try_recv().ok())
@@ -5877,6 +5934,8 @@ async fn prompt_edit_forks_before_selected_prompt_and_preserves_source() -> Resu
         AppEvent::ForkSessionForPromptEdit {
             thread_id: source_thread_id,
             nth_user_message: 1,
+            prompt_occurrences: 1,
+            prompt_occurrence: 0,
             prompt: prompt.clone(),
         },
     ))
@@ -5975,6 +6034,8 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
         AppEvent::ForkSessionForPromptEdit {
             thread_id: source_thread_id,
             nth_user_message: 0,
+            prompt_occurrences: 1,
+            prompt_occurrence: 0,
             prompt: crate::chatwidget::UserMessage::from("first prompt"),
         },
     ))

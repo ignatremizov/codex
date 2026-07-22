@@ -46,6 +46,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event: rx_events,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status,
         session_loop_termination: completed_session_loop_termination(),
     });
@@ -73,6 +74,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
         session,
         ctx,
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(SubmissionAdmission::default()),
         cancel.clone(),
     ));
 
@@ -145,12 +147,18 @@ async fn forward_ops_preserves_submission_trace_context() {
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event: rx_events,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status,
         session_loop_termination: completed_session_loop_termination(),
     });
     let (tx_ops, rx_ops) = bounded(1);
     let cancel = CancellationToken::new();
-    let forward = tokio::spawn(forward_ops(Arc::clone(&io), rx_ops, cancel));
+    let forward = tokio::spawn(forward_ops(
+        Arc::clone(&io),
+        rx_ops,
+        Arc::new(SubmissionAdmission::default()),
+        cancel,
+    ));
 
     let submission = Submission {
         id: "sub-1".to_string(),
@@ -174,6 +182,52 @@ async fn forward_ops_preserves_submission_trace_context() {
     assert_eq!(submission.op, forwarded.op);
     assert_eq!(submission.trace, forwarded.trace);
 
+    timeout(Duration::from_secs(1), forward)
+        .await
+        .expect("forward_ops did not exit")
+        .expect("forward_ops join error");
+}
+
+#[tokio::test]
+async fn interactive_proxy_admits_rollback_once() {
+    let (child_tx, child_rx) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
+    let child_io = Arc::new(SessionIo {
+        tx_sub: child_tx,
+        rx_event: rx_events,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
+        agent_status: agent_status.clone(),
+        session_loop_termination: completed_session_loop_termination(),
+    });
+    let (proxy_tx, proxy_rx) = bounded(1);
+    let caller_submission_admission = Arc::new(SubmissionAdmission::default());
+    let caller_io = SessionIo {
+        tx_sub: proxy_tx,
+        rx_event: bounded(1).1,
+        submission_admission: Arc::clone(&caller_submission_admission),
+        agent_status,
+        session_loop_termination: completed_session_loop_termination(),
+    };
+    let cancel = CancellationToken::new();
+    let forward = tokio::spawn(forward_ops(
+        child_io,
+        proxy_rx,
+        caller_submission_admission,
+        cancel,
+    ));
+
+    caller_io
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await
+        .expect("proxy should admit rollback");
+    let forwarded = timeout(Duration::from_secs(1), child_rx.recv())
+        .await
+        .expect("proxy rollback forwarding hung")
+        .expect("proxy rollback was not forwarded");
+    assert!(matches!(forwarded.op, Op::ThreadRollback { num_turns: 1 }));
+
+    drop(caller_io);
     timeout(Duration::from_secs(1), forward)
         .await
         .expect("forward_ops did not exit")
@@ -224,6 +278,7 @@ async fn handle_request_permissions_uses_tool_call_id_for_round_trip() {
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event: rx_events_child,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status,
         session_loop_termination: completed_session_loop_termination(),
     });
@@ -328,6 +383,7 @@ async fn handle_exec_approval_uses_call_id_for_guardian_review_and_approval_id_f
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event: rx_events_child,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status,
         session_loop_termination: completed_session_loop_termination(),
     });

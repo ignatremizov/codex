@@ -120,6 +120,8 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
+use codex_app_server_protocol::thread_rollback_error_requires_refresh;
+use codex_app_server_protocol::thread_rollback_error_was_committed;
 use codex_features::Feature;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
@@ -214,6 +216,32 @@ pub(crate) enum ResumeModelSettings {
     OverrideFromCurrentConfig,
     /// Omits those overrides so app-server restores the settings saved with the thread.
     RestoreFromThread,
+}
+
+#[derive(Debug)]
+pub(crate) enum ThreadRollbackOutcome {
+    Refreshed(Box<ThreadRollbackResponse>),
+    CommittedRefreshRequired,
+    OutcomeUnknownRefreshRequired,
+}
+
+fn map_thread_rollback_result(
+    result: std::result::Result<ThreadRollbackResponse, TypedRequestError>,
+) -> Result<ThreadRollbackOutcome> {
+    match result {
+        Ok(response) => Ok(ThreadRollbackOutcome::Refreshed(Box::new(response))),
+        Err(TypedRequestError::Server { source, .. })
+            if thread_rollback_error_was_committed(&source) =>
+        {
+            Ok(ThreadRollbackOutcome::CommittedRefreshRequired)
+        }
+        Err(TypedRequestError::Server { source, .. })
+            if thread_rollback_error_requires_refresh(&source) =>
+        {
+            Ok(ThreadRollbackOutcome::OutcomeUnknownRefreshRequired)
+        }
+        Err(err) => Err(err).wrap_err("thread/rollback failed in TUI"),
+    }
 }
 
 impl ThreadParamsMode {
@@ -1103,18 +1131,23 @@ impl AppServerSession {
         &mut self,
         thread_id: ThreadId,
         num_turns: u32,
-    ) -> Result<ThreadRollbackResponse> {
+        expected_start_turn_id: String,
+        expected_turn_count: u32,
+    ) -> Result<ThreadRollbackOutcome> {
         let request_id = self.next_request_id();
-        self.client
-            .request_typed(ClientRequest::ThreadRollback {
-                request_id,
-                params: ThreadRollbackParams {
-                    thread_id: thread_id.to_string(),
-                    num_turns,
-                },
-            })
-            .await
-            .wrap_err("thread/rollback failed in TUI")
+        map_thread_rollback_result(
+            self.client
+                .request_typed(ClientRequest::ThreadRollback {
+                    request_id,
+                    params: ThreadRollbackParams {
+                        thread_id: thread_id.to_string(),
+                        num_turns,
+                        expected_start_turn_id: Some(expected_start_turn_id),
+                        expected_turn_count: Some(expected_turn_count),
+                    },
+                })
+                .await,
+        )
     }
 
     pub(crate) async fn thread_shell_command(
@@ -1978,6 +2011,52 @@ mod tests {
     use codex_utils_path_uri::LegacyAppPathString;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
+
+    #[test]
+    fn rollback_result_maps_serialized_committed_error_to_refresh_outcome() {
+        let source: JSONRPCErrorError = serde_json::from_value(serde_json::json!({
+            "code": -32603,
+            "message": "thread rollback committed, but response hydration failed",
+            "data": {
+                "threadRollbackCommitted": true
+            }
+        }))
+        .expect("serialized server error should decode");
+
+        let outcome = map_thread_rollback_result(Err(TypedRequestError::Server {
+            method: "thread/rollback".to_string(),
+            source,
+        }))
+        .expect("committed rollback should map to a refresh outcome");
+
+        assert!(matches!(
+            outcome,
+            ThreadRollbackOutcome::CommittedRefreshRequired
+        ));
+    }
+
+    #[test]
+    fn rollback_result_maps_unknown_commit_to_refresh_required() {
+        let source: JSONRPCErrorError = serde_json::from_value(serde_json::json!({
+            "code": -32603,
+            "message": "rollback outcome unknown; refresh before retrying",
+            "data": {
+                "threadRollbackRefreshRequired": true
+            }
+        }))
+        .expect("serialized server error should decode");
+
+        let outcome = map_thread_rollback_result(Err(TypedRequestError::Server {
+            method: "thread/rollback".to_string(),
+            source,
+        }))
+        .expect("unknown rollback outcome should require refresh");
+
+        assert!(matches!(
+            outcome,
+            ThreadRollbackOutcome::OutcomeUnknownRefreshRequired
+        ));
+    }
 
     async fn build_config(temp_dir: &TempDir) -> Config {
         ConfigBuilder::default()

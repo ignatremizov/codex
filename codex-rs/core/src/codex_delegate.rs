@@ -7,6 +7,7 @@ use codex_analytics::GuardianApprovalRequestSource;
 use codex_async_utils::OrCancelExt;
 use codex_extension_api::LoadedUserInstructions;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
@@ -49,6 +50,7 @@ use crate::mcp_tool_call::mcp_approvals_reviewer;
 use crate::session::SUBMISSION_CHANNEL_CAPACITY;
 use crate::session::SessionIo;
 use crate::session::SessionSpawnArgs;
+use crate::session::SubmissionAdmission;
 use crate::session::emit_subagent_session_started;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -187,13 +189,16 @@ pub(crate) async fn run_codex_thread_interactive_with_environment_selections(
     // RequestUserInput approval event only carries a call_id and question metadata.
     let pending_mcp_invocations =
         Arc::new(Mutex::new(HashMap::<String, PendingMcpInvocation>::new()));
+    let caller_submission_admission = Arc::new(SubmissionAdmission::default());
     let caller_io = SessionIo {
         tx_sub: tx_ops,
         rx_event: rx_sub,
+        submission_admission: Arc::clone(&caller_submission_admission),
         agent_status: io.agent_status.clone(),
         session_loop_termination: io.session_loop_termination.clone(),
     };
     let io_for_events = Arc::clone(&io);
+    let caller_submission_admission_for_events = Arc::clone(&caller_submission_admission);
     tokio::spawn(async move {
         forward_events(
             io_for_events,
@@ -202,6 +207,7 @@ pub(crate) async fn run_codex_thread_interactive_with_environment_selections(
             parent_session_clone,
             parent_ctx_clone,
             pending_mcp_invocations,
+            caller_submission_admission_for_events,
             cancel_token_events,
         )
         .await;
@@ -209,7 +215,7 @@ pub(crate) async fn run_codex_thread_interactive_with_environment_selections(
 
     // Forward ops from the caller to the sub-agent.
     tokio::spawn(async move {
-        forward_ops(io, rx_ops, cancel_token_ops).await;
+        forward_ops(io, rx_ops, caller_submission_admission, cancel_token_ops).await;
     });
 
     Ok((session, caller_io))
@@ -327,12 +333,17 @@ pub(crate) async fn run_codex_thread_one_shot_with_environment_selections(
         SessionIo {
             rx_event: rx_bridge,
             tx_sub: tx_closed,
+            submission_admission: Arc::new(SubmissionAdmission::default()),
             agent_status,
             session_loop_termination,
         },
     ))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "event forwarding needs the delegate and parent-session routing state"
+)]
 async fn forward_events(
     io: Arc<SessionIo>,
     session: Arc<Session>,
@@ -340,6 +351,7 @@ async fn forward_events(
     parent_session: Arc<Session>,
     parent_ctx: Arc<TurnContext>,
     pending_mcp_invocations: Arc<Mutex<HashMap<String, PendingMcpInvocation>>>,
+    caller_submission_admission: Arc<SubmissionAdmission>,
     cancel_token: CancellationToken,
 ) {
     let cancelled = cancel_token.cancelled();
@@ -356,6 +368,21 @@ async fn forward_events(
                     Ok(event) => event,
                     Err(_) => break,
                 };
+                match &event.msg {
+                    EventMsg::ThreadRolledBack(_) => {
+                        caller_submission_admission.rollback_completed();
+                    }
+                    EventMsg::Error(error) => match error.codex_error_info.as_ref() {
+                        Some(CodexErrorInfo::ThreadRollbackFailed) => {
+                            caller_submission_admission.rollback_completed();
+                        }
+                        Some(CodexErrorInfo::ThreadRollbackCommitUnknown) => {
+                            caller_submission_admission.rollback_requires_reload();
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
                 match event {
                     Event {
                         id: _,
@@ -536,6 +563,7 @@ async fn forward_event_or_shutdown(
 async fn forward_ops(
     io: Arc<SessionIo>,
     rx_ops: Receiver<Submission>,
+    caller_submission_admission: Arc<SubmissionAdmission>,
     cancel_token_ops: CancellationToken,
 ) {
     loop {
@@ -543,8 +571,15 @@ async fn forward_ops(
             Ok(Ok(submission)) => submission,
             Ok(Err(_)) | Err(_) => break,
         };
-        let _ = io.submit_with_id(submission).await;
+        let is_rollback = matches!(
+            &submission.op,
+            Op::ThreadRollback { .. } | Op::ThreadRollbackMaterialized { .. }
+        );
+        if io.submit_with_id(submission).await.is_err() && is_rollback {
+            caller_submission_admission.rollback_completed();
+        }
     }
+    caller_submission_admission.rollback_completed();
 }
 
 /// Handle an ExecApprovalRequest by consulting the parent session and replying.

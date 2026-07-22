@@ -113,6 +113,10 @@ pub enum RolloutRecorderParams {
 
 enum RolloutCmd {
     AddItems(Vec<RolloutItem>),
+    AddItemAndFlush {
+        item: Box<RolloutItem>,
+        ack: oneshot::Sender<std::io::Result<()>>,
+    },
     Persist {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
@@ -914,6 +918,36 @@ impl RolloutRecorder {
             })
     }
 
+    /// Append one canonical item and complete its durability barrier as one writer command.
+    ///
+    /// Session metadata must already be persisted; this command never creates a rollout or writes
+    /// its first record.
+    ///
+    /// The item is kept out of the normal retry queue. If writing fails before the item is
+    /// complete, a later flush therefore cannot commit an item that its caller already treated as
+    /// rejected.
+    pub async fn record_canonical_item_and_flush(&self, item: &RolloutItem) -> std::io::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(RolloutCmd::AddItemAndFlush {
+                item: Box::new(item.clone()),
+                ack: tx,
+            })
+            .await
+            .map_err(|e| {
+                self.writer_task.terminal_failure().unwrap_or_else(|| {
+                    IoError::other(format!("failed to queue rollout item and flush: {e}"))
+                })
+            })?;
+        rx.await.map_err(|e| {
+            self.writer_task.terminal_failure().unwrap_or_else(|| {
+                IoError::other(format!(
+                    "failed waiting for rollout item durability barrier: {e}"
+                ))
+            })
+        })?
+    }
+
     /// Materialize the rollout file and persist all buffered items.
     ///
     /// This is idempotent. If materialization fails, the recorder keeps all pending items in memory
@@ -1592,6 +1626,35 @@ impl RolloutWriterState {
         self.pending_items.extend(items);
     }
 
+    async fn add_item_and_flush(&mut self, item: RolloutItem) -> std::io::Result<()> {
+        // Keep this command away from initial metadata writes, then drain older work before
+        // writing the item outside `pending_items`: unlike normal appends, the caller must be able
+        // to treat an error as final without a later retry committing the rejected item.
+        if self.meta.is_some() {
+            return Err(IoError::other(
+                "single-item durability barrier requires persisted session metadata",
+            ));
+        }
+        self.flush().await?;
+        self.ensure_writer_open().await?;
+
+        let ordinal = self.ordinal_state.current()?;
+        let write_result = match self.writer.as_mut() {
+            Some(writer) => match writer.write_rollout_item_buffered(&item, ordinal).await {
+                Ok(()) => {
+                    self.ordinal_state.advance();
+                    writer.file.flush().await
+                }
+                Err(err) => Err(err),
+            },
+            None => Err(IoError::other("rollout writer is not open")),
+        };
+        if let Err(err) = &write_result {
+            self.enter_recovery_mode(err);
+        }
+        write_result
+    }
+
     async fn flush_if_materialized(&mut self) {
         if self.is_deferred() {
             return;
@@ -1670,16 +1733,63 @@ impl RolloutWriterState {
             return Ok(());
         }
 
-        let path = self
-            .deferred_log_file_info
-            .as_ref()
-            .map(|info| info.path.as_path())
-            .unwrap_or(self.rollout_path.as_path());
-        let file = open_log_file(path)?;
-        self.writer = Some(JsonlWriter {
-            file: tokio::fs::File::from_std(file),
-        });
-        self.deferred_log_file_info = None;
+        if let Some(log_file_info) = self.deferred_log_file_info.as_ref() {
+            let file = open_log_file(log_file_info.path.as_path())?;
+            self.writer = Some(JsonlWriter {
+                file: tokio::fs::File::from_std(file),
+            });
+            self.deferred_log_file_info = None;
+        } else if self.meta.is_some() {
+            // Metadata remains pending when its first write reports an error. A complete JSON
+            // record may nevertheless be present (for example when only its trailing newline or
+            // flush failed); recognize that commit instead of duplicating ordinal zero. Any
+            // unparsable first record can only be an incomplete initial write, so truncate it
+            // before retrying the still-pending metadata.
+            let contents = fs::read(self.rollout_path.as_path())?;
+            let first_record = contents
+                .split(|byte| *byte == b'\n')
+                .find(|line| line.iter().any(|byte| !byte.is_ascii_whitespace()));
+            let complete_session_meta = match first_record {
+                Some(line) => match serde_json::from_slice::<RolloutLine>(line) {
+                    Ok(RolloutLine {
+                        item: RolloutItem::SessionMeta(_),
+                        ..
+                    }) => true,
+                    Ok(_) => {
+                        return Err(IoError::other(format!(
+                            "rollout at {} does not start with session metadata",
+                            self.rollout_path.display()
+                        )));
+                    }
+                    Err(_) => false,
+                },
+                None => false,
+            };
+            if complete_session_meta {
+                let (_path, file, ordinal_state) =
+                    open_rollout_for_append(self.rollout_path.as_path()).await?;
+                self.writer = Some(JsonlWriter { file });
+                self.ordinal_state = ordinal_state;
+                self.meta = None;
+            } else {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(self.rollout_path.as_path())?;
+                let file = open_log_file(self.rollout_path.as_path())?;
+                self.writer = Some(JsonlWriter {
+                    file: tokio::fs::File::from_std(file),
+                });
+            }
+        } else {
+            // A failed write can leave a complete final JSON object without its newline. Reopening
+            // repairs that terminator and must derive the next ordinal from the repaired tail;
+            // retaining the pre-write ordinal would let the next append reuse a committed ordinal.
+            let (_path, file, ordinal_state) =
+                open_rollout_for_append(self.rollout_path.as_path()).await?;
+            self.writer = Some(JsonlWriter { file });
+            self.ordinal_state = ordinal_state;
+        }
         Ok(())
     }
 
@@ -1752,6 +1862,9 @@ async fn rollout_writer(
             RolloutCmd::AddItems(items) => {
                 state.add_items(items);
                 state.flush_if_materialized().await;
+            }
+            RolloutCmd::AddItemAndFlush { item, ack } => {
+                let _ = ack.send(state.add_item_and_flush(*item).await);
             }
             RolloutCmd::Persist { ack } => {
                 let _ = ack.send(state.persist().await);
@@ -1871,6 +1984,16 @@ impl JsonlWriter {
         rollout_item: &RolloutItem,
         ordinal: Option<u64>,
     ) -> std::io::Result<()> {
+        self.write_rollout_item_buffered(rollout_item, ordinal)
+            .await?;
+        self.file.flush().await
+    }
+
+    async fn write_rollout_item_buffered(
+        &mut self,
+        rollout_item: &RolloutItem,
+        ordinal: Option<u64>,
+    ) -> std::io::Result<()> {
         let timestamp_format: &[FormatItem] = format_description!(
             "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
         );
@@ -1883,14 +2006,13 @@ impl JsonlWriter {
             ordinal,
             item: rollout_item,
         };
-        self.write_line(&line).await
+        self.write_line_buffered(&line).await
     }
-    async fn write_line(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
+
+    async fn write_line_buffered(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
         let mut json = serde_json::to_string(item)?;
         json.push('\n');
-        self.file.write_all(json.as_bytes()).await?;
-        self.file.flush().await?;
-        Ok(())
+        self.file.write_all(json.as_bytes()).await
     }
 }
 

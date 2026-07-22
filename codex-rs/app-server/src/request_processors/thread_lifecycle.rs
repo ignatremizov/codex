@@ -464,6 +464,7 @@ async fn process_thread_listener_event(
             Arc::clone(thread_manager),
             thread_outgoing,
             Arc::clone(thread_state),
+            thread_state_manager.clone(),
             thread_watch_manager.clone(),
             Arc::clone(thread_list_state_permit),
             fallback_model_provider.to_string(),

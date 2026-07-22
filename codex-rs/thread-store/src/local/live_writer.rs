@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
@@ -326,6 +327,13 @@ async fn write_and_project(
 async fn durable_write(recorder: &RolloutRecorder, write: RolloutWriteOp) -> ThreadStoreResult<()> {
     match write {
         RolloutWriteOp::AppendItems(items) => {
+            if let [item @ RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))] = items.as_slice()
+            {
+                return recorder
+                    .record_canonical_item_and_flush(item)
+                    .await
+                    .map_err(thread_store_io_error);
+            }
             recorder
                 .record_canonical_items(items.as_slice())
                 .await

@@ -15,6 +15,7 @@ use crate::session::TurnInput;
 use crate::session::rollout_reconstruction::RolloutReconstructionRepairPersistence;
 use crate::session::session::Session;
 use crate::session::session::SessionSettingsUpdate;
+use crate::thread_rollout_truncation::instruction_positions_in_rollout;
 
 use crate::config::Config;
 use crate::review_prompts::resolve_review_request;
@@ -23,6 +24,7 @@ use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
+use codex_app_server_protocol::materialized_rollback_start;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -524,112 +526,259 @@ pub async fn compact(sess: &Arc<Session>, sub_id: String) {
         .await;
 }
 
+enum ThreadRollbackTarget {
+    InstructionTurns(u32),
+    MaterializedTurns {
+        num_turns: u32,
+        expected_start_turn_id: Option<String>,
+        expected_turn_count: Option<u32>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThreadRollbackDisposition {
+    Continue,
+    ReloadRequired,
+}
+
+#[derive(Clone, Copy)]
+enum ThreadRollbackErrorDelivery {
+    Persist,
+    Ephemeral,
+}
+
+async fn send_thread_rollback_error(
+    sess: &Session,
+    sub_id: String,
+    message: String,
+    delivery: ThreadRollbackErrorDelivery,
+) {
+    sess.submission_admission.rollback_completed();
+    send_thread_rollback_error_with_info(
+        sess,
+        sub_id,
+        message,
+        CodexErrorInfo::ThreadRollbackFailed,
+        delivery,
+    )
+    .await;
+}
+
+async fn send_thread_rollback_error_with_info(
+    sess: &Session,
+    sub_id: String,
+    message: String,
+    codex_error_info: CodexErrorInfo,
+    delivery: ThreadRollbackErrorDelivery,
+) {
+    let event = Event {
+        id: sub_id,
+        msg: EventMsg::Error(ErrorEvent {
+            message,
+            codex_error_info: Some(codex_error_info),
+        }),
+    };
+    match delivery {
+        ThreadRollbackErrorDelivery::Persist => sess.send_event_raw(event).await,
+        ThreadRollbackErrorDelivery::Ephemeral => sess.deliver_event_raw(event).await,
+    }
+}
+
+#[cfg(test)]
 pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32) {
+    let _disposition = thread_rollback_target(
+        sess,
+        sub_id,
+        ThreadRollbackTarget::InstructionTurns(num_turns),
+    )
+    .await;
+}
+
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "the active-turn reservation must cover the complete rollback transaction"
+)]
+async fn thread_rollback_target(
+    sess: &Arc<Session>,
+    sub_id: String,
+    target: ThreadRollbackTarget,
+) -> ThreadRollbackDisposition {
+    let num_turns = match &target {
+        ThreadRollbackTarget::InstructionTurns(num_turns)
+        | ThreadRollbackTarget::MaterializedTurns { num_turns, .. } => *num_turns,
+    };
     if num_turns == 0 {
-        sess.send_event_raw(Event {
-            id: sub_id,
-            msg: EventMsg::Error(ErrorEvent {
-                message: "num_turns must be >= 1".to_string(),
-                codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
-            }),
-        })
+        send_thread_rollback_error(
+            sess,
+            sub_id,
+            "num_turns must be >= 1".to_string(),
+            ThreadRollbackErrorDelivery::Persist,
+        )
         .await;
-        return;
+        return ThreadRollbackDisposition::Continue;
     }
 
-    let has_active_turn = { sess.active_turn.lock().await.is_some() };
-    if has_active_turn {
-        sess.send_event_raw(Event {
-            id: sub_id,
-            msg: EventMsg::Error(ErrorEvent {
-                message: "Cannot rollback while a turn is in progress.".to_string(),
-                codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
-            }),
-        })
+    let Ok(_durable_context_permit) = sess.acquire_durable_context_permit().await else {
+        send_thread_rollback_error(
+            sess,
+            sub_id,
+            "failed to acquire thread history for rollback".to_string(),
+            ThreadRollbackErrorDelivery::Persist,
+        )
         .await;
-        return;
+        return ThreadRollbackDisposition::Continue;
+    };
+    // Keep the active-turn mutex for the whole transaction. Turn startup uses the same mutex, so
+    // this is both the idle check and the reservation that prevents queued work from starting
+    // between replay and marker persistence.
+    let active_turn_guard = sess.active_turn.lock().await;
+    if active_turn_guard.is_some() {
+        send_thread_rollback_error(
+            sess,
+            sub_id,
+            "Cannot rollback while a turn is in progress.".to_string(),
+            ThreadRollbackErrorDelivery::Persist,
+        )
+        .await;
+        return ThreadRollbackDisposition::Continue;
     }
 
     let turn_context = sess.new_default_turn_with_sub_id(sub_id).await;
     let live_thread = match sess.live_thread_for_persistence("rollback thread") {
         Ok(live_thread) => live_thread,
         Err(_) => {
-            sess.send_event_raw(Event {
-                id: turn_context.sub_id.clone(),
-                msg: EventMsg::Error(ErrorEvent {
-                    message: "thread rollback requires persisted thread history".to_string(),
-                    codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
-                }),
-            })
+            send_thread_rollback_error(
+                sess,
+                turn_context.sub_id.clone(),
+                "thread rollback requires persisted thread history".to_string(),
+                ThreadRollbackErrorDelivery::Persist,
+            )
             .await;
-            return;
+            return ThreadRollbackDisposition::Continue;
         }
     };
     if let Err(err) = live_thread.flush_canonical().await {
-        sess.send_event_raw(Event {
-            id: turn_context.sub_id.clone(),
-            msg: EventMsg::Error(ErrorEvent {
-                message: format!("failed to flush thread persistence for rollback replay: {err}"),
-                codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
-            }),
-        })
+        send_thread_rollback_error(
+            sess,
+            turn_context.sub_id.clone(),
+            format!("failed to flush thread persistence for rollback replay: {err}"),
+            ThreadRollbackErrorDelivery::Persist,
+        )
         .await;
-        return;
+        return ThreadRollbackDisposition::Continue;
     }
 
     let stored_history = match live_thread.load_history(/*include_archived*/ false).await {
         Ok(history) => history,
         Err(err) => {
-            sess.send_event_raw(Event {
-                id: turn_context.sub_id.clone(),
-                msg: EventMsg::Error(ErrorEvent {
-                    message: format!("failed to load thread history for rollback replay: {err}"),
-                    codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
-                }),
-            })
+            send_thread_rollback_error(
+                sess,
+                turn_context.sub_id.clone(),
+                format!("failed to load thread history for rollback replay: {err}"),
+                ThreadRollbackErrorDelivery::Persist,
+            )
             .await;
-            return;
+            return ThreadRollbackDisposition::Continue;
         }
     };
 
-    let rollback_event = ThreadRolledBackEvent { num_turns };
+    let instruction_positions = instruction_positions_in_rollout(&stored_history.items);
+    let (num_turns, materialized_turns, rollback_start_index) = match target {
+        ThreadRollbackTarget::InstructionTurns(num_turns) => {
+            let rollback_boundary_index = instruction_positions
+                .len()
+                .saturating_sub(usize::try_from(num_turns).unwrap_or(usize::MAX));
+            let rollback_start_index = instruction_positions
+                .get(rollback_boundary_index)
+                .copied()
+                .map(|instruction_position| {
+                    let segment_start = stored_history.items[..=instruction_position]
+                        .iter()
+                        .rposition(|item| {
+                            matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_)))
+                        })
+                        .filter(|segment_start| {
+                            !stored_history.items[*segment_start..instruction_position]
+                                .iter()
+                                .any(|item| {
+                                    matches!(
+                                        item,
+                                        RolloutItem::EventMsg(
+                                            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+                                        )
+                                    )
+                                })
+                        });
+                    segment_start
+                        .filter(|segment_start| {
+                            !instruction_positions[..rollback_boundary_index]
+                                .iter()
+                                .any(|position| *position >= *segment_start)
+                        })
+                        .unwrap_or(instruction_position)
+                });
+            (num_turns, None, rollback_start_index)
+        }
+        ThreadRollbackTarget::MaterializedTurns {
+            num_turns: materialized_turns,
+            expected_start_turn_id,
+            expected_turn_count,
+        } => {
+            let rollback_start =
+                materialized_rollback_start(&stored_history.items, materialized_turns);
+            if let Some(expected_turn_count) = expected_turn_count
+                && rollback_start.as_ref().is_none_or(|start| {
+                    u32::try_from(start.turn_count).unwrap_or(u32::MAX) != expected_turn_count
+                })
+            {
+                send_thread_rollback_error(
+                    sess,
+                    turn_context.sub_id.clone(),
+                    "thread history changed after selecting the prompt; rollback was not applied"
+                        .to_string(),
+                    ThreadRollbackErrorDelivery::Ephemeral,
+                )
+                .await;
+                return ThreadRollbackDisposition::Continue;
+            }
+            if let Some(expected_start_turn_id) = expected_start_turn_id
+                && rollback_start
+                    .as_ref()
+                    .is_none_or(|start| start.turn_id != expected_start_turn_id)
+            {
+                send_thread_rollback_error(
+                    sess,
+                    turn_context.sub_id.clone(),
+                    "selected prompt no longer identifies the rollback boundary; rollback was not applied"
+                        .to_string(),
+                    ThreadRollbackErrorDelivery::Ephemeral,
+                )
+                .await;
+                return ThreadRollbackDisposition::Continue;
+            }
+            let rollback_start_index =
+                rollback_start.map(|rollback_start| rollback_start.rollout_index);
+            let num_turns = rollback_start_index.map_or(0, |rollback_start_index| {
+                instruction_positions
+                    .iter()
+                    .filter(|position| **position >= rollback_start_index)
+                    .count()
+            });
+            (
+                u32::try_from(num_turns).unwrap_or(u32::MAX),
+                Some(materialized_turns),
+                rollback_start_index,
+            )
+        }
+    };
+    let rollback_event = ThreadRolledBackEvent {
+        num_turns,
+        materialized_turns,
+        rollback_start_index: rollback_start_index
+            .map(|index| u64::try_from(index).unwrap_or(u64::MAX)),
+    };
     let rollback_msg = EventMsg::ThreadRolledBack(rollback_event.clone());
     let mut replay_items = stored_history.items;
-    let current_reconstruction = sess
-        .prepare_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
-        .await;
-    // Commit a required repair before the rollback marker so every durable prefix is replay-safe.
-    // An interruption can leave the current history certified without rolling it back; once the
-    // marker commits, reconstruction can safely apply the requested rollback to that certified base.
-    if let Some(repair) = current_reconstruction.repair.as_ref().filter(|repair| {
-        matches!(
-            repair.persistence,
-            RolloutReconstructionRepairPersistence::Required
-        )
-    }) {
-        if let Err(err) = live_thread
-            .append_items_and_flush_canonical(repair.items.as_slice())
-            .await
-        {
-            sess.deliver_event_raw(Event {
-                id: turn_context.sub_id.clone(),
-                msg: EventMsg::Error(ErrorEvent {
-                    message: format!(
-                        "failed to persist required compacted-media repair before rolling back thread: {err}"
-                    ),
-                    codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
-                }),
-            })
-            .await;
-            return;
-        }
-        info!(
-            omitted_image_count = repair.sanitization.omitted_image_count,
-            omitted_inline_media_bytes = repair.sanitization.omitted_inline_media_bytes,
-            "persisted compacted-media rollout repair before rollback"
-        );
-        replay_items.extend(repair.items.iter().cloned());
-    }
     replay_items.push(RolloutItem::EventMsg(rollback_msg.clone()));
     let prepared_reconstruction = sess
         .prepare_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
@@ -640,34 +789,125 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
             RolloutReconstructionRepairPersistence::Required
         )
     });
-    let required_rollback_repair_sanitization =
-        required_rollback_repair.map(|repair| repair.sanitization);
-    let mut rollback_items = vec![RolloutItem::EventMsg(rollback_msg.clone())];
-    if let Some(repair) = required_rollback_repair {
-        rollback_items.extend(repair.items.iter().cloned());
-    }
-    if let Err(err) = live_thread
-        .append_items_and_flush_canonical(rollback_items.as_slice())
-        .await
-    {
-        sess.deliver_event_raw(Event {
-            id: turn_context.sub_id.clone(),
-            msg: EventMsg::Error(ErrorEvent {
-                message: format!(
-                    "failed to persist rollback marker before rolling back thread: {err}"
-                ),
-                codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
-            }),
-        })
+    let required_rollback_repair =
+        required_rollback_repair.map(|repair| (repair.items.clone(), repair.sanitization));
+    let rollback_marker_index = replay_items.len().saturating_sub(1);
+    let marker_append_result = live_thread
+        .append_items_and_flush_canonical(&[RolloutItem::EventMsg(rollback_msg.clone())])
         .await;
-        return;
+    if let Err(err) = marker_append_result {
+        match live_thread.load_history(/*include_archived*/ false).await {
+            Ok(history)
+                if history
+                    .items
+                    .get(rollback_marker_index)
+                    .is_some_and(|item| {
+                    matches!(
+                        item,
+                        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(persisted))
+                            if persisted.num_turns == rollback_event.num_turns
+                                && persisted.materialized_turns == rollback_event.materialized_turns
+                                && persisted.rollback_start_index
+                                    == rollback_event.rollback_start_index
+                    )
+                }) =>
+            {
+                // Read visibility cannot upgrade a failed durability barrier into a commit
+                // acknowledgement. Quarantine and rebuild from whatever survives a cold resume.
+                sess.submission_admission.rollback_requires_reload();
+                send_thread_rollback_error_with_info(
+                    sess,
+                    turn_context.sub_id.clone(),
+                    format!(
+                        "rollback marker was readable after its durability barrier failed; refresh the thread before retrying: {err}"
+                    ),
+                    CodexErrorInfo::ThreadRollbackCommitUnknown,
+                    ThreadRollbackErrorDelivery::Ephemeral,
+                )
+                .await;
+                return ThreadRollbackDisposition::ReloadRequired;
+            }
+            Ok(_) => {}
+            Err(verification_err) => {
+                sess.submission_admission.rollback_requires_reload();
+                send_thread_rollback_error_with_info(
+                    sess,
+                    turn_context.sub_id.clone(),
+                    format!(
+                        "rollback marker persistence outcome could not be verified after an append error; refresh the thread before retrying: append error: {err}; verification error: {verification_err}"
+                    ),
+                    CodexErrorInfo::ThreadRollbackCommitUnknown,
+                    ThreadRollbackErrorDelivery::Ephemeral,
+                )
+                .await;
+                return ThreadRollbackDisposition::ReloadRequired;
+            }
+        }
+        send_thread_rollback_error(
+            sess,
+            turn_context.sub_id.clone(),
+            format!("failed to persist rollback marker before rolling back thread: {err}"),
+            ThreadRollbackErrorDelivery::Ephemeral,
+        )
+        .await;
+        return ThreadRollbackDisposition::Continue;
     }
-    if let Some(sanitization) = required_rollback_repair_sanitization {
-        info!(
-            omitted_image_count = sanitization.omitted_image_count,
-            omitted_inline_media_bytes = sanitization.omitted_inline_media_bytes,
-            "persisted rollback marker with required compacted-media repair"
-        );
+    if let Some((repair_items, sanitization)) = required_rollback_repair.as_ref() {
+        let repair_append_result = live_thread
+            .append_items_and_flush_canonical(repair_items.as_slice())
+            .await;
+        let repair_is_durable = match &repair_append_result {
+            Ok(()) => true,
+            Err(_) => {
+                let repair_start = rollback_marker_index.saturating_add(1);
+                let repair_end = repair_start.saturating_add(repair_items.len());
+                live_thread
+                    .load_history(/*include_archived*/ false)
+                    .await
+                    .ok()
+                    .is_some_and(|history| {
+                        history
+                            .items
+                            .get(repair_start..repair_end)
+                            .is_some_and(|persisted_items| {
+                                persisted_items.len() == repair_items.len()
+                                    && persisted_items.iter().zip(repair_items).all(
+                                        |(persisted_item, repair_item)| {
+                                            serde_json::to_vec(persisted_item)
+                                                .ok()
+                                                .zip(serde_json::to_vec(repair_item).ok())
+                                                .is_some_and(|(persisted_item, repair_item)| {
+                                                    persisted_item == repair_item
+                                                })
+                                        },
+                                    )
+                            })
+                    })
+            }
+        };
+        if repair_is_durable {
+            info!(
+                omitted_image_count = sanitization.omitted_image_count,
+                omitted_inline_media_bytes = sanitization.omitted_inline_media_bytes,
+                "persisted required compacted-media repair after rollback marker"
+            );
+        } else if let Err(err) = repair_append_result {
+            // The rollback marker is committed, so it cannot be retried. Cold replay can
+            // regenerate the representation repair, but live state must not acknowledge a
+            // rollback whose required durable representation is still missing.
+            sess.submission_admission.rollback_requires_reload();
+            send_thread_rollback_error_with_info(
+                sess,
+                turn_context.sub_id.clone(),
+                format!(
+                    "rollback committed, but its required compacted-media repair failed to persist; refresh the thread before continuing: {err}"
+                ),
+                CodexErrorInfo::ThreadRollbackCommitUnknown,
+                ThreadRollbackErrorDelivery::Ephemeral,
+            )
+            .await;
+            return ThreadRollbackDisposition::ReloadRequired;
+        }
     }
     let applied_reconstruction = sess
         .install_rollout_reconstruction(turn_context.as_ref(), prepared_reconstruction)
@@ -678,18 +918,21 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         .rearm_reminder(sess.thread_id());
     sess.recompute_token_usage(turn_context.as_ref()).await;
 
-    if required_rollback_repair_sanitization.is_none()
+    if required_rollback_repair.is_none()
         && let Some(repair) = applied_reconstruction.repair.as_ref()
         && let Err(err) = sess.persist_reconstruction_repair_with_policy(repair).await
     {
         warn!(%err, "failed to persist compacted-media repair after rollback");
     }
 
+    sess.submission_admission.rollback_completed();
     sess.deliver_event_raw(Event {
         id: turn_context.sub_id.clone(),
         msg: rollback_msg,
     })
     .await;
+    drop(active_turn_guard);
+    ThreadRollbackDisposition::Continue
 }
 
 pub(super) async fn persist_thread_memory_mode_update(
@@ -846,6 +1089,7 @@ pub(super) async fn submission_loop(
 ) {
     // To break out of this loop, send Op::Shutdown.
     let mut shutdown_received = false;
+    let mut reload_required = false;
     while let Ok(sub) = rx_sub.recv().await {
         debug!(?sub, "Submission");
         let dispatch_span = submission_dispatch_span(&sub);
@@ -948,8 +1192,34 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::ThreadRollback { num_turns } => {
-                    thread_rollback(&sess, sub.id.clone(), num_turns).await;
-                    false
+                    let disposition = thread_rollback_target(
+                        &sess,
+                        sub.id.clone(),
+                        ThreadRollbackTarget::InstructionTurns(num_turns),
+                    )
+                    .await;
+                    reload_required =
+                        matches!(disposition, ThreadRollbackDisposition::ReloadRequired);
+                    reload_required
+                }
+                Op::ThreadRollbackMaterialized {
+                    num_turns,
+                    expected_start_turn_id,
+                    expected_turn_count,
+                } => {
+                    let disposition = thread_rollback_target(
+                        &sess,
+                        sub.id.clone(),
+                        ThreadRollbackTarget::MaterializedTurns {
+                            num_turns,
+                            expected_start_turn_id,
+                            expected_turn_count,
+                        },
+                    )
+                    .await;
+                    reload_required =
+                        matches!(disposition, ThreadRollbackDisposition::ReloadRequired);
+                    reload_required
                 }
                 Op::SetThreadMemoryMode { mode } => {
                     set_thread_memory_mode(&sess, sub.id.clone(), mode).await;
@@ -985,16 +1255,34 @@ pub(super) async fn submission_loop(
         .instrument(dispatch_span)
         .await;
         if should_exit {
-            shutdown_received = true;
+            // Submission admission switches to reload-required before an indeterminate rollback
+            // error is delivered. Closing the receiver here finalizes that quarantine and ensures
+            // no work runs against live context that may disagree with durable history.
+            rx_sub.close();
+            shutdown_received = !reload_required;
             break;
         }
     }
     // If the submission loop exits because the channel closed without an
     // explicit shutdown op, still run session teardown.
     if !shutdown_received {
+        if reload_required
+            && let Some(live_thread) = sess.live_thread()
+            && let Err(err) = live_thread.shutdown().await
+        {
+            warn!(
+                "failed to shut down thread persistence before reloading indeterminate history: {err}"
+            );
+            if let Err(discard_err) = live_thread.discard().await {
+                warn!(
+                    "failed to discard thread persistence after reload shutdown failed: {discard_err}"
+                );
+            }
+        }
         shutdown_session_runtime(&sess).await;
         emit_thread_stop_lifecycle(sess.as_ref()).await;
-        if let Some(live_thread) = sess.live_thread()
+        if !reload_required
+            && let Some(live_thread) = sess.live_thread()
             && let Err(err) = live_thread.shutdown().await
         {
             warn!("failed to shutdown thread persistence after submission channel closed: {err}");
