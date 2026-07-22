@@ -3095,6 +3095,7 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_rollback() {
         })),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            ..Default::default()
         })),
     ];
 
@@ -5090,7 +5091,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
 }
 
 #[tokio::test]
-async fn thread_rollback_persists_required_repairs_around_the_rollback_marker() {
+async fn thread_rollback_persists_required_repair_after_the_rollback_marker() {
     let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
     let rollout_path = attach_thread_persistence(
         Arc::get_mut(&mut sess).expect("session should not have additional references"),
@@ -5171,11 +5172,10 @@ async fn thread_rollback_persists_required_repairs_around_the_rollback_marker() 
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(repairs.len(), 2);
-    assert!(repairs[0].0 < rollback_position);
-    assert!(repairs[1].0 > rollback_position);
+    assert_eq!(repairs.len(), 1);
+    assert!(repairs[0].0 > rollback_position);
     assert!(
-        repairs[1]
+        repairs[0]
             .1
             .replacement_history
             .as_ref()
@@ -5242,18 +5242,26 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             false,
         ),
         (
+            false,
+            codex_thread_store::InMemoryThreadStoreFailure::ThreadRollbackFlush,
+            true,
+            0,
+            Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::BestEffort),
+            false,
+        ),
+        (
             true,
             codex_thread_store::InMemoryThreadStoreFailure::ThreadRollbackAppend,
             true,
-            1,
-            None,
+            0,
+            Some(rollout_reconstruction::RolloutReconstructionRepairPersistence::Required),
             false,
         ),
         (
             true,
             codex_thread_store::InMemoryThreadStoreFailure::ThreadMetadataUpdate,
             false,
-            2,
+            1,
             None,
             false,
         ),
@@ -5356,11 +5364,24 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
 
         handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
 
+        let commit_unknown = matches!(
+            failure,
+            codex_thread_store::InMemoryThreadStoreFailure::ThreadRollbackFlush
+        ) || has_inline_media
+            && matches!(
+                failure,
+                codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairAppend
+                    | codex_thread_store::InMemoryThreadStoreFailure::CompactedMediaRepairFlush
+            );
         if expect_rollback_failure {
             let error = wait_for_thread_rollback_failed(&rx).await;
             assert_eq!(
                 error.codex_error_info,
-                Some(CodexErrorInfo::ThreadRollbackFailed)
+                Some(if commit_unknown {
+                    CodexErrorInfo::ThreadRollbackCommitUnknown
+                } else {
+                    CodexErrorInfo::ThreadRollbackFailed
+                })
             );
             let live_state_after = {
                 let state = sess.state.lock().await;
@@ -5390,7 +5411,10 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             .iter()
             .filter(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))))
             .count();
-        assert_eq!(rollback_markers, usize::from(!expect_rollback_failure));
+        assert_eq!(
+            rollback_markers,
+            usize::from(!expect_rollback_failure || commit_unknown)
+        );
         let persisted_repairs = persisted
             .items
             .iter()
@@ -5410,7 +5434,11 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             .reconstruct_history_from_rollout(tc.as_ref(), persisted.items.as_slice())
             .await;
         let live_history = sess.clone_history().await;
-        assert_eq!(recovered.history, live_history.raw_items());
+        if commit_unknown {
+            assert_ne!(recovered.history, live_history.raw_items());
+        } else {
+            assert_eq!(recovered.history, live_history.raw_items());
+        }
         assert_eq!(
             recovered.repair.as_ref().map(|repair| repair.persistence),
             expected_recovered_repair_persistence
@@ -5951,7 +5979,13 @@ async fn wait_for_thread_rollback_failed(rx: &async_channel::Receiver<Event>) ->
             .expect("event");
         match evt.msg {
             EventMsg::Error(payload)
-                if payload.codex_error_info == Some(CodexErrorInfo::ThreadRollbackFailed) =>
+                if matches!(
+                    payload.codex_error_info,
+                    Some(
+                        CodexErrorInfo::ThreadRollbackFailed
+                            | CodexErrorInfo::ThreadRollbackCommitUnknown
+                    )
+                ) =>
             {
                 return payload;
             }
@@ -7673,6 +7707,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,
         forked_from_ordinal_exclusive: None,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         next_internal_sub_id: AtomicU64::new(0),
     };
     let per_turn_config =
@@ -8770,6 +8805,7 @@ async fn submit_with_trace_captures_current_span_trace_context() {
     let io = SessionIo {
         tx_sub,
         rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: completed_session_loop_termination(),
     };
@@ -8804,6 +8840,126 @@ async fn submit_with_trace_captures_current_span_trace_context() {
 
     let submitted = rx_sub.recv().await.expect("submission");
     assert_eq!(submitted.trace, Some(expected_trace));
+}
+
+#[tokio::test]
+async fn submission_admission_rejects_work_queued_behind_rollback() {
+    let (tx_sub, rx_sub) = async_channel::bounded(2);
+    let (_tx_event, rx_event) = async_channel::unbounded();
+    let io = SessionIo {
+        tx_sub,
+        rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
+        agent_status: watch::channel(AgentStatus::PendingInit).1,
+        session_loop_termination: completed_session_loop_termination(),
+    };
+
+    io.submit(Op::ThreadRollback { num_turns: 1 })
+        .await
+        .expect("rollback should reserve submission admission");
+    let err = io
+        .submit(Op::Compact)
+        .await
+        .expect_err("work behind a pending rollback should be rejected");
+    assert!(
+        matches!(err, CodexErr::InvalidRequest(message) if message == "thread rollback is already in progress")
+    );
+
+    let queued = rx_sub.recv().await.expect("rollback should be queued");
+    assert!(matches!(queued.op, Op::ThreadRollback { num_turns: 1 }));
+    assert!(matches!(
+        rx_sub.try_recv(),
+        Err(async_channel::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn submission_admission_transition_does_not_wait_for_channel_capacity() {
+    let (tx_sub, rx_sub) = async_channel::bounded(1);
+    let (_tx_event, rx_event) = async_channel::unbounded();
+    let io = Arc::new(SessionIo {
+        tx_sub,
+        rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
+        agent_status: watch::channel(AgentStatus::PendingInit).1,
+        session_loop_termination: completed_session_loop_termination(),
+    });
+
+    io.submit(Op::ThreadRollback { num_turns: 1 })
+        .await
+        .expect("rollback should fill the submission channel");
+    let shutdown = {
+        let io = Arc::clone(&io);
+        tokio::spawn(async move { io.submit(Op::Shutdown).await })
+    };
+    tokio::time::timeout(StdDuration::from_millis(100), async {
+        loop {
+            if io.submission_admission.send_lock.try_lock().is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("shutdown should block while holding the send-order lock");
+
+    io.submission_admission.rollback_requires_reload();
+
+    let rollback = rx_sub.recv().await.expect("rollback should be queued");
+    assert!(matches!(rollback.op, Op::ThreadRollback { num_turns: 1 }));
+    shutdown
+        .await
+        .expect("shutdown task should not panic")
+        .expect("shutdown should queue after capacity is released");
+    let shutdown = rx_sub.recv().await.expect("shutdown should be queued");
+    assert!(matches!(shutdown.op, Op::Shutdown));
+}
+
+#[tokio::test]
+async fn cancelling_blocked_rollback_submission_releases_admission() {
+    let (tx_sub, rx_sub) = async_channel::bounded(1);
+    let (_tx_event, rx_event) = async_channel::unbounded();
+    let io = Arc::new(SessionIo {
+        tx_sub,
+        rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
+        agent_status: watch::channel(AgentStatus::PendingInit).1,
+        session_loop_termination: completed_session_loop_termination(),
+    });
+
+    io.submit(Op::Interrupt)
+        .await
+        .expect("interrupt should fill the submission channel");
+    let rollback = {
+        let io = Arc::clone(&io);
+        tokio::spawn(async move { io.submit(Op::ThreadRollback { num_turns: 1 }).await })
+    };
+    tokio::time::timeout(StdDuration::from_millis(100), async {
+        loop {
+            if io.submission_admission.send_lock.try_lock().is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("rollback should block while holding the send-order lock");
+
+    rollback.abort();
+    let _ = rollback.await;
+    assert_eq!(
+        *io.submission_admission
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        SubmissionAdmissionState::Ready
+    );
+
+    let queued = rx_sub.recv().await.expect("interrupt should be queued");
+    assert!(matches!(queued.op, Op::Interrupt));
+    io.submit(Op::Compact)
+        .await
+        .expect("admission should accept work after rollback cancellation");
 }
 
 #[tokio::test]
@@ -9517,6 +9673,7 @@ async fn shutdown_and_wait_allows_multiple_waiters() {
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
     });
@@ -9553,6 +9710,7 @@ async fn shutdown_and_wait_waits_when_shutdown_is_already_in_progress() {
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
     });
@@ -9589,6 +9747,7 @@ async fn shutdown_and_wait_shuts_down_cached_guardian_subagent() {
     let parent_io = SessionIo {
         tx_sub: parent_tx_sub,
         rx_event: parent_rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(parent_session_loop_handle),
     };
@@ -9611,6 +9770,7 @@ async fn shutdown_and_wait_shuts_down_cached_guardian_subagent() {
     let child_io = SessionIo {
         tx_sub: child_tx_sub,
         rx_event: child_rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
@@ -9643,6 +9803,7 @@ async fn cached_guardian_subagent_exposes_its_rollout_path() {
     let child_io = SessionIo {
         tx_sub: child_tx_sub,
         rx_event: child_rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
@@ -9674,6 +9835,7 @@ async fn shutdown_and_wait_shuts_down_tracked_ephemeral_guardian_review() {
     let parent_io = SessionIo {
         tx_sub: parent_tx_sub,
         rx_event: parent_rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(parent_session_loop_handle),
     };
@@ -9696,6 +9858,7 @@ async fn shutdown_and_wait_shuts_down_tracked_ephemeral_guardian_review() {
     let child_io = SessionIo {
         tx_sub: child_tx_sub,
         rx_event: child_rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
@@ -9991,6 +10154,7 @@ where
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,
         forked_from_ordinal_exclusive: None,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         next_internal_sub_id: AtomicU64::new(0),
     });
     let per_turn_config =

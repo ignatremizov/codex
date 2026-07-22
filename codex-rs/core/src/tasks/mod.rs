@@ -856,13 +856,17 @@ impl Session {
                 time_to_first_token_ms,
             })
         };
-        self.send_event(turn_context.as_ref(), event).await;
-        self.services
-            .guardian_rejection_circuit_breaker
-            .lock()
-            .await
-            .clear_turn(&turn_context.sub_id);
-
+        // Publish the terminal event only after the active turn is cleared, and keep the durable
+        // context permit through the terminal-event flush. A client may submit rollback as soon as
+        // it receives TurnComplete; that rollback must observe both settled live state and the
+        // complete durable turn rather than racing this cleanup.
+        let _durable_context_permit = match self.acquire_durable_context_permit().await {
+            Ok(permit) => Some(permit),
+            Err(err) => {
+                warn!("failed to reserve durable context while completing turn: {err}");
+                None
+            }
+        };
         let cleared_active_turn = {
             let mut active = self.active_turn.lock().await;
             if let Some(active_turn) = active.as_ref()
@@ -875,17 +879,25 @@ impl Session {
                 false
             }
         };
-        if cleared_active_turn && !queued_pending_input_after_mcp_use {
-            self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
-        }
+        self.send_event(turn_context.as_ref(), event).await;
+        self.services
+            .guardian_rejection_circuit_breaker
+            .lock()
+            .await
+            .clear_turn(&turn_context.sub_id);
         // Regular items were flushed before this terminal event was appended; buffering
         // thread writers may not flush it without another explicit barrier.
         if let Err(err) = self.flush_rollout().await {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
-        if cleared_active_turn {
-            self.maybe_start_turn_for_pending_work().await;
+        drop(_durable_context_permit);
+        if !cleared_active_turn {
+            return;
         }
+        if !queued_pending_input_after_mcp_use {
+            self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
+        }
+        self.maybe_start_turn_for_pending_work().await;
     }
 
     async fn take_active_turn(&self, reason: &TurnAbortReason) -> Option<ActiveTurn> {

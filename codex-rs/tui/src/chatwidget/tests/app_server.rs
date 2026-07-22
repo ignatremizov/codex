@@ -740,6 +740,7 @@ async fn context_compacted_summary_respects_tui_toggle() {
             summary: Some("Trimmed summary text.".to_string()),
             message: Some("Full compacted prompt.".to_string()),
             decode_error: None,
+            available_skills: Vec::new(),
         }),
     });
 
@@ -758,15 +759,22 @@ async fn context_compacted_prefers_prompt_over_summary() {
             summary: Some("Short summary".to_string()),
             message: Some("Prompt line 1\nPrompt line 2".to_string()),
             decode_error: None,
+            available_skills: vec!["test-tui".to_string()],
         }),
     });
 
     let cells = drain_insert_history(&mut rx);
-    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
-    assert!(rendered.contains("Compacted prompt"));
-    assert!(rendered.contains("Prompt line 1"));
-    assert!(rendered.contains("Prompt line 2"));
-    assert!(!rendered.contains("Short summary"));
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    insta::assert_snapshot!(rendered, @r"
+    • Compacted prompt
+      Prompt line 1
+      Prompt line 2
+
+    • Available skills after compaction: test-tui
+    ");
 }
 
 #[tokio::test]
@@ -782,6 +790,7 @@ async fn live_app_server_context_compaction_item_completed_renders_prompt() {
                 id: "compact-1".to_string(),
                 summary: Some("Short summary".to_string()),
                 message: Some("Prompt line 1\nPrompt line 2".to_string()),
+                available_skills: Vec::new(),
                 decode_error: None,
             },
         }),
@@ -846,6 +855,7 @@ async fn live_app_server_context_compaction_decoding_updates_status_without_hist
                 summary: Some("Decoded summary".to_string()),
                 message: None,
                 decode_error: None,
+                available_skills: Vec::new(),
             },
         }),
         /*replay_kind*/ None,
@@ -871,6 +881,7 @@ async fn live_app_server_context_compaction_decode_error_renders_when_summary_is
                 summary: None,
                 message: None,
                 decode_error: Some("Selected model is at capacity.".to_string()),
+                available_skills: Vec::new(),
             },
         }),
         /*replay_kind*/ None,
@@ -901,6 +912,7 @@ async fn live_app_server_context_compacted_notification_renders_after_item() {
                 summary: Some("Short summary".to_string()),
                 message: Some("Prompt line 1\nPrompt line 2".to_string()),
                 decode_error: None,
+                available_skills: Vec::new(),
             },
         }),
         /*replay_kind*/ None,
@@ -912,6 +924,7 @@ async fn live_app_server_context_compacted_notification_renders_after_item() {
                 turn_id: "turn-1".to_string(),
                 summary: Some("Short summary".to_string()),
                 message: Some("Prompt line 1\nPrompt line 2".to_string()),
+                available_skills: Vec::new(),
             },
         ),
         /*replay_kind*/ None,
@@ -951,6 +964,7 @@ async fn live_app_server_remote_context_compacted_notification_renders_summary()
                 turn_id: "turn-1".to_string(),
                 summary: Some("Remote compact summary".to_string()),
                 message: None,
+                available_skills: Vec::new(),
             },
         ),
         /*replay_kind*/ None,

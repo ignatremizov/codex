@@ -23,24 +23,30 @@ fn turn_metadata(turn_id: &str) -> Option<InternalChatMessageMetadataPassthrough
 }
 
 fn function_call(turn_id: &str, name: &str, call_id: &str, arguments: &str) -> RolloutItem {
-    RolloutItem::ResponseItem(ResponseItem::FunctionCall {
-        id: None,
-        name: name.to_string(),
-        namespace: None,
-        arguments: arguments.to_string(),
-        encrypted_function_args: None,
-        call_id: call_id.to_string(),
-        internal_chat_message_metadata_passthrough: turn_metadata(turn_id),
-    })
+    RolloutItem::ResponseItem(
+        ResponseItem::FunctionCall {
+            id: None,
+            name: name.to_string(),
+            namespace: None,
+            arguments: arguments.to_string(),
+            encrypted_function_args: None,
+            call_id: call_id.to_string(),
+            internal_chat_message_metadata_passthrough: turn_metadata(turn_id),
+        }
+        .into(),
+    )
 }
 
 fn function_call_output(turn_id: &str, call_id: &str, output: &str) -> RolloutItem {
-    RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
-        id: None,
-        call_id: call_id.to_string(),
-        output: FunctionCallOutputPayload::from_text(output.to_string()),
-        internal_chat_message_metadata_passthrough: turn_metadata(turn_id),
-    })
+    RolloutItem::ResponseItem(
+        ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: call_id.to_string(),
+            output: FunctionCallOutputPayload::from_text(output.to_string()),
+            internal_chat_message_metadata_passthrough: turn_metadata(turn_id),
+        }
+        .into(),
+    )
 }
 
 fn turn_started(turn_id: &str) -> RolloutItem {

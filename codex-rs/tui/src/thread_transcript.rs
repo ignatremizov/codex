@@ -1,9 +1,11 @@
 //! Render persisted thread turns into history-cell building blocks.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::HistoryHydrationScope;
+use crate::chatwidget::ChatWidget;
 use crate::git_action_directives::parse_assistant_markdown;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::HistoryCell;
@@ -14,17 +16,21 @@ use crate::history_cell::UserHistoryCell;
 use crate::history_cell::split_reasoning_summary_parts;
 use crate::inline_visualization::InlineVisualizationContext;
 use crate::legacy_core::config::Config;
+use crate::multi_agents::AgentMetadata;
+use crate::multi_agents::CollabAgentHistoryCell;
+use crate::multi_agents::background_commentary_history_cell_from_agent_message;
+use crate::multi_agents::background_completion_history_cell_from_agent_message;
+use crate::multi_agents::parse_thread_id;
 use crate::multi_agents::sub_agent_activity_summary;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
-use codex_app_server_protocol::UserInput;
 use codex_protocol::ThreadId;
-use codex_protocol::items::UserMessageItem;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 
 pub(crate) type TranscriptCells = Vec<Arc<dyn HistoryCell>>;
+pub(crate) type CollabAgentMetadataMap = HashMap<ThreadId, AgentMetadata>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RawReasoningVisibility {
@@ -66,12 +72,24 @@ pub(crate) fn thread_to_transcript_cells(
 ) -> TranscriptCells {
     let cwd = thread.cwd;
     let thread_id = ThreadId::from_string(&thread.id).ok();
-    let mut cells = thread_items_to_transcript_cells(
+    let items = thread
+        .turns
+        .into_iter()
+        .flat_map(|turn| {
+            let turn_id = turn.id;
+            turn.items
+                .into_iter()
+                .map(move |item| (Some(turn_id.clone()), item))
+        })
+        .collect::<Vec<_>>();
+    let metadata = collab_agent_metadata_from_items(items.iter().map(|(_, item)| item));
+    let mut cells = thread_items_with_sources_to_transcript_cells(
         thread_id,
         &cwd,
-        thread.turns.into_iter().flat_map(|turn| turn.items),
+        items,
         raw_reasoning_visibility,
         config,
+        &metadata,
     );
     if cells.is_empty() {
         cells.push(Arc::new(PlainHistoryCell::new(vec![
@@ -81,51 +99,92 @@ pub(crate) fn thread_to_transcript_cells(
     cells
 }
 
-pub(crate) fn thread_items_to_transcript_cells(
+pub(crate) fn collab_agent_metadata_from_items<'a>(
+    items: impl IntoIterator<Item = &'a ThreadItem>,
+) -> CollabAgentMetadataMap {
+    let mut metadata = CollabAgentMetadataMap::new();
+    extend_collab_agent_metadata(&mut metadata, items);
+    metadata
+}
+
+pub(crate) fn thread_items_to_transcript_cells_with_metadata(
     thread_id: Option<ThreadId>,
     cwd: &AbsolutePathBuf,
     items: impl IntoIterator<Item = ThreadItem>,
     raw_reasoning_visibility: RawReasoningVisibility,
     config: Option<&Config>,
+    known_collab_agent_metadata: &CollabAgentMetadataMap,
+) -> TranscriptCells {
+    thread_items_with_sources_to_transcript_cells(
+        thread_id,
+        cwd,
+        items.into_iter().map(|item| (None, item)),
+        raw_reasoning_visibility,
+        config,
+        known_collab_agent_metadata,
+    )
+}
+
+pub(crate) fn thread_items_with_sources_to_transcript_cells(
+    thread_id: Option<ThreadId>,
+    cwd: &AbsolutePathBuf,
+    items: impl IntoIterator<Item = (Option<String>, ThreadItem)>,
+    raw_reasoning_visibility: RawReasoningVisibility,
+    config: Option<&Config>,
+    known_collab_agent_metadata: &CollabAgentMetadataMap,
 ) -> TranscriptCells {
     let inline_visualization_context = config.and_then(|config| {
         thread_id.and_then(|thread_id| InlineVisualizationContext::from_config(config, thread_id))
     });
     let mut cells: TranscriptCells = Vec::new();
-    for item in items {
+    for (turn_id, item) in items {
         match item {
-            ThreadItem::UserMessage {
-                id,
-                client_id,
-                content,
-            } => {
-                if content.iter().any(|input| {
-                    matches!(
-                        input,
-                        UserInput::Audio { .. } | UserInput::LocalAudio { .. }
-                    )
-                }) {
-                    tracing::warn!(
-                        user_message_id = id,
-                        "audio user inputs are not supported by the TUI and will be omitted"
-                    );
-                }
-                let item = UserMessageItem {
-                    id,
-                    client_id,
-                    content: content
-                        .into_iter()
-                        .map(codex_app_server_protocol::UserInput::into_core)
-                        .collect(),
-                };
+            ThreadItem::UserMessage { id, content, .. } => {
+                let display = ChatWidget::user_message_display_from_inputs(&content);
                 cells.push(Arc::new(UserHistoryCell {
-                    message: item.message(),
-                    text_elements: item.text_elements(),
-                    local_image_paths: item.local_image_paths(),
-                    remote_image_urls: item.image_urls(),
+                    message: display.message,
+                    text_elements: display.text_elements,
+                    local_image_paths: display.local_images,
+                    remote_image_urls: display.remote_image_urls,
+                    source: turn_id.map(|turn_id| crate::history_cell::UserMessageSource {
+                        item_id: id,
+                        turn_id,
+                    }),
                 }));
             }
-            ThreadItem::AgentMessage { text, .. } => {
+            ThreadItem::AgentMessage {
+                id, text, phase, ..
+            } => {
+                let collab_cell = background_completion_history_cell_from_agent_message(
+                    &id,
+                    &text,
+                    phase.as_ref(),
+                    /*agent_response_preview_lines*/ 0,
+                    |thread_id| {
+                        known_collab_agent_metadata
+                            .get(&thread_id)
+                            .cloned()
+                            .unwrap_or_default()
+                    },
+                )
+                .or_else(|| {
+                    background_commentary_history_cell_from_agent_message(
+                        &id,
+                        &text,
+                        phase.as_ref(),
+                        /*agent_response_preview_lines*/ 0,
+                        |thread_id| {
+                            known_collab_agent_metadata
+                                .get(&thread_id)
+                                .cloned()
+                                .unwrap_or_default()
+                        },
+                    )
+                });
+                if let Some(cell) = collab_cell {
+                    cells.push(Arc::new(cell));
+                    continue;
+                }
                 let parsed = parse_assistant_markdown(&text, cwd.as_path());
                 if !parsed.visible_markdown.trim().is_empty() {
                     cells.push(Arc::new(AgentMarkdownCell::new_with_inline_visualizations(
@@ -183,6 +242,11 @@ pub(crate) fn thread_items_to_transcript_cells(
                     )));
                 }
             }
+            item @ ThreadItem::UserAgentControl { .. } => {
+                if let Some(cell) = crate::history_cell::new_user_agent_control(item) {
+                    cells.push(Arc::new(cell));
+                }
+            }
             other => {
                 if let Some(cell) = fallback_transcript_cell(&other) {
                     cells.push(Arc::new(cell));
@@ -191,6 +255,70 @@ pub(crate) fn thread_items_to_transcript_cells(
         }
     }
     cells
+}
+
+pub(crate) fn refresh_collab_agent_metadata(
+    cells: &mut [Arc<dyn HistoryCell>],
+    known_collab_agent_metadata: &CollabAgentMetadataMap,
+) -> bool {
+    let mut refreshed = false;
+    for cell in cells {
+        let Some(collab_cell) = cell.as_any().downcast_ref::<CollabAgentHistoryCell>() else {
+            continue;
+        };
+        let Some(updated) = collab_cell.with_refreshed_agent_metadata(|thread_id| {
+            known_collab_agent_metadata.get(&thread_id).cloned()
+        }) else {
+            continue;
+        };
+        *cell = Arc::new(updated);
+        refreshed = true;
+    }
+    refreshed
+}
+
+fn extend_collab_agent_metadata<'a>(
+    metadata: &mut CollabAgentMetadataMap,
+    items: impl IntoIterator<Item = &'a ThreadItem>,
+) {
+    for item in items {
+        match item {
+            ThreadItem::CollabAgentToolCall {
+                receiver_agents, ..
+            } => {
+                for receiver in receiver_agents {
+                    let Some(thread_id) = parse_thread_id(&receiver.thread_id) else {
+                        continue;
+                    };
+                    let metadata = metadata.entry(thread_id).or_default();
+                    if receiver.agent_nickname.is_some() {
+                        metadata.agent_nickname = receiver.agent_nickname.clone();
+                    }
+                    if receiver.agent_role.is_some() {
+                        metadata.agent_role = receiver.agent_role.clone();
+                    }
+                }
+            }
+            ThreadItem::UserAgentControl {
+                target_thread_id: Some(target_thread_id),
+                nickname,
+                role,
+                ..
+            } => {
+                let Some(thread_id) = parse_thread_id(target_thread_id) else {
+                    continue;
+                };
+                let metadata = metadata.entry(thread_id).or_default();
+                if nickname.is_some() {
+                    metadata.agent_nickname = nickname.clone();
+                }
+                if role.is_some() {
+                    metadata.agent_role = role.clone();
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
@@ -264,8 +392,28 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
                 .unwrap_or_else(|| tool.clone());
             vec![format!("tool: {name} · {status:?}").dim().into()]
         }
-        ThreadItem::CollabAgentToolCall { tool, status, .. } => {
-            vec![format!("agent tool: {tool:?} · {status:?}").dim().into()]
+        ThreadItem::CollabAgentToolCall {
+            tool,
+            status,
+            observe_commentary,
+            wake_on_completion,
+            ..
+        } => {
+            let commentary = match observe_commentary {
+                Some(true) => " · receive commentary",
+                Some(false) => " · no commentary",
+                None => "",
+            };
+            let wake = match wake_on_completion {
+                Some(true) => " · wake on completion",
+                Some(false) => " · no wake on completion",
+                None => "",
+            };
+            vec![
+                format!("agent tool: {tool:?} · {status:?}{commentary}{wake}")
+                    .dim()
+                    .into(),
+            ]
         }
         ThreadItem::SubAgentActivity {
             kind, agent_path, ..
@@ -298,26 +446,43 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
             vec![vec!["review finished: ".dim(), review.clone().into()].into()]
         }
         ThreadItem::ContextCompaction {
-            decode_error: Some(error),
+            decode_error,
+            available_skills,
             ..
         } => {
-            vec![
+            let mut lines = if let Some(error) = decode_error {
                 vec![
-                    "context compacted · prompt decoding failed: ".dim(),
-                    error.clone().red(),
+                    vec![
+                        "context compacted · prompt decoding failed: ".dim(),
+                        error.clone().red(),
+                    ]
+                    .into(),
                 ]
-                .into(),
-            ]
-        }
-        ThreadItem::ContextCompaction { .. } => {
-            vec!["context compacted".dim().into()]
+            } else {
+                vec!["context compacted".dim().into()]
+            };
+            if !available_skills.is_empty() {
+                lines.push(
+                    vec![
+                        "available skills after compaction: ".dim(),
+                        available_skills.join(", ").into(),
+                    ]
+                    .into(),
+                );
+            }
+            lines
         }
         ThreadItem::UserMessage { .. }
         | ThreadItem::AgentMessage { .. }
         | ThreadItem::FunctionCallOutput { .. }
         | ThreadItem::Plan { .. }
         | ThreadItem::Reasoning { .. }
+        | ThreadItem::UserAgentControl { .. }
         | ThreadItem::Sleep(_) => return None,
     };
     (!lines.is_empty()).then(|| PlainHistoryCell::new(lines))
 }
+
+#[cfg(test)]
+#[path = "thread_transcript_tests.rs"]
+mod tests;

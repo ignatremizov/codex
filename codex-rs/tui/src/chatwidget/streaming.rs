@@ -143,6 +143,7 @@ impl ChatWidget {
         summary: Option<String>,
         message: Option<String>,
         decode_error: Option<String>,
+        available_skills: Vec<String>,
     ) {
         self.flush_answer_stream_with_separator();
         self.handle_stream_finished();
@@ -168,6 +169,7 @@ impl ChatWidget {
                     /*hint*/ None,
                 ));
             }
+            self.show_compacted_skills_inventory(&available_skills);
             self.request_redraw();
             return;
         }
@@ -197,7 +199,21 @@ impl ChatWidget {
                 /*hint*/ None,
             ));
         }
+        self.show_compacted_skills_inventory(&available_skills);
         self.request_redraw();
+    }
+
+    fn show_compacted_skills_inventory(&mut self, available_skills: &[String]) {
+        if available_skills.is_empty() {
+            return;
+        }
+        self.add_to_history(history_cell::new_info_event(
+            format!(
+                "Available skills after compaction: {}",
+                available_skills.join(", ")
+            ),
+            /*hint*/ None,
+        ));
     }
 
     pub(super) fn on_agent_message_delta(&mut self, delta: String) {

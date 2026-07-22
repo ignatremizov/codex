@@ -316,6 +316,7 @@ use crate::history_cell::HookCell;
 use crate::history_cell::McpInvocation;
 use crate::history_cell::McpToolCallCell;
 use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::UserMessageSource;
 use crate::history_cell::WebSearchCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
@@ -1343,7 +1344,19 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn on_committed_user_message(&mut self, items: &[UserInput], from_replay: bool) {
+    fn on_committed_user_message(
+        &mut self,
+        items: &[UserInput],
+        from_replay: bool,
+        source: Option<UserMessageSource>,
+    ) {
+        if !from_replay && let Some(source) = source.clone() {
+            self.app_event_tx
+                .send(AppEvent::AttachCommittedUserMessageSource {
+                    source,
+                    content: items.to_vec(),
+                });
+        }
         let display = Self::user_message_display_from_inputs(items);
         if from_replay {
             if self.review.is_review_mode {
@@ -1358,7 +1371,7 @@ impl ChatWidget {
                     mention_bindings: mention_bindings_from_user_inputs(items, &display.message),
                     pending_pastes: Vec::new(),
                 });
-            self.on_user_message_display(display);
+            self.on_user_message_display(display, source);
             return;
         }
 
@@ -1373,33 +1386,39 @@ impl ChatWidget {
                 self.refresh_pending_input_preview();
                 let pending_display =
                     user_message_display_for_history(pending.user_message, &pending.history_record);
-                self.on_user_message_display(pending_display);
+                self.on_user_message_display(pending_display, source);
             } else if self.last_rendered_user_message_display.as_ref() != Some(&display) {
                 tracing::warn!(
                     "pending steer matched compare key but queue was empty when rendering committed user message"
                 );
-                self.on_user_message_display(display);
+                self.on_user_message_display(display, source);
             }
         } else if !self.review.is_review_mode
             && self.last_rendered_user_message_display.as_ref() != Some(&display)
         {
-            self.on_user_message_display(display);
+            self.on_user_message_display(display, source);
         }
     }
 
-    fn on_user_message_display(&mut self, display: UserMessageDisplay) {
+    fn on_user_message_display(
+        &mut self,
+        display: UserMessageDisplay,
+        source: Option<UserMessageSource>,
+    ) {
         self.last_rendered_user_message_display = Some(display.clone());
         if !display.message.trim().is_empty()
             || !display.text_elements.is_empty()
             || !display.local_images.is_empty()
             || !display.remote_image_urls.is_empty()
         {
-            self.add_to_history(history_cell::new_user_prompt(
+            let mut cell = history_cell::new_user_prompt(
                 display.message,
                 display.text_elements,
                 display.local_images,
                 display.remote_image_urls,
-            ));
+            );
+            cell.source = source;
+            self.add_to_history(cell);
         }
 
         // User messages reset separator state so the next agent response doesn't add a stray break.

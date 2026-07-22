@@ -93,6 +93,7 @@ fn scrolled_test_renderables(lines: &[HyperlinkLine]) -> Vec<(&'static str, Box<
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
         remote_image_urls: Vec::new(),
+        source: None,
     });
 
     vec![

@@ -100,29 +100,6 @@ WHERE thread_id = ?
         .transpose()
 }
 
-pub(super) async fn fork_projection_is_current(
-    store: &LocalThreadStore,
-    thread_id: ThreadId,
-    next_rollout_byte_offset: u64,
-    next_rollout_ordinal: u64,
-) -> ThreadStoreResult<bool> {
-    let pool = store.thread_history_db().await?;
-    ensure_fork_projection_state_table(pool).await?;
-    let state = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT next_rollout_byte_offset, next_rollout_ordinal FROM fork_thread_history_projection_state WHERE thread_id = ?",
-    )
-    .bind(thread_id.to_string())
-    .fetch_optional(pool)
-    .await
-    .map_err(thread_history_error)?;
-    let expected_offset = sqlite_integer(next_rollout_byte_offset, "rollout byte offset")?;
-    let expected_ordinal = sqlite_integer(next_rollout_ordinal, "rollout ordinal")?;
-    match state {
-        Some(state) => Ok(state == (expected_offset, expected_ordinal)),
-        None => Ok(expected_offset == 0 && expected_ordinal == 0),
-    }
-}
-
 pub(super) async fn apply_projection(
     store: &LocalThreadStore,
     thread_id: ThreadId,
@@ -132,7 +109,6 @@ pub(super) async fn apply_projection(
     projections: Vec<RolloutProjectionStep>,
 ) -> ThreadStoreResult<()> {
     let pool = store.thread_history_db().await?;
-    ensure_fork_projection_state_table(pool).await?;
     // Write the projected rows and advance the JSONL offset and ordinal in one transaction. If
     // SQLite fails, it stays behind the durable rollout instead of claiming data it did not
     // materialize.
@@ -244,7 +220,6 @@ ON CONFLICT(thread_id, item_id) DO NOTHING
         }
     }
 
-    let next_offset = sqlite_integer(next_offset, "rollout byte offset")?;
     sqlx::query(
         r#"
 INSERT INTO thread_history_projection_state (
@@ -258,25 +233,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
         "#,
     )
     .bind(thread_id.as_str())
-    .bind(next_offset)
-    .bind(next_ordinal)
-    .execute(&mut *transaction)
-    .await
-    .map_err(thread_history_error)?;
-    sqlx::query(
-        r#"
-INSERT INTO fork_thread_history_projection_state (
-    thread_id,
-    next_rollout_byte_offset,
-    next_rollout_ordinal
-) VALUES (?, ?, ?)
-ON CONFLICT(thread_id) DO UPDATE SET
-    next_rollout_byte_offset = excluded.next_rollout_byte_offset,
-    next_rollout_ordinal = excluded.next_rollout_ordinal
-        "#,
-    )
-    .bind(thread_id.as_str())
-    .bind(next_offset)
+    .bind(sqlite_integer(next_offset, "rollout byte offset")?)
     .bind(next_ordinal)
     .execute(&mut *transaction)
     .await
@@ -297,9 +254,6 @@ pub(super) async fn delete_thread(
     }
 
     let pool = store.thread_history_db().await?;
-    ensure_fork_projection_state_table(pool)
-        .await
-        .map_err(thread_history_delete_error)?;
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
@@ -325,34 +279,10 @@ pub(super) async fn delete_thread(
         .execute(&mut *transaction)
         .await
         .map_err(thread_history_delete_error)?;
-    sqlx::query("DELETE FROM fork_thread_history_projection_state WHERE thread_id = ?")
-        .bind(thread_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(thread_history_delete_error)?;
     transaction
         .commit()
         .await
         .map_err(thread_history_delete_error)
-}
-
-async fn ensure_fork_projection_state_table(pool: &sqlx::SqlitePool) -> ThreadStoreResult<()> {
-    // This marker is fork-owned compatibility state, not canonical history or an upstream schema
-    // contract. Create it lazily so upstream and fork binaries can share the rebuildable database
-    // without assigning a migration version to a table upstream does not know about.
-    sqlx::query(
-        r#"
-CREATE TABLE IF NOT EXISTS fork_thread_history_projection_state (
-    thread_id TEXT PRIMARY KEY,
-    next_rollout_byte_offset INTEGER NOT NULL,
-    next_rollout_ordinal INTEGER NOT NULL
-)
-        "#,
-    )
-    .execute(pool)
-    .await
-    .map_err(thread_history_error)?;
-    Ok(())
 }
 
 pub(super) async fn apply_change_set(
@@ -405,7 +335,6 @@ ON CONFLICT(thread_id, turn_id) DO UPDATE SET
     completed_at = excluded.completed_at,
     duration_ms = excluded.duration_ms
 WHERE thread_turns.rollout_end_ordinal IS NULL
-  AND thread_turns.status = 'inProgress'
             "#,
         )
         .bind(thread_id)

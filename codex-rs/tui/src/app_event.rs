@@ -466,14 +466,20 @@ pub(crate) enum AppEvent {
     /// Roll back before a selected prompt and reopen it in the current thread's composer.
     RollbackSessionForPromptEdit {
         thread_id: ThreadId,
+        source: Option<crate::history_cell::UserMessageSource>,
         nth_user_message: usize,
+        prompt_occurrences: usize,
+        prompt_occurrence: usize,
         prompt: UserMessage,
     },
 
     /// Branch before a selected prompt and reopen it in the new thread's composer.
     ForkSessionForPromptEdit {
         thread_id: ThreadId,
+        source: Option<crate::history_cell::UserMessageSource>,
         nth_user_message: usize,
+        prompt_occurrences: usize,
+        prompt_occurrence: usize,
         prompt: UserMessage,
     },
 
@@ -957,6 +963,10 @@ pub(crate) enum AppEvent {
     BeginThreadSwitchHistoryReplayBuffer,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
+    AttachCommittedUserMessageSource {
+        source: crate::history_cell::UserMessageSource,
+        content: Vec<codex_app_server_protocol::UserInput>,
+    },
 
     /// Finish buffering initial resume replay after all replay events have been queued.
     EndInitialHistoryReplayBuffer,

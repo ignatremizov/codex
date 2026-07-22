@@ -32,6 +32,7 @@ pub use codex_history::ResponseItemEnvelope;
 pub use codex_history::ResumedHistory;
 pub use codex_history::RolloutItem;
 pub use codex_history::RolloutLine;
+pub use codex_history::rollout;
 pub(crate) use codex_protocol::protocol;
 
 /// Decodes a persisted rollout record without Serde's flattened-envelope buffering.

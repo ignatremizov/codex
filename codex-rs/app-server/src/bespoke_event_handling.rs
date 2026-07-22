@@ -9,6 +9,7 @@ use crate::request_processors::thread_from_stored_thread;
 use crate::request_processors::thread_settings_from_config_snapshot;
 use crate::server_request_error::is_turn_transition_server_request_error;
 use crate::thread_state::ThreadState;
+use crate::thread_state::ThreadStateManager;
 use crate::thread_state::TurnSummary;
 use crate::thread_state::resolve_server_request_on_thread_listener;
 use crate::thread_status::ThreadWatchActiveGuard;
@@ -38,6 +39,7 @@ use codex_app_server_protocol::HookCompletedNotification;
 use codex_app_server_protocol::HookStartedNotification;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
+use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_app_server_protocol::McpServerElicitationRequestResponse;
@@ -57,6 +59,8 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::StrictReviewRequiredNotification;
+use codex_app_server_protocol::THREAD_ROLLBACK_COMMITTED_ERROR_DATA_FIELD;
+use codex_app_server_protocol::THREAD_ROLLBACK_REFRESH_REQUIRED_ERROR_DATA_FIELD;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadRealtimeClosedNotification;
@@ -126,6 +130,7 @@ use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tokio::sync::Mutex;
@@ -154,6 +159,7 @@ pub(crate) async fn apply_bespoke_event_handling(
     thread_manager: Arc<ThreadManager>,
     outgoing: ThreadScopedOutgoingMessageSender,
     thread_state: Arc<tokio::sync::Mutex<ThreadState>>,
+    thread_state_manager: ThreadStateManager,
     thread_watch_manager: ThreadWatchManager,
     thread_list_state_permit: Arc<tokio::sync::Semaphore>,
     fallback_model_provider: String,
@@ -1018,28 +1024,57 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::Error(ev) => {
-            thread_watch_manager
-                .note_system_error(&conversation_id.to_string())
-                .await;
-
             let message = ev.message.clone();
             let codex_error_info = ev.codex_error_info.clone();
             // If this error belongs to an in-flight `thread/rollback` request, fail that request
             // (and clear pending state) so subsequent rollbacks are unblocked.
             //
             // Don't send a notification for this error.
-            if matches!(
-                codex_error_info,
-                Some(CoreCodexErrorInfo::ThreadRollbackFailed)
-            ) {
+            let rollback_failure = match codex_error_info.as_ref() {
+                Some(CoreCodexErrorInfo::ThreadRollbackFailed) => {
+                    Some(ThreadRollbackFailure::NotCommitted)
+                }
+                Some(CoreCodexErrorInfo::ThreadRollbackCommitUnknown) => {
+                    Some(ThreadRollbackFailure::RefreshRequired)
+                }
+                Some(
+                    CoreCodexErrorInfo::ContextWindowExceeded
+                    | CoreCodexErrorInfo::SessionBudgetExceeded
+                    | CoreCodexErrorInfo::UsageLimitExceeded
+                    | CoreCodexErrorInfo::RateLimitExceeded
+                    | CoreCodexErrorInfo::ServerOverloaded
+                    | CoreCodexErrorInfo::CyberPolicy
+                    | CoreCodexErrorInfo::HttpConnectionFailed { .. }
+                    | CoreCodexErrorInfo::ResponseStreamConnectionFailed { .. }
+                    | CoreCodexErrorInfo::InternalServerError
+                    | CoreCodexErrorInfo::Unauthorized
+                    | CoreCodexErrorInfo::BadRequest
+                    | CoreCodexErrorInfo::SandboxError
+                    | CoreCodexErrorInfo::ResponseStreamDisconnected { .. }
+                    | CoreCodexErrorInfo::ResponseTooManyFailedAttempts { .. }
+                    | CoreCodexErrorInfo::ActiveTurnNotSteerable { .. }
+                    | CoreCodexErrorInfo::Other,
+                )
+                | None => None,
+            };
+            if let Some(rollback_failure) = rollback_failure {
                 return handle_thread_rollback_failed(
                     conversation_id,
                     message,
+                    rollback_failure,
+                    &conversation,
+                    &thread_manager,
                     &thread_state,
+                    &thread_state_manager,
+                    &thread_watch_manager,
                     &outgoing,
                 )
                 .await;
             };
+
+            thread_watch_manager
+                .note_system_error(&conversation_id.to_string())
+                .await;
 
             if !ev.affects_turn_status() {
                 return;
@@ -1237,8 +1272,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                         outgoing
                             .send_error(
                                 request_id,
-                                internal_error(format!(
-                                    "failed to acquire thread list state permit: {err}"
+                                thread_rollback_committed_error(format!(
+                                    "thread rollback committed, but failed to acquire thread list state permit: {err}"
                                 )),
                             )
                             .await;
@@ -1256,9 +1291,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                     Err(err) => {
                         outgoing
                             .send_error(
-                                request_id.clone(),
-                                internal_error(format!(
-                                    "failed to read thread {conversation_id} after rollback: {err}"
+                                request_id,
+                                thread_rollback_committed_error(format!(
+                                    "thread rollback committed, but failed to read thread {conversation_id}: {err}"
                                 )),
                             )
                             .await;
@@ -1278,7 +1313,12 @@ pub(crate) async fn apply_bespoke_event_handling(
                     Ok(response) => response,
                     Err(err) => {
                         outgoing
-                            .send_error(request_id.clone(), internal_error(err))
+                            .send_error(
+                                request_id,
+                                thread_rollback_committed_error(format!(
+                                    "thread rollback committed, but failed to hydrate its response: {err}"
+                                )),
+                            )
                             .await;
                         return;
                     }
@@ -1642,19 +1682,61 @@ async fn handle_turn_interrupted(
     .await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_thread_rollback_failed(
-    _conversation_id: ThreadId,
+    conversation_id: ThreadId,
     message: String,
+    failure: ThreadRollbackFailure,
+    conversation: &Arc<CodexThread>,
+    thread_manager: &Arc<ThreadManager>,
     thread_state: &Arc<Mutex<ThreadState>>,
+    thread_state_manager: &ThreadStateManager,
+    thread_watch_manager: &ThreadWatchManager,
     outgoing: &ThreadScopedOutgoingMessageSender,
 ) {
     let pending_rollback = thread_state.lock().await.pending_rollbacks.take();
 
-    if let Some(request_id) = pending_rollback {
-        outgoing
-            .send_error(request_id, invalid_request(message))
-            .await;
+    match failure {
+        ThreadRollbackFailure::NotCommitted => {
+            if let Some(request_id) = pending_rollback {
+                outgoing
+                    .send_error(request_id, invalid_request(message))
+                    .await;
+            }
+        }
+        ThreadRollbackFailure::RefreshRequired => {
+            let terminated = tokio::time::timeout(
+                Duration::from_secs(10),
+                conversation.wait_until_terminated(),
+            )
+            .await
+            .is_ok();
+            if !terminated {
+                tracing::warn!(
+                    thread_id = %conversation_id,
+                    "thread teardown is still running after an indeterminate rollback commit; unloading the quarantined app-server handle"
+                );
+            }
+            thread_manager.remove_thread(&conversation_id).await;
+            thread_state_manager
+                .remove_thread_state(conversation_id)
+                .await;
+            thread_watch_manager
+                .remove_thread(&conversation_id.to_string())
+                .await;
+            if let Some(request_id) = pending_rollback {
+                outgoing
+                    .send_error(request_id, thread_rollback_refresh_required_error(message))
+                    .await;
+            }
+        }
     }
+}
+
+#[derive(Clone, Copy)]
+enum ThreadRollbackFailure {
+    NotCommitted,
+    RefreshRequired,
 }
 
 fn thread_rollback_response_from_stored_thread(
@@ -1676,6 +1758,30 @@ fn thread_rollback_response_from_stored_thread(
     populate_thread_turns_from_history(&mut thread, &history.items, /*active_turn*/ None);
     thread.status = loaded_status;
     Ok(ThreadRollbackResponse { thread })
+}
+
+fn thread_rollback_committed_error(message: impl Into<String>) -> JSONRPCErrorError {
+    let mut error = internal_error(message);
+    error.data = Some(serde_json::Value::Object(
+        std::iter::once((
+            THREAD_ROLLBACK_COMMITTED_ERROR_DATA_FIELD.to_string(),
+            serde_json::Value::Bool(true),
+        ))
+        .collect(),
+    ));
+    error
+}
+
+fn thread_rollback_refresh_required_error(message: impl Into<String>) -> JSONRPCErrorError {
+    let mut error = internal_error(message);
+    error.data = Some(serde_json::Value::Object(
+        std::iter::once((
+            THREAD_ROLLBACK_REFRESH_REQUIRED_ERROR_DATA_FIELD.to_string(),
+            serde_json::Value::Bool(true),
+        ))
+        .collect(),
+    ));
+    error
 }
 
 async fn respond_to_pending_interrupts(
@@ -2227,7 +2333,6 @@ mod tests {
     use codex_protocol::AgentPath;
     use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
     use codex_protocol::items::AgentMessageItem as CoreAgentMessageItem;
-    use codex_protocol::ResponseItemId;
     use codex_protocol::items::DynamicToolCallItem;
     use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
     use codex_protocol::items::SubAgentActivityItem;
@@ -2530,6 +2635,7 @@ mod tests {
                 self.thread_manager.clone(),
                 self.outgoing.clone(),
                 self.thread_state.clone(),
+                ThreadStateManager::default(),
                 self.thread_watch_manager.clone(),
                 Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
                 "test-provider".to_string(),
@@ -3372,6 +3478,7 @@ mod tests {
             Arc::clone(&thread_manager),
             outgoing.clone(),
             Arc::clone(&thread_state),
+            ThreadStateManager::default(),
             thread_watch_manager.clone(),
             Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
             "test-provider".to_string(),
@@ -3414,6 +3521,7 @@ mod tests {
                 Arc::clone(&thread_manager),
                 outgoing.clone(),
                 Arc::clone(&thread_state),
+                ThreadStateManager::default(),
                 thread_watch_manager.clone(),
                 Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
                 "test-provider".to_string(),
@@ -3496,6 +3604,7 @@ mod tests {
             thread_manager,
             outgoing,
             new_thread_state(),
+            ThreadStateManager::default(),
             thread_watch_manager.clone(),
             Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
             "test-provider".to_string(),
@@ -3586,6 +3695,7 @@ mod tests {
             thread_manager,
             outgoing,
             new_thread_state(),
+            ThreadStateManager::default(),
             ThreadWatchManager::new(),
             Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
             "test-provider".to_string(),

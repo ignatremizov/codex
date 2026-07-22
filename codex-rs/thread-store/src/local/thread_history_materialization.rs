@@ -2,10 +2,14 @@ use std::io::SeekFrom;
 use std::path::Path;
 
 use chrono::DateTime;
+use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::ThreadHistoryChangeSet;
 use codex_app_server_protocol::project_rollout_line;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::EventMsg;
 use codex_rollout::RolloutItem;
+use codex_rollout::RolloutLine;
+use codex_rollout::rollout::exact_rollback_removed_items;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tracing::warn;
@@ -15,6 +19,32 @@ use super::thread_history::ProjectedRolloutLine;
 use super::thread_history::RolloutProjectionStep;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
+
+enum ParsedProjectionStep {
+    Line {
+        line: Box<RolloutLine>,
+        projection: ProjectedRolloutLine,
+    },
+    SkippedOrdinalRange {
+        start_ordinal: u64,
+        end_ordinal_exclusive: u64,
+    },
+}
+
+impl ParsedProjectionStep {
+    fn into_projection_step(self) -> RolloutProjectionStep {
+        match self {
+            Self::Line { projection, .. } => RolloutProjectionStep::Line(projection),
+            Self::SkippedOrdinalRange {
+                start_ordinal,
+                end_ordinal_exclusive,
+            } => RolloutProjectionStep::SkippedOrdinalRange {
+                start_ordinal,
+                end_ordinal_exclusive,
+            },
+        }
+    }
+}
 
 pub(super) async fn materialize_to_sqlite(
     store: &LocalThreadStore,
@@ -79,7 +109,7 @@ pub(super) async fn materialize_to_sqlite(
     let expected_ordinal = projection_state
         .as_ref()
         .map_or(initial_ordinal, |state| state.next_ordinal);
-    let (projections, next_offset) = read_projection_steps(
+    let (parsed_steps, next_offset) = read_projection_steps(
         rollout_path,
         start_offset,
         expected_ordinal,
@@ -88,9 +118,23 @@ pub(super) async fn materialize_to_sqlite(
     )
     .await?;
     // Empty valid records can still consume bytes through blank complete lines.
-    if projections.is_empty() && start_offset == next_offset {
+    if parsed_steps.is_empty() && start_offset == next_offset {
         return Ok(());
     }
+    if parsed_steps.iter().any(|step| match step {
+        ParsedProjectionStep::Line { line, .. } => matches!(
+            &line.item,
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback))
+                if rollback.rollback_start_index.is_some()
+        ),
+        ParsedProjectionStep::SkippedOrdinalRange { .. } => false,
+    }) {
+        return rebuild_to_sqlite(store, thread_id, rollout_path).await;
+    }
+    let projections = parsed_steps
+        .into_iter()
+        .map(ParsedProjectionStep::into_projection_step)
+        .collect();
     super::thread_history::apply_projection(
         store,
         thread_id,
@@ -107,8 +151,187 @@ pub(super) async fn rebuild_to_sqlite(
     thread_id: ThreadId,
     rollout_path: &Path,
 ) -> ThreadStoreResult<()> {
-    super::thread_history::delete_thread(store, thread_id).await?;
-    Box::pin(materialize_to_sqlite(store, thread_id, rollout_path)).await
+    let session_meta = codex_rollout::read_session_meta_line(rollout_path)
+        .await
+        .map_err(thread_store_io_error)?
+        .meta;
+    let initial_ordinal = session_meta
+        .history_base
+        .map_or(0, |base| base.end_ordinal_exclusive);
+    let subagent_history_start_ordinal = session_meta.subagent_history_start_ordinal;
+    let (parsed_steps, next_offset) = read_projection_steps(
+        rollout_path,
+        /*start_offset*/ 0,
+        initial_ordinal,
+        thread_id,
+        subagent_history_start_ordinal,
+    )
+    .await?;
+    let mut rollout_items = Vec::new();
+    for step in &parsed_steps {
+        match step {
+            ParsedProjectionStep::Line { line, .. } => rollout_items.push(line.item.clone()),
+            ParsedProjectionStep::SkippedOrdinalRange {
+                start_ordinal,
+                end_ordinal_exclusive,
+            } => {
+                for _ in *start_ordinal..*end_ordinal_exclusive {
+                    // Preserve raw rollout indexes for forward-unknown records. Exact rollback
+                    // boundaries count every durable ordinal even when this binary cannot project
+                    // the record itself.
+                    rollout_items.push(RolloutItem::InterAgentCommunicationMetadata {
+                        trigger_turn: false,
+                    });
+                }
+            }
+        }
+    }
+    let mut removed_items = exact_rollback_removed_items(&rollout_items).into_iter();
+
+    let pool = store.thread_history_db().await?;
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(thread_history_error)?;
+    let thread_id_text = thread_id.to_string();
+    sqlx::query("DELETE FROM thread_items WHERE thread_id = ?")
+        .bind(thread_id_text.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(thread_history_error)?;
+    sqlx::query("DELETE FROM thread_turns WHERE thread_id = ?")
+        .bind(thread_id_text.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(thread_history_error)?;
+    sqlx::query("DELETE FROM thread_history_projection_state WHERE thread_id = ?")
+        .bind(thread_id_text.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(thread_history_error)?;
+
+    let mut next_ordinal = initial_ordinal;
+    let mut history_builder = ThreadHistoryBuilder::new();
+    for step in parsed_steps {
+        match step {
+            ParsedProjectionStep::SkippedOrdinalRange {
+                start_ordinal,
+                end_ordinal_exclusive,
+            } => {
+                if start_ordinal != next_ordinal {
+                    return Err(ThreadStoreError::Internal {
+                        message: format!(
+                            "thread history projection for {thread_id_text} expected ordinal {next_ordinal}, got {start_ordinal}"
+                        ),
+                    });
+                }
+                for _ in start_ordinal..end_ordinal_exclusive {
+                    removed_items
+                        .next()
+                        .ok_or_else(|| ThreadStoreError::Internal {
+                            message: "exact rollback filter did not cover every rollout item"
+                                .to_string(),
+                        })?;
+                    history_builder.skip_rollout_item();
+                }
+                next_ordinal = end_ordinal_exclusive;
+            }
+            ParsedProjectionStep::Line { line, projection } => {
+                let ordinal = projection.ordinal;
+                if ordinal != next_ordinal {
+                    return Err(ThreadStoreError::Internal {
+                        message: format!(
+                            "thread history projection for {thread_id_text} expected ordinal {next_ordinal}, got {ordinal}"
+                        ),
+                    });
+                }
+                let removed = removed_items
+                    .next()
+                    .ok_or_else(|| ThreadStoreError::Internal {
+                        message: "exact rollback filter did not cover every rollout item"
+                            .to_string(),
+                    })?;
+                let skipped =
+                    removed || subagent_history_start_ordinal.is_some_and(|start| ordinal < start);
+                let mut changes = if skipped {
+                    history_builder.skip_rollout_item();
+                    ThreadHistoryChangeSet::default()
+                } else {
+                    history_builder.handle_rollout_item_with_changes(&line.item)
+                };
+                if !skipped {
+                    let stateless_changes = projection.changes;
+                    for item in stateless_changes.changed_items {
+                        if !changes.changed_items.iter().any(|existing| {
+                            existing.turn_id == item.turn_id && existing.item.id() == item.item.id()
+                        }) {
+                            changes.changed_items.push(item);
+                        }
+                    }
+                    for turn in stateless_changes.changed_turns {
+                        if !changes
+                            .changed_turns
+                            .iter()
+                            .any(|existing| existing.turn_id == turn.turn_id)
+                        {
+                            changes.changed_turns.push(turn);
+                        }
+                    }
+                }
+                let fallback_created_at_ms = if changes
+                    .changed_items
+                    .iter()
+                    .any(|item| item.started_at_ms.is_none())
+                {
+                    Some(
+                        DateTime::parse_from_rfc3339(line.timestamp.as_str())
+                            .map(|timestamp| timestamp.timestamp_millis())
+                            .map_err(thread_history_error)?,
+                    )
+                } else {
+                    None
+                };
+                super::thread_history::apply_change_set(
+                    &mut transaction,
+                    thread_id_text.as_str(),
+                    sqlite_integer(ordinal, "rollout ordinal")?,
+                    sqlite_integer(projection.start_byte_offset, "rollout byte offset")?,
+                    sqlite_integer(projection.end_byte_offset, "rollout byte offset")?,
+                    fallback_created_at_ms,
+                    changes,
+                )
+                .await?;
+                next_ordinal =
+                    next_ordinal
+                        .checked_add(1)
+                        .ok_or_else(|| ThreadStoreError::Internal {
+                            message: "rollout ordinal overflow".to_string(),
+                        })?;
+            }
+        }
+    }
+    if removed_items.next().is_some() {
+        return Err(ThreadStoreError::Internal {
+            message: "exact rollback filter produced extra rollout items".to_string(),
+        });
+    }
+
+    sqlx::query(
+        r#"
+INSERT INTO thread_history_projection_state (
+    thread_id,
+    next_rollout_byte_offset,
+    next_rollout_ordinal
+) VALUES (?, ?, ?)
+        "#,
+    )
+    .bind(thread_id_text)
+    .bind(sqlite_integer(next_offset, "rollout byte offset")?)
+    .bind(sqlite_integer(next_ordinal, "rollout ordinal")?)
+    .execute(&mut *transaction)
+    .await
+    .map_err(thread_history_error)?;
+    transaction.commit().await.map_err(thread_history_error)
 }
 
 async fn read_projection_steps(
@@ -117,7 +340,7 @@ async fn read_projection_steps(
     expected_ordinal: u64,
     thread_id: ThreadId,
     subagent_history_start_ordinal: Option<u64>,
-) -> ThreadStoreResult<(Vec<RolloutProjectionStep>, u64)> {
+) -> ThreadStoreResult<(Vec<ParsedProjectionStep>, u64)> {
     let path = rollout_path.to_path_buf();
     let file =
         tokio::task::spawn_blocking(move || codex_rollout::open_rollout_seekable_reader(&path))
@@ -299,7 +522,7 @@ async fn read_projection_steps(
                 skipped_ordinal_end_exclusive = ordinal,
                 "skipping rollout ordinal range after rejected lines"
             );
-            projections.push(RolloutProjectionStep::SkippedOrdinalRange {
+            projections.push(ParsedProjectionStep::SkippedOrdinalRange {
                 start_ordinal: next_ordinal,
                 end_ordinal_exclusive: ordinal,
             });
@@ -311,19 +534,21 @@ async fn read_projection_steps(
                 .ok_or_else(|| ThreadStoreError::Internal {
                     message: "rollout ordinal exceeds SQLite integer range".to_string(),
                 })?;
-        projections.push(RolloutProjectionStep::Line(Box::new(
-            ProjectedRolloutLine {
+        let realtime_item = match &line.item {
+            RolloutItem::RealtimeItem(item) if !is_inherited_subagent_history => Some(item.clone()),
+            _ => None,
+        };
+        projections.push(ParsedProjectionStep::Line {
+            line: Box::new(line),
+            projection: ProjectedRolloutLine {
                 ordinal,
                 start_byte_offset: line_start_offset,
                 end_byte_offset: line_end_offset,
                 fallback_created_at_ms,
                 changes,
-                realtime_item: match line.item {
-                    RolloutItem::RealtimeItem(item) if !is_inherited_subagent_history => Some(item),
-                    _ => None,
-                },
+                realtime_item,
             },
-        )));
+        });
         next_ordinal = next_line_ordinal;
         next_offset = line_end_offset;
         line_start_offset = line_end_offset;
@@ -341,6 +566,12 @@ fn thread_store_io_error(err: std::io::Error) -> ThreadStoreError {
     ThreadStoreError::Internal {
         message: err.to_string(),
     }
+}
+
+fn sqlite_integer(value: u64, field: &str) -> ThreadStoreResult<i64> {
+    i64::try_from(value).map_err(|_| ThreadStoreError::Internal {
+        message: format!("{field} exceeds SQLite integer range"),
+    })
 }
 
 #[cfg(test)]

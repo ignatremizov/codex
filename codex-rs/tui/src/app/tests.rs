@@ -1416,7 +1416,7 @@ async fn replay_only_snapshot_clears_stale_pending_start_for_new_user_turn() {
 }
 
 #[tokio::test]
-async fn replay_only_snapshot_keeps_command_history_without_restoring_background_terminal() {
+async fn idle_thread_snapshot_keeps_command_history_without_restoring_background_terminal() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     app.replay_thread_snapshot_with_in_flight_state(
         ThreadEventSnapshot {
@@ -1445,7 +1445,7 @@ async fn replay_only_snapshot_keeps_command_history_without_restoring_background
             input_state: None,
         },
         /*resume_restored_queue*/ false,
-        /*preserve_in_flight_turn*/ false,
+        /*preserve_in_flight_turn*/ true,
     );
 
     let mut replayed_history = String::new();
@@ -5437,6 +5437,7 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
+            source: None,
         }) as Arc<dyn HistoryCell>
     };
     let agent_cell = |text: &str| -> Arc<dyn HistoryCell> {
@@ -6464,6 +6465,9 @@ fn test_thread_rollback_response(
             agent_role: None,
             git_info: None,
             name: None,
+            section: None,
+            section_entered_at: None,
+            project_id: None,
             turns,
         },
     }
@@ -6869,6 +6873,7 @@ async fn backtrack_selection_rolls_back_in_place_by_default() {
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
+            source: None,
         }) as Arc<dyn HistoryCell>,
         Arc::new(AgentMessageCell::new(
             vec![Line::from("first response")],
@@ -6879,6 +6884,7 @@ async fn backtrack_selection_rolls_back_in_place_by_default() {
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
+            source: None,
         }) as Arc<dyn HistoryCell>,
         Arc::new(AgentMessageCell::new(
             vec![Line::from("second response")],
@@ -6893,6 +6899,7 @@ async fn backtrack_selection_rolls_back_in_place_by_default() {
 
     app.apply_backtrack_selection(BacktrackSelection {
         thread_id,
+        source: None,
         nth_user_message: 1,
         prompt: crate::chatwidget::UserMessage::from("second prompt"),
     });
@@ -6935,6 +6942,7 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch_when_
             text_elements,
             local_image_paths,
             remote_image_urls,
+            source: None,
         }) as Arc<dyn HistoryCell>
     };
     let agent_cell = |text: &str| -> Arc<dyn HistoryCell> {
@@ -7048,6 +7056,7 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch_when_
         .expect("backtrack selection");
     let expected = BacktrackSelection {
         thread_id: base_id,
+        source: None,
         nth_user_message: 1,
         prompt: crate::chatwidget::UserMessage {
             text: edited_text,
@@ -7741,6 +7750,7 @@ async fn prompt_edit_rolls_back_selected_prompt_in_place_by_default() -> Result<
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
+            source: None,
         }) as Arc<dyn HistoryCell>,
         Arc::new(AgentMessageCell::new(
             vec![Line::from("first response")],
@@ -7751,6 +7761,7 @@ async fn prompt_edit_rolls_back_selected_prompt_in_place_by_default() -> Result<
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
+            source: None,
         }) as Arc<dyn HistoryCell>,
         Arc::new(AgentMessageCell::new(
             vec![Line::from("second response")],
@@ -7761,6 +7772,7 @@ async fn prompt_edit_rolls_back_selected_prompt_in_place_by_default() -> Result<
 
     app.apply_backtrack_selection(BacktrackSelection {
         thread_id: source_thread_id,
+        source: None,
         nth_user_message: 1,
         prompt: crate::chatwidget::UserMessage::from("second prompt"),
     });
@@ -7906,6 +7918,7 @@ async fn prompt_edit_forks_before_selected_prompt_and_preserves_source() -> Resu
         &mut app_server,
         AppEvent::ForkSessionForPromptEdit {
             thread_id: source_thread_id,
+            source: None,
             nth_user_message: 1,
             prompt: prompt.clone(),
         },
@@ -8004,6 +8017,7 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
         &mut app_server,
         AppEvent::ForkSessionForPromptEdit {
             thread_id: source_thread_id,
+            source: None,
             nth_user_message: 0,
             prompt: crate::chatwidget::UserMessage::from("first prompt"),
         },
@@ -9047,6 +9061,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
         remote_image_urls: Vec::new(),
+        source: None,
     }) as Arc<dyn HistoryCell>];
     app.overlay = Some(Overlay::new_transcript(
         app.transcript_cells.clone(),

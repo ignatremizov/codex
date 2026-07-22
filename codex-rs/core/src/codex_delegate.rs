@@ -5,6 +5,7 @@ use async_channel::Sender;
 use codex_async_utils::OrCancelExt;
 use codex_extension_api::LoadedUserInstructions;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -26,6 +27,7 @@ use crate::session::GitEnrichmentPolicy;
 use crate::session::SUBMISSION_CHANNEL_CAPACITY;
 use crate::session::SessionIo;
 use crate::session::SessionSpawnArgs;
+use crate::session::SubmissionAdmission;
 use crate::session::emit_subagent_session_started;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -153,20 +155,29 @@ pub(crate) async fn run_codex_thread_interactive(
 
     // Forward public events from the sub-agent to the consumer.
     let io = Arc::new(io);
+    let caller_submission_admission = Arc::new(SubmissionAdmission::default());
     let caller_io = SessionIo {
         tx_sub: tx_ops,
         rx_event: rx_sub,
+        submission_admission: Arc::clone(&caller_submission_admission),
         agent_status: io.agent_status.clone(),
         session_loop_termination: io.session_loop_termination.clone(),
     };
     let io_for_events = Arc::clone(&io);
+    let caller_submission_admission_for_events = Arc::clone(&caller_submission_admission);
     tokio::spawn(async move {
-        forward_events(io_for_events, tx_sub, cancel_token_events).await;
+        forward_events(
+            io_for_events,
+            tx_sub,
+            caller_submission_admission_for_events,
+            cancel_token_events,
+        )
+        .await;
     });
 
     // Forward ops from the caller to the sub-agent.
     tokio::spawn(async move {
-        forward_ops(io, rx_ops, cancel_token_ops).await;
+        forward_ops(io, rx_ops, caller_submission_admission, cancel_token_ops).await;
     });
 
     Ok((session, caller_io))
@@ -301,6 +312,7 @@ pub(crate) async fn run_codex_thread_one_shot_with_environment_selections(
         SessionIo {
             rx_event: rx_bridge,
             tx_sub: tx_closed,
+            submission_admission: Arc::new(SubmissionAdmission::default()),
             agent_status,
             session_loop_termination,
         },
@@ -310,6 +322,7 @@ pub(crate) async fn run_codex_thread_one_shot_with_environment_selections(
 async fn forward_events(
     io: Arc<SessionIo>,
     tx_sub: Sender<Event>,
+    caller_submission_admission: Arc<SubmissionAdmission>,
     cancel_token: CancellationToken,
 ) {
     let cancelled = cancel_token.cancelled();
@@ -326,6 +339,21 @@ async fn forward_events(
                     Ok(event) => event,
                     Err(_) => break,
                 };
+                match &event.msg {
+                    EventMsg::ThreadRolledBack(_) => {
+                        caller_submission_admission.rollback_completed();
+                    }
+                    EventMsg::Error(error) => match error.codex_error_info.as_ref() {
+                        Some(CodexErrorInfo::ThreadRollbackFailed) => {
+                            caller_submission_admission.rollback_completed();
+                        }
+                        Some(CodexErrorInfo::ThreadRollbackCommitUnknown) => {
+                            caller_submission_admission.rollback_requires_reload();
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
                 match event {
                     Event {
                         id: _,
@@ -384,6 +412,7 @@ async fn forward_event_or_shutdown(
 async fn forward_ops(
     io: Arc<SessionIo>,
     rx_ops: Receiver<Submission>,
+    caller_submission_admission: Arc<SubmissionAdmission>,
     cancel_token_ops: CancellationToken,
 ) {
     loop {
@@ -391,8 +420,15 @@ async fn forward_ops(
             Ok(Ok(submission)) => submission,
             Ok(Err(_)) | Err(_) => break,
         };
-        let _ = io.submit_with_id(submission).await;
+        let is_rollback = matches!(
+            &submission.op,
+            Op::ThreadRollback { .. } | Op::ThreadRollbackMaterialized { .. }
+        );
+        if io.submit_with_id(submission).await.is_err() && is_rollback {
+            caller_submission_admission.rollback_completed();
+        }
     }
+    caller_submission_admission.rollback_completed();
 }
 
 #[cfg(test)]
