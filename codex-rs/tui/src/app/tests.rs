@@ -5760,6 +5760,8 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
 
     let user_cell = |text: &str| -> Arc<dyn HistoryCell> {
         Arc::new(UserHistoryCell {
+            identity: Default::default(),
+            client_id: None,
             spoken: false,
             message: text.to_string(),
             text_elements: Vec::new(),
@@ -6001,6 +6003,7 @@ async fn make_test_app() -> App {
         transcript_reflow: TranscriptReflowState::default(),
         initial_history_replay_buffer: None,
         pending_thread_switch_resets: 0,
+        history_recovery_required: HashSet::new(),
         scrollback_has_older_history: false,
         enhanced_keys_supported: false,
         keymap: crate::keymap::RuntimeKeymap::defaults(),
@@ -6106,6 +6109,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             transcript_reflow: TranscriptReflowState::default(),
             initial_history_replay_buffer: None,
             pending_thread_switch_resets: 0,
+            history_recovery_required: HashSet::new(),
             scrollback_has_older_history: false,
             enhanced_keys_supported: false,
             keymap: crate::keymap::RuntimeKeymap::defaults(),
@@ -7399,6 +7403,8 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
                      remote_image_urls: Vec<String>|
      -> Arc<dyn HistoryCell> {
         Arc::new(UserHistoryCell {
+            identity: Default::default(),
+            client_id: None,
             spoken: false,
             message: text.to_string(),
             text_elements,
@@ -9563,6 +9569,8 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     app.chat_widget
         .apply_external_edit("draft prompt".to_string());
     app.transcript_cells = vec![Arc::new(UserHistoryCell {
+        identity: Default::default(),
+        client_id: None,
         spoken: false,
         message: "old message".to_string(),
         text_elements: Vec::new(),

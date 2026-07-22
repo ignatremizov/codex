@@ -1369,6 +1369,7 @@ impl ChatWidget {
         client_id: Option<&str>,
         from_replay: bool,
         turn_id: &str,
+        item_id: &str,
     ) {
         if let Some(input) = realtime::realtime_delegation_input(items) {
             if !from_replay && self.should_hide_realtime_delegation(turn_id) {
@@ -1379,8 +1380,20 @@ impl ChatWidget {
                 text: input,
                 text_elements: Vec::new(),
             }];
-            self.on_committed_user_message(&projected, client_id, from_replay, turn_id);
+            self.on_committed_user_message(&projected, client_id, from_replay, turn_id, item_id);
             return;
+        }
+        let identity = crate::history_cell::UserMessageIdentity {
+            turn_id: turn_id.to_string(),
+            item_id: item_id.to_string(),
+        };
+        if !from_replay && let Some(thread_id) = self.thread_id {
+            self.app_event_tx.send(AppEvent::AttachUserMessageIdentity {
+                thread_id,
+                identity: identity.clone(),
+                client_id: client_id.map(str::to_string),
+                content: items.to_vec(),
+            });
         }
         let display = Self::user_message_display_from_inputs(items);
         if from_replay {
@@ -1396,7 +1409,7 @@ impl ChatWidget {
                     mention_bindings: mention_bindings_from_user_inputs(items, &display.message),
                     pending_pastes: Vec::new(),
                 });
-            self.on_user_message_display(display);
+            self.on_identified_user_message_display(display, client_id, Some(identity));
             return;
         }
 
@@ -1420,7 +1433,7 @@ impl ChatWidget {
                 self.refresh_pending_input_preview();
                 let pending_display =
                     user_message_display_for_history(pending.user_message, &pending.history_record);
-                self.on_user_message_display(pending_display);
+                self.on_identified_user_message_display(pending_display, client_id, Some(identity));
                 // Later receipts carry the wire media, which may differ from the local attachment.
                 self.last_rendered_user_message_display = Some(display);
                 self.last_rendered_user_message_client_id = Some(pending.client_id);
@@ -1428,16 +1441,27 @@ impl ChatWidget {
                 tracing::warn!(
                     "pending steer matched receipt but queue was empty when rendering committed user message"
                 );
-                self.on_user_message_display(display);
+                self.on_identified_user_message_display(display, client_id, Some(identity));
             }
         } else if !self.review.is_review_mode
             && self.last_rendered_user_message_display.as_ref() != Some(&display)
         {
-            self.on_user_message_display(display);
+            self.on_identified_user_message_display(display, client_id, Some(identity));
         }
     }
 
     fn on_user_message_display(&mut self, display: UserMessageDisplay) {
+        self.on_identified_user_message_display(
+            display, /*client_id*/ None, /*identity*/ None,
+        );
+    }
+
+    fn on_identified_user_message_display(
+        &mut self,
+        display: UserMessageDisplay,
+        client_id: Option<&str>,
+        identity: Option<crate::history_cell::UserMessageIdentity>,
+    ) {
         self.transcript.last_status_copy_targets = None;
         self.last_rendered_user_message_display = Some(display.clone());
         self.last_rendered_user_message_client_id = None;
@@ -1446,12 +1470,17 @@ impl ChatWidget {
             || !display.local_images.is_empty()
             || !display.remote_image_urls.is_empty()
         {
-            self.add_to_history(history_cell::new_user_prompt(
+            let mut cell = history_cell::new_user_prompt(
                 display.message,
                 display.text_elements,
                 display.local_images,
                 display.remote_image_urls,
-            ));
+            );
+            cell.client_id = client_id.map(str::to_string);
+            if let Some(identity) = identity {
+                let _ = cell.identity.set(identity);
+            }
+            self.add_to_history(cell);
         }
     }
 

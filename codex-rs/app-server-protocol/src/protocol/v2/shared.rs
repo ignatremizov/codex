@@ -97,6 +97,7 @@ pub enum CodexErrorInfo {
     Unauthorized,
     BadRequest,
     ThreadRollbackFailed,
+    ThreadRollbackCommitUnknown,
     SandboxError,
     /// The response SSE stream disconnected in the middle of a turn before completion.
     ResponseStreamDisconnected {
@@ -143,6 +144,9 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
             CoreCodexErrorInfo::Unauthorized => CodexErrorInfo::Unauthorized,
             CoreCodexErrorInfo::BadRequest => CodexErrorInfo::BadRequest,
             CoreCodexErrorInfo::ThreadRollbackFailed => CodexErrorInfo::ThreadRollbackFailed,
+            CoreCodexErrorInfo::ThreadRollbackCommitUnknown => {
+                CodexErrorInfo::ThreadRollbackCommitUnknown
+            }
             CoreCodexErrorInfo::SandboxError => CodexErrorInfo::SandboxError,
             CoreCodexErrorInfo::ResponseStreamDisconnected { http_status_code } => {
                 CodexErrorInfo::ResponseStreamDisconnected { http_status_code }

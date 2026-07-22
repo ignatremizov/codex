@@ -20,9 +20,7 @@ use crate::legacy_core::config::Config;
 use crate::multi_agents::AgentPreviewLineLimits;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
-use codex_app_server_protocol::UserInput;
 use codex_protocol::ThreadId;
-use codex_protocol::items::UserMessageItem;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use ratatui::style::Stylize as _;
 
@@ -31,6 +29,7 @@ mod computer_groups;
 mod exploration_groups;
 mod other_items;
 pub(crate) mod tools;
+mod user_identity;
 
 pub(crate) use activity_pages::fold_trailing_activity_details;
 pub(crate) use activity_pages::is_hidden_activity_detail;
@@ -42,6 +41,7 @@ pub(crate) use computer_groups::join_computer_groups;
 pub(crate) use computer_groups::older_computer_group;
 pub(crate) use exploration_groups::join_exploration_groups;
 pub(crate) use exploration_groups::older_exploration_group;
+pub(crate) use user_identity::attach_projected_user_identities;
 
 pub(crate) type TranscriptCells = Vec<Arc<dyn HistoryCell>>;
 
@@ -106,13 +106,18 @@ pub(crate) fn thread_to_transcript_cells(
         .turns
         .into_iter()
         .flat_map(|turn| {
-            thread_items_to_transcript_cells(
+            let cells = thread_items_to_transcript_cells(
                 thread_id,
                 &cwd,
-                turn.items,
+                turn.items.clone(),
                 raw_reasoning_visibility,
                 config,
-            )
+            );
+            attach_projected_user_identities(
+                &cells,
+                turn.items.iter().map(|item| (Some(turn.id.as_str()), item)),
+            );
+            cells
         })
         .collect::<TranscriptCells>();
     if cells.is_empty() {
@@ -272,42 +277,23 @@ fn item_to_cells(
     let mut cells: TranscriptCells = Vec::new();
     match item {
         ThreadItem::UserMessage {
-            id,
-            client_id,
-            content,
+            client_id, content, ..
         } => {
-            if content.iter().any(|input| {
-                matches!(
-                    input,
-                    UserInput::Audio { .. } | UserInput::LocalAudio { .. }
-                )
-            }) {
-                tracing::warn!(
-                    user_message_id = id,
-                    "audio user inputs are not supported by the TUI and will be omitted"
-                );
-            }
-            let item = UserMessageItem {
-                id,
-                client_id,
-                content: content
-                    .into_iter()
-                    .map(codex_app_server_protocol::UserInput::into_core)
-                    .collect(),
-            };
-            let message = item.message();
-            let reply_text = crate::async_question_reply::display_text(&message);
+            let display = crate::chatwidget::ChatWidget::user_message_display_from_inputs(&content);
+            let reply_text = crate::async_question_reply::display_text(&display.message);
             let text_elements = if reply_text.is_some() {
                 Vec::new()
             } else {
-                item.text_elements()
+                display.text_elements
             };
             cells.push(Arc::new(UserHistoryCell {
                 spoken: false,
-                message: reply_text.unwrap_or(message),
+                identity: Default::default(),
+                client_id,
+                message: reply_text.unwrap_or(display.message),
                 text_elements,
-                local_image_paths: item.local_image_paths(),
-                remote_image_urls: item.image_urls(),
+                local_image_paths: display.local_images,
+                remote_image_urls: display.remote_image_urls,
             }));
         }
         ThreadItem::AgentMessage {

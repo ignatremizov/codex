@@ -29,6 +29,7 @@ use crate::protocol::v2::WebSearchItem;
 use crate::protocol::v2::inter_agent_message_thread_item_with_id;
 use crate::protocol::v2::web_search_action_from_core;
 use codex_extension_items::image_generation::ImageGenerationItem;
+use codex_history::exact_rollback_removed_items;
 use codex_protocol::items::parse_hook_prompt_message;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AgentReasoningEvent;
@@ -90,10 +91,51 @@ use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 /// resumed/rebuilt thread history preserves the original turn identifiers.
 pub fn build_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<Turn> {
     let mut builder = ThreadHistoryBuilder::new();
-    for item in items {
-        builder.handle_rollout_item(item);
+    let removed = exact_rollback_removed_items(items);
+    for (item, removed) in items.iter().zip(removed) {
+        if !removed {
+            builder.handle_rollout_item(item);
+        } else {
+            builder.skip_rollout_item();
+        }
     }
     builder.finish()
+}
+
+/// A materialized suffix boundary in the original canonical decoded rollout coordinates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedRollbackStart {
+    pub rollout_index: usize,
+    pub turn_id: String,
+    pub turn_count: usize,
+}
+
+/// Returns the raw rollout boundary of the selected materialized turn suffix.
+pub fn materialized_rollback_start(
+    items: &[RolloutItem],
+    num_turns: u32,
+) -> Option<MaterializedRollbackStart> {
+    let removed = exact_rollback_removed_items(items);
+    let mut builder = ThreadHistoryBuilder::new();
+    for (item, removed) in items.iter().zip(removed) {
+        if !removed {
+            builder.handle_rollout_item(item);
+        } else {
+            builder.skip_rollout_item();
+        }
+    }
+    builder.finish_current_turn();
+    let count = usize::try_from(num_turns).ok()?;
+    if count == 0 {
+        return None;
+    }
+    let start = builder.turns.len().checked_sub(count)?;
+    let turn = builder.turns.get(start)?;
+    Some(MaterializedRollbackStart {
+        rollout_index: turn.rollout_start_index,
+        turn_id: turn.id.clone(),
+        turn_count: builder.turns.len(),
+    })
 }
 
 /// A materialized `ThreadItem` snapshot that changed while handling one input.
@@ -465,9 +507,16 @@ impl ThreadHistoryBuilder {
         }
     }
 
-    pub fn handle_rollout_item(&mut self, item: &RolloutItem) {
+    /// Accounts for one omitted canonical record without changing the materialized history.
+    ///
+    /// Filtered replay must preserve raw coordinates for exact rollback and fallback turn IDs.
+    pub fn skip_rollout_item(&mut self) {
         self.current_rollout_index = self.next_rollout_index;
         self.next_rollout_index += 1;
+    }
+
+    pub fn handle_rollout_item(&mut self, item: &RolloutItem) {
+        self.skip_rollout_item();
         match item {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
@@ -1537,31 +1586,36 @@ impl ThreadHistoryBuilder {
     fn handle_thread_rollback(&mut self, payload: &ThreadRolledBackEvent) {
         self.finish_current_turn();
 
-        let n = usize::try_from(payload.num_turns).unwrap_or(usize::MAX);
-        let removed_turn_ids = if n >= self.turns.len() {
-            self.turns.iter().map(|turn| turn.id.clone()).collect()
-        } else if n == 0 {
-            Vec::new()
-        } else {
-            self.turns[self.turns.len() - n..]
+        let exact_cutoff = payload
+            .rollback_start_index
+            .and_then(|index| usize::try_from(index).ok());
+        let first_removed = match exact_cutoff {
+            Some(cutoff) => self
+                .turns
                 .iter()
-                .map(|turn| turn.id.clone())
-                .collect()
+                .position(|turn| turn.rollout_start_index >= cutoff)
+                .unwrap_or(self.turns.len()),
+            None => {
+                let count = payload.materialized_turns.unwrap_or(payload.num_turns);
+                let count = usize::try_from(count).unwrap_or(usize::MAX);
+                self.turns.len().saturating_sub(count)
+            }
         };
-        let cutoff = self
-            .turns
-            .get(self.turns.len().saturating_sub(n))
-            .map_or(self.next_rollout_index, |turn| turn.rollout_start_index);
+        let removed_turn_ids = self.turns[first_removed..]
+            .iter()
+            .map(|turn| turn.id.clone())
+            .collect();
+        let cutoff = exact_cutoff.unwrap_or_else(|| {
+            self.turns
+                .get(first_removed)
+                .map_or(self.next_rollout_index, |turn| turn.rollout_start_index)
+        });
         let restored_commands = self
             .non_paginated_exec_history
             .rollback(cutoff, &removed_turn_ids);
         self.record_removed_turn_ids(removed_turn_ids);
 
-        if n >= self.turns.len() {
-            self.turns.clear();
-        } else {
-            self.turns.truncate(self.turns.len().saturating_sub(n));
-        }
+        self.turns.truncate(first_removed);
 
         let item_count: usize = self.turns.iter().map(|t| t.items.len()).sum();
         self.next_item_index = i64::try_from(item_count.saturating_add(1)).unwrap_or(i64::MAX);
@@ -2494,7 +2548,11 @@ mod tests {
             // Reuse IDs at different positions in the other turn.
             expected.reverse();
         }
-        builder.handle_thread_rollback(&ThreadRolledBackEvent { num_turns: 1 });
+        builder.handle_thread_rollback(&ThreadRolledBackEvent {
+            num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
+        });
         expected[0] = indexed_sleep_item("0", /*duration_ms*/ 2);
         builder.upsert_item_in_turn_id("retained", expected[0].clone());
         assert_eq!(builder.finish()[0].items, expected);
@@ -3100,7 +3158,11 @@ mod tests {
                 delivery: None,
                 questions: None,
             }),
-            EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+            EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
+            }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
                 message: "Third".into(),
@@ -3208,7 +3270,11 @@ mod tests {
                 delivery: None,
                 questions: None,
             }),
-            EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 99 }),
+            EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 99,
+                materialized_turns: None,
+                rollback_start_index: None,
+            }),
         ];
 
         let items = events
@@ -5692,6 +5758,8 @@ mod tests {
             })),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
         ]);
 

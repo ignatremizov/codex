@@ -411,14 +411,21 @@ The response's `outcome` is `activated` when the operation is accepted, `already
 
 # Thread rollback
 
-`thread/rollback` has been removed from the API, including its request and response
-types. Requests use the generic unknown-method rejection path. Use `thread/revert`
-for paginated threads instead.
+`thread/rollback` is retained as a Legacy-history compatibility route. Paginated threads continue to use `thread/revert`; rollback rejects them rather than changing their history mode. Neither operation undoes filesystem changes.
 
-Existing rollouts may contain historical `ThreadRolledBack` events. Their replay
-and migration remain supported so resuming, reading, and forking those threads
-preserves the surviving history. This disk compatibility does not require restoring
-support for new `thread/rollback` requests.
+The request contains `threadId` and `numTurns` (at least one). For guarded prompt editing, send both `expectedStartTurnId` and `expectedTurnCount`: `numTurns` then selects a materialized suffix, whose first turn and total observed turn count are revalidated against canonical history. Without guards, the route retains its historical user-instruction-count behavior. Running turns, concurrent history mutations, and busy submission admission reject rollback without accepting the mutation. A successful response contains the updated `thread` with canonical turns populated.
+
+The Legacy mutation appends a rollback marker using a single-attempt recorder command, followed by any required reconstruction repairs, before installing the live history. A failed marker or required-repair barrier is not proof that nothing was written. The session remains quarantined until its writer is closed and canonical history can be reloaded; timeout does not authorize discarding a writer.
+
+Error responses distinguish recovery from retry:
+
+- An ordinary invalid-request error means the request was rejected.
+- `error.data.threadRollbackCommitted: true` means the history mutation committed but response hydration failed. Reload history; do not repeat the mutation.
+- `error.data.threadRollbackRefreshRequired: true` means the outcome or live state is unsafe to continue. Reopen through canonical recovery; do not repeat the mutation or submit further work to the old runtime.
+
+A transport failure can also leave the mutation outcome unknown. The Rust client transports expose an internal, request-ID-correlated completion event to order rollback replies after preceding notifications in their event queues. This is not a new wire notification and does not certify commit or storage durability. Consumers must separately apply the response's outcome and replace stale transcript buffers with canonical history.
+
+Historical count-only markers remain readable. New exact markers use positions in the full canonical decoded rollout, before filtering, compaction projection, or fork reindexing. Replay and migration preserve the surviving history, including terminal evidence for retained turns. Recorder acknowledgement means the existing file-flush contract, not an added filesystem `fsync` guarantee.
 
 # Selected workspace routing
 

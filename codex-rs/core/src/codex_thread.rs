@@ -232,6 +232,14 @@ impl CodexThread {
         self.io.submit(op).await
     }
 
+    /// Submits without waiting for admission or queue capacity, preserving the current trace.
+    ///
+    /// Every error means the operation was not accepted. A successful ID identifies work
+    /// owned by the session loop, just like `submit`; it is not a completion receipt.
+    pub fn try_submit(&self, op: Op) -> CodexResult<String> {
+        self.io.try_submit(op)
+    }
+
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
     pub fn session_telemetry(&self) -> SessionTelemetry {
         self.session.services.session_telemetry.clone()
@@ -470,8 +478,7 @@ impl CodexThread {
         // cancellation, persistence, or writer shutdown halfway through a handoff.
         let (reply, result) = oneshot::channel();
         self.io
-            .tx_sub
-            .send(Submission {
+            .submit_with_id(Submission {
                 id: new_submission_id(),
                 op: Op::SuspendTurnAndShutdown { reply },
                 trace: current_span_w3c_trace_context(),
@@ -825,6 +832,12 @@ impl CodexThread {
         live_thread
             .read_thread(include_archived, include_history)
             .await
+    }
+
+    /// Whether a quarantined rollback runtime has acknowledged closure of its writer.
+    /// Callers must also wait for termination before replacing the exact runtime.
+    pub fn rollback_reload_ready(&self) -> bool {
+        self.session.submission_admission.can_reload()
     }
 
     pub async fn update_thread_metadata(

@@ -228,6 +228,9 @@ mod compacted_media_repair;
 pub(crate) mod context_window;
 mod daemon_recovery;
 mod durable_context;
+pub(crate) mod rollback;
+mod submission_admission;
+pub(crate) use submission_admission::SubmissionAdmission;
 mod environment;
 mod extension_interruption;
 pub(crate) mod extension_metrics;
@@ -414,6 +417,8 @@ use codex_utils_stream_parser::ProposedPlanSegment;
 pub(crate) struct SessionIo {
     pub(crate) tx_sub: Sender<Submission>,
     pub(crate) rx_event: Receiver<Event>,
+    /// Serializes enqueueing with rollback reservation and reload quarantine transitions.
+    pub(crate) submission_admission: Arc<SubmissionAdmission>,
     // Last known status of the agent.
     pub(crate) agent_status: watch::Receiver<AgentStatus>,
     // Shared future for the background submission loop completion so multiple
@@ -951,6 +956,7 @@ impl Session {
         let io = SessionIo {
             tx_sub,
             rx_event,
+            submission_admission: Arc::clone(&session.submission_admission),
             agent_status: agent_status_rx,
             session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
         };
@@ -969,6 +975,21 @@ impl SessionIo {
             op, /*trace*/ None, /*parent_turn_id*/ None, /*root_turn_id*/ None,
         )
         .await
+    }
+
+    pub(crate) fn try_submit(&self, op: Op) -> CodexResult<String> {
+        let id = new_submission_id();
+        self.submission_admission.try_enqueue(
+            &self.tx_sub,
+            Submission {
+                id: id.clone(),
+                op,
+                trace: current_span_w3c_trace_context(),
+                parent_turn_id: None,
+                root_turn_id: None,
+            },
+        )?;
+        Ok(id)
     }
 
     pub(crate) async fn submit_with_trace(
@@ -990,16 +1011,12 @@ impl SessionIo {
         Ok(id)
     }
 
-    /// Use sparingly: prefer `submit()` so submission IDs are generated consistently.
+    /// Use sparingly: prefer `submit()` so IDs are generated consistently.
     pub(crate) async fn submit_with_id(&self, mut sub: Submission) -> CodexResult<()> {
         if sub.trace.is_none() {
             sub.trace = current_span_w3c_trace_context();
         }
-        self.tx_sub
-            .send(sub)
-            .await
-            .map_err(|_| CodexErr::InternalAgentDied)?;
-        Ok(())
+        self.submission_admission.enqueue(&self.tx_sub, sub).await
     }
 
     /// Submits an ordered turn-input call and waits only for Core's routing decision.
@@ -2510,6 +2527,7 @@ impl Session {
         // Save the completed review and its terminal event together before the parent sees
         // the decision. Turn completion skips its separate before/after barriers for this case.
         if flush_guardian_completion && let Err(err) = self.flush_rollout().await {
+            self.quarantine_history(format!("Guardian completion barrier failed: {err}"));
             warn!("failed to flush completed Guardian review: {err}");
         }
         self.deliver_event_raw(event).await;

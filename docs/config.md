@@ -182,6 +182,8 @@ fork_prompt_edits = true
 
 The branch retains history before the selected turn. Creating it does not submit the draft or automatically continue a goal, and it does not undo filesystem changes. This option also works when editing an existing Legacy session; it does not change that session's stored history mode.
 
+In-place editing also follows the session's actual stored history mode: Paginated sessions use `thread/revert`, and Legacy sessions use guarded `thread/rollback`. Selection is tied to canonical user-message identity; an incomplete or ambiguous old transcript must be refreshed before editing. The draft is not automatically submitted. If a Legacy mutation or its refresh has an uncertain outcome, the TUI preserves the draft and keeps that conversation read-only for the current TUI process, including after switching away and back. Navigation, copying, other conversations, and quitting remain available. Save the draft before quitting, then reopen the conversation in a new Codex process for canonical recovery. The TUI never repeats the mutation automatically.
+
 ## Notify
 
 `notify` is deprecated and will be removed in a future release. Existing configurations still work for compatibility, but new automation should use lifecycle hooks instead.

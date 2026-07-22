@@ -1254,6 +1254,59 @@ pub struct ThreadBackgroundTerminalsTerminateResponse {
     pub terminated: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+/// Legacy-history rollback request. This route applies only to Legacy history mode; Paginated
+/// history uses `thread/revert`.
+pub struct ThreadRollbackParams {
+    pub thread_id: String,
+    /// The number of turns to drop from the end of the thread. Must be >= 1.
+    ///
+    /// This only modifies the thread's history and does not revert local file changes
+    /// that have been made by the agent. Clients are responsible for reverting these changes.
+    pub num_turns: u32,
+    /// Optional first turn expected in the selected rollback suffix.
+    #[ts(optional = nullable)]
+    pub expected_start_turn_id: Option<String>,
+    /// Optional materialized turn count observed when the rollback target was selected.
+    #[ts(optional = nullable)]
+    pub expected_turn_count: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRollbackResponse {
+    /// The updated Legacy thread after applying the rollback, with canonical turns populated.
+    pub thread: Thread,
+}
+
+/// JSON-RPC error-data field set when Legacy rollback committed but response hydration failed.
+pub const THREAD_ROLLBACK_COMMITTED_ERROR_DATA_FIELD: &str = "threadRollbackCommitted";
+/// JSON-RPC error-data field set when clients must refresh before deciding whether to retry.
+pub const THREAD_ROLLBACK_REFRESH_REQUIRED_ERROR_DATA_FIELD: &str = "threadRollbackRefreshRequired";
+
+/// Returns whether a failed Legacy rollback request nevertheless committed its history change.
+pub fn thread_rollback_error_was_committed(error: &crate::rpc::JSONRPCErrorError) -> bool {
+    error
+        .data
+        .as_ref()
+        .and_then(|data| data.get(THREAD_ROLLBACK_COMMITTED_ERROR_DATA_FIELD))
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+}
+
+/// Returns whether a failed Legacy rollback request needs a refresh before any retry.
+pub fn thread_rollback_error_requires_refresh(error: &crate::rpc::JSONRPCErrorError) -> bool {
+    error
+        .data
+        .as_ref()
+        .and_then(|data| data.get(THREAD_ROLLBACK_REFRESH_REQUIRED_ERROR_DATA_FIELD))
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+}
+
 /// Replace a paginated thread's durable history with the prefix before one turn.
 ///
 /// This only changes persisted conversation history. It does not revert local file changes.

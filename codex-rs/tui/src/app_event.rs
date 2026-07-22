@@ -588,6 +588,7 @@ pub(crate) enum AppEvent {
     FinishPromptRevert {
         thread_id: ThreadId,
         nth_user_message: usize,
+        canonical_cells: Option<Vec<Arc<dyn HistoryCell>>>,
     },
 
     /// Request to exit the application.
@@ -1080,6 +1081,12 @@ pub(crate) enum AppEvent {
     FollowTranscript,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
+    AttachUserMessageIdentity {
+        thread_id: ThreadId,
+        identity: crate::history_cell::UserMessageIdentity,
+        client_id: Option<String>,
+        content: Vec<codex_app_server_protocol::UserInput>,
+    },
 
     /// Move visible completed voice captions into history in one app event.
     CommitRealtimeTranscriptHistory,

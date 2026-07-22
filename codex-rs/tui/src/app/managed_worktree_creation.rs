@@ -217,6 +217,9 @@ impl App {
             Err(error) => return self.working_directory_error(error),
         };
         let can_continue = !self.reconnect.offline
+            && !self
+                .history_recovery_required
+                .contains(&created.source_thread_id)
             && !self.chat_widget.has_misalignment_policy_violation()
             && self.config.features.enabled(Feature::Worktrees)
             && !crate::uses_remote_workspace_or_environment(

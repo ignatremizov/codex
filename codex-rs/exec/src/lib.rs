@@ -1241,6 +1241,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         };
 
         match server_event {
+            InProcessServerEvent::RequestCompleted { .. } => {}
             InProcessServerEvent::ServerRequest(request) => {
                 handle_server_request(&client, *request, &mut error_seen).await;
             }

@@ -117,6 +117,7 @@ pub(super) fn cells(
             summary,
             message,
             decode_error,
+            available_skills,
             ..
         } => {
             cells.push(Arc::new(history_cell::new_compaction(
@@ -126,6 +127,15 @@ pub(super) fn cells(
                 decode_error,
                 show_compact_summary,
             )));
+            if !available_skills.is_empty() {
+                cells.push(Arc::new(history_cell::new_info_event(
+                    format!(
+                        "Available skills after compaction: {}",
+                        available_skills.join(", ")
+                    ),
+                    /*hint*/ None,
+                )));
+            }
         }
         // These items do not have richer history-cell presentations yet.
         ThreadItem::HookPrompt { fragments, .. } => {

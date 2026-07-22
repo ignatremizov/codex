@@ -14,6 +14,8 @@ async fn text_selection_temporarily_replaces_the_rendered_backtrack_highlight() 
     let draft = app.chat_widget.capture_thread_input_state();
     let prompt = "Selected prompt";
     app.transcript_cells = vec![Arc::new(UserHistoryCell {
+        identity: Default::default(),
+        client_id: None,
         message: prompt.into(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),

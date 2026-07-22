@@ -748,6 +748,16 @@ pub enum Op {
     /// model.
     SetThreadMemoryMode { mode: ThreadMemoryMode },
 
+    /// Request Codex to drop the last N user turns from in-memory context.
+    ThreadRollback { num_turns: u32 },
+
+    /// Request Codex to drop the last N materialized app-server turns.
+    ThreadRollbackMaterialized {
+        num_turns: u32,
+        expected_start_turn_id: Option<String>,
+        expected_turn_count: Option<u32>,
+    },
+
     /// Request a code review from the agent.
     Review { review_request: ReviewRequest },
 
@@ -962,6 +972,9 @@ impl Op {
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact => "compact",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
+            Self::ThreadRollback { .. } | Self::ThreadRollbackMaterialized { .. } => {
+                "thread_rollback"
+            }
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
             Self::Shutdown => "shutdown",
@@ -1892,8 +1905,10 @@ pub enum CodexErrorInfo {
     ActiveTurnNotSteerable {
         turn_kind: NonSteerableTurnKind,
     },
-    // Retained to deserialize errors recorded in legacy rollouts.
+    /// A Legacy rollback was rejected before an acknowledged mutation.
     ThreadRollbackFailed,
+    /// A Legacy rollback requires canonical reload before further mutation.
+    ThreadRollbackCommitUnknown,
     Other,
 }
 
@@ -1901,7 +1916,9 @@ impl CodexErrorInfo {
     /// Whether this error should mark the current turn as failed when replaying history.
     pub fn affects_turn_status(&self) -> bool {
         match self {
-            Self::ThreadRollbackFailed | Self::ActiveTurnNotSteerable { .. } => false,
+            Self::ThreadRollbackFailed
+            | Self::ThreadRollbackCommitUnknown
+            | Self::ActiveTurnNotSteerable { .. } => false,
             Self::ContextWindowExceeded
             | Self::SessionBudgetExceeded
             | Self::UsageLimitExceeded
@@ -3722,6 +3739,14 @@ pub struct DeprecationNoticeEvent {
 pub struct ThreadRolledBackEvent {
     /// Number of user turns that were removed from context.
     pub num_turns: u32,
+    /// Number of materialized Legacy turns selected by the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub materialized_turns: Option<u32>,
+    /// Zero-based index in the full canonical decoded rollout vector where removal begins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub rollback_start_index: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

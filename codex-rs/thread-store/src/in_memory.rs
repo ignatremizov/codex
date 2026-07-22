@@ -13,6 +13,7 @@ use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
@@ -532,6 +533,10 @@ pub struct InMemoryThreadStoreCalls {
 pub enum InMemoryThreadStoreFailure {
     CompactedMediaRepairAppend,
     CompactedMediaRepairFlush,
+    ThreadRollbackAppend,
+    ThreadRollbackFlush,
+    ThreadRollbackVerificationRead,
+    ThreadRollbackResponseRead,
 }
 
 impl InMemoryThreadStoreFailure {
@@ -539,6 +544,10 @@ impl InMemoryThreadStoreFailure {
         match self {
             Self::CompactedMediaRepairAppend => "compacted-media repair append",
             Self::CompactedMediaRepairFlush => "compacted-media repair flush",
+            Self::ThreadRollbackAppend => "thread rollback append",
+            Self::ThreadRollbackFlush => "thread rollback flush",
+            Self::ThreadRollbackVerificationRead => "thread rollback verification read",
+            Self::ThreadRollbackResponseRead => "thread rollback response read",
         }
     }
 }
@@ -574,6 +583,8 @@ struct InMemoryThreadStoreState {
     rollout_paths: HashMap<PathBuf, ThreadId>,
     fail_next_operation: Option<InMemoryThreadStoreFailure>,
     compacted_media_repair_flush_rollback: Option<(ThreadId, usize)>,
+    fail_next_rollback_verification_read: bool,
+    fail_next_rollback_response_read: bool,
 }
 
 impl InMemoryThreadStore {
@@ -700,7 +711,10 @@ impl InMemoryThreadStore {
                     if compacted.replacement_history_media_repair
             )
         });
-        match state.fail_next_operation {
+        let appends_thread_rollback = persisted_items
+            .iter()
+            .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))));
+        let fail_after_commit = match state.fail_next_operation {
             Some(InMemoryThreadStoreFailure::CompactedMediaRepairAppend)
                 if appends_compacted_media_repair =>
             {
@@ -733,13 +747,50 @@ impl InMemoryThreadStore {
                         });
                     }
                 }
+                None
+            }
+            Some(InMemoryThreadStoreFailure::ThreadRollbackAppend) if appends_thread_rollback => {
+                state.fail_next_operation = None;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::ThreadRollbackAppend.operation()
+                    ),
+                });
+            }
+            Some(InMemoryThreadStoreFailure::ThreadRollbackFlush)
+                if appends_thread_rollback
+                    && matches!(durability, InMemoryAppendDurability::Flushed) =>
+            {
+                state.fail_next_operation = None;
+                Some(InMemoryThreadStoreFailure::ThreadRollbackFlush)
+            }
+            Some(InMemoryThreadStoreFailure::ThreadRollbackVerificationRead)
+                if appends_thread_rollback
+                    && matches!(durability, InMemoryAppendDurability::Flushed) =>
+            {
+                state.fail_next_operation = None;
+                state.fail_next_rollback_verification_read = true;
+                Some(InMemoryThreadStoreFailure::ThreadRollbackVerificationRead)
+            }
+            Some(InMemoryThreadStoreFailure::ThreadRollbackResponseRead)
+                if appends_thread_rollback
+                    && matches!(durability, InMemoryAppendDurability::Flushed) =>
+            {
+                state.fail_next_operation = None;
+                state.fail_next_rollback_response_read = true;
+                None
             }
             Some(
                 InMemoryThreadStoreFailure::CompactedMediaRepairAppend
-                | InMemoryThreadStoreFailure::CompactedMediaRepairFlush,
+                | InMemoryThreadStoreFailure::CompactedMediaRepairFlush
+                | InMemoryThreadStoreFailure::ThreadRollbackAppend
+                | InMemoryThreadStoreFailure::ThreadRollbackFlush
+                | InMemoryThreadStoreFailure::ThreadRollbackVerificationRead
+                | InMemoryThreadStoreFailure::ThreadRollbackResponseRead,
             )
-            | None => {}
-        }
+            | None => None,
+        };
         if matches!(durability, InMemoryAppendDurability::Flushed) {
             state.calls.flush_thread += 1;
         }
@@ -748,6 +799,14 @@ impl InMemoryThreadStore {
             .entry(params.thread_id)
             .or_default()
             .extend(persisted_items);
+        if let Some(failure) = fail_after_commit {
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "injected in-memory thread-store {} failure",
+                    failure.operation()
+                ),
+            });
+        }
         Ok(())
     }
 
@@ -757,6 +816,15 @@ impl InMemoryThreadStore {
     ) -> ThreadStoreResult<StoredThreadHistory> {
         let mut state = self.state.lock().await;
         state.calls.load_history += 1;
+        if state.fail_next_rollback_verification_read {
+            state.fail_next_rollback_verification_read = false;
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "injected in-memory thread-store {} failure",
+                    InMemoryThreadStoreFailure::ThreadRollbackVerificationRead.operation()
+                ),
+            });
+        }
         let items =
             state
                 .histories
@@ -794,6 +862,15 @@ impl InMemoryThreadStore {
     async fn read_thread(&self, params: ReadThreadParams) -> ThreadStoreResult<StoredThread> {
         let mut state = self.state.lock().await;
         state.calls.read_thread += 1;
+        if state.fail_next_rollback_response_read {
+            state.fail_next_rollback_response_read = false;
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "injected in-memory thread-store {} failure",
+                    InMemoryThreadStoreFailure::ThreadRollbackResponseRead.operation()
+                ),
+            });
+        }
         if params.include_history {
             state.calls.read_thread_with_history += 1;
             reject_paginated_history_mode(history_mode_from_state(&state, params.thread_id))?;

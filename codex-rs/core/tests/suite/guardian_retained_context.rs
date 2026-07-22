@@ -520,7 +520,11 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
         );
         thread
             .append_rollout_items(&[RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-                ThreadRolledBackEvent { num_turns: 1 },
+                ThreadRolledBackEvent {
+                    num_turns: 1,
+                    materialized_turns: None,
+                    rollback_start_index: None,
+                },
             ))])
             .await?;
         thread = resume(&test, &thread).await?;
@@ -935,7 +939,11 @@ async fn legacy_rollback_replay_retains_only_surviving_steered_answers() -> Resu
     for expected in [&answers[..1], &[]] {
         thread
             .append_rollout_items(&[RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-                ThreadRolledBackEvent { num_turns: 1 },
+                ThreadRolledBackEvent {
+                    num_turns: 1,
+                    materialized_turns: None,
+                    rollback_start_index: None,
+                },
             ))])
             .await?;
         thread = resume(&test, &thread).await?;
@@ -1458,7 +1466,11 @@ async fn retained_answers_cross_real_session_boundaries(
             for expected in [std::slice::from_ref(&before), &[]] {
                 thread
                     .append_rollout_items(&[RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-                        ThreadRolledBackEvent { num_turns: 1 },
+                        ThreadRolledBackEvent {
+                            num_turns: 1,
+                            materialized_turns: None,
+                            rollback_start_index: None,
+                        },
                     ))])
                     .await?;
                 thread = resume(&test, &thread).await?;

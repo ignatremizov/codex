@@ -12,6 +12,12 @@ use crate::wrapping::url_preserving_wrap_options;
 use crate::wrapping::word_wrap_line_with_source;
 use std::borrow::Cow;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UserMessageIdentity {
+    pub(crate) turn_id: String,
+    pub(crate) item_id: String,
+}
+
 #[derive(Debug)]
 pub(crate) struct UserHistoryCell {
     pub message: String,
@@ -19,6 +25,9 @@ pub(crate) struct UserHistoryCell {
     pub local_image_paths: Vec<PathBuf>,
     pub remote_image_urls: Vec<String>,
     pub(crate) spoken: bool,
+    /// A receipt can identify an optimistic cell without replacing its selected Arc.
+    pub(crate) identity: std::sync::OnceLock<UserMessageIdentity>,
+    pub(crate) client_id: Option<String>,
 }
 
 /// Remove CSI sequences and control characters, preserving tabs and newlines.
@@ -720,6 +729,8 @@ pub(crate) fn new_user_prompt(
         local_image_paths,
         remote_image_urls,
         spoken: false,
+        identity: Default::default(),
+        client_id: None,
     }
 }
 

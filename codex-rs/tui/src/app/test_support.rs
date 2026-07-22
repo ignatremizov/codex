@@ -63,6 +63,7 @@ pub(crate) async fn make_test_app() -> App {
         transcript_reflow: TranscriptReflowState::default(),
         initial_history_replay_buffer: None,
         pending_thread_switch_resets: 0,
+        history_recovery_required: HashSet::new(),
         scrollback_has_older_history: false,
         enhanced_keys_supported: false,
         keymap: crate::keymap::RuntimeKeymap::defaults(),

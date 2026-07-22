@@ -600,7 +600,7 @@ fn strip_legacy_ghost_snapshot_keeps_checkpoint_metadata_aligned() {
         }
     });
 
-    assert!(!strip_legacy_ghost_snapshot_rollout_line(&mut value));
+    assert!(!crate::canonical_line::strip_legacy_ghost_snapshot_rollout_line(&mut value));
     assert_eq!(
         value["payload"]["replacement_history"],
         serde_json::json!([
@@ -947,6 +947,7 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
     File::create(&rollout_path)?;
     let read_only_file = std::fs::OpenOptions::new().read(true).open(&rollout_path)?;
     let mut state = RolloutWriterState {
+        writer_lock: None,
         writer: Some(JsonlWriter {
             file: tokio::fs::File::from_std(read_only_file),
         }),
@@ -1836,3 +1837,6 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
     );
     Ok(())
 }
+
+#[path = "recorder_barrier_tests.rs"]
+mod barrier_tests;

@@ -900,6 +900,8 @@ mod tests {
 
         let url = "https://example.test/forwarded/threads/10930?page=1&queue=customer_support_unprocessed&forwardedScope=all";
         let cell = UserHistoryCell {
+            identity: Default::default(),
+            client_id: None,
             spoken: false,
             message: url.to_string(),
             text_elements: Vec::new(),

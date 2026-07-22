@@ -17,6 +17,8 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::ThreadRollbackParams;
+use codex_app_server_protocol::ThreadRollbackResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -163,6 +165,16 @@ async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> 
         .await?;
     let _: LoginAccountResponse = read_response(&mut app_server, request_id).await?;
     run_turn(&mut app_server, &thread.id, "Turn after workspace switch").await?;
+
+    let request_id = app_server
+        .send_thread_rollback_request(ThreadRollbackParams {
+            thread_id: thread.id.clone(),
+            num_turns: 1,
+            expected_start_turn_id: None,
+            expected_turn_count: None,
+        })
+        .await?;
+    let _: ThreadRollbackResponse = read_response(&mut app_server, request_id).await?;
 
     let request_id = app_server
         .send_chatgpt_auth_tokens_login_request(

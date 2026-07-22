@@ -2510,6 +2510,7 @@ async fn image_submission_is_portable_for_new_turns_and_steers() {
                     echo_client_id.then_some(client_user_message_id.as_str()),
                     /*from_replay*/ false,
                     "turn",
+                    client_user_message_id.as_str(),
                 );
             }
             rendered.extend(drain_insert_history(&mut rx));
@@ -2524,6 +2525,7 @@ async fn image_submission_is_portable_for_new_turns_and_steers() {
                 Some(&client_user_message_id),
                 /*from_replay*/ true,
                 "turn",
+                client_user_message_id.as_str(),
             );
             let replayed = drain_insert_history(&mut rx);
             assert_eq!(replayed, rendered);

@@ -17,6 +17,19 @@ pub(super) async fn process_thread_listener_event(
     outgoing: &Arc<OutgoingMessageSender>,
     config: &codex_core::config::Config,
 ) {
+    if super::thread_rollback::handle_event(
+        &event,
+        conversation_id,
+        conversation,
+        thread_manager,
+        thread_state,
+        outgoing,
+        config,
+    )
+    .await
+    {
+        return;
+    }
     let shutdown_complete = matches!(&event.msg, EventMsg::ShutdownComplete);
     if let Some(worker) = turn_cost_worker {
         worker.observe_event(conversation_id, config, &event, || {

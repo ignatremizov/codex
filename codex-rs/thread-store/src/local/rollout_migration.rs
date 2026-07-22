@@ -41,6 +41,7 @@ use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
 mod canonicalizer;
+mod exact_rollback;
 mod legacy_event;
 mod line_parser;
 mod publish;
@@ -570,8 +571,29 @@ impl LocalThreadStore {
             )));
         }
         let bytes_before = limiter.bytes_processed;
+        let exact_lines = match with_failure_reason(
+            exact_rollback::prepare(&path, limiter).await,
+            RolloutMigrationFailureReason::LegacyRolloutConversionFailed,
+        ) {
+            Ok(lines) => lines,
+            Err(failure) => {
+                return Ok(Some(migration_outcome(
+                    thread_id,
+                    path,
+                    Err(failure),
+                    limiter.bytes_processed.saturating_sub(bytes_before),
+                )));
+            }
+        };
         let result = match self
-            .migrate_one_rollout(thread_id, &path, &journal_path, legacy_names, limiter)
+            .migrate_one_rollout(
+                thread_id,
+                &path,
+                &journal_path,
+                legacy_names,
+                exact_lines,
+                limiter,
+            )
             .await
         {
             Ok(()) => Ok(RolloutMigrationStatus::Migrated),
@@ -608,6 +630,7 @@ impl LocalThreadStore {
         rollout_path: &Path,
         journal_path: &Path,
         legacy_names: &HashMap<ThreadId, String>,
+        exact_lines: Option<Vec<RolloutLine>>,
         limiter: &mut RolloutMigrationRateLimiter,
     ) -> ClassifiedMigrationResult<()> {
         if let Some(state_db) = &self.state_db
@@ -718,8 +741,11 @@ impl LocalThreadStore {
             // An interrupted older migrator may have left a bounded stage and projection.
             // Neither is authoritative: rebuild from the intact legacy source, including
             // rollback normalization, before publishing any replacement.
-            let (_, expected_ordinal) =
-                Self::write_rollout_with_rollback_plan(&canonicalization_source, limiter).await?;
+            let (_, expected_ordinal) = if let Some(lines) = exact_lines {
+                exact_rollback::write(&canonicalization_source, lines, limiter).await?
+            } else {
+                Self::write_rollout_with_rollback_plan(&canonicalization_source, limiter).await?
+            };
             let expected_length = tokio::fs::metadata(&staged_path)
                 .await
                 .map_err(migration_error)?

@@ -781,6 +781,7 @@ See the Codex keymap documentation for supported actions and examples."
             transcript_reflow: TranscriptReflowState::default(),
             initial_history_replay_buffer: None,
             pending_thread_switch_resets: 0,
+            history_recovery_required: HashSet::new(),
             scrollback_has_older_history: false,
             commit_animation: None,
             status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
