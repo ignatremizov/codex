@@ -148,14 +148,6 @@ Avoid test-only functions in the main implementation.
 
 Check whether there are existing helpers to make tests more streamlined and readable.
 
-### Change size guidance (800 lines)
-
-Unless the change is mechanical the total number of changed lines should not exceed 800 lines.
-For complex logic changes the size should be under 500 lines.
-
-If the change is larger, explore whether it can be split into reviewable stages and identify the smallest coherent stage to land first.
-Base the staging suggestion on the actual diff, dependencies, and affected call sites.
-
 ## TUI style conventions
 
 See `codex-rs/tui/styles.md`.
