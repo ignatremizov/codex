@@ -122,6 +122,8 @@ fn legacy_transcript_preview_falls_back_when_rollback_is_in_the_tail() {
             rollout_agent_message("rolled back assistant"),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
             rollout_user_message("recent user"),
             rollout_agent_message("recent assistant"),
@@ -148,6 +150,8 @@ fn legacy_transcript_preview_stops_before_rollback_outside_the_tail() {
             rollout_user_message("rolled back user"),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
             rollout_user_message("recent user"),
             rollout_agent_message("one\ntwo\nthree\nfour\nfive\nsix"),

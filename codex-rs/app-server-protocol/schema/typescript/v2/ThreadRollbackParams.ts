@@ -12,4 +12,12 @@ export type ThreadRollbackParams = { threadId: string,
  * This only modifies the thread's history and does not revert local file changes
  * that have been made by the agent. Clients are responsible for reverting these changes.
  */
-numTurns: number, };
+numTurns: number,
+/**
+ * Optional first turn expected in the selected rollback suffix.
+ */
+expectedStartTurnId?: string | null,
+/**
+ * Optional materialized turn count observed when the rollback target was selected.
+ */
+expectedTurnCount?: number | null, };

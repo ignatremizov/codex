@@ -28,6 +28,12 @@ impl ChatWidget {
                 completed_at,
                 duration_ms,
             } = turn;
+            let turn_replay_kind =
+                if replay_kind.preserves_live_processes() && status != TurnStatus::InProgress {
+                    ReplayKind::ReplayOnlyThreadSnapshot
+                } else {
+                    replay_kind
+                };
             if matches!(status, TurnStatus::InProgress) {
                 self.turn_lifecycle.last_turn_id = Some(turn_id.clone());
                 self.last_non_retry_error = None;
@@ -37,7 +43,7 @@ impl ChatWidget {
                 if hidden_nested_review_turn && matches!(item, ThreadItem::UserMessage { .. }) {
                     continue;
                 }
-                self.replay_thread_item(item, turn_id.clone(), replay_kind);
+                self.replay_thread_item(item, turn_id.clone(), turn_replay_kind);
             }
             let status = if hidden_nested_review_turn {
                 TurnStatus::Completed
@@ -62,10 +68,10 @@ impl ChatWidget {
                             duration_ms,
                         },
                     },
-                    Some(replay_kind),
+                    Some(turn_replay_kind),
                 );
             }
-            if !replay_kind.preserves_live_processes() {
+            if !turn_replay_kind.preserves_live_processes() {
                 self.finalize_replayed_process_tracking();
             }
         }
@@ -96,8 +102,15 @@ impl ChatWidget {
         let from_replay = render_source.is_replay();
         let replay_kind = render_source.replay_kind();
         match item {
-            ThreadItem::UserMessage { content, .. } => {
-                self.on_committed_user_message(&content, from_replay);
+            ThreadItem::UserMessage { id, content, .. } => {
+                self.on_committed_user_message(
+                    &content,
+                    from_replay,
+                    Some(UserMessageSource {
+                        item_id: id,
+                        turn_id: turn_id.clone(),
+                    }),
+                );
             }
             ThreadItem::AgentMessage {
                 id,
@@ -224,9 +237,10 @@ impl ChatWidget {
                 summary,
                 message,
                 decode_error,
+                available_skills,
                 ..
             } => {
-                self.on_context_compacted(summary, message, decode_error);
+                self.on_context_compacted(summary, message, decode_error, available_skills);
             }
             ThreadItem::FunctionCallOutput {
                 name,

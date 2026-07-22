@@ -20,6 +20,7 @@ use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_rollout::rollout::rollout_without_exact_rollback_ranges;
 use codex_thread_store::PersistContext;
 
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
@@ -2294,6 +2295,8 @@ impl ThreadRequestProcessor {
         let ThreadRollbackParams {
             thread_id,
             num_turns,
+            expected_start_turn_id,
+            expected_turn_count,
         } = params;
 
         if num_turns == 0 {
@@ -2309,7 +2312,6 @@ impl ThreadRequestProcessor {
                 "paginated threads do not support thread/rollback",
             ));
         }
-
         let request = request_id.clone();
 
         let rollback_already_in_progress = {
@@ -2328,12 +2330,19 @@ impl ThreadRequestProcessor {
             ));
         }
 
+        let rollback = if expected_start_turn_id.is_some() || expected_turn_count.is_some() {
+            Op::ThreadRollbackMaterialized {
+                num_turns,
+                expected_start_turn_id,
+                expected_turn_count,
+            }
+        } else {
+            // Preserve the established API contract for ordinary callers. Exact TUI prompt
+            // selection opts into materialized-turn counting through the expectation fields.
+            Op::ThreadRollback { num_turns }
+        };
         if let Err(err) = self
-            .submit_core_op(
-                request_id,
-                thread.as_ref(),
-                Op::ThreadRollback { num_turns },
-            )
+            .submit_core_op(request_id, thread.as_ref(), rollback)
             .await
         {
             // No ThreadRollback event will arrive if an error occurs.
@@ -2818,13 +2827,8 @@ impl ThreadRequestProcessor {
             let persisted_thread = self
                 .load_persisted_thread_for_read(thread_id, /*include_turns*/ false)
                 .await?;
-            self.load_live_thread_view(
-                thread_id,
-                include_turns,
-                loaded_thread,
-                persisted_thread,
-            )
-            .await?
+            self.load_live_thread_view(thread_id, include_turns, loaded_thread, persisted_thread)
+                .await?
         } else if let Some(thread) = self
             .load_persisted_thread_for_read(thread_id, include_turns)
             .await?
@@ -4269,6 +4273,19 @@ impl ThreadRequestProcessor {
                     "failed to drain running thread events before resuming thread {existing_thread_id}"
                 )));
             }
+            if paginated_resume
+                && (include_turns || params.initial_turns_page.is_some())
+                && let Err(error) = self
+                    .thread_store
+                    .persist_thread(existing_thread_id)
+                    .await
+                    .map_err(thread_store_resume_read_error)
+            {
+                self.thread_state_manager
+                    .resume_typed_transcript(existing_thread_id, connection_id)
+                    .await;
+                return Err(error);
+            }
             if needs_history {
                 let source_thread_id = source_thread.thread_id.to_string();
                 let source_rollout_path = source_thread.rollout_path.clone();
@@ -4824,11 +4841,7 @@ impl ThreadRequestProcessor {
                     &thread_id,
                     path.as_ref(),
                     /*include_history*/ true,
-                    if path.is_some() {
-                        ArchivedThreadReadPolicy::Allow
-                    } else {
-                        ArchivedThreadReadPolicy::Reject
-                    },
+                    archived_policy,
                 )
                 .await?;
             Arc::new(
@@ -4843,6 +4856,9 @@ impl ThreadRequestProcessor {
                     })?,
             )
         };
+        let source_history_items = Arc::new(rollout_without_exact_rollback_ranges(
+            source_history_items.as_ref(),
+        ));
         let history_cwd = Some(source_thread.cwd.clone());
 
         // Persist Windows sandbox mode.

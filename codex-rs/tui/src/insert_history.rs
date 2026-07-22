@@ -874,6 +874,7 @@ mod tests {
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
+            source: None,
         };
         let lines = cell
             .display_hyperlink_lines(width)

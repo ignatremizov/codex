@@ -71,7 +71,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn commit_safety_buffered_retry_submission(&mut self, display: UserMessageDisplay) {
-        self.on_user_message_display(display);
+        self.on_user_message_display(display, /*source*/ None);
     }
 
     pub(crate) fn cancel_safety_buffered_retry_submission(&mut self) {

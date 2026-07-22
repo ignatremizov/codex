@@ -17,6 +17,7 @@ use crate::tools::handlers::multi_agents_common::build_agent_resume_config;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_extension_api::ExtensionDataInit;
+use codex_history::rollout::rollout_without_exact_rollback_ranges;
 use codex_protocol::intersect_effective_permission_profiles;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_utils_path_uri::PathUri;
@@ -880,7 +881,7 @@ impl AgentControl {
 
         let destination_history_mode = matches!(parent_history_mode, ThreadHistoryMode::Paginated)
             .then_some(ThreadHistoryMode::Paginated);
-        let mut forked_rollout_items =
+        let forked_rollout_items =
             load_agent_model_context(state, parent_thread_id, parent_history_mode)
                 .await?
                 .ok_or_else(|| {
@@ -888,6 +889,7 @@ impl AgentControl {
                         "parent thread history unavailable for fork: {parent_thread_id}"
                     ))
                 })?;
+        let mut forked_rollout_items = rollout_without_exact_rollback_ranges(&forked_rollout_items);
 
         let selected_capability_roots = forked_rollout_items
             .iter()

@@ -1,5 +1,6 @@
 //! Load older transcript pages without rewriting terminal-native scrollback.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use super::*;
@@ -9,7 +10,9 @@ use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::thread_transcript::RawReasoningVisibility;
-use crate::thread_transcript::thread_items_to_transcript_cells;
+use crate::thread_transcript::collab_agent_metadata_from_items;
+use crate::thread_transcript::refresh_collab_agent_metadata;
+use crate::thread_transcript::thread_items_with_sources_to_transcript_cells;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ThreadItemsListResponse;
 
@@ -113,6 +116,16 @@ impl App {
         } else {
             RawReasoningVisibility::Hidden
         };
+        let collab_agent_metadata =
+            collab_agent_metadata_from_items(turns.iter().flat_map(|turn| turn.items.iter()));
+        let item_turn_ids = turns
+            .iter()
+            .flat_map(|turn| {
+                turn.items
+                    .iter()
+                    .map(move |item| (item.id().to_string(), turn.id.clone()))
+            })
+            .collect::<HashMap<_, _>>();
         let width = tui.terminal.last_known_screen_size.width;
         if !hidden_item_ids.is_empty() {
             let user_items = turns
@@ -121,12 +134,15 @@ impl App {
                 .filter(|item| matches!(item, ThreadItem::UserMessage { .. }))
                 .map(|item| (item.id().to_string(), item.clone()))
                 .collect::<Vec<_>>();
-            let projected_user_cells = thread_items_to_transcript_cells(
+            let projected_user_cells = thread_items_with_sources_to_transcript_cells(
                 Some(thread_id),
                 &cwd,
-                user_items.iter().map(|(_, item)| item.clone()),
+                user_items
+                    .iter()
+                    .map(|(item_id, item)| (item_turn_ids.get(item_id).cloned(), item.clone())),
                 visibility,
                 Some(&self.config),
+                &collab_agent_metadata,
             );
             let mut persisted_user_cells = user_items
                 .into_iter()
@@ -182,6 +198,11 @@ impl App {
                 }
             }
         }
+        if refresh_collab_agent_metadata(&mut self.transcript_cells, &collab_agent_metadata)
+            && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut()
+        {
+            overlay.replace_cells(self.transcript_cells.clone());
+        }
         items.retain(|item| !hidden_item_ids.contains(item.id()));
         {
             let mut store = store.lock().await;
@@ -199,12 +220,16 @@ impl App {
             });
             store.turns.splice(0..0, turns);
         }
-        let cells = thread_items_to_transcript_cells(
+        let cells = thread_items_with_sources_to_transcript_cells(
             Some(thread_id),
             &cwd,
-            items,
+            items.into_iter().map(|item| {
+                let turn_id = item_turn_ids.get(item.id()).cloned();
+                (turn_id, item)
+            }),
             visibility,
             Some(&self.config),
+            &collab_agent_metadata,
         );
         if self.backtrack.overlay_preview_active {
             self.backtrack.nth_user_message = self.backtrack.nth_user_message.saturating_add(

@@ -201,9 +201,16 @@ pub(super) async fn validate_thread_for_paginated_reads(
         ThreadHistoryMode::Legacy => Err(ThreadStoreError::Unsupported { operation }),
         ThreadHistoryMode::Paginated => {
             let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
+            let rollout_id = codex_rollout::rollout_id_from_path(metadata.rollout_path.as_path())
+                .ok_or_else(|| ThreadStoreError::Internal {
+                message: format!(
+                    "failed to resolve rollout ID from {}",
+                    metadata.rollout_path.display()
+                ),
+            })?;
             super::super::thread_history_materialization::materialize_to_sqlite(
                 store,
-                thread_id,
+                rollout_id,
                 metadata.rollout_path.as_path(),
             )
             .await

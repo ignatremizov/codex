@@ -309,7 +309,12 @@ impl ChatWidget {
             | ServerNotification::ProjectChanged(_)
             | ServerNotification::ThreadProjectUpdated(_) => {}
             ServerNotification::ContextCompacted(notification) => {
-                self.on_context_compacted(notification.summary, notification.message, None);
+                self.on_context_compacted(
+                    notification.summary,
+                    notification.message,
+                    /*decode_error*/ None,
+                    notification.available_skills,
+                );
                 if self.status_state.current_status.header
                     == codex_protocol::items::CONTEXT_COMPACTION_DECODING_MESSAGE
                 {
@@ -323,7 +328,7 @@ impl ChatWidget {
     #[cfg(test)]
     pub(crate) fn handle_codex_event(&mut self, event: Event) {
         if let EventMsg::ContextCompacted(ev) = event.msg {
-            self.on_context_compacted(ev.summary, ev.message, ev.decode_error);
+            self.on_context_compacted(ev.summary, ev.message, ev.decode_error, ev.available_skills);
         }
     }
 

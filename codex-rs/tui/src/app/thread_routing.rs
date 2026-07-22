@@ -4,11 +4,13 @@
 //! channels, submits thread-scoped operations through the app server, and replays buffered events
 //! when the visible thread changes.
 
+use super::agent_observation_display::AgentResponseObservationBinding;
+use super::agent_picker::AGENT_PICKER_VIEW_ID;
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
 use crate::app_event::ThreadTitleDestination;
 use crate::chatwidget::ThreadInputStateRestoreMode;
-use crate::session_resume::read_session_model;
+use crate::session_resume::read_saved_model_settings;
 use codex_app_server_protocol::ThreadRollbackResponse;
 use codex_app_server_protocol::ThreadStartedNotification;
 use codex_app_server_protocol::TurnInterruptParams;
@@ -84,7 +86,7 @@ impl App {
             let receiver = self.active_thread_rx.take();
             let mut store = channel.store.lock().await;
             store.active = false;
-            store.input_state = input_state;
+            store.set_input_state(input_state);
             store.merge_recap_progress(recap_progress);
             if let Some(receiver) = receiver {
                 channel.receiver = Some(receiver);
@@ -137,7 +139,7 @@ impl App {
     }
 
     pub(super) fn thread_label(&self, thread_id: ThreadId) -> String {
-        let is_primary = self.primary_thread_id == Some(thread_id);
+        let is_primary = self.agent_root_thread_id() == Some(thread_id);
         let fallback_label = if is_primary {
             "Main [default]".to_string()
         } else {
@@ -173,6 +175,12 @@ impl App {
         self.active_thread_id.or(self.chat_widget.thread_id())
     }
 
+    pub(super) fn agent_root_thread_id(&self) -> Option<ThreadId> {
+        self.agent_navigation
+            .root_thread_id()
+            .or(self.primary_thread_id)
+    }
+
     pub(super) fn ignore_same_thread_resume(
         &mut self,
         target_session: &crate::resume_picker::SessionTarget,
@@ -195,10 +203,69 @@ impl App {
     /// intentionally hidden until there is more than one known thread so single-thread sessions do
     /// not spend footer space restating that the user is already on the main conversation.
     pub(super) fn sync_active_agent_label(&mut self) {
+        let current_thread_id = self.current_displayed_thread_id();
+        let agent_root_thread_id = self.agent_root_thread_id();
         let label = self
             .agent_navigation
-            .active_agent_label(self.current_displayed_thread_id(), self.primary_thread_id);
+            .active_agent_label(current_thread_id, agent_root_thread_id);
         self.chat_widget.set_active_agent_label(label);
+        let mut targets = self
+            .agent_navigation
+            .ordered_threads()
+            .into_iter()
+            .filter(|(thread_id, _entry)| {
+                Some(*thread_id) != current_thread_id
+                    && self.agent_navigation.alias(*thread_id).is_none_or(|alias| {
+                        alias.state != codex_app_server_protocol::AgentAliasState::Transferred
+                    })
+            })
+            .map(|(thread_id, entry)| {
+                let is_primary = agent_root_thread_id == Some(thread_id);
+                let label = format_agent_picker_item_name(
+                    entry.agent_nickname.as_deref(),
+                    entry.agent_role.as_deref(),
+                    is_primary,
+                );
+                AgentPromptTarget {
+                    thread_id: Some(thread_id),
+                    selector: if is_primary {
+                        codex_protocol::MAIN_AGENT_NICKNAME.to_string()
+                    } else {
+                        self.agent_navigation
+                            .control_selector(thread_id)
+                            .unwrap_or_else(|| thread_id.to_string())
+                    },
+                    label: if entry.is_closed {
+                        format!("{label} · closed")
+                    } else {
+                        label
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        targets.push(AgentPromptTarget {
+            thread_id: None,
+            selector: "new".to_string(),
+            label: "New default agent".to_string(),
+        });
+        targets.extend(
+            AGENT_TARGET_ACTION_CHOICES.map(|(selector, label)| AgentPromptTarget {
+                thread_id: None,
+                selector: selector.to_string(),
+                label: label.to_string(),
+            }),
+        );
+        targets.extend(
+            self.config
+                .agent_roles
+                .keys()
+                .map(|role| AgentPromptTarget {
+                    thread_id: None,
+                    selector: agent_role_selector(role),
+                    label: format!("New {role} agent"),
+                }),
+        );
+        self.chat_widget.set_agent_prompt_targets(targets);
         self.sync_side_thread_ui();
     }
 
@@ -230,6 +297,12 @@ impl App {
                         .clone()
                         .unwrap_or_else(|| params.item_id.clone()),
                     environment_id: params.environment_id.clone(),
+                    started_at_ms: params.started_at_ms.unwrap_or_default(),
+                    expires_at_ms: params.started_at_ms.and(params.expires_at_ms),
+                    received_at: self
+                        .pending_app_server_requests
+                        .request_received_at(request)
+                        .unwrap_or_else(std::time::Instant::now),
                     command: params
                         .command
                         .as_deref()
@@ -461,6 +534,41 @@ impl App {
             .try_resolve_app_server_request(app_server, thread_id, &op)
             .await?
         {
+            return Ok(());
+        }
+
+        let requires_live_thread = matches!(
+            &op,
+            AppCommand::Interrupt
+                | AppCommand::CleanBackgroundTerminals
+                | AppCommand::RealtimeConversationStart { .. }
+                | AppCommand::RealtimeConversationAudio(_)
+                | AppCommand::RealtimeConversationClose
+                | AppCommand::RunUserShellCommand { .. }
+                | AppCommand::UserTurn { .. }
+                | AppCommand::OverrideTurnContext { .. }
+                | AppCommand::Compact
+                | AppCommand::Review { .. }
+                | AppCommand::ActivateMcpServer { .. }
+                | AppCommand::ApproveGuardianDeniedAction { .. }
+        );
+        if requires_live_thread
+            && let Err(error) = self.resume_replay_only_thread(app_server, thread_id).await
+        {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %error,
+                "failed to resume replay-only thread for live operation"
+            );
+            let message = format!("Failed to resume agent thread: {error:#}");
+            if matches!(&op, AppCommand::UserTurn { .. })
+                && self
+                    .chat_widget
+                    .handle_turn_start_rejection(message.clone())
+            {
+                return Ok(());
+            }
+            self.chat_widget.add_error_message(message);
             return Ok(());
         }
 
@@ -717,7 +825,7 @@ impl App {
                                             self.thread_event_channels.get(&thread_id)
                                         {
                                             let mut store = channel.store.lock().await;
-                                            store.active_turn_id = Some(actual_turn_id.clone());
+                                            store.set_active_turn_id(actual_turn_id.clone());
                                         }
                                         steer_turn_id = actual_turn_id;
                                         retried_after_turn_mismatch = true;
@@ -729,7 +837,7 @@ impl App {
                                             self.thread_event_channels.get(&thread_id)
                                         {
                                             let mut store = channel.store.lock().await;
-                                            store.active_turn_id = Some(actual_turn_id);
+                                            store.set_active_turn_id(actual_turn_id);
                                         }
                                         return Err(error.into());
                                     }
@@ -805,7 +913,7 @@ impl App {
                     .wrap_err("review/start returned invalid review thread id")?;
                 let store = Arc::clone(&self.ensure_thread_channel(review_thread_id).store);
                 let mut store = store.lock().await;
-                store.active_turn_id = Some(response.turn.id);
+                store.set_active_turn_id(response.turn.id);
                 Ok(true)
             }
             AppCommand::CleanBackgroundTerminals => {
@@ -950,9 +1058,10 @@ impl App {
         thread_id: ThreadId,
         op: &AppCommand,
     ) -> Result<bool> {
+        let thread_id_string = thread_id.to_string();
         let Some(resolution) = self
             .pending_app_server_requests
-            .take_resolution(&thread_id.to_string(), op)
+            .take_resolution_for_thread(&thread_id_string, op)
             .map_err(|err| color_eyre::eyre::eyre!(err))?
         else {
             return Ok(false);
@@ -1008,6 +1117,14 @@ impl App {
             .collect();
 
         self.chat_widget.set_pending_thread_approvals(threads);
+        if let Some(selected) = self
+            .chat_widget
+            .selected_index_for_present_view(AGENT_PICKER_VIEW_ID)
+        {
+            let params = self.agent_picker_selection_view_params(Some(selected));
+            self.chat_widget
+                .replace_selection_view_if_present(AGENT_PICKER_VIEW_ID, params);
+        }
     }
 
     pub(super) async fn refresh_side_parent_status_from_store(&mut self, thread_id: ThreadId) {
@@ -1073,14 +1190,22 @@ impl App {
             self.apply_thread_settings_to_cached_session(thread_id, &notification.thread_settings)
                 .await;
         }
+        self.cache_collab_response_observation_for_notification(&notification);
         let inferred_session = if let ServerNotification::ThreadStarted(started) = &notification
             && self.primary_session_configured.is_some()
         {
+            let agent_nickname = self
+                .agent_navigation
+                .authoritative_nickname(thread_id, started.thread.agent_nickname.clone());
             self.upsert_agent_picker_thread(
                 thread_id,
-                started.thread.agent_nickname.clone(),
+                agent_nickname,
                 started.thread.agent_role.clone(),
                 /*is_closed*/ false,
+            );
+            self.agent_navigation.set_parent_thread_id(
+                thread_id,
+                crate::app_server_session::thread_parent_thread_id(&started.thread),
             );
 
             // Lifecycle responses already contain authoritative session state. Their rollout may
@@ -1098,6 +1223,10 @@ impl App {
             }
         } else {
             None
+        };
+        let turn_started_agent_queue = match &notification {
+            ServerNotification::TurnStarted(notification) => notification.agent_queue.clone(),
+            _ => None,
         };
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
         let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
@@ -1136,10 +1265,40 @@ impl App {
         };
         if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
+            if let Some(agent_queue) = turn_started_agent_queue {
+                match ThreadId::from_string(&agent_queue.source_thread_id) {
+                    Ok(source_thread_id) => {
+                        if let Some(response_handling) = agent_queue.response_handling {
+                            self.agent_navigation.note_response_observation(
+                                source_thread_id,
+                                thread_id,
+                                AgentResponseObservationBinding::Bound,
+                                Some(response_handling),
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            source_thread_id = agent_queue.source_thread_id,
+                            %err,
+                            "ignoring queued turn response handling with invalid source thread id"
+                        );
+                    }
+                }
+            }
+            if self.queued_agent_prompts.contains_key(&thread_id) {
+                self.app_event_tx.send(AppEvent::RefreshAgentPromptQueue);
+            }
         } else if is_thread_closed {
+            // A closed inactive thread does not pass through `handle_active_thread_event`, so
+            // perform the same lifecycle cleanup at notification ingress. In particular, a
+            // queued follow-up must not turn a close into an implicit resume.
             self.mark_agent_picker_thread_closed(thread_id);
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);
+            if self.queued_agent_prompts.contains_key(&thread_id) {
+                self.app_event_tx.send(AppEvent::RefreshAgentPromptQueue);
+            }
         }
 
         if let Some(notification) = notification {
@@ -1186,6 +1345,24 @@ impl App {
             return;
         }
 
+        if let Some(receiver_agents) = collab_receiver_agents(notification) {
+            for receiver in receiver_agents {
+                if collab_receiver_is_not_found(notification, &receiver.thread_id) {
+                    continue;
+                }
+                let Some(thread_id) = crate::multi_agents::parse_thread_id(&receiver.thread_id)
+                else {
+                    continue;
+                };
+                self.upsert_agent_picker_thread(
+                    thread_id,
+                    receiver.agent_nickname.clone(),
+                    receiver.agent_role.clone(),
+                    /*is_closed*/ false,
+                );
+            }
+        }
+
         let Some(receiver_thread_ids) = collab_receiver_thread_ids(notification) else {
             return;
         };
@@ -1226,12 +1403,16 @@ impl App {
         session
             .set_cwd_retargeting_implicit_runtime_workspace_root(notification.thread.cwd.clone());
         let rollout_path = notification.thread.path.clone();
-        if let Some(model) =
-            read_session_model(self.state_db.as_deref(), thread_id, rollout_path.as_deref()).await
-        {
+        let saved_model_settings =
+            read_saved_model_settings(self.state_db.as_deref(), thread_id, rollout_path.as_deref())
+                .await;
+        if let Some(model) = saved_model_settings.model {
             session.model = model;
         } else if rollout_path.is_some() {
             session.model.clear();
+        }
+        if saved_model_settings.reasoning_effort.is_some() || rollout_path.is_some() {
+            session.reasoning_effort = saved_model_settings.reasoning_effort;
         }
         session.message_history = None;
         session.rollout_path = rollout_path;
@@ -1484,7 +1665,30 @@ impl App {
         is_replay_only: bool,
         snapshot: &mut ThreadEventSnapshot,
     ) {
-        if !self.should_refresh_snapshot_session(thread_id, is_replay_only, snapshot) {
+        if !self.should_refresh_snapshot_session(thread_id, snapshot) {
+            return;
+        }
+
+        if is_replay_only {
+            match app_server
+                .thread_read(thread_id, /*include_turns*/ false)
+                .await
+            {
+                Ok(thread) => {
+                    let session = self.session_state_for_thread_read(thread_id, &thread).await;
+                    if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                        channel.store.lock().await.session = Some(session.clone());
+                    }
+                    snapshot.session = Some(session);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        thread_id = %thread_id,
+                        error = %err,
+                        "failed to refresh replay-only thread session before replay"
+                    );
+                }
+            }
             return;
         }
 
@@ -1513,13 +1717,13 @@ impl App {
     pub(super) fn should_refresh_snapshot_session(
         &self,
         thread_id: ThreadId,
-        is_replay_only: bool,
         snapshot: &ThreadEventSnapshot,
     ) -> bool {
-        !is_replay_only
-            && !self.side_threads.contains_key(&thread_id)
+        !self.side_threads.contains_key(&thread_id)
             && snapshot.session.as_ref().is_none_or(|session| {
-                session.model.trim().is_empty() || session.rollout_path.is_none()
+                session.model.trim().is_empty()
+                    || session.reasoning_effort.is_none()
+                    || session.rollout_path.is_none()
             })
     }
 
@@ -1684,10 +1888,24 @@ impl App {
         (active_thread_id != primary_thread_id).then_some((active_thread_id, primary_thread_id))
     }
 
+    #[cfg(test)]
     pub(super) fn replay_thread_snapshot(
         &mut self,
         mut snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
+    ) {
+        self.replay_thread_snapshot_with_in_flight_state(
+            snapshot,
+            resume_restored_queue,
+            /*preserve_in_flight_turn*/ true,
+        );
+    }
+
+    pub(super) fn replay_thread_snapshot_with_in_flight_state(
+        &mut self,
+        snapshot: ThreadEventSnapshot,
+        resume_restored_queue: bool,
+        preserve_in_flight_turn: bool,
     ) {
         let request_changes = snapshot
             .events
@@ -1716,9 +1934,20 @@ impl App {
         }
         let suppress_replay_notices =
             replay_filter::snapshot_has_pending_interactive_request(&snapshot);
+        let ThreadEventSnapshot {
+            session,
+            turns,
+            events,
+            mut input_state,
+            active_turn_timing,
+        } = snapshot;
+        // Attaching the incoming session can refresh session-dependent surfaces that attempt to
+        // drain the current queue. Suppress autosend before that boundary so queued input from the
+        // outgoing thread cannot be submitted under the incoming thread before its saved input
+        // state is restored.
         self.chat_widget
             .set_queue_autosend_suppressed(/*suppressed*/ true);
-        if let Some(session) = snapshot.session {
+        if let Some(session) = session {
             if session.reasoning_effort != Some(ReasoningEffortConfig::Ultra) {
                 self.chat_widget
                     .set_plan_mode_reasoning_effort(self.config.plan_mode_reasoning_effort.clone());
@@ -1738,22 +1967,34 @@ impl App {
             .then(|| snapshot.input_state.take())
             .flatten();
         self.sync_mcp_inventory_loading_for_current_thread();
+        let restored_active_turn_timing = if preserve_in_flight_turn {
+            active_turn_timing
+        } else {
+            None
+        };
+        if let Some(input_state) = input_state.as_mut() {
+            input_state.set_active_turn_timing(restored_active_turn_timing.clone());
+        }
         self.chat_widget.restore_thread_input_state(
-            snapshot.input_state,
+            input_state,
             ThreadInputStateRestoreMode {
-                preserve_in_flight_turn: true,
+                preserve_in_flight_turn,
             },
         );
-        let replay_kind = if preserve_in_flight_turn {
+        if let Some((turn_id, started_at)) = restored_active_turn_timing.as_ref() {
+            self.chat_widget.restore_active_turn(turn_id, *started_at);
+        }
+        let preserves_live_processes =
+            preserve_in_flight_turn && restored_active_turn_timing.is_some();
+        let replay_kind = if preserves_live_processes {
             ReplayKind::ThreadSnapshot
         } else {
             ReplayKind::ReplayOnlyThreadSnapshot
         };
-        if !snapshot.turns.is_empty() {
-            self.chat_widget
-                .replay_thread_turns(snapshot.turns, replay_kind);
+        if !turns.is_empty() {
+            self.chat_widget.replay_thread_turns(turns, replay_kind);
         }
-        for (event, changes) in snapshot.events.into_iter().zip(request_changes) {
+        for (event, changes) in events.into_iter().zip(request_changes) {
             if suppress_replay_notices && replay_filter::event_is_notice(&event) {
                 continue;
             }
@@ -1764,7 +2005,11 @@ impl App {
                 (event, _) => self.handle_thread_event_replay(event, replay_kind),
             }
         }
-        if !preserve_in_flight_turn {
+        if let Some((turn_id, started_at)) = restored_active_turn_timing {
+            self.chat_widget
+                .restore_replayed_turn_origin(&turn_id, started_at);
+        }
+        if !preserves_live_processes {
             // Closed and replay-only threads cannot own process-local terminals. Keep persisted
             // command items in the transcript, but discard any `InProgress` item state rebuilt
             // while replaying saved turns or buffered events.
@@ -1876,8 +2121,15 @@ impl App {
                 {
                     let may_open_protected_view =
                         self.startup_request_may_open_protected_view(request.as_ref());
-                    self.chat_widget
-                        .handle_server_request(*request, /*replay_kind*/ None);
+                    let received_at = self
+                        .pending_app_server_requests
+                        .request_received_at(request.as_ref())
+                        .unwrap_or_else(std::time::Instant::now);
+                    self.chat_widget.handle_server_request(
+                        *request,
+                        /*replay_kind*/ None,
+                        received_at,
+                    );
                     if may_open_protected_view
                         && self.startup_protected_input_boundary
                         && !self.chat_widget.has_active_view()
@@ -1945,8 +2197,12 @@ impl App {
             ThreadBufferedEvent::Request(request) => {
                 let may_open_protected_view =
                     self.startup_request_may_open_protected_view(request.as_ref());
+                let received_at = self
+                    .pending_app_server_requests
+                    .request_received_at(request.as_ref())
+                    .unwrap_or_else(std::time::Instant::now);
                 self.chat_widget
-                    .handle_server_request(*request, Some(replay_kind));
+                    .handle_server_request(*request, Some(replay_kind), received_at);
                 if may_open_protected_view
                     && self.startup_protected_input_boundary
                     && !self.chat_widget.has_active_view()
@@ -2129,6 +2385,27 @@ impl App {
     }
 }
 
+fn agent_role_selector(role: &str) -> String {
+    let reserved = role == "new"
+        || role.eq_ignore_ascii_case(codex_protocol::MAIN_AGENT_NICKNAME)
+        || is_agent_target_action(role);
+    let requires_namespace = reserved
+        || role.is_empty()
+        || role.chars().all(|ch| ch.is_ascii_digit())
+        || role.chars().any(char::is_whitespace)
+        || role.chars().any(|ch| matches!(ch, '"' | '\\'))
+        || ThreadId::from_string(role).is_ok()
+        || ["fork:", "w:", "id:", "ref:", "nick:", "role:"]
+            .iter()
+            .any(|prefix| role.starts_with(prefix));
+    if !requires_namespace {
+        return role.to_string();
+    }
+
+    let role = role.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("role:\"{role}\"")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2199,6 +2476,23 @@ mod tests {
                 Some(&permission_profile),
             ),
             TurnPermissionsOverride::LegacySandbox(effective_permission_profile)
+        );
+    }
+
+    #[test]
+    fn role_autocomplete_uses_bare_names_unless_they_need_a_namespace() {
+        assert_eq!(agent_role_selector("reviewer"), "reviewer");
+        assert_eq!(agent_role_selector("main"), "role:\"main\"");
+        assert_eq!(agent_role_selector("MAIN"), "role:\"MAIN\"");
+        assert_eq!(agent_role_selector("queue"), "role:\"queue\"");
+        assert_eq!(agent_role_selector("2"), "role:\"2\"");
+        assert_eq!(
+            agent_role_selector("Ada \"reviewer\""),
+            "role:\"Ada \\\"reviewer\\\"\""
+        );
+        assert_eq!(
+            agent_role_selector("019faa07-aa3d-78d3-9eca-66cd8626adad"),
+            "role:\"019faa07-aa3d-78d3-9eca-66cd8626adad\""
         );
     }
 }

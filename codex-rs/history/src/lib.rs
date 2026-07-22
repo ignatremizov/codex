@@ -150,6 +150,7 @@ impl JsonSchema for RolloutItem {
 
 mod guardian_history;
 mod rollout_payload;
+pub mod rollout;
 
 pub use guardian_history::GuardianHistoryCheckpoint;
 

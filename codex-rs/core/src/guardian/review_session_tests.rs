@@ -21,6 +21,7 @@ async fn test_review_session() -> (
         session.user_instructions().await,
         session.clone_history().await.history_version(),
     );
+    let submission_admission = Arc::clone(&session.submission_admission);
 
     (
         GuardianReviewSession {
@@ -28,6 +29,7 @@ async fn test_review_session() -> (
             io: SessionIo {
                 tx_sub,
                 rx_event,
+                submission_admission,
                 agent_status,
                 session_loop_termination: crate::session::completed_session_loop_termination(),
             },

@@ -247,9 +247,11 @@ fn handoff_initial_history_appends_instruction_after_new_history() {
     let Some(RolloutItem::ResponseItem(first_item)) = items.first() else {
         panic!("expected compacted history first");
     };
-    assert_eq!(first_item, &summary);
-    let Some(RolloutItem::ResponseItem(ResponseItem::Message { role, content, .. })) = items.last()
-    else {
+    assert_eq!(&first_item.item, &summary);
+    let Some(RolloutItem::ResponseItem(envelope)) = items.last() else {
+        panic!("expected trailing handoff instruction");
+    };
+    let ResponseItem::Message { role, content, .. } = &envelope.item else {
         panic!("expected trailing handoff instruction");
     };
     assert_eq!(role, "developer");

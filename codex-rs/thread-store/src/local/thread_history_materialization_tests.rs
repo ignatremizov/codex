@@ -22,6 +22,7 @@ use codex_protocol::protocol::RateLimitWindow;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -445,7 +446,6 @@ async fn paginated_realtime_items_materialize_separately_in_rollout_order() {
         .persist_thread(thread_id, PersistContext::Standard)
         .await
         .expect("persist thread metadata");
-
     store
         .append_items(AppendThreadItemsParams {
             thread_id,
@@ -645,6 +645,84 @@ async fn paginated_realtime_items_materialize_separately_in_rollout_order() {
     .await
     .expect("count legacy realtime items");
     assert_eq!(legacy_realtime_count, 0);
+}
+
+#[tokio::test]
+async fn exact_rollback_rebuilds_paginated_projection_without_removed_turn() {
+    let home = TempDir::new().expect("temp dir");
+    let store = projection_store(home.path()).await;
+    let thread_id = ThreadId::default();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .persist_thread(thread_id, PersistContext::Standard)
+        .await
+        .expect("persist session metadata");
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![
+                turn_started("retained-turn"),
+                completed_item(
+                    thread_id,
+                    "retained-turn",
+                    agent_message("retained-agent", MessagePhase::FinalAnswer),
+                ),
+                turn_completed("retained-turn"),
+                turn_started("removed-turn"),
+                completed_item(
+                    thread_id,
+                    "removed-turn",
+                    agent_message("removed-agent", MessagePhase::FinalAnswer),
+                ),
+                turn_completed("removed-turn"),
+                RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                    num_turns: 0,
+                    materialized_turns: Some(1),
+                    rollback_start_index: Some(4),
+                })),
+            ],
+        })
+        .await
+        .expect("append history and exact rollback");
+
+    let pool = codex_state::open_thread_history_db(&codex_state::SqliteConfig::new_for_testing(
+        home.path().abs(),
+    ))
+    .await
+    .expect("open thread history db");
+    let turns = sqlx::query_as::<_, (String, String)>(
+        "SELECT turn_id, status FROM thread_turns WHERE thread_id = ? ORDER BY rollout_ordinal",
+    )
+    .bind(thread_id.to_string())
+    .fetch_all(&pool)
+    .await
+    .expect("read rebuilt turns");
+    let items = sqlx::query_scalar::<_, String>(
+        "SELECT item_id FROM thread_items WHERE thread_id = ? ORDER BY rollout_ordinal",
+    )
+    .bind(thread_id.to_string())
+    .fetch_all(&pool)
+    .await
+    .expect("read rebuilt items");
+    let rollout_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("live rollout path");
+    let rollout_len = i64::try_from(
+        fs::metadata(rollout_path.as_path())
+            .expect("rollout metadata")
+            .len(),
+    )
+    .expect("rollout length");
+
+    assert_eq!(
+        (turns, items, projection_state(&pool, thread_id).await),
+        (
+            vec![("retained-turn".to_string(), "completed".to_string())],
+            vec!["retained-agent".to_string()],
+            (rollout_len, 8),
+        )
+    );
 }
 
 #[tokio::test]

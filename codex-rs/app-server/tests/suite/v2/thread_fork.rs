@@ -86,6 +86,7 @@ use super::analytics::assert_basic_thread_initialized_event;
 use super::analytics::mount_analytics_capture;
 use super::analytics::thread_initialized_event;
 use super::analytics::wait_for_analytics_payload;
+use super::connection_handling_websocket::create_config_toml;
 
 #[cfg(windows)]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
@@ -1105,7 +1106,7 @@ async fn thread_fork_can_load_source_by_path_from_another_home() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let source_home = TempDir::new()?;
     let active_home = TempDir::new()?;
-    create_config_toml(active_home.path(), &server.uri())?;
+    create_config_toml(active_home.path(), &server.uri(), "never")?;
 
     let preview = "Cross-home source message";
     let conversation_id = create_fake_rollout(
@@ -1174,7 +1175,7 @@ async fn thread_fork_can_load_source_by_path_from_another_home() -> Result<()> {
 async fn thread_fork_can_load_archived_source_by_path() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path(), &server.uri())?;
+    create_config_toml(codex_home.path(), &server.uri(), "never")?;
 
     let preview = "Archived source message";
     let conversation_id = create_fake_rollout(

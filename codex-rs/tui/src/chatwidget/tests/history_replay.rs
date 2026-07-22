@@ -172,6 +172,53 @@ async fn resumed_history_keeps_command_without_restoring_background_terminal() {
 }
 
 #[tokio::test]
+async fn thread_snapshot_does_not_restore_terminal_from_completed_turn() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.replay_thread_turns(
+        vec![AppServerTurn {
+            id: "turn-1".to_string(),
+            items: vec![AppServerThreadItem::CommandExecution {
+                id: "exec-1".to_string(),
+                plugin_id: None,
+                script_path: None,
+                command: "sleep 20".to_string(),
+                cwd: test_path_buf("/home/user/project").abs().into(),
+                process_id: Some("123".to_string()),
+                source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                status: AppServerCommandExecutionStatus::InProgress,
+                command_actions: vec![AppServerCommandAction::Unknown {
+                    command: "sleep 20".to_string(),
+                }],
+                aggregated_output: None,
+                exit_code: None,
+                duration_ms: None,
+            }],
+            items_view: codex_app_server_protocol::TurnItemsView::Full,
+            status: AppServerTurnStatus::Completed,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        }],
+        ReplayKind::ThreadSnapshot,
+    );
+
+    assert_eq!(
+        (
+            chat.unified_exec_processes.len(),
+            chat.completed_unified_exec_processes.len(),
+        ),
+        (0, 0)
+    );
+    chat.add_ps_output();
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<String>();
+    assert!(rendered.contains("No background terminals running"));
+}
+
+#[tokio::test]
 async fn thread_snapshot_keeps_live_background_terminals() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.replay_thread_turns(

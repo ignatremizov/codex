@@ -3,6 +3,7 @@
 use super::ServerNotification;
 use super::ThreadBufferedEvent;
 use super::ThreadEventStore;
+use super::thread_turn_materialization::event_changes_materialized_turns;
 use std::borrow::Cow;
 
 // Keep merged text finite so continued streaming still reaches bounded replay eviction.
@@ -58,6 +59,9 @@ impl ThreadEventStore {
             let Some(removed) = self.buffer.pop_front() else {
                 break;
             };
+            if event_changes_materialized_turns(&removed) {
+                self.turn_history_complete = false;
+            }
             match removed {
                 ThreadBufferedEvent::Notification(notification) => {
                     if let ServerNotification::AgentMessageDelta(delta) = notification.as_ref() {

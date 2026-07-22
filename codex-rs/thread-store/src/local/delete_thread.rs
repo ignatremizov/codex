@@ -220,7 +220,16 @@ async fn delete_thread_after_reference_check(
     };
     let found_rollout_path = !thread_rollouts.paths.is_empty() || removed_orphaned_artifact;
     for rollout_path in thread_rollouts.paths {
-        delete_rollout_file(store, rollout_path.as_path(), thread_id)?;
+        let rollout_id =
+            codex_rollout::rollout_id_from_path(rollout_path.as_path()).ok_or_else(|| {
+                ThreadStoreError::InvalidRequest {
+                    message: format!(
+                        "rollout path `{}` does not contain a rollout id",
+                        rollout_path.display()
+                    ),
+                }
+            })?;
+        delete_rollout_file(store, rollout_path.as_path(), rollout_id)?;
     }
     remove_thread_name_entries(store.config.codex_home.as_path(), thread_id)
         .await

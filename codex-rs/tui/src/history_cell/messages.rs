@@ -8,13 +8,20 @@ use crate::wrapping::url_preserving_wrap_options;
 use crate::wrapping::word_wrap_line;
 use std::borrow::Cow;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UserMessageSource {
+    pub(crate) item_id: String,
+    pub(crate) turn_id: String,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct UserHistoryCell {
     pub message: String,
     pub text_elements: Vec<TextElement>,
     #[allow(dead_code)]
     pub local_image_paths: Vec<PathBuf>,
     pub remote_image_urls: Vec<String>,
+    pub source: Option<UserMessageSource>,
 }
 
 /// Remove CSI sequences and control characters, preserving tabs and newlines.
@@ -618,6 +625,7 @@ pub(crate) fn new_user_prompt(
         text_elements,
         local_image_paths,
         remote_image_urls,
+        source: None,
     }
 }
 /// Create the reasoning history cell emitted at the end of a reasoning block.

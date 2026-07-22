@@ -51,6 +51,7 @@ pub(super) enum ThreadEventAttachment {
 pub(super) struct ThreadEventStore {
     pub(super) session: Option<ThreadSessionState>,
     pub(super) turns: Vec<Turn>,
+    pub(super) turn_history_complete: bool,
     pub(super) buffer: VecDeque<ThreadBufferedEvent>,
     pub(super) pending_interactive_replay: PendingInteractiveReplayState,
     pub(super) active_turn_id: Option<String>,
@@ -96,6 +97,7 @@ impl ThreadEventStore {
         Self {
             session: None,
             turns: Vec::new(),
+            turn_history_complete: true,
             buffer: VecDeque::new(),
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             active_turn_id: None,
@@ -139,6 +141,7 @@ impl ThreadEventStore {
             .find(|turn| matches!(turn.status, TurnStatus::InProgress))
             .map(|turn| turn.id.clone());
         self.turns = turns;
+        self.turn_history_complete = true;
     }
 
     pub(super) fn push_notification(&mut self, notification: ServerNotification) {
@@ -234,6 +237,7 @@ impl ThreadEventStore {
 
     pub(super) fn apply_thread_rollback(&mut self, response: &ThreadRollbackResponse) {
         self.turns = response.thread.turns.clone();
+        self.turn_history_complete = true;
         self.buffer.retain(Self::event_survives_thread_rollback);
         self.active_turn_id = None;
     }

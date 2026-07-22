@@ -41,6 +41,20 @@ use tokio_tungstenite::tungstenite::Message;
 pub(super) type RecordedRequests = Arc<Mutex<Vec<JSONRPCRequest>>>;
 pub(super) type RecordingAppServer = (AppServerSession, RecordedRequests, JoinHandle<Result<()>>);
 
+fn test_transcript_cells(
+    thread_id: Option<ThreadId>,
+    cwd: &codex_utils_absolute_path::AbsolutePathBuf,
+    items: impl IntoIterator<Item = codex_app_server_protocol::ThreadItem>,
+    visibility: crate::thread_transcript::RawReasoningVisibility,
+    config: Option<&crate::legacy_core::config::Config>,
+) -> crate::thread_transcript::TranscriptCells {
+    let items = items.into_iter().collect::<Vec<_>>();
+    let metadata = crate::thread_transcript::collab_agent_metadata_from_items(&items);
+    crate::thread_transcript::thread_items_to_transcript_cells_with_metadata(
+        thread_id, cwd, items, visibility, config, &metadata,
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HistoryCapabilities {
     Current,
@@ -1569,7 +1583,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
             crate::app_server_session::ResumeModelSettings::RestoreFromThread,
         )
         .await?;
-    let initial_cells = crate::thread_transcript::thread_items_to_transcript_cells(
+    let initial_cells = test_transcript_cells(
         Some(thread_id),
         &app.config.cwd,
         started.turns.iter().flat_map(|turn| turn.items.clone()),
@@ -1742,7 +1756,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
             crate::app_server_session::ResumeModelSettings::RestoreFromThread,
         )
         .await?;
-    let initial_cells = crate::thread_transcript::thread_items_to_transcript_cells(
+    let initial_cells = test_transcript_cells(
         Some(thread_id),
         &app.config.cwd,
         started.turns.iter().flat_map(|turn| turn.items.clone()),
@@ -2155,7 +2169,7 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
             crate::app_server_session::ResumeModelSettings::RestoreFromThread,
         )
         .await?;
-    let mut initial_cells = crate::thread_transcript::thread_items_to_transcript_cells(
+    let mut initial_cells = test_transcript_cells(
         Some(thread_id),
         &app.config.cwd,
         started.turns.iter().flat_map(|turn| turn.items.clone()),
