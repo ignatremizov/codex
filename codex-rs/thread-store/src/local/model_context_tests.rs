@@ -34,6 +34,9 @@ use crate::ThreadStore;
 use crate::local::test_support::test_config;
 use crate::local::test_support::write_session_file_with_history_mode;
 
+#[path = "model_context_rollback_tests.rs"]
+mod rollback_tests;
+
 #[tokio::test]
 async fn loads_latest_checkpoint_with_required_turn_metadata() {
     let home = TempDir::new().expect("temp dir");

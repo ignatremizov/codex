@@ -3069,3 +3069,6 @@ fn append_suffix(rollout_path: &std::path::Path, suffix: &str) {
     file.write_all(suffix.as_bytes()).expect("append suffix");
     file.flush().expect("flush suffix");
 }
+
+#[path = "thread_history_rollback_tests.rs"]
+mod rollback_tests;

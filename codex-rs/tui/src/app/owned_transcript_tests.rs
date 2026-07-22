@@ -24,6 +24,8 @@ use ratatui::buffer::Buffer;
 
 fn user_cell(message: &str) -> Arc<dyn HistoryCell> {
     Arc::new(UserHistoryCell {
+        identity: Default::default(),
+        client_id: None,
         spoken: false,
         message: message.to_string(),
         text_elements: Vec::new(),

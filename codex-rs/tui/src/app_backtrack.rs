@@ -24,6 +24,11 @@
 mod browsing;
 mod legacy_input;
 mod prompt_navigation;
+mod prompt_target;
+mod user_identity;
+
+pub(crate) use prompt_target::LegacyRollbackTarget;
+pub(crate) use prompt_target::selected_prompt_turn_index;
 
 use std::any::TypeId;
 use std::sync::Arc;
@@ -1104,6 +1109,8 @@ mod tests {
         assert!(!has_backtrack_target(&cells));
 
         cells.push(Arc::new(UserHistoryCell {
+            identity: Default::default(),
+            client_id: None,
             spoken: false,
             message: "hello".to_string(),
             text_elements: Vec::new(),

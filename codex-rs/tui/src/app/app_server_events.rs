@@ -63,7 +63,27 @@ impl App {
         app_server_client: &AppServerSession,
         event: AppServerEvent,
     ) {
+        let target = match &event {
+            AppServerEvent::ServerNotification(notification) => {
+                match server_notification_thread_target(notification) {
+                    ServerNotificationThreadTarget::Thread(id) => Some(id),
+                    ServerNotificationThreadTarget::InvalidThreadId(_)
+                    | ServerNotificationThreadTarget::AppScoped
+                    | ServerNotificationThreadTarget::Global => None,
+                }
+            }
+            AppServerEvent::ServerRequest(request) => server_request_thread_id(request),
+            AppServerEvent::RequestCompleted { .. }
+            | AppServerEvent::Lagged { .. }
+            | AppServerEvent::Disconnected { .. } => None,
+        };
+        if target.is_some_and(|id| self.history_recovery_required.contains(&id)) {
+            return;
+        }
         match event {
+            // Legacy prompt editing consumes its correlated boundary directly. Boundaries
+            // left by cancelled request waiters carry no presentation or mutation semantics.
+            AppServerEvent::RequestCompleted { .. } => {}
             AppServerEvent::Lagged { skipped } => {
                 tracing::warn!(
                     skipped,

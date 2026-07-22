@@ -138,6 +138,8 @@ mod thread_queue;
 mod thread_read;
 mod thread_resume;
 mod thread_revert;
+#[path = "thread_rollback.rs"]
+mod thread_rollback;
 mod thread_sections;
 mod thread_settings_update;
 mod thread_shell_command;

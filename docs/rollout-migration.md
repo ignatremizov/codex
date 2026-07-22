@@ -8,12 +8,42 @@ completion evidence belonging to surviving turns remains attributed to those
 turns. Compatible historical records are decoded tolerantly; malformed or
 unsupported records retain the existing decoder's handling.
 
+Exact rollback cutoffs use the full canonical decoded record vector, before
+compatibility normalization, metadata relocation, or ordinal assignment.
+Migration scans for exact markers without changing managed migration or recovery
+files; compressed input can use an anonymous decoded snapshot. For exact
+sources only, it loads canonical records and their physical source positions,
+including valid retired events, oversized records, and delayed/copied metadata.
+Compatibility-only records are retained or removed using those source positions.
+Canonical decoding also performs the same embedded ghost-snapshot cleanup as
+cold resume. Surviving records preserve their original timestamps and media.
+Exact ranges are applied before the existing count-only rollback planner;
+exact markers are not applied again as instruction-count rollbacks.
+
+This exact-only pass costs O(decoded source) memory. Count-only migration keeps
+its streaming replay path; detection requires an additional streaming read and
+space for one uncapped source line. An invalid or unprovable exact coordinate is
+rejected under writer exclusion before changing the source, projection, journal,
+or staging files, without running unpublished-migration cleanup.
+Detection tolerates invalid UTF-8 records on count-only sources, as the existing
+compatibility parser does. Exact sources require canonical UTF-8 decoding and
+are rejected during preflight if that decoding fails. A cutoff at or after its
+own marker is also rejected rather than silently treated as an empty range.
+
 Canonical storage and model context serve different purposes. The canonical
 rollout retains historical messages, tool records, and compaction checkpoints.
 Paginated model-context loading independently selects a usable checkpoint and its
 required suffix. Without a provably usable cutoff, it falls back to full replay.
 Migration never publishes that bounded model-context selection as the canonical
 transcript.
+
+The rebuildable `fork_thread_history_projection_state` cache adds
+`projection_version INTEGER NOT NULL DEFAULT 0`. Version 0 rows are rebuilt even
+when their byte/ordinal checkpoint already matches EOF. Version 1 certifies exact
+rollback filtering and is published atomically with all derived rows and both
+projection checkpoints; a failed rebuild retains the previous data and version.
+This is a local cache implementation version, not a canonical rollout format or
+released database migration version.
 
 ## Inherited history and audit access
 

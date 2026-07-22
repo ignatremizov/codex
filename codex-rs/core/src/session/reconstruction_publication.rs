@@ -5,7 +5,7 @@ use super::*;
 impl Session {
     pub(super) async fn apply_rollout_reconstruction(
         &self,
-        turn_context: &TurnContext,
+        turn_context: &Arc<TurnContext>,
         rollout_items: &[RolloutItem],
     ) -> CodexResult<rollout_reconstruction::AppliedRolloutReconstruction> {
         let reconstruction = self
@@ -122,9 +122,26 @@ impl Session {
 
     pub(super) async fn install_rollout_reconstruction(
         &self,
-        turn_context: &TurnContext,
+        turn_context: &Arc<TurnContext>,
+        reconstruction: rollout_reconstruction::PreparedRolloutReconstruction,
+        prefix: Vec<RolloutItem>,
+    ) -> CodexResult<rollout_reconstruction::AppliedRolloutReconstruction> {
+        let permit = thread_settings::acquire_persistence_lock(self).await;
+        self.install_rollout_reconstruction_with_permit(
+            turn_context,
+            reconstruction,
+            prefix,
+            permit,
+        )
+        .await
+    }
+
+    pub(super) async fn install_rollout_reconstruction_with_permit(
+        &self,
+        turn_context: &Arc<TurnContext>,
         reconstruction: rollout_reconstruction::PreparedRolloutReconstruction,
         mut prefix: Vec<RolloutItem>,
+        permit: tokio::sync::OwnedSemaphorePermit,
     ) -> CodexResult<rollout_reconstruction::AppliedRolloutReconstruction> {
         let rollout_reconstruction::PreparedRolloutReconstruction {
             history,
@@ -158,7 +175,6 @@ impl Session {
         {
             prefix.extend(required.items);
         }
-        let permit = thread_settings::acquire_persistence_lock(self).await;
         let applied = rollout_reconstruction::AppliedRolloutReconstruction {
             previous_turn_settings: previous_turn_settings.clone(),
             repair,

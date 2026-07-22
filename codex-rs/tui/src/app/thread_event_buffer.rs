@@ -58,6 +58,9 @@ impl ThreadEventStore {
             let Some(removed) = self.buffer.pop_front() else {
                 break;
             };
+            if super::thread_turn_materialization::event_changes_materialized_turns(&removed) {
+                self.turn_history_complete = false;
+            }
             match removed {
                 ThreadBufferedEvent::Notification(notification) => {
                     if let ServerNotification::AgentMessageDelta(delta) = notification.as_ref() {

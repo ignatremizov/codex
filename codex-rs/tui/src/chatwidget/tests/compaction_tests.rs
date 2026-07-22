@@ -1,6 +1,51 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+#[tokio::test]
+async fn compacted_skill_inventory_is_visible_in_live_and_historical_projection() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let item = AppServerThreadItem::ContextCompaction {
+        id: "compact-skills".into(),
+        summary: None,
+        message: None,
+        decode_error: None,
+        available_skills: vec!["test-tui".into(), "remote-tests".into()],
+    };
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: thread_id(&chat),
+            turn_id: "turn-1".into(),
+            completed_at_ms: 0,
+            item: item.clone(),
+        }),
+        /*replay_kind*/ None,
+    );
+    let live = drain_insert_history_transcript(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    let cells = crate::thread_transcript::thread_items_to_transcript_cells(
+        /*thread_id*/ None,
+        &chat.config.cwd,
+        [item],
+        crate::thread_transcript::RawReasoningVisibility::Hidden,
+        Some(&chat.config),
+    );
+    let historical = cells
+        .iter()
+        .flat_map(|cell| cell.transcript_lines(/*width*/ 200))
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let inventory = "Available skills after compaction: test-tui, remote-tests";
+    assert!(live.contains(inventory));
+    assert!(historical.contains(inventory));
+    insta::assert_snapshot!(historical, @"
+    • Context compacted
+    • Available skills after compaction: test-tui, remote-tests
+    ");
+}
+
 fn normalize_compaction_snapshot(text: String) -> String {
     let elapsed = regex_lite::Regex::new(r"\b\d+(?:h \d+m \d+s|m \d+s|s)\b").unwrap();
     elapsed

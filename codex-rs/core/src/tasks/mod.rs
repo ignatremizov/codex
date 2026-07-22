@@ -856,12 +856,14 @@ impl Session {
                 time_to_first_token_ms,
             })
         };
+        // A client may issue rollback immediately after receiving the terminal event.
+        // Keep that mutation behind both active-state cleanup and the terminal flush.
+        let terminal_permit = self.reserve_history_publication().await;
         let saved_guardian_completion =
             matches!(event, EventMsg::TurnComplete(_)) && self.is_private_guardian_reviewer().await;
         if !saved_guardian_completion {
             self.send_event(turn_context.as_ref(), event.clone()).await;
         }
-
         let cleared_active_turn = {
             let mut active = self.active_turn.lock().await;
             if let Some(active_turn) = active.as_ref()
@@ -878,15 +880,20 @@ impl Session {
             // The parent can request another review as soon as it receives this event.
             self.send_event(turn_context.as_ref(), event).await;
         }
-        if cleared_active_turn && !queued_follow_up {
-            self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
-        }
         // Private reviewers already flushed the terminal event before delivering it.
         // Other buffering writers still need a barrier for the terminal event.
         if !saved_guardian_completion && let Err(err) = self.flush_rollout().await {
+            self.quarantine_history(format!("terminal history barrier failed: {err}"));
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
-        if cleared_active_turn {
+        drop(terminal_permit);
+        if !cleared_active_turn {
+            return;
+        }
+        if !queued_follow_up {
+            self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
+        }
+        if !self.submission_admission.requires_reload() {
             self.maybe_start_turn_for_pending_work().await;
         }
     }

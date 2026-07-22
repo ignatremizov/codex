@@ -83,19 +83,32 @@ impl Drop for PublicationOutcome {
 }
 
 impl Session {
+    pub(crate) fn quarantine_history(&self, reason: String) {
+        self.submission_admission.rollback_requires_reload();
+        self.history_publication
+            .failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(|| format!("{reason}; canonical reload required"));
+    }
+
     pub(crate) fn check_history_publication(&self) -> CodexResult<()> {
         self.history_publication.check()
     }
 
     /// Waits for accepted workers without closing admission. Abort the active task first.
     pub(crate) async fn await_history_publication(&self) {
-        let _permit = thread_settings::acquire_persistence_lock(self).await;
+        let _permit = self.reserve_history_publication().await;
+    }
+
+    pub(crate) async fn reserve_history_publication(&self) -> OwnedSemaphorePermit {
+        thread_settings::acquire_persistence_lock(self).await
     }
 
     pub(crate) async fn acquire_history_publication_barrier(
         &self,
     ) -> CodexResult<OwnedSemaphorePermit> {
-        let permit = thread_settings::acquire_persistence_lock(self).await;
+        let permit = self.reserve_history_publication().await;
         self.check_history_publication()?;
         Ok(permit)
     }

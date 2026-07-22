@@ -144,6 +144,8 @@ fn late_poll_updates_original_turn_and_rollback_restores_its_prior_snapshot() {
     assert_eq!(builder.active_turn_start_index(), start_index);
     let rollback = RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
         num_turns: 1,
+        materialized_turns: None,
+        rollback_start_index: None,
     }));
     let changes = builder.handle_rollout_item_with_changes(&rollback);
     assert_eq!(changes.removed_turn_ids, vec!["B"]);
@@ -271,7 +273,11 @@ fn canonical_completion_keeps_authority_over_late_raw_outputs_and_rollback() {
                 .is_empty()
         );
         builder.handle_rollout_item(&RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            ThreadRolledBackEvent { num_turns: 1 },
+            ThreadRolledBackEvent {
+                num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
+            },
         )));
         assert_eq!(builder.finish()[0].items, vec![expected]);
     }
@@ -395,13 +401,19 @@ fn zero_and_overcount_rollback_preserve_existing_indices_and_reset_associations(
     }
     let before = builder.turn_snapshot("A");
     let changes = builder.handle_rollout_item_with_changes(&RolloutItem::EventMsg(
-        EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 0 }),
+        EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            num_turns: 0,
+            materialized_turns: None,
+            rollback_start_index: None,
+        }),
     ));
     assert!(changes.changed_items.is_empty());
     assert_eq!(builder.turn_snapshot("A"), before);
     builder.handle_rollout_item(&RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
         ThreadRolledBackEvent {
             num_turns: u32::MAX,
+            materialized_turns: None,
+            rollback_start_index: None,
         },
     )));
     builder.handle_rollout_item(&started("C"));

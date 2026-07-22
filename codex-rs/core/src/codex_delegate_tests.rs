@@ -40,6 +40,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
     let io = Arc::new(SessionIo {
         tx_sub,
+        submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
         rx_event: rx_events,
         agent_status,
         session_loop_termination: completed_session_loop_termination(),
@@ -129,19 +130,19 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
 }
 
 #[tokio::test]
-async fn forward_ops_preserves_submission_trace_context() {
+async fn forwarded_session_preserves_submission_trace_context() {
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
     let io = Arc::new(SessionIo {
         tx_sub,
+        submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
         rx_event: rx_events,
         agent_status,
         session_loop_termination: completed_session_loop_termination(),
     });
-    let (tx_ops, rx_ops) = bounded(1);
     let cancel = CancellationToken::new();
-    let forward = tokio::spawn(forward_ops(Arc::clone(&io), rx_ops, cancel));
+    let forwarded_io = forward_session_io(Arc::clone(&io), cancel.clone());
 
     let submission = Submission {
         id: "sub-1".to_string(),
@@ -155,12 +156,11 @@ async fn forward_ops_preserves_submission_trace_context() {
         parent_turn_id: Some("parent-turn".to_string()),
         root_turn_id: Some("root-turn".to_string()),
     };
-    tx_ops.send(submission).await.unwrap();
-    drop(tx_ops);
+    forwarded_io.submit_with_id(submission).await.unwrap();
 
     let forwarded = timeout(Duration::from_secs(1), rx_sub.recv())
         .await
-        .expect("forward_ops hung")
+        .expect("submission hung")
         .expect("forwarded submission missing");
     assert_eq!("sub-1", forwarded.id);
     assert!(matches!(forwarded.op, Op::Interrupt));
@@ -175,10 +175,42 @@ async fn forward_ops_preserves_submission_trace_context() {
     );
     assert_eq!(Some("parent-turn".to_string()), forwarded.parent_turn_id);
 
-    timeout(Duration::from_secs(1), forward)
+    assert_eq!(Some("root-turn".to_string()), forwarded.root_turn_id);
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn forwarded_session_cancellation_preserves_accepted_rollback() {
+    let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let io = Arc::new(SessionIo {
+        tx_sub,
+        submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
+        rx_event: rx_events,
+        agent_status: watch::channel(AgentStatus::PendingInit).1,
+        session_loop_termination: completed_session_loop_termination(),
+    });
+    let cancellation = CancellationToken::new();
+    let forwarded = forward_session_io(Arc::clone(&io), cancellation.clone());
+    let rollback_id = forwarded
+        .submit(Op::ThreadRollback { num_turns: 1 })
         .await
-        .expect("forward_ops did not exit")
-        .expect("forward_ops join error");
+        .expect("accept rollback");
+    assert!(io.submit(Op::Compact).await.is_err());
+    cancellation.cancel();
+
+    let accepted = rx_sub
+        .recv()
+        .await
+        .expect("accepted rollback remains queued");
+    assert_eq!(accepted.id, rollback_id);
+    assert!(matches!(accepted.op, Op::ThreadRollback { num_turns: 1 }));
+    let shutdown = timeout(Duration::from_secs(1), rx_sub.recv())
+        .await
+        .expect("cancellation should request shutdown")
+        .expect("shutdown should be queued");
+    assert!(matches!(shutdown.op, Op::Shutdown));
+    assert!(io.submission_admission.check_ready().is_err());
 }
 
 #[tokio::test]

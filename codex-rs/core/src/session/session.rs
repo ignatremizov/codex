@@ -97,6 +97,7 @@ pub(crate) struct Session {
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
     pub(super) fork_persistence: ForkPersistence,
     pub(super) forked_from_ordinal_exclusive: Option<u64>,
+    pub(crate) submission_admission: Arc<SubmissionAdmission>,
     pub(super) next_internal_sub_id: AtomicU64,
 }
 
@@ -1772,6 +1773,7 @@ impl Session {
                 git_enrichment_policy,
                 fork_persistence,
                 forked_from_ordinal_exclusive,
+                submission_admission: Arc::new(SubmissionAdmission::default()),
                 next_internal_sub_id: AtomicU64::new(0),
             });
             if let Some(startup) = &startup {

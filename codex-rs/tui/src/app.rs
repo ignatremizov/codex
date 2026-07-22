@@ -227,6 +227,7 @@ mod file_change_approvals;
 mod history_pagination;
 mod history_ui;
 mod input;
+mod legacy_prompt_edit;
 mod loaded_threads;
 mod managed_worktree_creation;
 mod mcp_requests;
@@ -262,10 +263,12 @@ mod startup_warnings;
 mod thread_event_buffer;
 mod thread_events;
 mod thread_goal_actions;
+mod thread_replay_processes;
 mod thread_routing;
 mod thread_session_state;
 mod thread_settings;
 mod thread_title;
+mod thread_turn_materialization;
 mod transcript_export;
 mod tui_mode_picker;
 mod user_verification;
@@ -596,6 +599,8 @@ pub(crate) struct App {
     transcript_reflow: TranscriptReflowState,
     initial_history_replay_buffer: Option<InitialHistoryReplayBuffer>,
     pending_thread_switch_resets: usize,
+    /// Ambiguous history mutations stay read-only for this App's lifetime.
+    history_recovery_required: HashSet<ThreadId>,
     pub(crate) scrollback_has_older_history: bool,
 
     pub(crate) enhanced_keys_supported: bool,

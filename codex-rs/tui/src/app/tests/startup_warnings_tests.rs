@@ -50,6 +50,8 @@ async fn startup_warnings_preserve_stream_repair_and_backtrack_selection() -> Re
         app.config.cwd.to_path_buf(),
     ));
     app.transcript_cells = vec![Arc::new(UserHistoryCell {
+        identity: Default::default(),
+        client_id: None,
         message: "Selected prompt".into(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),

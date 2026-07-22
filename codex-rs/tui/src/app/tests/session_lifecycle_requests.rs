@@ -161,7 +161,13 @@ pub(super) enum HistoryCapabilities {
     ConfigReadUnknownVoice,
     VoiceCatalogCustom,
     VoiceCatalogUnavailable,
+    RollbackRejected,
+    RollbackUnknown,
+    RollbackCommittedRefreshFails,
 }
+
+#[path = "legacy_rollback_proxy.rs"]
+mod legacy_rollback_proxy;
 
 /// Returns and resets `(thread/loaded/list, thread/read)` request counts.
 fn take_backfill_counts(requests: &RecordedRequests) -> (usize, usize) {
@@ -289,6 +295,7 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
         let mut websocket = accept_async(stream).await?;
         let mut inventories = usize::from(failed_thread_name == Some("background"));
         let mut reject_detach = false;
+        let mut rollback_attempted = false;
         let mut reject_thread_list = history_capabilities == HistoryCapabilities::ThreadListFails;
         loop {
             let frame = tokio::select! {
@@ -337,6 +344,22 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                         .lock()
                         .expect("request recorder lock")
                         .push(request.clone());
+                    if let Some(error) = legacy_rollback_proxy::fault(
+                        history_capabilities,
+                        &request,
+                        &mut rollback_attempted,
+                    ) {
+                        websocket
+                            .send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Error(JSONRPCError {
+                                    id: request.id,
+                                    error,
+                                }))?
+                                .into(),
+                            ))
+                            .await?;
+                        continue;
+                    }
                     if realtime_behavior == RealtimeRequestBehavior::AcceptSpeechAndStallStop
                         && request.method == "thread/realtime/stop"
                     {

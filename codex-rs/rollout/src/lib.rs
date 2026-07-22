@@ -6,6 +6,7 @@ use codex_protocol::protocol::SessionSource;
 use serde::de::Error as _;
 use serde_json::Value;
 
+mod canonical_line;
 pub(crate) mod compression;
 pub(crate) mod config;
 pub(crate) mod list;
@@ -27,6 +28,7 @@ mod sqlite_metrics;
 pub mod state_db;
 mod writer_lock;
 
+pub use canonical_line::decode_canonical_rollout_line;
 pub use codex_history::CompactedItem;
 pub use codex_history::InitialHistory;
 pub use codex_history::ResponseItemEnvelope;
@@ -36,6 +38,8 @@ pub use codex_history::RetainedContextEvent;
 pub use codex_history::RetainedInputSource;
 pub use codex_history::RolloutItem;
 pub use codex_history::RolloutLine;
+pub use codex_history::exact_rollback_removed_items;
+pub use codex_history::rollout_without_exact_rollback_ranges;
 pub(crate) use codex_protocol::protocol;
 
 /// Decodes a persisted rollout record without Serde's flattened-envelope buffering.

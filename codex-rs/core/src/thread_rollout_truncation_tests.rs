@@ -167,6 +167,8 @@ fn truncate_rollout_before_turn_id_rejects_rolled_back_turn() {
         turn_completed("turn-2"),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         turn_started("turn-3"),
         turn_completed("turn-3"),
@@ -211,6 +213,8 @@ fn truncate_rollout_after_turn_id_rejects_rolled_back_turn() {
         turn_completed("turn-2"),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         turn_started("turn-3"),
         turn_completed("turn-3"),
@@ -224,6 +228,37 @@ fn truncate_rollout_after_turn_id_rejects_rolled_back_turn() {
         CodexErrorDetails::InvalidRequest(message)
             if message == "lastTurnId 'turn-2' was not found in the source thread"
     ));
+}
+
+#[test]
+fn fork_truncation_removes_exact_ranges_before_copying_rollout() {
+    let rollout = vec![
+        turn_started("turn-1"),
+        turn_completed("turn-1"),
+        turn_started("turn-2"),
+        turn_completed("turn-2"),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            rollback_start_index: Some(2),
+            num_turns: 0,
+            materialized_turns: None,
+        })),
+        turn_started("turn-3"),
+        turn_completed("turn-3"),
+    ];
+
+    let truncated =
+        truncate_rollout_after_turn_id(rollout, "turn-3").expect("truncate through turn-3");
+
+    assert_eq!(
+        serde_json::to_value(truncated).expect("serialize truncated rollout"),
+        serde_json::to_value(vec![
+            turn_started("turn-1"),
+            turn_completed("turn-1"),
+            turn_started("turn-3"),
+            turn_completed("turn-3"),
+        ])
+        .expect("serialize expected rollout")
+    );
 }
 
 #[test]
@@ -341,6 +376,8 @@ fn truncates_rollout_from_start_applies_thread_rollback_markers() {
         response_item(assistant_msg("a2")),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         response_item(user_msg("u3")),
         response_item(assistant_msg("a3")),
@@ -435,6 +472,25 @@ fn fork_turn_positions_use_inter_agent_delivery_metadata() {
 }
 
 #[test]
+fn instruction_positions_include_user_event_before_model_message() {
+    let rollout = vec![
+        turn_started("turn-1"),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: "initial".to_string(),
+            ..Default::default()
+        })),
+        RolloutItem::ResponseItem(user_msg("initial").into()),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: "steer".to_string(),
+            ..Default::default()
+        })),
+        RolloutItem::ResponseItem(user_msg("steer").into()),
+    ];
+
+    assert_eq!(instruction_positions_in_rollout(&rollout), vec![1, 3]);
+}
+
+#[test]
 fn fork_turn_positions_use_canonical_agent_messages_and_delivery_metadata() {
     let queued = InterAgentCommunication::new(
         AgentPath::root(),
@@ -464,11 +520,14 @@ fn fork_turn_positions_use_canonical_agent_messages_and_delivery_metadata() {
     ];
 
     assert_eq!(fork_turn_positions_in_rollout(&rollout), vec![0, 4, 7]);
+    assert_eq!(instruction_positions_in_rollout(&rollout), vec![0, 1, 4, 7]);
 
     rollout.insert(
         7,
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
     );
     assert_eq!(fork_turn_positions_in_rollout(&rollout), vec![0, 8]);
@@ -503,6 +562,8 @@ fn truncates_rollout_to_last_n_fork_turns_applies_thread_rollback_markers() {
         response_item(assistant_msg("a2")),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         response_item(user_msg("u2")),
         response_item(assistant_msg("a3")),
@@ -526,6 +587,8 @@ fn fork_turn_positions_ignore_zero_turn_rollback_markers() {
         )),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 0,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         response_item(user_msg("u2")),
     ];
@@ -545,6 +608,8 @@ fn truncates_rollout_to_last_n_fork_turns_discards_trigger_boundaries_in_rolled_
         response_item(assistant_msg("a1")),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         response_item(user_msg("u3")),
         response_item(assistant_msg("a2")),
@@ -572,6 +637,8 @@ fn truncates_rollout_to_last_n_fork_turns_discards_rolled_back_assistant_instruc
         response_item(assistant_msg("a2")),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         response_item(inter_agent_msg(
             "triggered task 2",

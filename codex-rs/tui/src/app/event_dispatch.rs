@@ -31,6 +31,13 @@ impl App {
         app_server: &mut AppServerSession,
         event: AppEvent,
     ) -> Result<AppRunControl> {
+        if self.history_recovery_blocks_event(&event) {
+            self.chat_widget.add_error_message(
+                "This conversation needs its history reloaded. Your draft is preserved. Start a new conversation, or quit and reopen this conversation in a new Codex process.".into(),
+            );
+            tui.frame_requester().schedule_frame();
+            return Ok(AppRunControl::Continue);
+        }
         if self.reconnect.offline {
             self.chat_widget.cancel_dictation();
         }
@@ -596,6 +603,32 @@ impl App {
                     return Ok(AppRunControl::Continue);
                 };
                 let nth_user_message = crate::app_backtrack::user_count(&self.transcript_cells[..index]);
+                let thread = match app_server.thread_read(thread_id, /*include_turns*/ false).await {
+                    Ok(thread) => thread,
+                    Err(err) => {
+                        self.restore_backtrack_prompt_after_revert_error(prompt, err);
+                        return Ok(AppRunControl::Continue);
+                    }
+                };
+                if thread.history_mode == codex_app_server_protocol::ThreadHistoryMode::Legacy {
+                    let recovery_draft = prompt.clone();
+                    if let Err(error) = self.edit_legacy_prompt(
+                        tui, app_server, thread, selected_cell, nth_user_message, prompt,
+                    ).await {
+                        // Release only this rollback's transient UI reservation. The thread-scoped
+                        // recovery guard remains closed across navigation and warm attachment.
+                        if self.history_recovery_required.contains(&thread_id) {
+                            self.pending_thread_switch_resets -= 1;
+                        } else {
+                            self.chat_widget.restore_user_message_to_composer(recovery_draft);
+                        }
+                        self.chat_widget.add_error_message(format!(
+                            "Could not finish editing this prompt: {error:#}. Your draft is preserved. Start a new conversation, or quit and reopen this conversation in a new Codex process."
+                        ));
+                        tui.frame_requester().schedule_frame();
+                    }
+                    return Ok(AppRunControl::Continue);
+                }
                 let selection: Result<(String, Vec<Turn>)> = async {
                     let channel = self.thread_event_channels.get(&thread_id)
                         .ok_or_else(|| color_eyre::eyre::eyre!("the selected thread is no longer available"))?;
@@ -608,7 +641,7 @@ impl App {
                             store.latest_turn_id.clone(),
                         )
                     };
-                    let mut thread = app_server.thread_read(thread_id, /*include_turns*/ false).await?;
+                    let mut thread = thread;
                     app_server.hydrate_initial_thread_history(
                         &mut thread,
                         /*turn_cursor*/ None,
@@ -630,15 +663,16 @@ impl App {
                                 .map(|item| (turn.id.clone(), item.id().to_string())))
                         })
                     }));
-                    let before_turn_id = crate::app_backtrack::backtrack_revert_before_turn_id(
+                    let cut = crate::app_backtrack::selected_prompt_turn_index(
                         &thread.turns,
+                        selected_cell.as_any().downcast_ref::<crate::history_cell::UserHistoryCell>()
+                            .and_then(|cell| cell.identity.get()),
                         start_item.as_ref(),
                         nth_user_message,
                         &mut prompt,
                     )?;
+                    let before_turn_id = thread.turns[cut].id.clone();
                     // Keep the store aligned with the displayed prefix, including retained live turns.
-                    let cut = thread.turns.iter().position(|turn| turn.id == before_turn_id)
-                        .ok_or_else(|| color_eyre::eyre::eyre!("selected turn disappeared"))?;
                     thread.turns.truncate(cut);
                     if let Some((turn_id, item_id)) = &start_item {
                         for turn in &mut thread.turns {
@@ -738,12 +772,16 @@ impl App {
                 self.pending_thread_switch_resets += 1;
                 self.app_event_tx.send(AppEvent::FinishPromptRevert {
                     thread_id, nth_user_message,
+                    canonical_cells: None,
                 });
             }
-            AppEvent::FinishPromptRevert { thread_id, nth_user_message } => {
-                self.pending_thread_switch_resets -= 1;
+            AppEvent::FinishPromptRevert { thread_id, nth_user_message, canonical_cells } => {
                 if self.chat_widget.thread_id() == Some(thread_id) {
-                    if let Some(index) = crate::app_backtrack::nth_user_position(&self.transcript_cells, nth_user_message) {
+                    let canonical_reset = canonical_cells.is_some();
+                    if let Some(cells) = canonical_cells {
+                        self.transcript_cells = cells;
+                        self.native_history.retain(&self.transcript_cells);
+                    } else if let Some(index) = crate::app_backtrack::nth_user_position(&self.transcript_cells, nth_user_message) {
                         self.transcript_cells.truncate(index);
                 self.native_history.retain(&self.transcript_cells);
                     }
@@ -754,10 +792,14 @@ impl App {
                     self.last_thread_usage_status_cell = None;
                     self.pending_thread_usage_history_refresh = false;
                     self.backtrack_render_pending = !tui.is_owned_screen();
+                    if canonical_reset {
+                        self.history_recovery_required.remove(&thread_id);
+                    }
                     self.chat_widget.set_queue_autosend_suppressed(/*suppressed*/ false);
                     self.chat_widget.emit_prompt_edit_thread_event();
                     tui.frame_requester().schedule_frame();
                 }
+                self.pending_thread_switch_resets -= 1;
             }
             AppEvent::BeginInitialHistoryReplayBuffer => {
                 self.begin_initial_history_replay_buffer();
@@ -788,6 +830,9 @@ impl App {
             }
             AppEvent::InsertHistoryCell(cell) => {
                 self.insert_history_cell(tui, cell);
+            }
+            AppEvent::AttachUserMessageIdentity { thread_id, identity, client_id, content } => {
+                self.attach_user_message_identity(thread_id, identity, client_id.as_deref(), &content);
             }
             AppEvent::EndInitialHistoryReplayBuffer => {
                 self.scrollback_has_older_history = self
@@ -873,6 +918,12 @@ impl App {
                     self.show_shutdown_feedback(tui)?;
                 }
                 return Ok(self.handle_exit_mode(app_server, mode).await);
+            }
+            AppEvent::RunningTaskExit { action, thread_id }
+                if self.history_recovery_required.contains(&thread_id) => {
+                if !matches!(action, RunningTaskExitAction::CancelTask) {
+                    return Ok(self.handle_exit_mode(app_server, ExitMode::Immediate).await);
+                }
             }
             AppEvent::RunningTaskExit { action, thread_id } => match action {
                 RunningTaskExitAction::RunInBackground => {

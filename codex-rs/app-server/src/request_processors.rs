@@ -405,6 +405,7 @@ use codex_feedback::FeedbackAttachmentPath;
 use codex_feedback::FeedbackUploadOptions;
 use codex_git_utils::git_diff_to_remote;
 use codex_git_utils::resolve_root_git_project_for_trust;
+use codex_history::exact_rollback_removed_items;
 use codex_login::AuthManager;
 use codex_login::CODEX_OPEN_APP_URL;
 use codex_login::CodexAuth;
@@ -567,6 +568,7 @@ mod thread_listener_event;
 mod thread_processor;
 mod thread_queue_processor;
 mod thread_resume_boundary;
+pub(crate) mod thread_rollback;
 mod thread_sections;
 mod token_usage_replay;
 mod turn_processor;
@@ -718,8 +720,12 @@ pub(crate) use self::thread_summary::thread_settings_from_config_snapshot;
 
 pub(crate) fn build_legacy_api_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<Turn> {
     let mut builder = ThreadHistoryBuilder::new();
-    for item in items {
-        if is_persisted_rollout_item(item, codex_protocol::protocol::ThreadHistoryMode::Legacy) {
+    for (item, removed) in items.iter().zip(exact_rollback_removed_items(items)) {
+        if removed
+            || !is_persisted_rollout_item(item, codex_protocol::protocol::ThreadHistoryMode::Legacy)
+        {
+            builder.skip_rollout_item();
+        } else {
             builder.handle_rollout_item(item);
         }
     }

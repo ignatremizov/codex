@@ -505,7 +505,11 @@ async fn guardian_history_survives_compaction_and_eviction_but_not_legacy_rollba
             test.codex.ensure_rollout_materialized().await;
             test.codex
                 .append_rollout_items(&[RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-                    ThreadRolledBackEvent { num_turns: 2 },
+                    ThreadRolledBackEvent {
+                        num_turns: 2,
+                        materialized_turns: None,
+                        rollback_start_index: None,
+                    },
                 ))])
                 .await?;
             test.codex.shutdown_and_wait().await?;

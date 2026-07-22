@@ -95,10 +95,20 @@ pub type RequestResult = std::result::Result<JsonRpcResult, JSONRPCErrorError>;
 
 #[derive(Debug, Clone)]
 pub enum AppServerEvent {
-    Lagged { skipped: usize },
+    Lagged {
+        skipped: usize,
+    },
     ServerNotification(Box<ServerNotification>),
     ServerRequest(Box<ServerRequest>),
-    Disconnected { message: String },
+    Disconnected {
+        message: String,
+    },
+    /// All earlier transport events precede this rollback request's response boundary.
+    ///
+    /// Local client bookkeeping only: this does not certify mutation success or durability.
+    RequestCompleted {
+        request_id: RequestId,
+    },
 }
 
 impl From<InProcessServerEvent> for AppServerEvent {
@@ -109,6 +119,9 @@ impl From<InProcessServerEvent> for AppServerEvent {
                 Self::ServerNotification(notification)
             }
             InProcessServerEvent::ServerRequest(request) => Self::ServerRequest(request),
+            InProcessServerEvent::RequestCompleted { request_id } => {
+                Self::RequestCompleted { request_id }
+            }
         }
     }
 }

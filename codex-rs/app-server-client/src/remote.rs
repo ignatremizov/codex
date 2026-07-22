@@ -17,6 +17,9 @@ use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::time::Duration;
 
+mod request_completion;
+use request_completion::PendingResponse;
+
 use crate::AppServerEvent;
 use crate::RequestResult;
 use crate::SHUTDOWN_TIMEOUT;
@@ -255,8 +258,7 @@ impl RemoteAppServerClient {
         let (command_tx, mut command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::unbounded_channel::<AppServerEvent>();
         let worker_handle = tokio::spawn(async move {
-            let mut pending_requests =
-                HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
+            let mut pending_requests = HashMap::<RequestId, PendingResponse>::new();
             let mut worker_exit_error: Option<(ErrorKind, String)> = None;
             loop {
                 tokio::select! {
@@ -275,7 +277,11 @@ impl RemoteAppServerClient {
                                     )));
                                     continue;
                                 }
-                                pending_requests.insert(request_id.clone(), response_tx);
+                                pending_requests.insert(request_id.clone(), PendingResponse {
+                                    response_tx,
+                                    ordered_boundary: (request.method == "thread/rollback")
+                                        .then(|| request_id.clone()),
+                                });
                                 if let Err(err) = write_jsonrpc_message(
                                     &mut stream,
                                     JSONRPCMessage::Request(*request),
@@ -287,8 +293,8 @@ impl RemoteAppServerClient {
                                     let message = format!(
                                         "remote app server at `{endpoint}` write failed: {err_message}"
                                     );
-                                    if let Some(response_tx) = pending_requests.remove(&request_id) {
-                                        let _ = response_tx.send(Err(err));
+                                    if let Some(pending) = pending_requests.remove(&request_id) {
+                                        let _ = pending.response_tx.send(Err(err));
                                     }
                                     let _ = deliver_event(
                                         &event_tx,
@@ -363,13 +369,19 @@ impl RemoteAppServerClient {
                             Some(Ok(Message::Text(text))) => {
                                 match serde_json::from_str::<JSONRPCMessage>(&text) {
                                     Ok(JSONRPCMessage::Response(response)) => {
-                                        if let Some(response_tx) = pending_requests.remove(&response.id) {
-                                            let _ = response_tx.send(Ok(Ok(response.result)));
+                                        if let Some(pending) = pending_requests.remove(&response.id)
+                                            && let Err(err) = pending.respond(Ok(response.result), &event_tx)
+                                        {
+                                            worker_exit_error = Some((err.kind(), err.to_string()));
+                                            break;
                                         }
                                     }
                                     Ok(JSONRPCMessage::Error(error)) => {
-                                        if let Some(response_tx) = pending_requests.remove(&error.id) {
-                                            let _ = response_tx.send(Ok(Err(error.error)));
+                                        if let Some(pending) = pending_requests.remove(&error.id)
+                                            && let Err(err) = pending.respond(Err(error.error), &event_tx)
+                                        {
+                                            worker_exit_error = Some((err.kind(), err.to_string()));
+                                            break;
                                         }
                                     }
                                     Ok(JSONRPCMessage::Notification(notification)) => {
@@ -511,8 +523,10 @@ impl RemoteAppServerClient {
                     "remote app-server worker channel is closed".to_string(),
                 )
             });
-            for (_, response_tx) in pending_requests {
-                let _ = response_tx.send(Err(IoError::new(err_kind, err_message.clone())));
+            for (_, pending) in pending_requests {
+                let _ = pending
+                    .response_tx
+                    .send(Err(IoError::new(err_kind, err_message.clone())));
             }
         });
 

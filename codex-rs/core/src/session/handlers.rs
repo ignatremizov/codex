@@ -343,19 +343,22 @@ pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
 
     // Gracefully flush and shutdown thread persistence on session end so tests
     // that inspect durable state do not race with the background writer.
-    if let Some(live_thread) = sess.live_thread()
-        && let Err(e) = live_thread.shutdown().await
-    {
-        warn!("failed to shutdown thread persistence: {e}");
-        let event = Event {
-            id: sub_id.clone(),
-            msg: EventMsg::Error(ErrorEvent {
-                misalignment: None,
-                message: "Failed to shutdown thread persistence".to_string(),
-                codex_error_info: Some(CodexErrorInfo::Other),
-            }),
-        };
-        sess.send_event_raw(event).await;
+    if let Some(live_thread) = sess.live_thread() {
+        match live_thread.shutdown().await {
+            Ok(()) => sess.submission_admission.acknowledge_writer_closed(),
+            Err(e) => {
+                warn!("failed to shutdown thread persistence: {e}");
+                let event = Event {
+                    id: sub_id.clone(),
+                    msg: EventMsg::Error(ErrorEvent {
+                        misalignment: None,
+                        message: "Failed to shutdown thread persistence".to_string(),
+                        codex_error_info: Some(CodexErrorInfo::Other),
+                    }),
+                };
+                sess.deliver_event_raw(event).await;
+            }
+        }
     }
 
     let event = Event {
@@ -417,6 +420,21 @@ pub(super) async fn submission_loop(
     // To break out of this loop, send Op::Shutdown.
     let mut shutdown_received = false;
     while let Ok(sub) = rx_sub.recv().await {
+        if sess.submission_admission.requires_reload()
+            && !matches!(
+                &sub.op,
+                Op::Shutdown | Op::ThreadRollback { .. } | Op::ThreadRollbackMaterialized { .. }
+            )
+        {
+            rx_sub.close();
+            // Drain already accepted work so a queued rollback still receives
+            // its correlated indeterminate result. Reply-bearing ops are dropped.
+            continue;
+        }
+        let rollback_submission = matches!(
+            &sub.op,
+            Op::ThreadRollback { .. } | Op::ThreadRollbackMaterialized { .. }
+        );
         if matches!(sub.op, Op::ResolveElicitation { .. }) {
             debug!(submission_id = %sub.id, operation = sub.op.kind(), "Submission");
         } else {
@@ -567,6 +585,23 @@ pub(super) async fn submission_loop(
                     compact(&sess, sub.id.clone()).await;
                     false
                 }
+                Op::ThreadRollback { num_turns } => {
+                    super::rollback::thread_rollback(&sess, sub.id.clone(), num_turns).await
+                }
+                Op::ThreadRollbackMaterialized {
+                    num_turns,
+                    expected_start_turn_id,
+                    expected_turn_count,
+                } => {
+                    super::rollback::thread_rollback_materialized(
+                        &sess,
+                        sub.id.clone(),
+                        num_turns,
+                        expected_start_turn_id,
+                        expected_turn_count,
+                    )
+                    .await
+                }
                 Op::SetThreadMemoryMode { mode } => {
                     set_thread_memory_mode(&sess, sub.id.clone(), mode).await;
                     false
@@ -604,7 +639,11 @@ pub(super) async fn submission_loop(
         .instrument(dispatch_span)
         .await;
         if should_exit {
-            shutdown_received = true;
+            // Submission admission switches to reload-required before an indeterminate rollback
+            // error is delivered. Closing the receiver here finalizes that quarantine and ensures
+            // no work runs against live context that may disagree with durable history.
+            rx_sub.close();
+            shutdown_received = !rollback_submission;
             break;
         }
     }
@@ -612,10 +651,13 @@ pub(super) async fn submission_loop(
     // explicit shutdown op, still run session teardown.
     if !shutdown_received {
         shutdown_session_runtime(&sess).await;
-        if let Some(live_thread) = sess.live_thread()
-            && let Err(err) = live_thread.shutdown().await
-        {
-            warn!("failed to shutdown thread persistence after submission channel closed: {err}");
+        if let Some(live_thread) = sess.live_thread() {
+            match live_thread.shutdown().await {
+                Ok(()) => sess.submission_admission.acknowledge_writer_closed(),
+                Err(err) => warn!(
+                    "failed to shutdown thread persistence after submission channel closed: {err}"
+                ),
+            }
         }
     }
     debug!("Agent loop exited");

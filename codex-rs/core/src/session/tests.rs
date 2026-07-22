@@ -1,6 +1,9 @@
 #[path = "notification_tests.rs"]
 mod notification_tests;
 
+#[path = "rollback_tests.rs"]
+mod rollback_tests;
+
 use super::mcp_refresh::McpRefresh;
 use super::step_context::StepInputs;
 
@@ -3311,6 +3314,8 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_rollback() {
         })),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
     ];
 
@@ -7042,6 +7047,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,
         forked_from_ordinal_exclusive: None,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         next_internal_sub_id: AtomicU64::new(0),
     };
     let per_turn_config = session.build_per_turn_config(
@@ -8158,6 +8164,7 @@ async fn submit_with_trace_captures_current_span_trace_context() {
     let io = SessionIo {
         tx_sub,
         rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: completed_session_loop_termination(),
     };
@@ -8972,6 +8979,7 @@ async fn shutdown_and_wait_allows_multiple_waiters() {
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
     });
@@ -9008,6 +9016,7 @@ async fn shutdown_and_wait_waits_when_shutdown_is_already_in_progress() {
     let io = Arc::new(SessionIo {
         tx_sub,
         rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
     });
@@ -9313,6 +9322,7 @@ where
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,
         forked_from_ordinal_exclusive: None,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
         next_internal_sub_id: AtomicU64::new(0),
     });
     let per_turn_config = session.build_per_turn_config(

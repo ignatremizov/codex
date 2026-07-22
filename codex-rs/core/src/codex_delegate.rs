@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use async_channel::Receiver;
 use async_channel::Sender;
 use codex_async_utils::OrCancelExt;
 use codex_protocol::protocol::AskForApproval;
@@ -156,14 +155,15 @@ pub(crate) async fn run_codex_thread_interactive(
 /// Keeps delegate IO cancellation identical for standalone and manager-owned reviewers.
 pub(crate) fn forward_session_io(io: Arc<SessionIo>, cancel_token: CancellationToken) -> SessionIo {
     let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
-    let (tx_ops, rx_ops) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     // Use a child token so parent cancel cascades but we can scope it to this task
     let cancel_token_events = cancel_token.child_token();
-    let cancel_token_ops = cancel_token.child_token();
 
     // Forward public events from the sub-agent to the consumer.
     let caller_io = SessionIo {
-        tx_sub: tx_ops,
+        // Acceptance must transfer directly to the session loop. An intermediate
+        // cancellable queue could lose a rollback after admission was reserved.
+        tx_sub: io.tx_sub.clone(),
+        submission_admission: Arc::clone(&io.submission_admission),
         rx_event: rx_sub,
         agent_status: io.agent_status.clone(),
         session_loop_termination: io.session_loop_termination.clone(),
@@ -171,11 +171,6 @@ pub(crate) fn forward_session_io(io: Arc<SessionIo>, cancel_token: CancellationT
     let io_for_events = Arc::clone(&io);
     tokio::spawn(async move {
         forward_events(io_for_events, tx_sub, cancel_token_events).await;
-    });
-
-    // Forward ops from the caller to the sub-agent.
-    tokio::spawn(async move {
-        forward_ops(io, rx_ops, cancel_token_ops).await;
     });
 
     caller_io
@@ -246,6 +241,7 @@ pub(crate) async fn run_codex_thread_one_shot(
     let ops_tx = io.tx_sub.clone();
     let agent_status = io.agent_status.clone();
     let session_loop_termination = io.session_loop_termination.clone();
+    let submission_admission = Arc::clone(&io.submission_admission);
     let io_for_bridge = io;
     tokio::spawn(async move {
         while let Ok(event) = io_for_bridge.next_event().await {
@@ -281,6 +277,7 @@ pub(crate) async fn run_codex_thread_one_shot(
         SessionIo {
             rx_event: rx_bridge,
             tx_sub: tx_closed,
+            submission_admission,
             agent_status,
             session_loop_termination,
         },
@@ -357,21 +354,6 @@ async fn forward_event_or_shutdown(
             shutdown_delegate(io).await;
             false
         }
-    }
-}
-
-/// Forward ops from a caller to a sub-agent, respecting cancellation.
-async fn forward_ops(
-    io: Arc<SessionIo>,
-    rx_ops: Receiver<Submission>,
-    cancel_token_ops: CancellationToken,
-) {
-    loop {
-        let submission = match rx_ops.recv().or_cancel(&cancel_token_ops).await {
-            Ok(Ok(submission)) => submission,
-            Ok(Err(_)) | Err(_) => break,
-        };
-        let _ = io.submit_with_id(submission).await;
     }
 }
 
