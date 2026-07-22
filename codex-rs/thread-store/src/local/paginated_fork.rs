@@ -110,7 +110,9 @@ pub(super) async fn prepare(
         }
         ForkBoundary::BeforeTurn(turn_id) => {
             let row = find_source_turn(pool, &lineage, turn_id.as_str()).await?;
-            if row.rollout_end_ordinal == Some(row.rollout_ordinal) {
+            if row.rollout_byte_offset.is_none()
+                || row.rollout_end_ordinal == Some(row.rollout_ordinal)
+            {
                 return Err(ThreadStoreError::InvalidRequest {
                     message: format!("turn {turn_id} does not have a persisted start boundary"),
                 });

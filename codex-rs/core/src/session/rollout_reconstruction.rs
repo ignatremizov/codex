@@ -3,6 +3,7 @@ use crate::context::world_state::WorldStateSnapshot;
 use crate::context_manager::is_model_generated_item;
 use crate::context_manager::is_user_turn_boundary;
 use codex_protocol::protocol::SessionContextWindow;
+use codex_protocol::rollout::exact_rollback_removed_items;
 use uuid::Uuid;
 
 // Return value of `Session::reconstruct_history_from_rollout`, bundling the rebuilt history with
@@ -123,9 +124,7 @@ fn finalize_active_segment<'a>(
     active_segment: ActiveReplaySegment<'a>,
     replay_state: &mut ReverseReplayState<'a>,
 ) {
-    // Thread rollback drops the newest surviving real user-message boundaries. In replay, that
-    // means skipping the next finalized segments that contain a non-contextual
-    // `EventMsg::UserMessage`.
+    // Legacy thread rollback markers count user-turn segments.
     if replay_state.pending_rollback_turns > 0 {
         replay_state
             .skipped_compacted_items
@@ -210,8 +209,15 @@ impl Session {
         // Reverse replay accumulates rollout items into the newest in-progress turn segment until
         // we hit its matching `TurnStarted`, at which point the segment can be finalized.
         let mut active_segment: Option<ActiveReplaySegment<'_>> = None;
+        let exact_rollback_removals = exact_rollback_removed_items(rollout_items);
 
         for (index, item) in rollout_items.iter().enumerate().rev() {
+            if exact_rollback_removals[index] {
+                if let RolloutItem::Compacted(compacted) = item {
+                    replay_state.skipped_compacted_items.push(compacted);
+                }
+                continue;
+            }
             match item {
                 RolloutItem::Compacted(compacted) if compacted.replacement_history_media_repair => {
                     // Older writers could append a repair before the rollback marker. If reverse
@@ -324,9 +330,12 @@ impl Session {
                     }
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
-                    replay_state.pending_rollback_turns = replay_state
-                        .pending_rollback_turns
-                        .saturating_add(usize::try_from(rollback.num_turns).unwrap_or(usize::MAX));
+                    if rollback.rollback_start_index.is_none() {
+                        replay_state.pending_rollback_turns =
+                            replay_state.pending_rollback_turns.saturating_add(
+                                usize::try_from(rollback.num_turns).unwrap_or(usize::MAX),
+                            );
+                    }
                 }
                 RolloutItem::EventMsg(EventMsg::TurnComplete(event)) => {
                     let active_segment =
@@ -444,18 +453,21 @@ impl Session {
             ..
         } = replay_state;
         let rollout_suffix = rollout_suffix.unwrap_or(rollout_items);
+        let rollout_suffix_start = rollout_items.len().saturating_sub(rollout_suffix.len());
         let was_skipped = |compacted: &CompactedItem| {
             skipped_compacted_items
                 .iter()
                 .any(|skipped| std::ptr::eq(*skipped, compacted))
         };
-        let has_legacy_compaction_without_window_number = rollout_items.iter().any(|item| {
-            matches!(
-                item,
-                RolloutItem::Compacted(compacted)
-                    if compacted.window_number.is_none() && !was_skipped(compacted)
-            )
-        });
+        let has_legacy_compaction_without_window_number =
+            rollout_items.iter().enumerate().any(|(index, item)| {
+                !exact_rollback_removals[index]
+                    && matches!(
+                        item,
+                        RolloutItem::Compacted(compacted)
+                            if compacted.window_number.is_none() && !was_skipped(compacted)
+                    )
+            });
         let initial_window = if has_legacy_compaction_without_window_number {
             None
         } else {
@@ -465,13 +477,15 @@ impl Session {
         let fallback_window_number = u64::try_from(
             rollout_items
                 .iter()
-                .filter(|item| {
-                    matches!(
-                        item,
+                .enumerate()
+                .filter(|(index, item)| {
+                    !exact_rollback_removals[*index]
+                        && matches!(
+                            item,
                         RolloutItem::Compacted(compacted)
                             if !compacted.replacement_history_media_repair
                                 && !was_skipped(compacted)
-                    )
+                        )
                 })
                 .count(),
         )
@@ -507,7 +521,11 @@ impl Session {
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
         // design should keep this same replay shape, but drive it from a resumable reverse source
         // instead of an eagerly loaded `&[RolloutItem]`.
-        for item in rollout_suffix {
+        for (offset, item) in rollout_suffix.iter().enumerate() {
+            let index = rollout_suffix_start.saturating_add(offset);
+            if exact_rollback_removals[index] {
+                continue;
+            }
             match item {
                 RolloutItem::ResponseItem(response_item) => {
                     history.record_items(
@@ -558,8 +576,10 @@ impl Session {
                     }
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
-                    history.drop_last_n_user_turns(rollback.num_turns);
-                    repaired_prefix_len = repaired_prefix_len.min(history.raw_items().len());
+                    if rollback.rollback_start_index.is_none() {
+                        history.drop_last_n_user_turns(rollback.num_turns);
+                        repaired_prefix_len = repaired_prefix_len.min(history.raw_items().len());
+                    }
                 }
                 RolloutItem::EventMsg(_)
                 | RolloutItem::TurnContext(_)

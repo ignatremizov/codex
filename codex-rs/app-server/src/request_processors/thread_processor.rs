@@ -14,6 +14,7 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -1888,6 +1889,8 @@ impl ThreadRequestProcessor {
         let ThreadRollbackParams {
             thread_id,
             num_turns,
+            expected_start_turn_id,
+            expected_turn_count,
         } = params;
 
         if num_turns == 0 {
@@ -1903,7 +1906,6 @@ impl ThreadRequestProcessor {
                 "paginated threads do not support thread/rollback",
             ));
         }
-
         let request = request_id.clone();
 
         let rollback_already_in_progress = {
@@ -1926,7 +1928,11 @@ impl ThreadRequestProcessor {
             .submit_core_op(
                 request_id,
                 thread.as_ref(),
-                Op::ThreadRollback { num_turns },
+                Op::ThreadRollbackMaterialized {
+                    num_turns,
+                    expected_start_turn_id,
+                    expected_turn_count,
+                },
             )
             .await
         {
@@ -3649,19 +3655,6 @@ impl ThreadRequestProcessor {
                     )
                     .await?;
             }
-            let history_items = if needs_history {
-                source_thread
-                    .history
-                    .take()
-                    .map(|history| history.items)
-                    .ok_or_else(|| {
-                        internal_error(format!(
-                            "thread {existing_thread_id} did not include persisted history"
-                        ))
-                    })?
-            } else {
-                Vec::new()
-            };
             let thread_state = self
                 .thread_state_manager
                 .thread_state(existing_thread_id)
@@ -4257,6 +4250,7 @@ impl ThreadRequestProcessor {
                     &thread_id,
                     path.as_ref(),
                     /*include_history*/ true,
+                    archived_policy,
                 )
                 .await?;
             Arc::new(
@@ -4271,8 +4265,9 @@ impl ThreadRequestProcessor {
                     })?,
             )
         };
-        let source_history_items =
-            Arc::new(without_goal_owned_context((*source_history_items).clone()));
+        let source_history_items = Arc::new(without_goal_owned_context(
+            rollout_without_exact_rollback_ranges(source_history_items.as_ref()),
+        ));
         let history_cwd = Some(source_thread.cwd.clone());
 
         // Persist Windows sandbox mode.

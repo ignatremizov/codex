@@ -320,6 +320,8 @@ pub(crate) enum AppEvent {
     RollbackSessionForPromptEdit {
         thread_id: ThreadId,
         nth_user_message: usize,
+        prompt_occurrences: usize,
+        prompt_occurrence: usize,
         prompt: UserMessage,
     },
 
@@ -327,6 +329,8 @@ pub(crate) enum AppEvent {
     ForkSessionForPromptEdit {
         thread_id: ThreadId,
         nth_user_message: usize,
+        prompt_occurrences: usize,
+        prompt_occurrence: usize,
         prompt: UserMessage,
     },
 

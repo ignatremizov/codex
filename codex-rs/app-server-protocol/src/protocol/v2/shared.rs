@@ -130,6 +130,7 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
             CoreCodexErrorInfo::Unauthorized => CodexErrorInfo::Unauthorized,
             CoreCodexErrorInfo::BadRequest => CodexErrorInfo::BadRequest,
             CoreCodexErrorInfo::ThreadRollbackFailed => CodexErrorInfo::ThreadRollbackFailed,
+            CoreCodexErrorInfo::ThreadRollbackCommitUnknown => CodexErrorInfo::ThreadRollbackFailed,
             CoreCodexErrorInfo::SandboxError => CodexErrorInfo::SandboxError,
             CoreCodexErrorInfo::ResponseStreamDisconnected { http_status_code } => {
                 CodexErrorInfo::ResponseStreamDisconnected { http_status_code }

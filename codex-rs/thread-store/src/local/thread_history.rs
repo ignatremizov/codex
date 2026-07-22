@@ -85,28 +85,6 @@ WHERE thread_id = ?
         .transpose()
 }
 
-pub(super) async fn fork_projection_is_current(
-    store: &LocalThreadStore,
-    thread_id: ThreadId,
-    next_rollout_byte_offset: u64,
-    next_rollout_ordinal: u64,
-) -> ThreadStoreResult<bool> {
-    let pool = store.thread_history_db().await?;
-    let state = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT next_rollout_byte_offset, next_rollout_ordinal FROM fork_thread_history_projection_state WHERE thread_id = ?",
-    )
-    .bind(thread_id.to_string())
-    .fetch_optional(pool)
-    .await
-    .map_err(thread_history_error)?;
-    let expected_offset = sqlite_integer(next_rollout_byte_offset, "rollout byte offset")?;
-    let expected_ordinal = sqlite_integer(next_rollout_ordinal, "rollout ordinal")?;
-    match state {
-        Some(state) => Ok(state == (expected_offset, expected_ordinal)),
-        None => Ok(expected_offset == 0 && expected_ordinal == 0),
-    }
-}
-
 pub(super) async fn apply_projection(
     store: &LocalThreadStore,
     thread_id: ThreadId,
@@ -170,7 +148,6 @@ WHERE thread_id = ?
             })?;
     }
 
-    let next_offset = sqlite_integer(next_offset, "rollout byte offset")?;
     sqlx::query(
         r#"
 INSERT INTO thread_history_projection_state (
@@ -184,25 +161,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
         "#,
     )
     .bind(thread_id.as_str())
-    .bind(next_offset)
-    .bind(next_ordinal)
-    .execute(&mut *transaction)
-    .await
-    .map_err(thread_history_error)?;
-    sqlx::query(
-        r#"
-INSERT INTO fork_thread_history_projection_state (
-    thread_id,
-    next_rollout_byte_offset,
-    next_rollout_ordinal
-) VALUES (?, ?, ?)
-ON CONFLICT(thread_id) DO UPDATE SET
-    next_rollout_byte_offset = excluded.next_rollout_byte_offset,
-    next_rollout_ordinal = excluded.next_rollout_ordinal
-        "#,
-    )
-    .bind(thread_id.as_str())
-    .bind(next_offset)
+    .bind(sqlite_integer(next_offset, "rollout byte offset")?)
     .bind(next_ordinal)
     .execute(&mut *transaction)
     .await
@@ -239,11 +198,6 @@ pub(super) async fn delete_thread(
         .await
         .map_err(thread_history_delete_error)?;
     sqlx::query("DELETE FROM thread_history_projection_state WHERE thread_id = ?")
-        .bind(thread_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(thread_history_delete_error)?;
-    sqlx::query("DELETE FROM fork_thread_history_projection_state WHERE thread_id = ?")
         .bind(thread_id.as_str())
         .execute(&mut *transaction)
         .await
@@ -304,7 +258,6 @@ ON CONFLICT(thread_id, turn_id) DO UPDATE SET
     completed_at = excluded.completed_at,
     duration_ms = excluded.duration_ms
 WHERE thread_turns.rollout_end_ordinal IS NULL
-  AND thread_turns.status = 'inProgress'
             "#,
         )
         .bind(thread_id)
