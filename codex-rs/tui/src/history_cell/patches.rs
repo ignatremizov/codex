@@ -24,6 +24,10 @@ impl PatchHistoryCell {
 }
 
 impl HistoryCell for PatchHistoryCell {
+    fn transcript_navigation_kind(&self) -> Option<TranscriptNavigationKind> {
+        Some(TranscriptNavigationKind::Patch)
+    }
+
     fn activity_ids(&self) -> Vec<String> {
         vec![self.activity_id.clone()]
     }

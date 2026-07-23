@@ -62,8 +62,10 @@ async fn cold_compaction_projection_respects_preference_and_preserves_detail() -
       Prompt line 1
 
       Prompt line 2
+    • Available skills after compaction: test-tui
     ---
     • Context compacted
+    • Available skills after compaction: test-tui
     ");
     Ok(())
 }
@@ -84,8 +86,18 @@ fn cold_compaction_decode_error_is_visible_with_content_hidden() {
             &cwd,
             show_compact_summary,
             AgentPreviewLineLimits::default(),
+            /*agent_metadata*/ &Default::default(),
         );
-        assert_eq!(projected.len(), 1);
+        assert_eq!(projected.len(), 2);
+        assert_eq!(
+            projected[1]
+                .display_lines(/*width*/ 80)
+                .into_iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "• Available skills after compaction: test-tui"
+        );
         rendered.push(
             projected[0]
                 .display_lines(/*width*/ 80)
@@ -161,6 +173,7 @@ fn completed_patch_restores_rich_diff_and_styles() {
         &cwd,
         /*show_compact_summary*/ true,
         AgentPreviewLineLimits::default(),
+        /*agent_metadata*/ &Default::default(),
     );
 
     assert_eq!(actual.len(), 1);
@@ -193,6 +206,7 @@ fn unfinished_and_rejected_patches_keep_their_outcome() {
             &cwd,
             /*show_compact_summary*/ true,
             AgentPreviewLineLimits::default(),
+            /*agent_metadata*/ &Default::default(),
         )
     })
     .flat_map(|cell| cell.display_lines(/*width*/ 80))
@@ -201,10 +215,35 @@ fn unfinished_and_rejected_patches_keep_their_outcome() {
     .join("\n");
 
     insta::assert_snapshot!(rendered, @"
+    • Added main.rs (+1 -0)
+        1 +fn main() {}
     • Patch application in progress
     • Patch application declined
     ✘ Failed to apply patch
     ");
+}
+
+#[test]
+fn empty_in_progress_patch_keeps_status_without_phantom_target() {
+    let cwd = test_path_buf("/workspace").abs();
+    let cells = cells(
+        ThreadItem::FileChange {
+            id: "patch-empty".to_string(),
+            changes: Vec::new(),
+            status: PatchApplyStatus::InProgress,
+        },
+        &cwd,
+        /*show_compact_summary*/ true,
+        AgentPreviewLineLimits::default(),
+        /*agent_metadata*/ &Default::default(),
+    );
+
+    assert_eq!(cells.len(), 1);
+    assert_eq!(cells[0].transcript_navigation_kind(), None);
+    assert_eq!(
+        cells[0].display_lines(/*width*/ 80)[0].to_string(),
+        "• Patch application in progress"
+    );
 }
 
 #[test]
@@ -271,6 +310,7 @@ fn tool_and_notice_projection_uses_normal_transcript_presentation() {
                 &cwd,
                 /*show_compact_summary*/ true,
                 AgentPreviewLineLimits::default(),
+                /*agent_metadata*/ &Default::default(),
             )
         })
         .flat_map(|cell| cell.display_lines(/*width*/ 80))

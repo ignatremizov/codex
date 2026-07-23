@@ -10,6 +10,7 @@ use crate::terminal_hyperlinks::lines_with_sources_eq;
 use crate::terminal_hyperlinks::remap_source_wrapped_line;
 use crate::wrapping::url_preserving_wrap_options;
 use crate::wrapping::word_wrap_line_with_source;
+use codex_protocol::models::MessagePhase;
 use std::borrow::Cow;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -185,6 +186,10 @@ impl UserHistoryCell {
 }
 
 impl HistoryCell for UserHistoryCell {
+    fn transcript_navigation_kind(&self) -> Option<TranscriptNavigationKind> {
+        Some(TranscriptNavigationKind::UserMessage)
+    }
+
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         visible_lines(self.display_hyperlink_lines(width))
     }
@@ -515,6 +520,7 @@ pub(crate) struct AgentMarkdownCell {
     inline_visualization_context: Option<crate::inline_visualization::InlineVisualizationContext>,
     rendered_lines: Option<MarkdownRenderCache>,
     spoken_artifacts: bool,
+    phase: Option<MessagePhase>,
 }
 
 impl AgentMarkdownCell {
@@ -539,6 +545,22 @@ impl AgentMarkdownCell {
             crate::inline_visualization::InlineVisualizationContext,
         >,
     ) -> Self {
+        Self::new_with_inline_visualizations_and_phase(
+            markdown_source,
+            cwd,
+            inline_visualization_context,
+            /*phase*/ None,
+        )
+    }
+
+    pub(crate) fn new_with_inline_visualizations_and_phase(
+        markdown_source: String,
+        cwd: &Path,
+        inline_visualization_context: Option<
+            crate::inline_visualization::InlineVisualizationContext,
+        >,
+        phase: Option<MessagePhase>,
+    ) -> Self {
         let rendered_lines =
             (!crate::inline_visualization::contains_inline_visualization(&markdown_source))
                 .then(MarkdownRenderCache::default);
@@ -548,6 +570,7 @@ impl AgentMarkdownCell {
             inline_visualization_context,
             rendered_lines,
             spoken_artifacts: false,
+            phase,
         }
     }
 
@@ -630,6 +653,13 @@ impl AgentMarkdownCell {
 }
 
 impl HistoryCell for AgentMarkdownCell {
+    fn transcript_navigation_kind(&self) -> Option<TranscriptNavigationKind> {
+        Some(match self.phase {
+            Some(MessagePhase::Commentary) => TranscriptNavigationKind::Commentary,
+            Some(MessagePhase::FinalAnswer) | None => TranscriptNavigationKind::AssistantOutput,
+        })
+    }
+
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         visible_lines(self.display_hyperlink_lines(width))
     }

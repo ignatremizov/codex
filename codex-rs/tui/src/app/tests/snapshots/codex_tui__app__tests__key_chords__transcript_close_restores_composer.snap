@@ -1,0 +1,8 @@
+---
+source: tui/src/app/tests/key_chords.rs
+assertion_line: 879
+expression: "render_bottom_popup(&app.chat_widget, 80)"
+---
+› draft
+
+  GPT-5.6-Sol default · /tmp/project

@@ -308,6 +308,7 @@ impl TranscriptView {
         if width == self.area.width {
             return;
         }
+        self.painted_highlight = None;
         self.rewrap_snapshot(width);
         self.area.width = width;
         if self.held_reading.is_none() || !matches!(self.search.progress, Progress::Found) {
@@ -391,6 +392,7 @@ impl TranscriptView {
         cells: &[Arc<dyn HistoryCell>],
         inserted: Range<usize>,
     ) {
+        self.painted_highlight = None;
         // With only a header and live output, the first older page extends the canonical tail.
         if !inserted.is_empty()
             && inserted.end == cells.len()

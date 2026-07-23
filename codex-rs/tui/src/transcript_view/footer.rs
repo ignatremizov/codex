@@ -61,6 +61,18 @@ impl TranscriptView {
         if self.is_activity_focused() {
             return self.disclosure_footer(width);
         }
+        if self.is_review_browser()
+            && !self.is_loading_history()
+            && self.history != TranscriptHistoryState::Failed
+        {
+            let close = self
+                .disclosure
+                .keymap
+                .primary_hint(crate::keymap::KeymapContext::Pager, "close_transcript")
+                .map(|key| key.display_label())
+                .unwrap_or_default();
+            return self.review_footer(width, &close);
+        }
         let pending = self.is_loading_history() || self.history == TranscriptHistoryState::Failed;
         let can_return = self.selection.is_none() && self.can_return_to_latest();
         (pending || self.unseen_activity || can_return)

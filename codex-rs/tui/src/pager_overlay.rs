@@ -53,6 +53,17 @@ impl Overlay {
         Self::Transcript(TranscriptOverlay::new(cells, keymap))
     }
 
+    pub(crate) fn new_review_transcript(
+        cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+    ) -> Self {
+        let mut overlay = TranscriptOverlay::new(cells, keymap);
+        overlay
+            .view
+            .open_review_browser(crate::history_cell::HistoryRenderMode::Rich);
+        Self::Transcript(overlay)
+    }
+
     pub(crate) fn new_static_with_lines(
         lines: Vec<Line<'static>>,
         title: String,

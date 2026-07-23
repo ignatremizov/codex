@@ -298,23 +298,30 @@ fn item_to_cells(
         }
         ThreadItem::AgentMessage {
             text,
+            phase,
             inter_agent_source: Some(_),
             ..
         } => {
-            cells.push(Arc::new(AgentMarkdownCell::new_with_inline_visualizations(
-                text,
-                cwd.as_path(),
-                inline_visualization_context,
-            )));
-        }
-        ThreadItem::AgentMessage { text, .. } => {
-            let parsed = parse_assistant_markdown(&text, cwd.as_path());
-            if !parsed.visible_markdown.trim().is_empty() {
-                cells.push(Arc::new(AgentMarkdownCell::new_with_inline_visualizations(
-                    parsed.visible_markdown,
+            cells.push(Arc::new(
+                AgentMarkdownCell::new_with_inline_visualizations_and_phase(
+                    text,
                     cwd.as_path(),
                     inline_visualization_context,
-                )));
+                    phase,
+                ),
+            ));
+        }
+        ThreadItem::AgentMessage { text, phase, .. } => {
+            let parsed = parse_assistant_markdown(&text, cwd.as_path());
+            if !parsed.visible_markdown.trim().is_empty() {
+                cells.push(Arc::new(
+                    AgentMarkdownCell::new_with_inline_visualizations_and_phase(
+                        parsed.visible_markdown,
+                        cwd.as_path(),
+                        inline_visualization_context,
+                        phase,
+                    ),
+                ));
             }
         }
         ThreadItem::FunctionCallOutput {

@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use codex_protocol::models::MessagePhase;
 use color_eyre::eyre::Result;
 
 use super::App;
@@ -29,6 +30,7 @@ impl App {
         source: String,
         cwd: PathBuf,
         inline_visualization_context: Option<InlineVisualizationContext>,
+        phase: Option<MessagePhase>,
         scrollback_reflow: ConsolidationScrollbackReflow,
         deferred_history_cell: Option<Box<dyn HistoryCell>>,
     ) -> Result<()> {
@@ -59,10 +61,11 @@ impl App {
                 "ConsolidateAgentMessage: replacing cells [{start}..{end}] with AgentMarkdownCell"
             );
             let consolidated: Arc<dyn HistoryCell> = Arc::new(
-                history_cell::AgentMarkdownCell::new_with_inline_visualizations(
+                history_cell::AgentMarkdownCell::new_with_inline_visualizations_and_phase(
                     source,
                     &cwd,
                     inline_visualization_context,
+                    phase,
                 ),
             );
             self.native_history

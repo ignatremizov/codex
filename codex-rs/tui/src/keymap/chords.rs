@@ -252,10 +252,17 @@ or a two-stroke chord such as `ctrl-x ctrl-t`.",
                     && chord_stroke_matches(binding.chord.completion, event)
             })
             .min_by_key(|binding| {
-                (
-                    !(contexts.0 & TRANSCRIPT_CLOSE != 0
+                // Prompt selection uses the shared chord to toggle details without
+                // leaving the selected prompt. Review and Full use it to close first.
+                let preferred_transcript_action = if contexts.0 & TRANSCRIPT_BROWSING != 0 {
+                    is_agent_picker_transcript_action(binding.action)
+                } else {
+                    contexts.contains(KeymapContext::Pager)
                         && binding.action.context == KeymapContext::Pager
-                        && binding.action.action == "close_transcript"),
+                        && binding.action.action == "close_transcript"
+                };
+                (
+                    !preferred_transcript_action,
                     contexts.is_warnings() && binding.action.context != KeymapContext::List,
                     contexts.is_warnings() && binding.action.context == KeymapContext::Global,
                 )
