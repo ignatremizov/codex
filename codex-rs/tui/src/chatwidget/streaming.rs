@@ -288,17 +288,20 @@ impl ChatWidget {
 
     pub(super) fn finalize_completed_assistant_message(
         &mut self,
-        message: &str,
+        message: Option<&str>,
         phase: Option<MessagePhase>,
     ) {
-        if self.stream_controller.is_none() && !message.is_empty() {
+        if self.stream_controller.is_none()
+            && let Some(message) = message
+            && !message.is_empty()
+        {
             let displayed =
                 parse_assistant_markdown(message, self.config.cwd.as_path()).visible_markdown;
             self.handle_streaming_delta(displayed);
         }
         // Item completion is authoritative. Use it for consolidation so any
         // deltas dropped by a saturated transport cannot truncate the transcript.
-        self.flush_answer_stream(Some(message), phase);
+        self.flush_answer_stream(message, phase);
         self.handle_stream_finished();
         self.request_redraw();
     }
@@ -551,6 +554,7 @@ impl ChatWidget {
             }
         }
         let parsed = parse_assistant_markdown(&message, self.config.cwd.as_path());
+        let phase = item.phase;
         let questions = item.questions.as_deref().unwrap_or_default();
         let interrupted = self
             .transcript
@@ -582,7 +586,7 @@ impl ChatWidget {
                 context,
                 questions,
             )
-            .with_phase(item.phase.clone());
+            .with_phase(phase.clone());
             if let Some(item) = interrupted {
                 self.app_event_tx
                     .send(AppEvent::CorrectFlushedAgentMessage { item, cell });
@@ -599,7 +603,7 @@ impl ChatWidget {
             self.handle_stream_finished();
             self.request_redraw();
         } else {
-            self.finalize_completed_assistant_message(&message, item.phase.clone());
+            self.finalize_completed_assistant_message(Some(&message), phase.clone());
         }
         self.transcript.last_flushed_agent_message = None;
         if !parsed.visible_markdown.is_empty() {
@@ -627,7 +631,7 @@ impl ChatWidget {
             });
         }
         self.status_state.pending_status_indicator_restore = item.questions.is_some()
-            || match item.phase {
+            || match phase {
                 // Models that don't support preambles only output AgentMessageItems on turn completion.
                 Some(MessagePhase::FinalAnswer) | None => {
                     !self.input_queue.pending_steers.is_empty()

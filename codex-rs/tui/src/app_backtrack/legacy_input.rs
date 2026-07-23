@@ -31,7 +31,13 @@ impl App {
             if self.handle_backtrack_preview_key(tui, *key) {
                 return Ok(true);
             }
-            if self.keymap.pager.find.is_pressed(*key) {
+            if self
+                .transcript_view
+                .handle_review_key(*key, &self.transcript_cells)
+                .is_some()
+            {
+                // Browser keys do not alter the independently armed prompt selection.
+            } else if self.keymap.pager.find.is_pressed(*key) {
                 self.transcript_view.begin_search();
             } else if self.keymap.pager.close.is_pressed(*key)
                 || self.keymap.pager.close_transcript.is_pressed(*key)
@@ -47,7 +53,7 @@ impl App {
             tui.frame_requester().schedule_frame();
             return Ok(true);
         }
-        if !self.transcript_view.is_detailed() {
+        if !self.transcript_view.is_review_browser() && !self.transcript_view.is_detailed() {
             return Ok(false);
         }
         if self.keymap.pager.close_transcript.is_pressed(*key) {

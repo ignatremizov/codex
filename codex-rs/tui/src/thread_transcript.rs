@@ -297,14 +297,18 @@ fn item_to_cells(
         }
         ThreadItemPayload::AgentMessage {
             text,
+            phase,
             inter_agent_source: Some(_),
             ..
         } => {
-            cells.push(Arc::new(AgentMarkdownCell::new_with_inline_visualizations(
-                text,
-                cwd.as_path(),
-                inline_visualization_context,
-            )));
+            cells.push(Arc::new(
+                AgentMarkdownCell::new_with_inline_visualizations_and_phase(
+                    text,
+                    cwd.as_path(),
+                    inline_visualization_context,
+                    phase,
+                ),
+            ));
         }
         ThreadItemPayload::AgentMessage {
             text,
@@ -315,12 +319,12 @@ fn item_to_cells(
             let parsed = parse_assistant_markdown(&text, cwd.as_path());
             if !parsed.visible_markdown.trim().is_empty() {
                 cells.push(Arc::new(
-                    AgentMarkdownCell::new_with_inline_visualizations(
+                    AgentMarkdownCell::new_with_inline_visualizations_and_phase(
                         parsed.visible_markdown,
                         cwd.as_path(),
                         inline_visualization_context,
+                        phase,
                     )
-                    .with_phase(phase)
                     .with_questions(questions.as_deref().unwrap_or_default()),
                 ));
             }

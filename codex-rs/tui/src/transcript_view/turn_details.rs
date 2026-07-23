@@ -390,7 +390,9 @@ impl TranscriptView {
     }
 
     pub(crate) fn turn_row(&self, cells: &[Arc<dyn HistoryCell>], index: usize) -> Option<TurnRow> {
-        if self.detailed || self.mode != HistoryRenderMode::Rich {
+        // Review owns its concise per-cell representation and canonical target list.
+        // Optional turn summaries remain an ordinary-owned-viewport presentation only.
+        if self.is_review_browser() || self.detailed || self.mode != HistoryRenderMode::Rich {
             return None;
         }
         let details = self.turn_details.as_ref()?;

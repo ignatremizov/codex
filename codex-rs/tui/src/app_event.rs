@@ -41,6 +41,7 @@ use codex_connectors::AppInfo;
 use codex_file_search::FileMatch;
 use codex_message_history::HistoryBatchCursor;
 use codex_protocol::ThreadId;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -1385,7 +1386,7 @@ pub(crate) enum AppEvent {
     /// `deferred_history_cell` lets callers add the final stream tail to the
     /// transcript without first writing its provisional render to scrollback.
     ConsolidateAgentMessage {
-        phase: Option<codex_protocol::models::MessagePhase>,
+        phase: Option<MessagePhase>,
         interrupted_item: Option<(String, String)>,
         source: String,
         copy_source: Option<String>,

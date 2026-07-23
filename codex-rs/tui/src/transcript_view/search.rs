@@ -494,6 +494,7 @@ impl TranscriptView {
         if width == self.area.width {
             return;
         }
+        self.painted_highlight = None;
         self.rewrap_snapshot(width);
         if let Some(found) = &mut self.search.current {
             found.layout = Arc::new(found.layout.rewrap(width));
@@ -592,6 +593,7 @@ impl TranscriptView {
         inserted: Range<usize>,
     ) {
         self.invalidate_turn_details_from(/*index*/ 0);
+        self.painted_highlight = None;
         // With only a header and live output, the first older page extends the canonical tail.
         if !inserted.is_empty()
             && inserted.end == cells.len()
