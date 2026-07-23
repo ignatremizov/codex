@@ -1,0 +1,233 @@
+ └ .codex-comment-23257.md (+0 -115)
+Additional reproduction plus a proposed smallest-stage implementation spec. This is the same thread analyzed in #33493, viewed specifically at the rollout persistence boundary.
+
+### Additional storage evidence
+
+A sanitized structural scan of one long-lived image-heavy rollout produced:
+
+| Metric | Observed value |
+| --- | ---: |
+| Total rollout bytes | 2,873,784,216 |
+| `compacted` records | 54 |
+| Bytes in `compacted` records | 2,731,786,825 |
+| Share of rollout bytes in `compacted` records | approximately 95.1% |
+| Latest compacted replacement-history items | 211 |
+| Latest retained images | 142 |
+| Latest retained image/data-URL characters | 111,563,732 |
+| Latest retained text characters | 56,733 |
+
+The latest checkpoint was therefore approximately 111.7 MB of serialized replacement history, almost entirely inline image URLs. The rollout is not recursively embedding prior `replacement_history` objects. It is append-only snapshot amplification: each compaction persists another full snapshot containing the same surviving media.
+
+All 142 images in the latest checkpoint were already surrounded by local-image text wrappers containing their source paths. The raw data URLs can therefore be removed while retaining cheap, model-callable references for `view_image`.
+
+No raw rollout is attached because it contains private prompts, paths, tool output, and images. These measurements were computed from record types and structural field lengths without printing content.
+
+### Current upstream persistence path
+
+Remote compaction v2 constructs `CompactedItem` with a clone of the newly installed history:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/compact_remote_v2.rs#L285-L319
+
+`replace_compacted_history` then deliberately overwrites `replacement_history` with another clone of the exact post-ID-assignment live history and appends it as a `RolloutItem::Compacted` record:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/session/mod.rs#L3021-L3051
+
+The persisted schema stores that snapshot directly as `Option<Vec<ResponseItem>>`:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/protocol/src/protocol.rs#L3232-L3248
+
+This means a persistence-only filter applied after history installation would make replay/resume diverge from the live context. The safer fix boundary is earlier: sanitize/bound the replacement history before it becomes both live state and the persisted checkpoint
+.
+
+Historic resume/fork reconstruction currently restores the latest surviving replacement history exactly:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/session/rollout_reconstruction.rs#L113-L185
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/session/rollout_reconstruction.rs#L317-L345
+
+The shared installation path prepares media in memory but intentionally leaves the recorded rollout unchanged. That means an existing 2.87 GB rollout remains large and repeats the same repair work on every reconstruction:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/session/mod.rs#L1248-L1333
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/session/mod.rs#L1345-L1370
+
+The zero-cost media retention that feeds this persistence path is documented in #33493. Current upstream counts `InputImage` and `InputAudio` as zero retained-message tokens and preserves them in partial messages:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/compact_remote_v2.rs#L482-L560
+
+I posted the detailed current-source trace and token reproduction here:
+
+https://github.com/openai/codex/issues/33493#issuecomment-5015810639
+
+### Proposed implementation / persistence spec
+
+The smallest coherent stage should keep live and persisted replacement semantics identical:
+
+1. Before `build_v2_compacted_history` applies its retained-message budget, remove every retained raw `InputImage` payload and scope reopenable references to the window being summarized.
+   - Carry the selected checkpoint's summarized-prefix length as structural `ContextManager` state. Do not infer the boundary from a model-visible `ResponseItem::Compaction` / `ContextCompaction` item: remote output normalization, historic repair, and rollback can legitimately produce replacement histories without that marker.
+   - Keep inherited paths in the actual compaction request so the compactor has one final opportunity to inspect them, but remove those inherited wrappers from the cloned replacement-history candidates.
+   - For canonical local-image triplets introduced after that boundary, retain the existing `<image ... path="...">` wrappers in the new checkpoint. A path therefore survives the compaction of the window that introduced it, remains available during the following window and its compaction request, and then ages out of the newly installed checkpoint.
+   - Emit one bounded checkpoint-level omission fragment for images introduced in the current window, positioned at the latest removed media item, rather than one fragment per image. The fragment tells the model that retained paths can be reopened with `view_image`; repeated repair coalesces older omission fragments back to one. If retention filters out the item carrying that fragment, rehome it into a retained current-window message. If no message survives—for example, a tool-output-only window—create one exact developer-role omission item that retention explicitly recognizes and rollback cannot mistake for a user-turn boundary. Treat canonical path wrappers and their marker as atomic during retained-text truncation so truncation never persists malformed path-bearing markup. Never rehome an omission marker inherited from an older window.
+   - For pathless media, retain an explicit unavailable marker until a durable media-resource contract exists.
+2. Charge the reference/marker text against the existing retained-message token budget.
+3. Install that media-free history as the active post-compaction context.
+4. Let `replace_compacted_history` persist the same installed items unchanged. No second rollout-only representation is needed for the first fix.
+5. Keep the original user/response rollout records untouched so transcript rendering and audit history still retain the original event once. The change only prevents raw media from being recopied into every later checkpoint.
+6. For already-poisoned threads, sanitize media in the structurally tracked summarized prefix of the cloned history used to construct the next compaction request. Preserve adjacent source-path wrappers in that request so the current compactor can still use them. Media added after the boundary remains fully visible to the current compactor. Build replacement candidates from the raw sanitized history rather than the modality-normalized prompt, so a text-only model's image placeholder cannot obscure canonical wrappers. After compaction succeeds, expire inherited wrappers and markers from the replacement-history candidates, sanitize current-window media, and install a media-free checkpoint containing only current-window references.
+   - Apply the same inherited-reference expiration to local compaction replacement candidates. Sanitize the current local-compaction suffix before its text-only retention collector runs so a new canonical wrapper is flattened with its bounded omission instead of losing the path alongside the raw image. Apply the shared structured retained-message truncator before flattening an oversized selected item, so the wrapper and omission are retained together or the item is dropped rather than persisting malformed markup. Local history collection can flatten canonical wrappers into one text item, so the following compaction recognizes and removes complete inherited `<image ... path="...">...</image>` ranges while preserving adjacent user text.
+   - The legacy remote compactor has no reliable returned-history boundary; expire recognized returned wrappers before central media sanitization. Remote compaction v2 remains the provenance-preserving path.
+7. Record omitted image counts and bytes in remote-compaction-v2 analytics so the size reduction is observable. Repair and manual-vacuum operations use structured logs.
+
+A content-addressed media store remains useful for pathless pasted/data-URL images and transcript hydration, but it is not required to stop this reproduction because every observed image already has a source path. A later store should be owned by the image's execution environment and expose a stable reference that `view_image` can resolve; it must not turn an app-server host path into an assumed remote-executor path.
+
+### Historic rollout migration / vacuum spec
+
+Existing rollouts need recovery before the next compaction:
+
+1. At the shared resume/fork reconstruction boundary, sanitize only the base replacement history selected from the latest surviving checkpoint. Leave the newer suffix untouched because it has not yet been summarized.
+2. Make the transformation deterministic and idempotent, preserving source-path wrappers while removing raw media.
+3. On resume, append one marked repaired checkpoint with the same context-window number/IDs before accepting the first user/model turn. An append or flush failure aborts initialization.
+4. On fork, persist sanitized inherited context only in the child. Never rewrite or vacuum the parent as a side effect of forking.
+5. `replacement_history_media_sanitized_prefix_len` marks the exact summarized prefix covered by the policy, while `replacement_history_media_repair` identifies representation-only checkpoints. These fields make later resumes idempotent without a separate numeric policy version.
+6. Keep a defensive pre-compaction repair for already-running sessions that did not pass through cold reconstruction. Local, legacy-remote, and remote-v2 compaction all sanitize only the structurally tracked inherited prefix of their cloned request history before emergency function-output trimming and modality normalization; the live history and current unsummarized suffix remain untouched until compaction succeeds.
+7. Keep prior path-bearing checkpoints append-only. If rollback selects an older surviving checkpoint, reconstruction ignores semantic checkpoints and representation repairs owned by the rejected turn, restores the path set that was active at the historical checkpoint, and lets a later successful compaction age those references out again. Commit the rollback marker first, then persist and verify the one required repair for the newly selected surviving checkpoint before installing live state. Do not append a pre-marker repair that the rollback immediately rejects and manual vacuum must preserve forever; a post-marker repair failure leaves the thread reload-required.
+8. If forward replay encounters a legacy compaction record without `replacement_history`, rebuild that compaction as before and reset the tracked repaired-prefix boundary to the complete rebuilt history. Do not carry an older selected checkpoint's boundary into the newly rebuilt replacement.
+
+The active-context repair and physical file reclamation should remain separate:
+
+1. Do not rewrite a multi-gigabyte JSONL synchronously on the resume path.
+2. Do not schedule vacuuming from resume, fork, or compaction. Physical reclamation is an explicit offline operation:
+   `codex debug rollout vacuum <ROLLOUT>`.
+   No preliminary resume is required. The command accepts both checkpointless pre-policy rollouts and marker-aware rollouts produced after resume or compaction under the new policy. Here “checkpointless” means that the rollout has pre-policy `compacted` records but no marked/certified media-policy checkpoint; a thread that was never compacted has no replacement history for vacuum to rewrite. For a pre-policy rollout, the command repairs the file directly by sanitizing every valid compacted replacement history. For a marker-aware rollout, it preserves every valid marked checkpoint and vacuums only eligible unmarked compacted histories. Original response records remain untouched, so transcript/audit media stays persisted once even though raw media is no longer replayed from a historical compacted snapshot. Close every Codex process using that session before running the command. Mutating the same rollout from multiple processes is operator error; use `codex fork` for concurrent branches.
+3. Once a record payload contains `replacement_history_media_sanitized_prefix_len`, require that record to be a structurally valid protected compacted checkpoint. Preserve every valid marked checkpoint byte-for-byte because its post-prefix suffix may be the only persisted copy of unsummarized media. Certify the summarized prefix over the same typed message and function/custom-tool output image locations used by preflight and rewriting; opaque nested image-shaped data does not invalidate the prefix. Any malformed outer rollout shape, malformed marker, or false media-free certification fails closed even when another valid protected checkpoint exists, without rewriting or changing compressed representation. Syntactically valid envelopes use decoded payload keys, while rejected/non-envelope JSONL values are scanned conservatively for a complete literal or JSON-escaped marker-key spelling even when its delimiter is malformed.
+4. The manual command accepts either a logical `.jsonl` path or its physical `.jsonl.zst` representation, validates compressed input before changing representation, then materializes valid input to the canonical plain path and streams to a same-directory, rollout-owned `.media-vacuum-*.tmp` file. Failed preflight leaves `.jsonl.zst` selected. If a canonical plain file and compressed sibling coexist, remove the sibling only after preflight establishes at least one valid canonical rollout record; an empty/corrupt plain file must not displace a valid compressed representation. Physical compressed-path recovery normalizes to the backup's canonical `.jsonl` name.
+5. Preserve all unrelated fields, including opaque encrypted content, byte-for-byte, and preserve the source file modification time so offline cleanup does not reorder thread recency. Restore that time immediately if compressed materialization publishes the canonical plain file, including when a later materialization or cleanup step fails, and preserve it on the final replacement. Preserve rejected/non-target rollout records verbatim rather than materializing their potentially large inline strings. Within each rewritten compacted record, emit one checkpoint-level mixed/reopenable/unavailable omission marker at the latest removed media location and replace other image items with bounded neutral text items, rather than scaling marker text with image count.
+6. Stream records under hard per-record byte, parsed-node, and nesting-depth limits, fsync the temporary file and directory, retain a recoverable backup, and atomically replace the original. Compressed materialization fsyncs the parent after publishing the plain canonical name and again after deleting the compressed source on Unix. Platforms without a directory durability barrier retain the compressed recovery representation until a later explicit cleanup observes the established plain file. The Unix recovery path accepts either a valid marked checkpoint or checkpointless rewritable compacted media, links the backup back to the canonical name, fsyncs the parent, and only then removes the backup and fsyncs again. A later no-rewrite invocation removes retained backups and named temporary artifacts only after preflight establishes a valid selected rollout record. Failure before replacement must leave the original selected and usable.
+7. Print physical bytes before/after, records rewritten, image count, and media bytes removed from the CLI command; failures return a non-zero exit. For compressed input, `bytes_before` is the selected `.jsonl.zst` size before materialization and `bytes_after` is the resulting canonical plain-file size. Preflight detects only typed message and function/custom-tool output image locations that the rewrite traverses; opaque nested objects do not trigger materialization. A rollout with no rewritable compacted media reports zero rewritten records and retains its selected canonical representation while cleaning obsolete siblings/backups/temporary artifacts only when that representation contains a valid rollout record.
+8. Paginated rollouts use the existing reverse/lazy checkpoint reader and can stop at the latest usable semantic checkpoint; a representation-only media repair does not satisfy that cutoff, so the scan continues to the preceding semantic checkpoint and its world-state/reference baselines. Compressed paginated input is streamed to an unnamed same-directory seekable temporary file for the reverse scan without rewriting the parent representation; reverse record accumulation has the same hard per-record byte bound as vacuuming. After an offline rewrite, validate the saved projection offset against the preceding rollout ordinal rather than relying only on file shrink; rebuild the SQLite projection transactionally when a stale offset remains numerically in range. Legacy history still uses its existing full-history loader; manual vacuuming is what restores its subsequent startup and disk behavior.
+9. User/tool suffix items after a server token snapshot remain additive local-tail estimates, but a later rollback can delete context already covered by the snapshot. Resume/fork therefore recomputes usage after rollback even when no compaction checkpoint exists.
+
+### Acceptance criteria
+
+- After successful compaction, `CompactedItem.replacement_history` contains no inline `InputImage` payloads.
+- Two consecutive compactions over the same image-heavy transcript do not copy prior-window data URLs into the second checkpoint.
+- A local-image path introduced in one window is retained by that window's checkpoint and remains visible to the next compaction request, but is absent from the second checkpoint unless the user supplied the image again after the first boundary.
+- A window with no new images inherits neither old local-image wrappers nor an old compacted-image omission marker.
+- Retention budgeting never drops the only current-window omission marker: remote-v2 rehomes it after truncation, while local compaction preserves structured marker-bearing messages or inserts a standalone developer marker for tool-only/oversized carriers.
+- Compacted-record byte size is bounded by retained text, bounded references/markers, canonical context, and the compaction item—not historical image bytes.
+- Resume, fork, rollback, and rollout-trace reconstruction produce the same sanitized history that was active immediately after compaction.
+- Rollback across a compaction boundary restores the path set persisted in the selected older checkpoint without requiring paths to remain in the current checkpoint indefinitely.
+- Exact rollback keeps the legacy `ThreadRolledBackEvent.num_turns` meaning for older readers, and a committed rollback whose required representation repair cannot be verified leaves the thread reload-required instead of acknowledging divergent live state.
+- Original image-bearing response records remain available once for transcript/audit rendering.
+- Current-window default-environment local-image paths remain available for `view_image` through the following compaction request, then age out like other compacted context. Structured tool-output images and references without typed environment provenance degrade to unavailable; non-default-environment reopening is deferred until the reference can carry `environment_id`.
+- Pathless or unavailable media degrades explicitly without embedding the original bytes.
+- Cold resume repairs a legacy image-heavy checkpoint before the first model request and does not remove unsummarized suffix images.
+- A repair that removes media recomputes usage from the repaired history instead of restoring a stale pre-repair token count, without double-counting an incomplete suffix or separately accounted prior reasoning. A later authoritative server `TokenCount` remains intact unless a subsequent rollback invalidates it; a marked checkpoint is re-estimated when no usable later count exists.
+- Fork repair affects only the child rollout and does not modify the parent.
+- A regression test performs at least two compactions with a large local image and asserts that checkpoint size does not grow with the discarded image payload size, that the first checkpoint retains its path, and that the second checkpoint expires it when no new image was supplied.
+- A recovery test starts from an existing image-bearing compacted replacement history and verifies that the next compaction request succeeds and installs a clean checkpoint.
+- Manual-vacuum tests cover both pre-policy checkpointless repair and marker-aware reclamation, verifying substantial byte reclamation while preserving original transcript image events, non-zero marked unsummarized suffixes, rejected record bytes, and encrypted fields. Repeating a checkpointless vacuum leaves canonical bytes unchanged and reports zero rewrites while retiring retained cleanup artifacts.
+- A failed manual vacuum leaves the original rollout valid and selected; backup recovery handles both marker-authorized and checkpointless pre-rewrite backups after an interrupted replacement, rejects marker-invalid backups, and supports a bare relative rollout path. Hard delete can still remove a marker-invalid backup when no canonical representation can be recovered.
+- Manual vacuum accepts both logical plain and physical compressed rollout paths and leaves the canonical plain rollout selected. Unix removes the obsolete compressed representation immediately; platforms without a directory durability barrier retain it until a later explicit cleanup.
+- A protected or checkpointless compressed rollout with no rewritable media remains compressed and reports zero rewrites.
+- A validated canonical plain rollout removes any obsolete compressed sibling, and a validated no-rewrite invocation removes retained recovery backups and named temporary artifacts. Empty/corrupt plain files do not authorize sibling or recovery-artifact removal.
+- Archive and unarchive validate the first canonical session metadata identity and read the selected rollout through EOF before removing retained vacuum artifacts and hidden compressed siblings, then move the canonical rollout so lifecycle transitions cannot expose a corrupt compressed tail or stale source representation. Metadata-only rollouts remain valid lifecycle inputs.
+- Structural parsing rejects records that exceed the hard JSON node or nesting-depth budgets.
+- Opaque/forward-compatible nested objects that happen to contain an `input_image`-shaped value do not trigger compressed materialization unless they occupy a typed content location supported by the rewrite.
+- Marker-bearing input containing any invalid marked record fails closed and preserves its selected plain or compressed representation, even when another valid protected checkpoint exists.
+- Successful compressed cleanup reports the original `.jsonl.zst` byte size as `bytes_before` and the resulting plain rollout byte size as `bytes_after`.
+- A paginated rollout whose stale pre-vacuum projection offset remains within the rewritten file is detected and fully rematerialized before later appends.
+- Encrypted compaction/reasoning content remains opaque and byte-identical; the sanitizer only touches typed `InputImage` content items.
+
+This should stop the 95%-of-rollout amplification demonstrated above while also fixing the post-compaction context death spiral, without changing the append-only rollout model or introducing replay divergence.
+
+  └ .codex-comment-33493.md (+0 -150)
+Additional current reproduction and source trace (2026-07-19).
+
+### Reproduction
+
+I inspected another long-lived image-heavy thread after a local compaction-v2 checkpoint. Sanitized structural measurements from the latest `compacted.payload.replacement_history`:
+
+| Metric | Observed value |
+| --- | ---: |
+| Rollout JSONL size | 2,873,784,216 bytes |
+| Compaction records | 54 |
+| Replacement-history items | 211 |
+| User messages | 209 |
+| Retained `input_image` parts | 142 |
+| Retained image detail | 142 × `high` |
+| Retained inline image/data-URL characters | 111,563,732 |
+| Retained text characters | 56,733 |
+| Effective model context window | 353,400 tokens (`gpt-5.6-sol`) |
+
+The token sequence makes the impact visible:
+
+1. Immediately after compaction, local recomputation emitted `total_tokens=294,141`, `input_tokens=0`, which rendered as 17% context remaining.
+2. The first real post-compaction model response reported `input_tokens=342,406`, `output_tokens=230`, `total_tokens=342,636`, which rendered as 3% remaining.
+
+The apparent drop was not caused by the file-read output displayed immediately before the second token event. That usage belongs to the request that generated the read call, so the result could not yet have been part of its input. The first server-provided usage corrected the lower-bound local estimate for the already-installed image-heavy prompt.
+
+No raw rollout is attached because it contains private prompts, paths, tool output, and images. The counts above were computed structurally without printing content.
+
+All 142 retained images in this reproduction were already surrounded by the canonical local-image text wrapper: an opening `<image ... path="...">` item immediately before the `InputImage` and a closing `</image>` immediately after it. The compactor can therefore remove the inline bytes without losing the model-callable source path.
+
+### Current upstream source analysis
+
+Current upstream `main` now uses a 64k retained-message budget, but the budget remains text-only:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/compact_remote_v2.rs#L52-L54
+
+`build_v2_compacted_history` selects retained user/developer/system messages from the compaction prompt and passes them through the retained-message truncator:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/compact_remote_v2.rs#L443-L460
+
+The truncator charges only text. `InputImage` and `InputAudio` contribute zero, and the partial-message path always preserves them:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/compact_remote_v2.rs#L482-L560
+
+The current tests explicitly lock in this behavior by asserting that images survive truncation and that an image-only message costs only the `.max(1)` message floor:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/compact_remote_v2.rs#L729-L819
+
+Local-image prompt construction already emits the source path in an adjacent model-visible wrapper and keeps the raw image as a separate content item:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/protocol/src/models.rs#L1392-L1400
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/protocol/src/models.rs#L1568-L1588
+
+`view_image` already accepts a model-generated path plus an optional environment ID and resolves it through the selected environment filesystem:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/tools/handlers/view_image.rs#L53-L57
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/tools/handlers/view_image.rs#L118-L168
+
+There is already a content-aware image estimator elsewhere in core. It replaces inline base64 payload size with an estimated model-visible image cost (approximately 1,844 tokens for ordinary resized images, with separate original-detail patch accounting):
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/context_manager/history.rs#L521-L579
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/context_manager/history.rs#L652-L679
+
+That estimator is used after history replacement for the provisional token-count event, but not for retained-message selection. `recompute_token_usage` also estimates only base instructions plus installed history and marks the result as `input_tokens=0`, explainin
+g why the first real server count can jump materially:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/session/mod.rs#L3668-L3704
+
+Historic rollouts currently receive no equivalent cleanup. Reconstruction selects the latest surviving `replacement_history` as its base and installs it exactly before replaying the suffix:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/session/rollout_reconstruction.rs#L113-L185
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/session/rollout_reconstruction.rs#L317-L345
+
+Both resume and fork use the shared reconstruction path. It currently prepares legacy media in memory while explicitly leaving the recorded rollout unchanged, so image-heavy checkpoints remain active and are processed again on every reconstruction:
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/session/mod.rs#L1248-L1333
+
+https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/core/src/session/mod.rs#L1345-L1370
+
+### Implementation spec
+
+The implementation contract, rollout-vacuum behavior, and acceptance criteria are maintained in the companion persistence comment on #23257:
+
+https://github.com/openai/codex/issues/23257#issuecomment-5015815020
+
+That comment is the single implementation spec for both issues. The reproduction and source trace above explain the immediate context death spiral; the companion comment covers the shared fix for it and the repeated checkpoint amplification tracked in #23257.
