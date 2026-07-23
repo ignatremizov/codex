@@ -28,6 +28,7 @@ use ratatui::layout::Rect;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_protocol::mcp::CallToolResult;
@@ -751,6 +752,36 @@ async fn session_info_uses_availability_nux_tooltip_override() {
 
     let rendered = render_transcript(&cell).join("\n");
     assert!(rendered.contains("Model just became available"));
+
+    // Fullscreen history owns a separate tip surface. Opening Review or Full must not
+    // copy the inline-only tip into the same transcript a second time.
+    let cells: Vec<Arc<dyn HistoryCell>> = vec![Arc::new(cell)];
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 0, /*width*/ 100, /*height*/ 20,
+    );
+    let mut view = crate::transcript_view::TranscriptView::default();
+    let mut baseline = Buffer::empty(area);
+    view.render(area, &mut baseline, &cells);
+    let text = baseline
+        .content()
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect::<String>();
+    assert!(text.contains("OpenAI Codex"));
+    assert!(!text.contains("Model just became available"));
+    view.open_review_browser(HistoryRenderMode::Rich);
+    for detailed in [false, true] {
+        if detailed {
+            view.handle_review_key(crossterm::event::KeyCode::Char('v').into(), &cells);
+        }
+        let mut actual = Buffer::empty(area);
+        view.render(area, &mut actual, &cells);
+        assert_eq!(actual, baseline);
+    }
+    view.close_review_browser(HistoryRenderMode::Rich);
+    let mut restored = Buffer::empty(area);
+    view.render(area, &mut restored, &cells);
+    assert_eq!(restored, baseline);
 }
 
 #[tokio::test]

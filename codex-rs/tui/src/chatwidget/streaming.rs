@@ -80,10 +80,14 @@ impl ChatWidget {
     }
 
     pub(super) fn flush_answer_stream_with_separator(&mut self) {
-        self.flush_answer_stream(/*completed_message*/ None);
+        self.flush_answer_stream(/*completed_message*/ None, /*phase*/ None);
     }
 
-    fn flush_answer_stream(&mut self, completed_message: Option<&str>) {
+    fn flush_answer_stream(
+        &mut self,
+        completed_message: Option<&str>,
+        phase: Option<MessagePhase>,
+    ) {
         let had_stream_controller = self.stream_controller.is_some();
         if let Some(mut controller) = self.stream_controller.take() {
             let needs_scrollback_reflow = controller.needs_scrollback_reflow();
@@ -137,6 +141,7 @@ impl ChatWidget {
                     copy_source,
                     cwd: self.config.cwd.to_path_buf(),
                     inline_visualization_context,
+                    phase,
                     scrollback_reflow,
                     deferred_history_cell,
                 });
@@ -187,7 +192,11 @@ impl ChatWidget {
         self.status_state.pending_status_indicator_restore = false;
     }
 
-    pub(super) fn finalize_completed_assistant_message(&mut self, message: Option<&str>) {
+    pub(super) fn finalize_completed_assistant_message(
+        &mut self,
+        message: Option<&str>,
+        phase: Option<MessagePhase>,
+    ) {
         if self.stream_controller.is_none()
             && let Some(message) = message
             && !message.is_empty()
@@ -198,7 +207,7 @@ impl ChatWidget {
         }
         // Item completion is authoritative. Use it for consolidation so any
         // deltas dropped by a saturated transport cannot truncate the transcript.
-        self.flush_answer_stream(message);
+        self.flush_answer_stream(message, phase);
         self.handle_stream_finished();
         self.request_redraw();
     }
@@ -429,6 +438,7 @@ impl ChatWidget {
             }
         }
         let parsed = parse_assistant_markdown(&message, self.config.cwd.as_path());
+        let phase = item.phase;
         if from_replay && self.stream_controller.is_none() && !parsed.visible_markdown.is_empty() {
             self.prepare_assistant_message();
             self.mark_safety_buffering_agent_message_started();
@@ -440,17 +450,18 @@ impl ChatWidget {
                 )
             });
             self.add_to_history(
-                history_cell::AgentMarkdownCell::new_with_inline_visualizations(
+                history_cell::AgentMarkdownCell::new_with_inline_visualizations_and_phase(
                     parsed.visible_markdown.clone(),
                     self.config.cwd.as_path(),
                     context,
+                    phase.clone(),
                 )
                 .with_copy_source(Some(message.clone())),
             );
             self.handle_stream_finished();
             self.request_redraw();
         } else {
-            self.finalize_completed_assistant_message(Some(&message));
+            self.finalize_completed_assistant_message(Some(&message), phase.clone());
         }
         if !parsed.visible_markdown.is_empty() {
             self.transcript
@@ -477,7 +488,7 @@ impl ChatWidget {
             });
         }
         self.status_state.pending_status_indicator_restore = item.questions.is_some()
-            || match item.phase {
+            || match phase {
                 // Models that don't support preambles only output AgentMessageItems on turn completion.
                 Some(MessagePhase::FinalAnswer) | None => {
                     !self.input_queue.pending_steers.is_empty()

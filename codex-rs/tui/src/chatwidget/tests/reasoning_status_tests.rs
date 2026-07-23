@@ -222,7 +222,7 @@ async fn reasoning_status_replay_retains_last_usable_heading() {
                 content: Vec::new(),
             },
             "turn-1".to_string(),
-            ThreadItemRenderSource::Replay(ReplayKind::ThreadSnapshot),
+            ThreadItemRenderSource::ReplayedTurnItem(ReplayKind::ThreadSnapshot),
         );
         assert_eq!(chat.bottom_pane.status_widget().unwrap().header(), expected);
     }
@@ -278,7 +278,7 @@ async fn completed_reasoning_stays_in_expanded_transcript_for_live_and_replay() 
                         content: Vec::new(),
                     },
                     "turn-1".to_string(),
-                    ThreadItemRenderSource::Replay(ReplayKind::ThreadSnapshot),
+                    ThreadItemRenderSource::ReplayedTurnItem(ReplayKind::ThreadSnapshot),
                 );
             } else {
                 handle_agent_reasoning_started(&mut chat, id);
