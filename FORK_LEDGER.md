@@ -88,6 +88,18 @@ and keep an uncertain conversation read-only without disabling unrelated navigat
 Recorder acknowledgement retains the file-flush contract, not a new fsync guarantee. Generated
 protocol output and executable qualification remain pending for the completed rebase.
 
+### Shared transcript Review and canonical navigation
+
+Ownership anchor: `feat(tui): share concise transcript review and canonical target navigation`.
+The existing `tui/src/transcript_view/review.rs` owns Review/Full mode and chronological targets
+for both the owned viewport and inline overlay. Canonical message phase and structured patch
+items supply navigation identity; full source, search, selection, voice ownership, and historical
+Full previews retain their distinct contracts. Prompt edits require painted content and the
+existing canonical rollback/revert safeguards. Copy-on-select and primary selection follow the
+current client settings, and fullscreen session tips are not duplicated into transcript rows.
+Entrypoints include `tui/src/app/owned_transcript.rs`, `tui/src/app_backtrack.rs`, and
+`tui/src/pager_overlay/transcript.rs`. Snapshot and executable qualification remain pending.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.

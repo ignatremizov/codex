@@ -508,8 +508,10 @@ impl ChatWidget {
                     self.handle_thread_item(
                         item.clone(),
                         notification.turn.id.clone(),
-                        replay_kind
-                            .map_or(ThreadItemRenderSource::Live, ThreadItemRenderSource::Replay),
+                        replay_kind.map_or(
+                            ThreadItemRenderSource::Live,
+                            ThreadItemRenderSource::ReplayedNotification,
+                        ),
                     );
                 }
                 if replay_kind.is_none()
@@ -750,7 +752,10 @@ impl ChatWidget {
             item => self.handle_thread_item(
                 item,
                 notification.turn_id,
-                replay_kind.map_or(ThreadItemRenderSource::Live, ThreadItemRenderSource::Replay),
+                replay_kind.map_or(
+                    ThreadItemRenderSource::Live,
+                    ThreadItemRenderSource::ReplayedNotification,
+                ),
             ),
         }
     }

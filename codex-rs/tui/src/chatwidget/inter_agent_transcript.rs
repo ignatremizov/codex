@@ -28,6 +28,7 @@ impl ChatWidget {
     pub(super) fn handle_inter_agent_message_now(&mut self, item: ThreadItem) {
         let ThreadItem::AgentMessage {
             text,
+            phase,
             inter_agent_source: Some(_),
             ..
         } = item
@@ -42,10 +43,11 @@ impl ChatWidget {
         });
         // Do not interpret assistant directives or mutate local-answer/question state.
         self.add_to_history(
-            history_cell::AgentMarkdownCell::new_with_inline_visualizations(
+            history_cell::AgentMarkdownCell::new_with_inline_visualizations_and_phase(
                 text,
                 self.config.cwd.as_path(),
                 context,
+                phase,
             ),
         );
         self.request_redraw();

@@ -348,6 +348,10 @@ async fn prompt_forks_preserve_sources_and_drafts_after_owned_and_inline_attachm
                     .chain(std::iter::repeat_n(KeyCode::Left, 3 - selected))
                     .chain([KeyCode::Enter])
                 {
+                    if code == KeyCode::Enter {
+                        app.handle_tui_event(&mut tui, &mut server, TuiEvent::Draw)
+                            .await?;
+                    }
                     let event = TuiEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
                     if owned {
                         assert!(app.handle_owned_backtrack_event(&mut tui, &event)?);

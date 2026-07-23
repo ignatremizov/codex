@@ -128,8 +128,12 @@ impl TranscriptView {
         }
         let detailed = self.detailed;
         let mode = self.mode;
+        let review = self.review_mode() == Some(ReviewMode::Review);
         let ids = cell.activity_ids();
-        let disclosure = !detailed && mode == HistoryRenderMode::Rich && !ids.is_empty();
+        let disclosure = !self.is_review_browser()
+            && !detailed
+            && mode == HistoryRenderMode::Rich
+            && !ids.is_empty();
         let expanded = disclosure && self.disclosure.is_expanded(&ids);
         if expanded {
             self.disclosure.expanded.extend(ids);
@@ -156,6 +160,20 @@ impl TranscriptView {
                     width,
                     expanded,
                 )
+            } else if review {
+                let lines = if cell.as_any().is::<crate::history_cell::SessionInfoCell>() {
+                    // Fullscreen session tips have their own surface; Review must not clone
+                    // the inline-only startup tooltip into transcript rows.
+                    crate::history_cell::fullscreen_session_lines(
+                        cell.as_ref(),
+                        width,
+                        /*detailed*/ false,
+                        HistoryRenderMode::Rich,
+                    )
+                } else {
+                    cell.display_hyperlink_lines(width)
+                };
+                TextLayout::new(lines, width)
             } else {
                 TextLayout::new(
                     crate::history_cell::fullscreen_session_lines(

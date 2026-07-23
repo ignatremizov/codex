@@ -57,6 +57,10 @@ impl App {
             view.sync_live_tail(transcript_width, active_key, |width| {
                 chat_widget.active_cell_transcript_hyperlink_lines(width)
             })
+        } else if view.is_review_browser() {
+            view.sync_live_tail(transcript_width, active_key, |width| {
+                chat_widget.active_cell_review_hyperlink_lines(width)
+            })
         } else {
             view.sync_live_activity_tail(transcript_width, active_key, expanded, |width| {
                 chat_widget.active_cell_owned_transcript_lines(width, expanded)
@@ -308,6 +312,9 @@ impl App {
         if !tui.is_owned_screen() || self.overlay.is_some() {
             return Ok(false);
         }
+        if matches!(event, TuiEvent::Resize(_)) {
+            self.transcript_view.invalidate_highlight_paint();
+        }
         if matches!(event, TuiEvent::FocusLost) {
             self.chat_widget
                 .empty_state_animation
@@ -380,6 +387,19 @@ impl App {
                 return Ok(false);
             }
         }
+        if let TuiEvent::Key(key) = event
+            && self.transcript_view.review_key_needs_layout(*key)
+        {
+            tui.frame_requester().schedule_frame();
+            return Ok(true);
+        }
+        // Do not let the eager input repaint turn an unpainted selection into confirmation.
+        if self.backtrack.overlay_preview_active
+            && !self.transcript_view.has_active_interaction()
+            && matches!(event, TuiEvent::Key(key) if key.code == KeyCode::Enter && key.modifiers.is_empty())
+        {
+            return self.handle_owned_backtrack_event(tui, event);
+        }
         if matches!(event, TuiEvent::Key(key) if key.kind != KeyEventKind::Release) {
             let size = tui.prepare_draw_size()?;
             self.render_owned_transcript(tui, size)?;
@@ -444,10 +464,32 @@ impl App {
         if let TuiEvent::Key(key) = event
             && !self.transcript_view.has_active_interaction()
             && !self.backtrack.overlay_preview_active
-            && self.transcript_view.is_detailed()
-            && self.keymap.pager.close_transcript.is_pressed(*key)
+            && (self.transcript_view.is_review_browser() || self.transcript_view.is_detailed())
+            && (self.keymap.pager.close_transcript.is_pressed(*key)
+                || (self.transcript_view.is_review_browser()
+                    && self.keymap.pager.close.is_pressed(*key)))
         {
             self.close_transcript_overlay(tui);
+            return Ok(true);
+        }
+        if let TuiEvent::Key(key) = event
+            && !self.transcript_view.has_active_interaction()
+            && self
+                .transcript_view
+                .handle_review_key(*key, &self.transcript_cells)
+                .is_some()
+        {
+            tui.frame_requester().schedule_frame();
+            return Ok(true);
+        }
+        if let TuiEvent::Key(key) = event
+            && self.transcript_view.is_review_browser()
+            && !self.transcript_view.has_active_interaction()
+            && self
+                .transcript_view
+                .navigate_pager(*key, &self.transcript_cells, &self.keymap.pager)
+        {
+            tui.frame_requester().schedule_frame();
             return Ok(true);
         }
         if let TuiEvent::Key(key) = event
@@ -516,7 +558,8 @@ impl App {
             }
             if self.reconnect.offline {
                 if let TuiEvent::Key(key) = event
-                    && self.transcript_view.is_detailed()
+                    && (self.transcript_view.is_review_browser()
+                        || self.transcript_view.is_detailed())
                     && self.keymap.pager.close_transcript.is_pressed(*key)
                 {
                     self.close_transcript_overlay(tui);

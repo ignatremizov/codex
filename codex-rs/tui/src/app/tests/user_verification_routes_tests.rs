@@ -271,6 +271,7 @@ async fn inactive_thread_user_verification_preserves_foreground_stream() -> Resu
                 source,
                 cwd,
                 inline_visualization_context,
+                phase,
                 scrollback_reflow,
                 deferred_history_cell,
             } => {
@@ -280,6 +281,7 @@ async fn inactive_thread_user_verification_preserves_foreground_stream() -> Resu
                     source,
                     cwd,
                     inline_visualization_context,
+                    phase,
                     scrollback_reflow,
                     deferred_history_cell,
                 )?;

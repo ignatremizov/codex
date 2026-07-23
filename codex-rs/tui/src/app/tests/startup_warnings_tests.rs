@@ -84,7 +84,39 @@ async fn deprecation_delivery_deduplicates_retained_transcript() -> Result<()> {
     let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() else {
         panic!("expected transcript")
     };
+    // Startup warnings are retained detail, not concise Review rows. Paint the browser before
+    // sending its detail key, then exercise the warning's actual Full transcript presentation.
     overlay.render(area, &mut buffer);
+    assert!(!overlay.is_detailed());
+    overlay.handle_event(&mut tui, TuiEvent::Key(KeyCode::Char('v').into()))?;
+    assert!(overlay.is_detailed());
+    // Switching presentation keeps the visible user-message anchor. The retained warning
+    // precedes that anchor, so explicitly navigate to the beginning before inspecting it.
+    overlay.handle_event(
+        &mut tui,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)),
+    )?;
+    overlay.render(area, &mut buffer);
+    let rendered = buffer
+        .content()
+        .chunks(usize::from(area.width))
+        .map(|row| {
+            row.iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        rendered.matches("`transcript_v2` is deprecated.").count(),
+        1
+    );
+    assert_eq!(
+        rendered
+            .matches("Remove it from your configuration.")
+            .count(),
+        1
+    );
     insta::assert_snapshot!("deduplicated_deprecation_transcript", format!("{buffer:?}"));
 
     for (summary, details) in [
