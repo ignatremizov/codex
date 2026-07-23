@@ -1766,8 +1766,11 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
         "<none>".to_string(),
         /*refreshing_rate_limits*/ true,
     );
-    let mut overlay =
-        TranscriptOverlay::new(vec![Arc::new(status)], RuntimeKeymap::defaults().pager);
+    let mut overlay = TranscriptOverlay::new(
+        vec![Arc::new(status)],
+        RuntimeKeymap::defaults().pager,
+        crate::pager_overlay::TranscriptFlavor::HistoricalFullPreview,
+    );
     let area = Rect::new(
         /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ 30,
     );

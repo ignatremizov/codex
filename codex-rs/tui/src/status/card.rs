@@ -895,6 +895,10 @@ impl HistoryCell for StatusHistoryCell {
         with_border_with_inner_width(truncated_lines, inner_width)
     }
 
+    fn has_stable_transcript_height(&self) -> bool {
+        false
+    }
+
     fn raw_lines(&self) -> Vec<Line<'static>> {
         plain_lines(self.display_lines(u16::MAX))
     }

@@ -85,6 +85,10 @@ pub fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 }
 
 impl StatusIndicatorWidget {
+    pub(crate) fn header(&self) -> &str {
+        &self.header
+    }
+
     pub(crate) fn new(
         app_event_tx: AppEventSender,
         frame_requester: FrameRequester,
@@ -153,10 +157,6 @@ impl StatusIndicatorWidget {
         if deadline.is_some() {
             self.frame_requester.schedule_frame();
         }
-    }
-
-    pub(crate) fn header(&self) -> &str {
-        &self.header
     }
 
     #[cfg(test)]

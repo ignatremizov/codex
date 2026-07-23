@@ -654,6 +654,7 @@ impl App {
                 source,
                 cwd,
                 inline_visualization_context,
+                phase,
                 scrollback_reflow,
                 deferred_history_cell,
             } => {
@@ -662,6 +663,7 @@ impl App {
                     source,
                     cwd,
                     inline_visualization_context,
+                    phase,
                     scrollback_reflow,
                     deferred_history_cell,
                 )?;

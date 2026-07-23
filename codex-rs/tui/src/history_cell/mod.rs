@@ -142,6 +142,18 @@ pub(crate) enum HistoryRenderMode {
     Raw,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TranscriptNavigationKind {
+    /// A user-authored turn input.
+    UserMessage,
+    /// Canonical mid-turn assistant commentary.
+    Commentary,
+    /// A finalized assistant output, including messages whose phase is unknown.
+    AssistantOutput,
+    /// A structured applied-patch summary.
+    Patch,
+}
+
 pub(crate) fn raw_lines_from_source(source: &str) -> Vec<Line<'static>> {
     if source.is_empty() {
         return Vec::new();
@@ -187,6 +199,11 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
 
     /// Returns copy-friendly plain logical lines for raw scrollback mode.
     fn raw_lines(&self) -> Vec<Line<'static>>;
+
+    /// Classifies cells that the transcript's focused review navigation can visit.
+    fn transcript_navigation_kind(&self) -> Option<TranscriptNavigationKind> {
+        None
+    }
 
     /// Returns rich visible lines plus terminal hyperlink metadata.
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
@@ -265,6 +282,7 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
     ///
     /// Cells backed by external state should return `false` so the pager remeasures them before
     /// rendering instead of reusing a height that may now clip their content.
+    #[allow(dead_code)]
     fn has_stable_transcript_height(&self) -> bool {
         true
     }

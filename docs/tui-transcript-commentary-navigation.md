@@ -118,13 +118,13 @@ for edit/branch behavior.
 
 While backtrack preview is active:
 
-- `[` and `]` do not navigate review targets;
-- `v` does not change detail mode;
-- pager row/page/top/bottom scrolling is disabled;
 - existing `Esc`, Left, Right, and Enter behavior has priority;
+- detail, review-target, and pager navigation remain available;
 - Enter can only act on the visibly highlighted backtrack selection.
 
-This prevents browser navigation from moving an armed edit target off-screen.
+Scrolling may move the selected edit target off-screen, but Enter remains
+disabled until navigation returns that highlighted target to the visible
+viewport.
 
 ### Header and hints
 
@@ -154,8 +154,7 @@ q close    v detail    [ review prev    ] review next
 ```
 
 When backtrack preview is active, its existing edit hints replace browser
-actions that are temporarily unavailable. Pager scrolling is disabled in that
-state, so its scroll/page hint row is blank rather than showing inert keys.
+actions on the second hint row. Pager navigation remains active.
 
 Transcript-local keys are resolved before pager bindings. If a user configured
 `v`, `[`, or `]` as a pager scroll binding, the transcript action wins while
@@ -229,9 +228,11 @@ Deferred ideas are recorded in
 - Store the selected target as a committed-cell index. Append and mode changes
   preserve it. Consolidation remaps the index to the replacement target or
   shifts it by the removed count, and renderable rebuilds restore its pending
-  alignment. Arbitrary replacement/trim clears it. Backtrack highlights take
-  positioning priority and likewise restore their pending visibility after a
-  rebuild.
+  alignment. Arbitrary replacement/trim clears it. An explicit backtrack
+  selection change likewise survives a rebuild as a pending visibility request.
+  An unchanged armed highlight does not override manual navigation: paginated
+  history prepends, history-state refreshes, and live cell rebuilds preserve the
+  scrolled viewport.
 - Manual row/page/half-page/top/bottom scrolling clears target selection.
 - Carry completed `AgentMessageItem.phase` directly through
   `ConsolidateAgentMessage` into the consolidated `AgentMarkdownCell`. Generic
@@ -244,8 +245,8 @@ Deferred ideas are recorded in
 - Resolve live transcript keys as close, browser actions, then pager actions.
   Before the initial viewport render, browser actions only request that frame
   and otherwise no-op rather than deriving an anchor from uninitialized layout.
-  `App` owns backtrack priority and forwards only draw/resize, close, and the
-  existing Esc/Left/Right/Enter actions while preview is active.
+  `App` gives the existing Esc/Left/Right/Enter backtrack actions priority and
+  forwards all other events to the transcript browser while preview is active.
 - Keep transcript-specific state and tests in the transcript child module where
   practical; do not introduce protocol, config, rollout, or model-context
   changes.
@@ -262,8 +263,11 @@ Automated coverage should establish:
 - exact commentary phase propagation, metadata-free flush behavior, and replay
   patch reconstruction;
 - Review/Full live-tail invalidation and logical-cell anchoring;
-- modal backtrack behavior, including ignored browser and pager keys and
-  confirmation only after the selected highlight has drawn;
+- backtrack/browser key coexistence and confirmation only while the selected
+  message content—not merely its unstyled separator—is visibly highlighted;
+- paginated history prepends preserve manual scrolling away from an unchanged
+  backtrack selection, and renderable height changes above the viewport retain
+  the same visible logical row;
 - browser actions before the initial viewport render, narrow footer rendering,
   and replayed file-change start/completion pairs;
 - unchanged deep-offset virtualization, hyperlinks, and wide-Unicode rendering.

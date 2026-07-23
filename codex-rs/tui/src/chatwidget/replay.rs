@@ -90,7 +90,11 @@ impl ChatWidget {
         turn_id: String,
         replay_kind: ReplayKind,
     ) {
-        self.handle_thread_item(item, turn_id, ThreadItemRenderSource::Replay(replay_kind));
+        self.handle_thread_item(
+            item,
+            turn_id,
+            ThreadItemRenderSource::ReplayedTurnItem(replay_kind),
+        );
     }
 
     pub(super) fn handle_thread_item(
@@ -196,10 +200,28 @@ impl ChatWidget {
             } if from_replay => self.handle_command_execution_completed_now(item),
             item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_completed(item),
             ThreadItem::FileChange {
+                changes,
                 status: codex_app_server_protocol::PatchApplyStatus::InProgress,
                 ..
-            } => {}
-            item @ ThreadItem::FileChange { .. } => self.on_file_change_completed(item),
+            } => {
+                if render_source.reconstructs_file_change() {
+                    self.on_patch_apply_begin(file_update_changes_to_display(changes));
+                }
+            }
+            ThreadItem::FileChange {
+                id,
+                changes,
+                status,
+            } => {
+                if render_source.reconstructs_file_change() {
+                    self.on_patch_apply_begin(file_update_changes_to_display(changes.clone()));
+                }
+                self.on_file_change_completed(ThreadItem::FileChange {
+                    id,
+                    changes,
+                    status,
+                });
+            }
             item @ ThreadItem::McpToolCall {
                 status: codex_app_server_protocol::McpToolCallStatus::InProgress,
                 ..
