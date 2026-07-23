@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use codex_protocol::models::MessagePhase;
 use color_eyre::eyre::Result;
 
 use super::App;
@@ -26,6 +27,7 @@ impl App {
         tui: &mut tui::Tui,
         source: String,
         cwd: PathBuf,
+        phase: Option<MessagePhase>,
         scrollback_reflow: ConsolidationScrollbackReflow,
         deferred_history_cell: Option<Box<dyn HistoryCell>>,
     ) -> Result<()> {
@@ -52,8 +54,9 @@ impl App {
             tracing::debug!(
                 "ConsolidateAgentMessage: replacing cells [{start}..{end}] with AgentMarkdownCell"
             );
-            let consolidated: Arc<dyn HistoryCell> =
-                Arc::new(history_cell::AgentMarkdownCell::new(source, &cwd));
+            let consolidated: Arc<dyn HistoryCell> = Arc::new(
+                history_cell::AgentMarkdownCell::new_with_phase(source, &cwd, phase),
+            );
             self.transcript_cells
                 .splice(start..end, std::iter::once(consolidated.clone()));
 

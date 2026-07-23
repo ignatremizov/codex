@@ -1484,7 +1484,7 @@ async fn completed_token_activity_refresh_waits_for_queued_stream_consolidation(
 
     let request_id = dispatch_usage_and_expect_refresh(&mut chat, &mut rx);
     chat.on_agent_message_delta("partial response".to_string());
-    chat.finalize_completed_assistant_message(/*message*/ None);
+    chat.finalize_completed_assistant_message(/*message*/ None, /*phase*/ None);
     assert!(chat.pending_stream_consolidations > 0);
 
     assert!(

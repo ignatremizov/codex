@@ -806,6 +806,12 @@ pub(crate) struct ActiveCellTranscriptKey {
     pub(crate) animation_tick: Option<u64>,
 }
 
+#[derive(Clone, Copy)]
+enum ActiveCellTranscriptDetail {
+    Review,
+    Full,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum InterruptedTurnNoticeMode {
     #[default]
@@ -1910,27 +1916,46 @@ impl ChatWidget {
         &self,
         width: u16,
     ) -> Option<Vec<HyperlinkLine>> {
+        self.active_cell_hyperlink_lines(width, ActiveCellTranscriptDetail::Full)
+    }
+
+    pub(crate) fn active_cell_display_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Option<Vec<HyperlinkLine>> {
+        self.active_cell_hyperlink_lines(width, ActiveCellTranscriptDetail::Review)
+    }
+
+    fn active_cell_hyperlink_lines(
+        &self,
+        width: u16,
+        detail: ActiveCellTranscriptDetail,
+    ) -> Option<Vec<HyperlinkLine>> {
+        let render = |cell: &dyn HistoryCell| match detail {
+            ActiveCellTranscriptDetail::Review => cell.display_hyperlink_lines(width),
+            ActiveCellTranscriptDetail::Full => cell.transcript_hyperlink_lines(width),
+        };
         let mut lines = Vec::new();
         if let Some(cell) = self.transcript.active_cell.as_ref() {
-            lines.extend(cell.transcript_hyperlink_lines(width));
+            lines.extend(render(cell.as_ref()));
         }
         if let Some(hook_cell) = self.active_hook_cell.as_ref() {
             // Compute hook lines first so hidden hooks do not add a separator.
-            let hook_lines = hook_cell.transcript_hyperlink_lines(width);
+            let hook_lines = render(hook_cell);
             if !hook_lines.is_empty() && !lines.is_empty() {
                 lines.push(HyperlinkLine::from(""));
             }
             lines.extend(hook_lines);
         }
         if let Some(token_activity_cell) = self.pending_token_activity_output() {
-            let token_activity_lines = token_activity_cell.transcript_hyperlink_lines(width);
+            let token_activity_lines = render(token_activity_cell);
             if !token_activity_lines.is_empty() && !lines.is_empty() {
                 lines.push(HyperlinkLine::from(""));
             }
             lines.extend(token_activity_lines);
         }
         if let Some(rate_limit_reset_hint) = self.pending_rate_limit_reset_hint() {
-            let hint_lines = rate_limit_reset_hint.transcript_hyperlink_lines(width);
+            let hint_lines = render(rate_limit_reset_hint);
             if !hint_lines.is_empty() && !lines.is_empty() {
                 lines.push(HyperlinkLine::from(""));
             }

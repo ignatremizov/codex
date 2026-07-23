@@ -4769,6 +4769,7 @@ async fn required_stream_reflow_during_capped_initial_replay_survives_transcript
         "Final answer:\n\n| Pattern | Outcome |\n| --- | --- |\n| Table tail | Preserved |"
             .to_string(),
         PathBuf::from("/tmp"),
+        /*phase*/ None,
         ConsolidationScrollbackReflow::Required,
         /*deferred_history_cell*/ None,
     )?;
@@ -6804,6 +6805,41 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     assert!(!app.backtrack_render_pending);
     assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
     assert_eq!(app.chat_widget.composer_text_with_pending(), "draft prompt");
+}
+
+#[tokio::test]
+async fn backtrack_preview_suppresses_transcript_browser_and_pager_keys() -> Result<()> {
+    let mut app = make_test_app().await;
+    app.transcript_cells = vec![Arc::new(AgentMarkdownCell::new_with_phase(
+        "commentary".to_string(),
+        Path::new("/tmp"),
+        Some(codex_protocol::models::MessagePhase::Commentary),
+    ))];
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.open_transcript_overlay(&mut tui);
+    if let Some(Overlay::Transcript(overlay)) = &mut app.overlay {
+        overlay.handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        )?;
+    }
+    app.backtrack.overlay_preview_active = true;
+
+    for code in [KeyCode::Char('v'), KeyCode::Char(']'), KeyCode::Down] {
+        app.handle_backtrack_overlay_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+        )
+        .await?;
+    }
+
+    let Some(Overlay::Transcript(overlay)) = &app.overlay else {
+        panic!("expected transcript overlay");
+    };
+    assert!(overlay.is_review_mode());
+    assert_eq!(overlay.selected_review_target(), None);
+    assert_eq!(overlay.scroll_offset(), 0);
+    Ok(())
 }
 
 #[tokio::test]

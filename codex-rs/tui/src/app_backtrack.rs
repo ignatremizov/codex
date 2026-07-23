@@ -138,10 +138,20 @@ impl App {
                     self.overlay_confirm_backtrack(tui);
                     Ok(true)
                 }
-                _ => {
+                TuiEvent::Key(key_event)
+                    if self
+                        .overlay
+                        .as_ref()
+                        .is_some_and(|overlay| overlay.is_transcript_close_key(key_event)) =>
+                {
+                    self.overlay_forward_event(tui, TuiEvent::Key(key_event))?;
+                    Ok(true)
+                }
+                event @ (TuiEvent::Draw | TuiEvent::Resize) => {
                     self.overlay_forward_event(tui, event)?;
                     Ok(true)
                 }
+                _ => Ok(true),
             }
         } else if let TuiEvent::Key(KeyEvent {
             code: KeyCode::Esc,
@@ -252,10 +262,10 @@ impl App {
         );
     }
 
-    /// Open transcript overlay (enters alternate screen and shows full transcript).
+    /// Open the live transcript browser in its concise review mode.
     pub(crate) fn open_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         let _ = tui.enter_alt_screen();
-        self.overlay = Some(Overlay::new_transcript(
+        self.overlay = Some(Overlay::new_review_transcript(
             self.transcript_cells.clone(),
             self.keymap.pager.clone(),
         ));
@@ -406,11 +416,16 @@ impl App {
             && let Some(Overlay::Transcript(t)) = &mut self.overlay
         {
             let active_key = self.chat_widget.active_cell_transcript_key();
+            let review_mode = t.is_review_mode();
             let chat_widget = &self.chat_widget;
             tui.draw(u16::MAX, |frame| {
                 let width = frame.area().width.max(1);
                 t.sync_live_tail(width, active_key, |w| {
-                    chat_widget.active_cell_transcript_hyperlink_lines(w)
+                    if review_mode {
+                        chat_widget.active_cell_display_hyperlink_lines(w)
+                    } else {
+                        chat_widget.active_cell_transcript_hyperlink_lines(w)
+                    }
                 });
                 t.render(frame.area(), frame.buffer);
             })?;

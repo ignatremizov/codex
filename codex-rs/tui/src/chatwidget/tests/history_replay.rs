@@ -1107,6 +1107,35 @@ async fn replayed_reasoning_item_shows_raw_reasoning_when_enabled() {
 }
 
 #[tokio::test]
+async fn replayed_completed_file_change_reconstructs_patch_history_cell() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    chat.replay_thread_item(
+        AppServerThreadItem::FileChange {
+            id: "patch-1".to_string(),
+            changes: vec![FileUpdateChange {
+                path: "src/main.rs".to_string(),
+                kind: PatchChangeKind::Add,
+                diff: "fn main() {}\n".to_string(),
+            }],
+            status: AppServerPatchApplyStatus::Completed,
+        },
+        "turn-1".to_string(),
+        ReplayKind::ThreadSnapshot,
+    );
+
+    let cell = match rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell, got {other:?}"),
+    };
+    assert_eq!(
+        Some(crate::history_cell::TranscriptNavigationKind::Patch),
+        cell.transcript_navigation_kind()
+    );
+}
+
+#[tokio::test]
 async fn replayed_in_progress_mcp_tool_call_stays_active() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let _ = drain_insert_history(&mut rx);

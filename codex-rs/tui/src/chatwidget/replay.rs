@@ -151,7 +151,10 @@ impl ChatWidget {
                 status: codex_app_server_protocol::PatchApplyStatus::InProgress,
                 ..
             } => {}
-            item @ ThreadItem::FileChange { .. } => self.on_file_change_completed(item),
+            item @ ThreadItem::FileChange { ref changes, .. } => {
+                self.on_patch_apply_begin(file_update_changes_to_display(changes.clone()));
+                self.on_file_change_completed(item);
+            }
             item @ ThreadItem::McpToolCall {
                 status: codex_app_server_protocol::McpToolCallStatus::InProgress,
                 ..

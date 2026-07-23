@@ -281,11 +281,13 @@ async fn flush_answer_stream_keeps_default_reflow_for_plain_text_tail() {
         match event {
             AppEvent::InsertHistoryCell(_) => saw_insert_history = true,
             AppEvent::ConsolidateAgentMessage {
+                phase,
                 scrollback_reflow,
                 deferred_history_cell,
                 ..
             } => {
                 saw_consolidate = true;
+                assert_eq!(phase, None);
                 assert_eq!(
                     scrollback_reflow,
                     crate::app_event::ConsolidationScrollbackReflow::IfResizeReflowRan
@@ -304,6 +306,31 @@ async fn flush_answer_stream_keeps_default_reflow_for_plain_text_tail() {
         saw_insert_history,
         "plain text should still insert history before consolidation"
     );
+}
+
+#[tokio::test]
+async fn completed_assistant_message_carries_phase_into_consolidation() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let cwd = chat.config.cwd.to_path_buf();
+    let mut controller = crate::streaming::controller::StreamController::new(
+        Some(80),
+        cwd.as_path(),
+        HistoryRenderMode::Rich,
+    );
+    assert!(controller.push("commentary\n"));
+    chat.stream_controller = Some(controller);
+    while rx.try_recv().is_ok() {}
+
+    chat.finalize_completed_assistant_message(
+        /*message*/ None,
+        Some(MessagePhase::Commentary),
+    );
+
+    let phase = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|event| match event {
+        AppEvent::ConsolidateAgentMessage { phase, .. } => Some(phase),
+        _ => None,
+    });
+    assert_eq!(phase, Some(Some(MessagePhase::Commentary)));
 }
 
 #[tokio::test]

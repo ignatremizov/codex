@@ -1,6 +1,7 @@
 //! User, assistant, reasoning, and streaming message history cells.
 
 use super::*;
+use codex_protocol::models::MessagePhase;
 
 #[derive(Debug)]
 pub(crate) struct UserHistoryCell {
@@ -365,6 +366,7 @@ impl HistoryCell for AgentMessageCell {
 pub(crate) struct AgentMarkdownCell {
     markdown_source: String,
     cwd: PathBuf,
+    phase: Option<MessagePhase>,
 }
 
 impl AgentMarkdownCell {
@@ -374,14 +376,28 @@ impl AgentMarkdownCell {
     /// wrapped terminal lines. Passing rendered lines here would make future resize reflow preserve
     /// stale wrapping instead of repairing it.
     pub(crate) fn new(markdown_source: String, cwd: &Path) -> Self {
+        Self::new_with_phase(markdown_source, cwd, /*phase*/ None)
+    }
+
+    pub(crate) fn new_with_phase(
+        markdown_source: String,
+        cwd: &Path,
+        phase: Option<MessagePhase>,
+    ) -> Self {
         Self {
             markdown_source,
             cwd: cwd.to_path_buf(),
+            phase,
         }
     }
 }
 
 impl HistoryCell for AgentMarkdownCell {
+    fn transcript_navigation_kind(&self) -> Option<TranscriptNavigationKind> {
+        (self.phase == Some(MessagePhase::Commentary))
+            .then_some(TranscriptNavigationKind::Commentary)
+    }
+
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         visible_lines(self.display_hyperlink_lines(width))
     }

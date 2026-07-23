@@ -17,6 +17,10 @@ impl ChatWidget {
     }
 
     pub(super) fn flush_answer_stream_with_separator(&mut self) {
+        self.flush_answer_stream_with_phase(/*phase*/ None);
+    }
+
+    fn flush_answer_stream_with_phase(&mut self, phase: Option<MessagePhase>) {
         let had_stream_controller = self.stream_controller.is_some();
         if let Some(mut controller) = self.stream_controller.take() {
             let scrollback_reflow = if controller.has_live_tail() {
@@ -49,6 +53,7 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::ConsolidateAgentMessage {
                     source,
                     cwd: self.config.cwd.to_path_buf(),
+                    phase,
                     scrollback_reflow,
                     deferred_history_cell,
                 });
@@ -99,7 +104,11 @@ impl ChatWidget {
         self.status_state.pending_status_indicator_restore = false;
     }
 
-    pub(super) fn finalize_completed_assistant_message(&mut self, message: Option<&str>) {
+    pub(super) fn finalize_completed_assistant_message(
+        &mut self,
+        message: Option<&str>,
+        phase: Option<MessagePhase>,
+    ) {
         // If we have a stream_controller, the finalized message payload is redundant because the
         // visible content has already been accumulated through deltas.
         if self.stream_controller.is_none()
@@ -108,7 +117,7 @@ impl ChatWidget {
         {
             self.handle_streaming_delta(message.to_string());
         }
-        self.flush_answer_stream_with_separator();
+        self.flush_answer_stream_with_phase(phase);
         self.handle_stream_finished();
         self.request_redraw();
     }
@@ -324,10 +333,12 @@ impl ChatWidget {
             }
         }
         let parsed = parse_assistant_markdown(&message, self.config.cwd.as_path());
+        let phase = item.phase;
         self.finalize_completed_assistant_message(
             (!parsed.visible_markdown.is_empty()).then_some(parsed.visible_markdown.as_str()),
+            phase.clone(),
         );
-        if matches!(item.phase, Some(MessagePhase::FinalAnswer) | None)
+        if matches!(phase, Some(MessagePhase::FinalAnswer) | None)
             && !parsed.visible_markdown.is_empty()
         {
             self.record_agent_markdown(&parsed.visible_markdown);
@@ -347,7 +358,7 @@ impl ChatWidget {
                 }
             });
         }
-        self.status_state.pending_status_indicator_restore = match item.phase {
+        self.status_state.pending_status_indicator_restore = match phase {
             // Models that don't support preambles only output AgentMessageItems on turn completion.
             Some(MessagePhase::FinalAnswer) | None => !self.input_queue.pending_steers.is_empty(),
             Some(MessagePhase::Commentary) => true,
