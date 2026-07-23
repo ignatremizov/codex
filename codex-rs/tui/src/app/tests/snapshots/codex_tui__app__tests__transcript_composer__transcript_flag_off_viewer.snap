@@ -1,8 +1,9 @@
 ---
 source: tui/src/app/tests/transcript_composer.rs
+assertion_line: 273
 expression: buffer_text(&buffer)
 ---
-/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
+T R A N S C R I P T · R E V I E W
 
 › first
 
@@ -10,6 +11,4 @@ expression: buffer_text(&buffer)
 
 › second
 
-⌃space select
- ↑/↓ to scroll · pgup/pgdn to page · home/end to jump
- q close · f3 find · esc browse prompts
+Review · ⌃t close · v detail · [ review prev · ] review next
