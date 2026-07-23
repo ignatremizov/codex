@@ -201,10 +201,34 @@ fn unfinished_and_rejected_patches_keep_their_outcome() {
     .join("\n");
 
     insta::assert_snapshot!(rendered, @"
+    • Added main.rs (+1)
+        1 +fn main() {}
     • Patch application in progress
     • Patch application declined
     ✘ Failed to apply patch
     ");
+}
+
+#[test]
+fn empty_in_progress_patch_keeps_status_without_phantom_target() {
+    let cwd = test_path_buf("/workspace").abs();
+    let cells = cells(
+        ThreadItem::FileChange {
+            id: "patch-empty".to_string(),
+            changes: Vec::new(),
+            status: PatchApplyStatus::InProgress,
+        },
+        &cwd,
+        /*show_compact_summary*/ true,
+        AgentPreviewLineLimits::default(),
+    );
+
+    assert_eq!(cells.len(), 1);
+    assert_eq!(cells[0].transcript_navigation_kind(), None);
+    assert_eq!(
+        cells[0].display_lines(/*width*/ 80)[0].to_string(),
+        "• Patch application in progress"
+    );
 }
 
 #[test]

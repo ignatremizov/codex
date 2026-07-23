@@ -1,6 +1,9 @@
 //! Owned transcript integration preserves composer spacing/input, prompt editing, and gestures.
 
 use super::*;
+
+#[path = "transcript_review_tests.rs"]
+mod review;
 use crate::app::tests::make_test_app_with_channels;
 use crate::app_command::AppCommand;
 use crate::app_event::ConsolidationScrollbackReflow;
@@ -217,7 +220,10 @@ async fn owned_transcript_reserves_a_row_above_the_composer() -> Result<()> {
             app.transcript_cells = vec![Arc::new(crate::history_cell::new_view_image_tool_call(
                 codex_utils_path_uri::LegacyAppPathString::from_string("assets/detail-image.png"),
             ))];
-            app.open_transcript_overlay(&mut tui);
+            app.transcript_view.set_presentation(
+                /*detailed*/ true,
+                app.chat_widget.history_render_mode(),
+            );
             assert!(app.overlay.is_none() && app.transcript_view.is_detailed());
         }
         if label == "Reading" {
@@ -383,7 +389,7 @@ async fn owned_details_keep_the_composer_cursor_and_screen() -> Result<()> {
     assert_eq!(
         (
             app.overlay.is_none(),
-            app.transcript_view.is_detailed(),
+            app.transcript_view.is_review_browser(),
             tui.is_owned_screen(),
             tui.is_alt_screen_active()
         ),
@@ -483,7 +489,7 @@ async fn owned_details_escape_interrupts_work_without_starting_backtrack() -> Re
         (
             interrupts,
             app.backtrack.overlay_preview_active,
-            app.transcript_view.is_detailed(),
+            app.transcript_view.is_review_browser(),
             app.chat_widget.composer_text_with_pending(),
         ),
         (1, false, true, "draft survives interrupt".to_string()),
@@ -515,6 +521,7 @@ async fn owned_backtrack_keys_edit_the_selected_prompt_and_restore_compact_view(
             (true, selected)
         );
     }
+    app.render_owned_transcript(&mut tui, Size::new(/*width*/ 80, /*height*/ 24))?;
     assert!(app.handle_owned_backtrack_event(
         &mut tui,
         &TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -602,7 +609,7 @@ async fn cancelling_owned_backtrack_returns_arrow_keys_to_the_composer() -> Resu
         assert_eq!(app.chat_widget.composer_text_with_pending(), "abXcY");
         assert_eq!(
             (
-                app.transcript_view.is_detailed(),
+                app.transcript_view.is_review_browser(),
                 app.backtrack.primed,
                 app.backtrack.overlay_preview_active,
                 app.backtrack.base_id,
@@ -871,14 +878,14 @@ async fn offline_find_closes_before_the_next_ctrl_c_quits() -> Result<()> {
         app.chat_widget.composer_text_with_pending(),
         "offline draft"
     );
-    assert!(app.transcript_view.is_detailed());
+    assert!(app.transcript_view.is_review_browser());
     app.handle_tui_event(
         &mut tui,
         &mut app_server,
         TuiEvent::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
     )
     .await?;
-    assert!(!app.transcript_view.is_detailed());
+    assert!(!app.transcript_view.is_review_browser());
     let quit = TuiEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(matches!(
         app.handle_tui_event(&mut tui, &mut app_server, quit)
@@ -1127,6 +1134,8 @@ async fn double_escape_browses_prompts_without_reverting_and_explains_editing() 
             .any(|event| matches!(event, AppEvent::RevertSessionForPromptEdit { .. }))
     );
     app.keymap = RuntimeKeymap::defaults();
+    // The first frame establishes selected-content visibility for the rewind footer.
+    app.render_owned_transcript(&mut tui, size)?;
     app.render_owned_transcript(&mut tui, size)?;
     insta::assert_snapshot!(
         "prompt_navigation",

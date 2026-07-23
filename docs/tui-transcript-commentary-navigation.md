@@ -1,12 +1,12 @@
 # TUI transcript review mode and navigation
 
-Status: proposed integration contract; implementation and remote validation pending
+Status: implemented in the shared transcript viewport; remote executable validation pending
 
 ## Summary
 
 Improve the existing transcript browser for reviewing long Codex sessions. The configured transcript shortcut defaults to `Ctrl+T`; it is not a fixed binding.
 
-The current integration already has an owned viewport and an inline `TranscriptOverlay`, both using shared `TranscriptView` state and layout. Existing search and per-entry disclosure remain available in their current surfaces. The behavior below is the next implementation contract, not a claim that Review/navigation has already landed or passed CI.
+The owned viewport and inline `TranscriptOverlay` share `TranscriptView` review state, layout and logical anchors. Existing search and per-entry disclosure remain available in their current surfaces. The inline browser shows its mode in the title and hints; the owned browser uses its persistent transcript footer. This document describes implemented behavior, not successful CI qualification.
 
 The existing Full presentation is an exact retained transcript. That is useful for auditing, but a
 single file read can insert hundreds of source lines and make it difficult to
@@ -17,7 +17,7 @@ find:
 - commands that changed repository state;
 - the final response.
 
-The proposed slice makes two focused changes:
+The browser provides two focused behaviors:
 
 1. Open the transcript in a concise **Review** mode that reuses the summaries
    already shown in the main TUI.
@@ -199,12 +199,12 @@ The renderer never relies on terminal clipping of a partial group.
 Deferred ideas are recorded in
 `docs/tui-transcript-browser-deferred.md`.
 
-## Implementation contract
+## Implementation
 
 - Put shared review/navigation state in the existing `TranscriptView` used by both the owned viewport and inline overlay. Preserve its logical cell identity, anchors, layout caches and viewport-bounded scrolling; do not transplant an old `PagerView` index or add a second viewport system.
 - Distinguish an explicitly open live browser from the existing detailed-rendering boolean: Review still owns pager input even when cells use ordinary display representations. Preserve existing live-tail identity and invalidation.
-- Add `LiveReviewBrowser` and fixed `HistoricalFullPreview` transcript flavors.
-  The configured transcript shortcut and backtrack use the former; the resume-picker preview keeps
+- An explicit optional browser state distinguishes live Review/Full from fixed historical Full.
+  The configured transcript shortcut and backtrack open the live browser; the resume-picker preview keeps
   its current Full-only title, hints, and pager handling.
 - In Review, committed cells and the live tail use
   `display_hyperlink_lines(width)`. In Full they use
@@ -238,7 +238,7 @@ Deferred ideas are recorded in
 
 ## Validation
 
-Automated coverage should establish:
+Authored regression coverage addresses the following behaviors. Local builds, tests and snapshot generation were not run for this integration; executable qualification remains with remote CI.
 
 - distinct Review and Full rendering, title fallbacks, narrow atomic hints, and
   the unchanged historical Full preview;

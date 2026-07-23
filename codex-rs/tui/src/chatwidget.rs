@@ -912,19 +912,28 @@ pub(crate) enum TurnAbortReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ThreadItemRenderSource {
     Live,
-    Replay(ReplayKind),
+    /// A persisted turn item has no preceding start notification to reconstruct its UI.
+    ReplayedTurnItem(ReplayKind),
+    /// Buffered notifications preserve start/completion sequencing during thread switches.
+    ReplayedNotification(ReplayKind),
 }
 
 impl ThreadItemRenderSource {
     fn is_replay(self) -> bool {
-        matches!(self, Self::Replay(_))
+        !matches!(self, Self::Live)
     }
 
     fn replay_kind(self) -> Option<ReplayKind> {
         match self {
             Self::Live => None,
-            Self::Replay(replay_kind) => Some(replay_kind),
+            Self::ReplayedTurnItem(replay_kind) | Self::ReplayedNotification(replay_kind) => {
+                Some(replay_kind)
+            }
         }
+    }
+
+    fn reconstructs_file_change(self) -> bool {
+        matches!(self, Self::ReplayedTurnItem(_))
     }
 }
 
@@ -2115,6 +2124,15 @@ impl ChatWidget {
     pub(crate) fn active_cell_transcript_lines(&self, width: u16) -> Option<Vec<Line<'static>>> {
         self.active_cell_transcript_hyperlink_lines(width)
             .map(crate::terminal_hyperlinks::visible_lines)
+    }
+
+    pub(crate) fn active_cell_review_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Option<Vec<HyperlinkLine>> {
+        self.active_cell_hyperlink_lines_with(width, |cell, width| {
+            cell.display_hyperlink_lines(width)
+        })
     }
 
     /// Return a reference to the widget's current config (includes any

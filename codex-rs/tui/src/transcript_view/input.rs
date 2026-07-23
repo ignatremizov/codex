@@ -114,6 +114,9 @@ impl TranscriptView {
         if key.kind == KeyEventKind::Release {
             return false;
         }
+        if self.owns_review_key(key) {
+            return true;
+        }
         let (code, modifiers) = crate::key_hint::normalize_key_parts(key.code, key.modifiers);
         if (code == KeyCode::Char(' ') && modifiers == KeyModifiers::CONTROL)
             || JumpTarget::from_key(key).is_some()

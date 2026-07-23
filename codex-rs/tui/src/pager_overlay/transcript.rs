@@ -30,6 +30,10 @@ pub(crate) struct TranscriptOverlay {
     is_done: bool,
 }
 
+#[cfg(test)]
+#[path = "review_tests.rs"]
+mod review_tests;
+
 impl TranscriptOverlay {
     pub(crate) fn bookmark(&mut self) -> TranscriptBookmark {
         self.view.bookmark(&self.cells)
@@ -87,10 +91,14 @@ impl TranscriptOverlay {
             self.view.render(self.content_area, buf, &self.cells);
         }
         let header = Rect::new(area.x, area.y, area.width, area.height.min(/*other*/ 1));
-        Span::from("/ ".repeat(area.width as usize / 2))
-            .dim()
-            .render(header, buf);
-        "/ T R A N S C R I P T".dim().render(header, buf);
+        if let Some(title) = self.view.review_title(header.width) {
+            title.render(header, buf);
+        } else {
+            Span::from("/ ".repeat(area.width as usize / 2))
+                .dim()
+                .render(header, buf);
+            "/ T R A N S C R I P T".dim().render(header, buf);
+        }
         let status = Rect::new(
             area.x,
             self.content_area.bottom(),
@@ -313,6 +321,7 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn replace_cells(&mut self, cells: Vec<Arc<dyn HistoryCell>>) {
+        self.view.clear_review_target();
         self.cells = cells;
         self.view.restart_search();
         self.view.history_loaded(&self.cells, 0..0);
@@ -380,9 +389,29 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn set_highlight_cell(&mut self, cell: Option<usize>) {
-        self.highlight_cell = cell.filter(|index| *index < self.cells.len());
-        self.pending_highlight = self.highlight_cell;
+        let cell = cell.filter(|index| *index < self.cells.len());
+        if self.highlight_cell != cell {
+            self.pending_highlight = cell;
+        }
+        self.highlight_cell = cell;
         self.view.set_highlight(self.highlight_cell);
+    }
+
+    pub(crate) fn highlighted_content_is_drawn(&self) -> bool {
+        self.pending_highlight.is_none()
+            && self
+                .highlight_cell
+                .is_some_and(|index| self.view.highlighted_content_is_drawn(&self.cells, index))
+    }
+
+    pub(crate) fn invalidate_highlight_paint(&mut self) {
+        self.view.invalidate_highlight_paint();
+    }
+
+    pub(crate) fn review_key_needs_layout(&self, key: KeyEvent) -> bool {
+        self.view.owns_review_key(key)
+            && !self.view.has_active_interaction()
+            && !self.view.has_painted_layout()
     }
 
     /// Apply prompt navigation before scrolling, even when both keys precede the next draw.
@@ -398,20 +427,22 @@ impl TranscriptOverlay {
             return None;
         }
         if !self.view.is_search_active()
+            && (!self.view.owns_review_key(key) || self.view.has_active_interaction())
             && (!self.view.has_active_interaction() || !self.view.owns_interaction_key(key))
             && self.keymap.find.is_pressed(key)
         {
             self.view.begin_search();
             return Some(ViewAction::Changed);
         }
-        if self.view.has_active_interaction()
-            && let Some(action) = self.view.handle_key(key, &self.cells)
-        {
-            return Some(action);
+        if self.view.has_active_interaction() {
+            return self.view.handle_key(key, &self.cells);
         }
         if self.keymap.close.is_pressed(key) || self.keymap.close_transcript.is_pressed(key) {
             self.is_done = true;
             return Some(ViewAction::Changed);
+        }
+        if let Some(action) = self.view.handle_review_key(key, &self.cells) {
+            return Some(action);
         }
         if self.view.navigate_pager(key, &self.cells, &self.keymap) {
             return Some(ViewAction::Changed);
@@ -457,6 +488,18 @@ impl TranscriptOverlay {
         let first = Rect::new(area.x, area.y, area.width, /*height*/ 1).intersection(area);
         render_navigation_hints(first, buf, &self.keymap);
         let second = Rect::new(area.x, first.bottom(), area.width, /*height*/ 1).intersection(area);
+        if let Some(footer) = self.view.review_footer(
+            second.width,
+            &self
+                .keymap
+                .close
+                .first()
+                .map(|key| key.display_label())
+                .unwrap_or_default(),
+        ) {
+            Paragraph::new(footer.text).render(second, buf);
+            return;
+        }
         let mut pairs = vec![(
             first_or_empty(&self.keymap, "close", &self.keymap.close),
             "close",

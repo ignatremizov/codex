@@ -68,7 +68,7 @@ impl App {
         {
             let close_chord = tui.is_owned_screen()
                 && self.overlay.is_none()
-                && self.transcript_view.is_detailed()
+                && (self.transcript_view.is_review_browser() || self.transcript_view.is_detailed())
                 && !self.transcript_view.has_active_interaction()
                 && !self.backtrack.overlay_preview_active
                 && match self.key_chord_matcher.clone().advance(
@@ -207,17 +207,21 @@ impl App {
         if self.backtrack.overlay_preview_active && self.chat_widget.no_modal_or_popup_active() {
             return KeymapContextSet::browsing();
         }
+        if self.transcript_view.is_review_browser() && self.chat_widget.no_modal_or_popup_active() {
+            return KeymapContextSet::new(KeymapContext::Pager).with(KeymapContext::Global);
+        }
         let voice_available = self.chat_widget.realtime_microphone_shortcut_available();
         let contexts = self.chat_widget.keymap_contexts();
         if self.chat_widget.no_modal_or_popup_active() {
             let contexts = contexts
                 .with(KeymapContext::Global)
                 .with(KeymapContext::Chat);
-            let contexts = if self.transcript_view.is_detailed() {
-                contexts.with_transcript_close()
-            } else {
-                contexts
-            };
+            let contexts =
+                if self.transcript_view.is_review_browser() || self.transcript_view.is_detailed() {
+                    contexts.with_transcript_close()
+                } else {
+                    contexts
+                };
             if voice_available {
                 contexts.with(KeymapContext::Voice)
             } else {

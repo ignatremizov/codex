@@ -30,7 +30,7 @@ impl App {
             HistoryRenderMode::Raw => None,
             HistoryRenderMode::Rich => match (
                 self.overlay.as_ref(),
-                view.is_detailed(),
+                view.is_review_browser() || view.is_detailed(),
                 view.is_search_active(),
                 view.is_activity_focused(),
                 view.has_selection_range(),

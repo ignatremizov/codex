@@ -4,7 +4,7 @@ assertion_line: 169
 expression: "snapshots.join(\"\\n\\n\")"
 ---
 80 columns
-/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
+T R A N S C R I P T · R E V I E W
 › first prompt
 
 
@@ -14,7 +14,7 @@ expression: "snapshots.join(\"\\n\\n\")"
 Browsing · ↑↓/jk scroll · ←→/hl prompts · ctrl+t details · ↵ rewind · esc back
 
 32 columns
-/ T R A N S C R I P T / / / / /
+T R A N S C R I P T · R E V I E W
 › first prompt
 
 

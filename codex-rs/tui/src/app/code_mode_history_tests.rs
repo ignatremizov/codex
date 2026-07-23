@@ -82,6 +82,20 @@ async fn default_owned_history_shows_complete_live_and_replayed_code_mode_calls(
                     .trim_matches('\n')
                     .to_string();
                 rendered.push(history);
+                app.open_transcript_overlay(&mut tui);
+                app.render_owned_transcript(&mut tui, size)?;
+                let review =
+                    crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal)
+                        .content()
+                        .iter()
+                        .map(ratatui::buffer::Cell::symbol)
+                        .collect::<String>();
+                for retained_line in output.lines() {
+                    assert!(
+                        review.contains(retained_line),
+                        "missing Review line: {retained_line}"
+                    );
+                }
                 tui.set_owned_screen(/*owned*/ false)?;
             }
             assert_eq!(rendered[0], rendered[1]);

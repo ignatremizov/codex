@@ -19,6 +19,14 @@ impl App {
             .keymap
             .primary_hint(crate::keymap::KeymapContext::Global, "open_transcript")
             .map(|key| (key.display_label(), "details"));
+        let confirmable = match &self.overlay {
+            Some(Overlay::Transcript(overlay)) => overlay.highlighted_content_is_drawn(),
+            _ => nth_user_position(&self.transcript_cells, self.backtrack.nth_user_message)
+                .is_some_and(|index| {
+                    self.transcript_view
+                        .highlighted_content_is_drawn(&self.transcript_cells, index)
+                }),
+        };
         let mut full_hints = vec![
             ("↑↓/jk".to_string(), "scroll"),
             ("←→/hl".to_string(), "prompts"),
@@ -52,6 +60,9 @@ impl App {
             .map(|(label, hints)| {
                 let mut line = Line::from(label.fg(crate::style::accent_color()));
                 for (keys, action) in hints {
+                    if keys == "↵" && !confirmable {
+                        continue;
+                    }
                     line.spans.push(" · ".dim());
                     line.spans.extend(crate::key_hint::key_label_spans(&keys));
                     if !action.is_empty() {

@@ -127,8 +127,12 @@ impl TranscriptView {
         }
         let detailed = self.detailed;
         let mode = self.mode;
+        let review = self.review_mode() == Some(ReviewMode::Review);
         let ids = cell.activity_ids();
-        let disclosure = !detailed && mode == HistoryRenderMode::Rich && !ids.is_empty();
+        let disclosure = !self.is_review_browser()
+            && !detailed
+            && mode == HistoryRenderMode::Rich
+            && !ids.is_empty();
         let expanded = disclosure && self.disclosure.is_expanded(&ids);
         if expanded {
             self.disclosure.expanded.extend(ids);
@@ -154,6 +158,8 @@ impl TranscriptView {
                     width,
                     expanded,
                 )
+            } else if review {
+                TextLayout::new(cell.display_hyperlink_lines(width), width)
             } else if detailed || mode == HistoryRenderMode::Rich {
                 TextLayout::new(cell.retained_hyperlink_lines(width, detailed), width)
             } else {

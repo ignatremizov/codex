@@ -6893,6 +6893,7 @@ async fn directive_only_completion_removes_streamed_directive() -> Result<()> {
         String::new(),
         PathBuf::from("/tmp"),
         /*inline_visualization_context*/ None,
+        /*phase*/ None,
         ConsolidationScrollbackReflow::Required,
         /*deferred_history_cell*/ None,
     )?;

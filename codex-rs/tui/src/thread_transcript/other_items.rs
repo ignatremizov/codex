@@ -1,7 +1,8 @@
 //! Restore historical tool and notice cells without changing live application state.
 //!
-//! Formatting stays in the same history cells used by live events. Only completed
-//! patches render as applied changes; other statuses retain their actual outcome.
+//! Formatting stays in the same history cells used by live events. Completed patches render as
+//! applied changes, while in-progress patches retain their structured target alongside status.
+//! Other statuses retain their actual outcome.
 
 use super::TranscriptCells;
 use crate::app_server_approval_conversions::file_update_changes_to_display;
@@ -43,14 +44,24 @@ pub(super) fn cells(
                     String::new(),
                 )));
             }
-            PatchApplyStatus::InProgress | PatchApplyStatus::Declined => {
-                let message = if status == PatchApplyStatus::Declined {
-                    "Patch application declined"
-                } else {
-                    "Patch application in progress"
-                };
+            PatchApplyStatus::InProgress => {
+                if !changes.is_empty() {
+                    cells.push(Arc::new(
+                        history_cell::new_patch_event(
+                            file_update_changes_to_display(changes),
+                            cwd.as_path(),
+                        )
+                        .with_activity_id(id.clone()),
+                    ));
+                }
                 cells.push(Arc::new(history_cell::new_info_event(
-                    message.to_string(),
+                    "Patch application in progress".to_string(),
+                    /*hint*/ None,
+                )));
+            }
+            PatchApplyStatus::Declined => {
+                cells.push(Arc::new(history_cell::new_info_event(
+                    "Patch application declined".to_string(),
                     /*hint*/ None,
                 )));
             }

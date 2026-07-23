@@ -154,6 +154,18 @@ pub(crate) enum HistoryRenderMode {
     Raw,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TranscriptNavigationKind {
+    /// A user-authored turn input.
+    UserMessage,
+    /// Canonical mid-turn assistant commentary.
+    Commentary,
+    /// A finalized assistant output, including messages whose phase is unknown.
+    AssistantOutput,
+    /// A structured applied-patch summary.
+    Patch,
+}
+
 pub(crate) fn raw_lines_from_source(source: &str) -> Vec<Line<'static>> {
     if source.is_empty() {
         return Vec::new();
@@ -219,6 +231,11 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
     /// Raw live presentation may omit transcript-only diagnostics without losing their source.
     fn live_raw_lines(&self) -> Vec<Line<'static>> {
         self.raw_lines()
+    }
+
+    /// Classifies cells that the transcript's focused review navigation can visit.
+    fn transcript_navigation_kind(&self) -> Option<TranscriptNavigationKind> {
+        None
     }
 
     /// Returns rich visible lines plus terminal hyperlink metadata.
@@ -317,6 +334,7 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
     ///
     /// Cells backed by external state should return `false` so the shared viewport refreshes
     /// their rendered text and source mapping each frame instead of reusing stale content.
+    /// The default is stable because ordinary history cells do not change after insertion.
     fn has_stable_transcript_height(&self) -> bool {
         true
     }

@@ -169,6 +169,10 @@ async fn browsing_footer_adapts_to_width() -> Result<()> {
     let mut snapshots = Vec::new();
     for width in [80, 32] {
         let area = Rect::new(/*x*/ 0, /*y*/ 0, width, /*height*/ 8);
+        if let Some(Overlay::Transcript(overlay)) = &mut app.overlay {
+            overlay.browsing_footer = Some("Browsing".into());
+            overlay.render(area, &mut Buffer::empty(area));
+        }
         let footer = app
             .prompt_navigation_footer(width.saturating_sub(/*rhs*/ 2))
             .expect("browsing footer");
@@ -215,7 +219,7 @@ async fn inline_browsing_is_compact_and_escape_restores_the_existing_overlay() -
             true,
             true,
         ),
-        (KeyEvent::from(KeyCode::Esc), true, false),
+        (KeyEvent::from(KeyCode::Esc), false, false),
     ] {
         app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(key))
             .await?;

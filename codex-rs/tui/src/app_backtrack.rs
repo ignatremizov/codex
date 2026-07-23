@@ -104,6 +104,11 @@ impl App {
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<bool> {
+        if matches!(event, TuiEvent::Resize(_))
+            && let Some(Overlay::Transcript(overlay)) = &mut self.overlay
+        {
+            overlay.invalidate_highlight_paint();
+        }
         if !matches!(self.overlay, Some(Overlay::Transcript(_))) {
             self.overlay_forward_event(tui, event)?;
             return Ok(true);
@@ -160,18 +165,16 @@ impl App {
             .add_error_message(format!("Failed to edit the selected prompt: {err:#}"));
     }
 
-    /// Show detailed history in the owned viewport or the inline session's transcript overlay.
+    /// Open a live Review browser in either presentation; historical previews remain Full.
     pub(crate) fn open_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         if tui.is_owned_screen() {
-            self.transcript_view.set_presentation(
-                /*detailed*/ true,
-                self.chat_widget.history_render_mode(),
-            );
+            self.transcript_view
+                .open_review_browser(self.chat_widget.history_render_mode());
             tui.frame_requester().schedule_frame();
             return;
         }
         let _ = tui.enter_alt_screen();
-        self.overlay = Some(Overlay::new_transcript(
+        self.overlay = Some(Overlay::new_review_transcript(
             self.transcript_cells.clone(),
             self.keymap.pager.clone(),
         ));
@@ -186,10 +189,8 @@ impl App {
     /// Close the current overlay and restore normal UI, retaining Analytics navigation state.
     pub(crate) fn close_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         if tui.is_owned_screen() && self.overlay.is_none() {
-            self.transcript_view.set_presentation(
-                /*detailed*/ false,
-                self.chat_widget.history_render_mode(),
-            );
+            self.transcript_view
+                .close_review_browser(self.chat_widget.history_render_mode());
             self.backtrack.overlay_preview_active = false;
             self.reset_backtrack_state();
             tui.frame_requester().schedule_frame();
@@ -319,14 +320,17 @@ impl App {
     /// Apply a computed backtrack selection to the overlay and internal counter.
     pub(crate) fn apply_backtrack_selection_internal(&mut self, nth_user_message: usize) {
         if let Some(cell_idx) = nth_user_position(&self.transcript_cells, nth_user_message) {
+            let changed = self.backtrack.nth_user_message != nth_user_message;
             self.backtrack.nth_user_message = nth_user_message;
             if let Some(Overlay::Transcript(t)) = &mut self.overlay {
                 t.set_highlight_cell(Some(cell_idx));
             }
             if self.overlay.is_none() {
                 self.transcript_view.set_highlight(Some(cell_idx));
-                self.transcript_view
-                    .ensure_entry_visible(&self.transcript_cells, cell_idx);
+                if changed {
+                    self.transcript_view
+                        .ensure_entry_visible(&self.transcript_cells, cell_idx);
+                }
             }
         } else {
             self.backtrack.nth_user_message = usize::MAX;
@@ -351,6 +355,12 @@ impl App {
     /// source of truth for the active cell and its cache invalidation key, and because `App` owns
     /// overlay lifecycle and frame scheduling for animations.
     fn overlay_forward_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
+        if let TuiEvent::Key(key) = &event
+            && matches!(&self.overlay, Some(Overlay::Transcript(overlay)) if overlay.review_key_needs_layout(*key))
+        {
+            tui.frame_requester().schedule_frame();
+            return Ok(());
+        }
         let width = tui.terminal.last_known_screen_size.width.max(/*other*/ 1);
         let footer = self.prompt_navigation_footer(width.saturating_sub(/*rhs*/ 2));
         if let Some(Overlay::Transcript(overlay)) = &mut self.overlay {
@@ -378,12 +388,7 @@ impl App {
                 if detailed {
                     chat_widget.active_cell_transcript_hyperlink_lines(width)
                 } else {
-                    chat_widget
-                        .active_cell_owned_transcript_lines(width, /*expanded*/ false)
-                        .map(|mut lines| {
-                            lines.activity.extend(lines.auxiliary);
-                            lines.activity
-                        })
+                    chat_widget.active_cell_review_hyperlink_lines(width)
                 }
             });
             // Refresh visible rows before selection captures this live revision.
@@ -421,6 +426,17 @@ impl App {
     /// Handle Enter in overlay backtrack preview: confirm selection and reset state.
     fn overlay_confirm_backtrack(&mut self, tui: &mut tui::Tui) {
         let nth_user_message = self.backtrack.nth_user_message;
+        let painted = match &self.overlay {
+            Some(Overlay::Transcript(overlay)) => overlay.highlighted_content_is_drawn(),
+            _ => nth_user_position(&self.transcript_cells, nth_user_message).is_some_and(|index| {
+                self.transcript_view
+                    .highlighted_content_is_drawn(&self.transcript_cells, index)
+            }),
+        };
+        if !painted {
+            tui.frame_requester().schedule_frame();
+            return;
+        }
         let Some(selection) = self.backtrack_selection(nth_user_message) else {
             return;
         };
