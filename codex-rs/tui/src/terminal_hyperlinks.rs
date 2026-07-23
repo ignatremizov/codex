@@ -136,6 +136,13 @@ pub(crate) fn visible_lines(lines: Vec<HyperlinkLine>) -> Vec<Line<'static>> {
     lines.into_iter().map(|line| line.line).collect()
 }
 
+pub(crate) fn visible_lines_ref(lines: &[HyperlinkLine]) -> Vec<Line<'_>> {
+    lines
+        .iter()
+        .map(|line| line_to_borrowed(&line.line))
+        .collect()
+}
+
 /// Wraps hyperlink-aware source lines into independently renderable viewport rows.
 ///
 /// This work is intended to be cached by viewport renderers. Once wrapped, callers can slice the
