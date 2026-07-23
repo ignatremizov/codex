@@ -29,34 +29,39 @@ pub(crate) struct PromotedSkillIdentity {
     authority_kind_hex: String,
     authority_id_hex: String,
     package_hex: String,
-    resource_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_hex: Option<String>,
 }
 
 impl PromotedSkillIdentity {
     pub(crate) fn from_entry(entry: &SkillCatalogEntry) -> Option<Self> {
         let authority_kind = source_kind_key(&entry.authority.kind);
+        let package = entry.id.0.as_str();
+        let resource = entry.main_prompt.as_str();
         (authority_kind.len() <= MAX_AUTHORITY_KIND_BYTES
             && entry.authority.id.len() <= MAX_AUTHORITY_ID_BYTES
-            && entry.id.0.len() <= MAX_PACKAGE_ID_BYTES
-            && entry.main_prompt.as_str().len() <= MAX_RESOURCE_ID_BYTES)
+            && package.len() <= MAX_PACKAGE_ID_BYTES
+            && resource.len() <= MAX_RESOURCE_ID_BYTES)
             .then(|| Self {
                 authority_kind_hex: hex_encode(authority_kind.as_bytes()),
                 authority_id_hex: hex_encode(entry.authority.id.as_bytes()),
-                package_hex: hex_encode(entry.id.0.as_bytes()),
-                resource_hex: hex_encode(entry.main_prompt.as_str().as_bytes()),
+                package_hex: hex_encode(package.as_bytes()),
+                resource_hex: (resource != package).then(|| hex_encode(resource.as_bytes())),
             })
     }
 
     pub(crate) fn matches_entry(&self, entry: &SkillCatalogEntry) -> bool {
         let authority_kind = source_kind_key(&entry.authority.kind);
+        let package_hex = hex_encode(entry.id.0.as_bytes());
+        let resource_hex = hex_encode(entry.main_prompt.as_str().as_bytes());
         authority_kind.len() <= MAX_AUTHORITY_KIND_BYTES
             && entry.authority.id.len() <= MAX_AUTHORITY_ID_BYTES
             && entry.id.0.len() <= MAX_PACKAGE_ID_BYTES
             && entry.main_prompt.as_str().len() <= MAX_RESOURCE_ID_BYTES
             && self.authority_kind_hex == hex_encode(authority_kind.as_bytes())
             && self.authority_id_hex == hex_encode(entry.authority.id.as_bytes())
-            && self.package_hex == hex_encode(entry.id.0.as_bytes())
-            && self.resource_hex == hex_encode(entry.main_prompt.as_str().as_bytes())
+            && self.package_hex == package_hex
+            && self.resource_hex.as_ref().unwrap_or(&self.package_hex) == &resource_hex
     }
 }
 
@@ -185,3 +190,7 @@ impl ContextualUserFragment for AvailableSkillsInstructions {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "fragments_tests.rs"]
+mod tests;
