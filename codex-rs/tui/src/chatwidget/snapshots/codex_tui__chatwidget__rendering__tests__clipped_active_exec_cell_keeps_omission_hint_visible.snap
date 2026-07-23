@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/rendering.rs
+expression: rendered
+---
+• Ran seq 1 40
+  └ output line 01
+    output line 02
+… +26 rows (ctrl + t to view transcript)
+    output line 39
+    output line 40
