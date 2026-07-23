@@ -183,6 +183,7 @@ impl Renderable for ChatWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec_cell::ExecCall;
     use crate::history_cell::PlainHistoryCell;
     use crate::render::renderable::Renderable;
 
