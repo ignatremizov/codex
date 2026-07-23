@@ -8,8 +8,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use crate::diff_model::FileChange;
 use crate::chatwidget::ActiveCellTranscriptKey;
+use crate::diff_model::FileChange;
 use crate::history_cell;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::PlainHistoryCell;
@@ -240,9 +240,11 @@ fn detail_toggle_invalidates_and_rebuilds_live_tail_in_new_mode() {
         is_stream_continuation: false,
         animation_tick: None,
     };
-    overlay.sync_live_tail(/*width*/ 80, Some(key), |_| {
-        Some(vec!["review tail".into()])
-    });
+    overlay.sync_live_tail(
+        /*width*/ 80,
+        Some(key),
+        |_| Some(vec!["review tail".into()]),
+    );
     assert_eq!(overlay.view.renderables.len(), 1);
     assert_eq!(
         overlay.live_tail_key.map(|key| key.detail_mode),
@@ -257,9 +259,11 @@ fn detail_toggle_invalidates_and_rebuilds_live_tail_in_new_mode() {
         )
         .expect("toggle detail");
     assert!(overlay.view.renderables.is_empty());
-    overlay.sync_live_tail(/*width*/ 80, Some(key), |_| {
-        Some(vec!["full tail".into()])
-    });
+    overlay.sync_live_tail(
+        /*width*/ 80,
+        Some(key),
+        |_| Some(vec!["full tail".into()]),
+    );
 
     assert_eq!(overlay.view.renderables.len(), 1);
     assert_eq!(
