@@ -1,5 +1,6 @@
 //! Explicit communication provenance keeps incoming history separate from local model output.
 
+use super::helpers::drain_insert_history_with;
 use super::*;
 use codex_app_server_protocol::InterAgentMessageSource;
 use pretty_assertions::assert_eq;
@@ -52,7 +53,13 @@ async fn live_app_server_inter_agent_message_renders_in_transcript() {
             "Agent message from `/root`:\n\nInspect the repository.",
         ),
     );
-    let cells = drain_insert_history(&mut rx);
+    let cells = drain_insert_history_with(&mut rx, |cell| {
+        assert_eq!(
+            cell.transcript_navigation_kind(),
+            Some(crate::history_cell::TranscriptNavigationKind::Commentary)
+        );
+        cell.display_lines(/*width*/ 80)
+    });
     assert_eq!(cells.len(), 1);
     let rendered = lines_to_single_string(&cells[0]).replace("  \n", "\n");
     insta::assert_snapshot!(

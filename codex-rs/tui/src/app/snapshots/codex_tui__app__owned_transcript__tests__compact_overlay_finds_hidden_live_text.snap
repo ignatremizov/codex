@@ -1,13 +1,14 @@
 ---
 source: tui/src/app/owned_transcript_tests.rs
+assertion_line: 1433
 expression: rendered
 ---
-/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
-$ 'printf visible
-    printf needle'
-
-
-
+T R A N S C R I P T · R E V I E W
+$ 'printf output'
+visible
+needle
+more output
+last
 
 
 

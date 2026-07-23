@@ -3,7 +3,7 @@
 This note keeps adjacent ideas out of the initial transcript review-mode
 implementation. None of these are V1 requirements.
 
-Integration status: Review/navigation remains a proposal at this documentation stop. The current TUI already has an owned viewport, transcript search and per-entry disclosure; this note defers extensions to those capabilities, not their existence. Both owned and inline transcript displays reuse `TranscriptView`. No implementation or CI qualification is asserted here.
+Integration status: shared Review/navigation is implemented; executable qualification is pending. The current TUI already has an owned viewport, transcript search, and per-entry disclosure; this note defers extensions to those capabilities, not their existence. Both owned and inline transcript displays reuse `TranscriptView`. The ideas below remain proposals, not implemented extensions.
 
 ## Candidate follow-ups
 

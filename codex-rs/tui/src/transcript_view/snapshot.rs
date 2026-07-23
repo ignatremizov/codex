@@ -12,6 +12,7 @@ pub(super) struct ViewSnapshot {
     pub(super) activities: HashMap<EntryKey, Arc<[String]>>,
     // Hidden live text cannot be reconstructed from the pinned compact display.
     pub(super) search_live: Option<Arc<TextLayout>>,
+    pub(super) refresh_live_presentation: bool,
 }
 
 impl TranscriptView {
@@ -78,6 +79,7 @@ impl TranscriptView {
                 .snapshot()
                 .and_then(|snapshot| snapshot.search_live.clone())
                 .or_else(|| self.search.live.clone()),
+            refresh_live_presentation: false,
         }
     }
 

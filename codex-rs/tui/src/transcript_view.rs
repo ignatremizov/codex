@@ -16,6 +16,7 @@ mod input;
 mod layout;
 mod mutations;
 mod prompt_header;
+mod review;
 mod search;
 mod select_mode;
 mod selection;
@@ -49,6 +50,7 @@ pub(crate) use bookmark::TranscriptBookmark;
 pub(crate) use input::JumpTarget;
 pub(crate) use input::ViewAction;
 pub(crate) use layout::ActivityTranscriptLines;
+pub(crate) use review::ReviewMode;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum EntryKey {
@@ -115,6 +117,8 @@ pub(crate) struct TranscriptView {
     held_reading: Option<ViewSnapshot>,
     search: Search,
     detailed: bool,
+    review: Option<review::ReviewBrowser>,
+    painted_highlight: Option<(EntryKey, Option<EntryKey>)>,
     mode: HistoryRenderMode,
     pub(crate) history: TranscriptHistoryState,
     highlight: Option<usize>,
@@ -155,6 +159,8 @@ impl Default for TranscriptView {
             held_reading: None,
             search: Search::default(),
             detailed: false,
+            review: None,
+            painted_highlight: None,
             mode: HistoryRenderMode::Rich,
             history: TranscriptHistoryState::Idle,
             highlight: None,
@@ -183,6 +189,7 @@ impl TranscriptView {
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer, cells: &[Arc<dyn HistoryCell>]) {
+        self.painted_highlight = None;
         self.composer_tip = None;
         self.prompt_header_target = None;
         self.cache.begin_frame();
@@ -220,7 +227,13 @@ impl TranscriptView {
             // Freezing follow must preserve a header that yielded to the next visible prompt.
             self.suppressed_prompt_header = Some(header_position);
         } else if area.height >= 4
-            && prompt_header::line(cells, start.0, area.width, self.detailed).is_some()
+            && prompt_header::line(
+                cells,
+                start.0,
+                area.width,
+                self.detailed || self.is_review_browser(),
+            )
+            .is_some()
         {
             body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
             let resized = resized || previous_height != body.height;
@@ -231,9 +244,12 @@ impl TranscriptView {
             }
             // Following may advance into the next turn after reserving the header row.
             start = self.start(cells);
-            if let Some((header, key)) =
-                prompt_header::line(cells, start.0, area.width, self.detailed)
-            {
+            if let Some((header, key)) = prompt_header::line(
+                cells,
+                start.0,
+                area.width,
+                self.detailed || self.is_review_browser(),
+            ) {
                 let header_area = Rect::new(area.x, area.y, area.width, /*height*/ 1);
                 header.render(header_area, buf);
                 self.prompt_header_target = Some((header_area, key));
@@ -281,6 +297,11 @@ impl TranscriptView {
             if self.highlight == Some(index) && self.selection.is_none() && !self.search.is_active()
             {
                 layout.highlight(0..layout.text().len(), row_area, buf, row);
+                let start = layout.position_at(row, /*column*/ 0);
+                let end = layout.position_at(row, area.width);
+                if !layout.text()[start..end].trim().is_empty() {
+                    self.painted_highlight = Some((key, current_cells.last().map(EntryKey::cell)));
+                }
             }
             self.visible.push(VisibleRow {
                 index,
@@ -391,6 +412,21 @@ impl TranscriptView {
         }
         let changed = self.live.is_some() || live.is_some();
         self.live = live;
+        // A browser flavor change keeps retired committed sources, but its live source must
+        // be rebuilt by the widget in the new presentation before pinning that revision again.
+        if self
+            .snapshot()
+            .is_some_and(|snapshot| snapshot.refresh_live_presentation)
+            && let Some(cells) = self.snapshot_cells()
+        {
+            let live = self.current_layout(&cells, cells.len());
+            if let Some(snapshot) = self.snapshot_mut() {
+                snapshot.refresh_live_presentation = false;
+                if let Some(live) = live {
+                    snapshot.pinned.insert(EntryKey::Live, live);
+                }
+            }
+        }
         changed
     }
 
@@ -401,12 +437,13 @@ impl TranscriptView {
         self.selection = None;
         self.select_mode = None;
         self.copy_mode = None;
+        self.painted_highlight = None;
         self.release_live_reading();
         self.cache.clear();
         self.suppressed_prompt_header = None;
         self.live_key = None;
-        // Keep search's origin independent of either presentation's saved position.
-        if self.detailed != detailed && !self.search.is_active() {
+        // Search temporarily expands content without changing either presentation's position.
+        if self.detailed != detailed && !self.search.is_active() && self.review.is_none() {
             let previous = self.position;
             self.position = self.saved_position.take().unwrap_or(previous);
             self.saved_position = Some(previous);
@@ -433,7 +470,9 @@ impl TranscriptView {
 
     /// Hold the current reading position until every older page has arrived.
     pub(crate) fn jump_to_beginning(&mut self, cells: &[Arc<dyn HistoryCell>]) {
+        self.clear_review_target();
         if !self.detailed
+            && !self.is_review_browser()
             && !self.is_select_mode()
             && let Some(index) = cells
                 .iter()
@@ -455,6 +494,7 @@ impl TranscriptView {
 
     pub(crate) fn jump_to_latest(&mut self) {
         self.disclosure.resume_after_approval = None;
+        self.clear_review_target();
         self.cancel_search();
         self.cancel_beginning();
         self.position = Position::Latest;
@@ -467,6 +507,7 @@ impl TranscriptView {
     }
 
     pub(crate) fn scroll(&mut self, cells: &[Arc<dyn HistoryCell>], rows: isize) {
+        self.clear_review_target();
         if rows != 0 {
             self.disclosure.resume_after_approval = None;
             self.last_click = None;
@@ -517,6 +558,7 @@ impl TranscriptView {
     }
 
     pub(crate) fn jump_to_entry(&mut self, cells: &[Arc<dyn HistoryCell>], index: usize) {
+        self.painted_highlight = None;
         self.cancel_beginning();
         self.release_live_reading();
         let snapshot = self.snapshot_cells();
@@ -552,6 +594,9 @@ impl TranscriptView {
     }
 
     pub(crate) fn set_highlight(&mut self, index: Option<usize>) {
+        if self.highlight != index {
+            self.painted_highlight = None;
+        }
         self.highlight = index;
     }
 
@@ -643,6 +688,7 @@ impl TranscriptView {
             let mut remaining = rows.unsigned_abs();
             while remaining > row && index > 0 {
                 if !self.detailed
+                    && !self.is_review_browser()
                     && cells.get(index).is_some_and(|cell| {
                         cell.as_any().is::<crate::history_cell::ClearScreenHeader>()
                     })
