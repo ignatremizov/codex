@@ -6,6 +6,7 @@
 use std::sync::Weak;
 
 use super::*;
+use crate::history_cell::ActivityDisclosure;
 
 const MAX_CACHED_ENTRIES: usize = 64;
 const MAX_CACHED_LAYOUT_BYTES: usize = 8 * 1024 * 1024;
@@ -62,6 +63,19 @@ fn cell_content_layout(
             width,
             presentation.expanded,
         )
+    } else if presentation.review {
+        let lines = if cell.as_any().is::<crate::history_cell::SessionInfoCell>() {
+            // Review has its own fullscreen tips rather than the inline startup tooltip.
+            crate::history_cell::fullscreen_session_lines(
+                cell,
+                width,
+                /*detailed*/ false,
+                HistoryRenderMode::Rich,
+            )
+        } else {
+            cell.display_hyperlink_lines(width)
+        };
+        TextLayout::new(lines, width)
     } else {
         TextLayout::new(
             crate::history_cell::fullscreen_session_lines(cell, width, presentation.detailed, mode),
@@ -115,6 +129,7 @@ pub(super) struct CellPresentation {
     expanded: bool,
     disclosure: bool,
     detailed: bool,
+    review: bool,
     image_protocol: Option<crate::pets::ImageProtocol>,
 }
 
@@ -126,7 +141,10 @@ impl TranscriptView {
         mode: HistoryRenderMode,
     ) -> CellPresentation {
         let ids = cell.activity_ids();
-        let disclosure = !self.detailed && mode == HistoryRenderMode::Rich && !ids.is_empty();
+        let disclosure = !self.is_review_browser()
+            && !self.detailed
+            && mode == HistoryRenderMode::Rich
+            && !ids.is_empty();
         let manually_expanded = self.disclosure.is_expanded(&ids);
         let reveal_image = ids.is_empty() || manually_expanded || self.detailed;
         if manually_expanded {
@@ -139,6 +157,7 @@ impl TranscriptView {
             expanded: disclosure && (full_content || manually_expanded),
             disclosure,
             detailed: full_content,
+            review: !full_content && self.review_mode() == Some(ReviewMode::Review),
             image_protocol: self
                 .image_protocol
                 .filter(|_| mode == HistoryRenderMode::Rich && reveal_image),

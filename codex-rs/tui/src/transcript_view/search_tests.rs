@@ -1010,22 +1010,30 @@ fn find_expands_only_the_match_and_preserves_manual_disclosures() {
     let cells: Vec<Arc<dyn HistoryCell>> = ["unrelated", "older needle", "newer needle", "manual"]
         .into_iter()
         .map(|name| {
-            Arc::new(crate::exec_cell::ExecCell::new(
-                crate::exec_cell::ExecCall {
-                    call_id: name.into(),
-                    command: vec![format!("echo visible\necho hidden {name}")],
-                    parsed: Vec::new(),
-                    output: Some(crate::exec_cell::CommandOutput::new(
-                        /*exit_code*/ 0,
-                        String::new(),
-                    )),
-                    source: codex_app_server_protocol::CommandExecutionSource::Agent,
-                    start_time: None,
-                    duration: None,
-                    interaction_input: None,
-                },
-                /*animations_enabled*/ false,
-            )) as Arc<dyn HistoryCell>
+            Arc::new(
+                crate::exec_cell::ExecCell::new(
+                    crate::exec_cell::ExecCall {
+                        call_id: name.into(),
+                        command: vec!["echo visible".into()],
+                        parsed: Vec::new(),
+                        output: Some(crate::exec_cell::CommandOutput::new(
+                            /*exit_code*/ 0,
+                            format!("visible\nhidden {name}\n"),
+                        )),
+                        source: codex_app_server_protocol::CommandExecutionSource::Agent,
+                        start_time: None,
+                        duration: None,
+                        interaction_input: None,
+                    },
+                    /*animations_enabled*/ false,
+                )
+                .with_output_preview_line_limits(
+                    crate::exec_cell::OutputPreviewLineLimits {
+                        command: 1,
+                        ..Default::default()
+                    },
+                ),
+            ) as Arc<dyn HistoryCell>
         })
         .collect();
     let area = Rect::new(

@@ -62,13 +62,14 @@ async fn default_owned_history_shows_complete_live_and_replayed_code_mode_calls(
                 let mut tui = crate::tui::test_support::make_test_tui()?;
                 tui.set_owned_screen(/*owned*/ true)?;
                 let size = Size::new(/*width*/ 100, /*height*/ 24);
-                tui.terminal.resize(size)?;
+                tui.screen_size_for_event(&TuiEvent::Resize(size))?;
                 let bottom = app.render_owned_transcript(&mut tui, size)?;
                 let buffer =
                     crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+                assert_eq!(buffer.area.width, size.width);
                 let history = buffer
                     .content()
-                    .chunks(usize::from(size.width))
+                    .chunks(usize::from(buffer.area.width))
                     .take(usize::from(bottom.y.saturating_sub(/*rhs*/ 1)))
                     .map(|row| {
                         row.iter()
@@ -81,7 +82,27 @@ async fn default_owned_history_shows_complete_live_and_replayed_code_mode_calls(
                     .join("\n")
                     .trim_matches('\n')
                     .to_string();
+                for retained_line in output.lines() {
+                    assert!(
+                        history.contains(retained_line),
+                        "missing owned history line: {retained_line}"
+                    );
+                }
                 rendered.push(history);
+                app.open_transcript_overlay(&mut tui);
+                app.render_owned_transcript(&mut tui, size)?;
+                let review =
+                    crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal)
+                        .content()
+                        .iter()
+                        .map(ratatui::buffer::Cell::symbol)
+                        .collect::<String>();
+                for retained_line in output.lines() {
+                    assert!(
+                        review.contains(retained_line),
+                        "missing Review line: {retained_line}"
+                    );
+                }
                 tui.set_owned_screen(/*owned*/ false)?;
             }
             assert_eq!(rendered[0], rendered[1]);
