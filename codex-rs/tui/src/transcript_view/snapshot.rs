@@ -9,6 +9,7 @@ pub(super) struct ViewSnapshot {
     pub(super) cells: Arc<[Arc<dyn HistoryCell>]>,
     pub(super) pinned: HashMap<EntryKey, Arc<TextLayout>>,
     pub(super) activities: HashMap<EntryKey, Arc<[String]>>,
+    pub(super) refresh_live_presentation: bool,
 }
 
 impl TranscriptView {
@@ -62,6 +63,7 @@ impl TranscriptView {
             cells,
             pinned,
             activities,
+            refresh_live_presentation: false,
         }
     }
 

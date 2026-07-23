@@ -60,6 +60,20 @@ impl Overlay {
         Self::Transcript(overlay)
     }
 
+    pub(crate) fn new_review_transcript(
+        cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+        copy_on_select: bool,
+    ) -> Self {
+        let mut overlay = TranscriptOverlay::new(cells, keymap);
+        overlay.view.copy_on_select = copy_on_select;
+        overlay.view.primary_selection = crate::clipboard_copy::primary::available();
+        overlay
+            .view
+            .open_review_browser(crate::history_cell::HistoryRenderMode::Rich);
+        Self::Transcript(overlay)
+    }
+
     pub(crate) fn new_static_with_lines(
         lines: Vec<Line<'static>>,
         title: String,

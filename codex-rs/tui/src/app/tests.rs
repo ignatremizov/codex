@@ -6967,6 +6967,7 @@ async fn directive_only_completion_removes_streamed_directive() -> Result<()> {
         String::new(),
         PathBuf::from("/tmp"),
         /*inline_visualization_context*/ None,
+        /*phase*/ None,
         ConsolidationScrollbackReflow::Required,
         /*deferred_history_cell*/ None,
     )?;
@@ -7013,6 +7014,7 @@ async fn required_stream_reflow_during_capped_initial_replay_survives_transcript
             .to_string(),
         PathBuf::from("/tmp"),
         /*inline_visualization_context*/ None,
+        /*phase*/ None,
         ConsolidationScrollbackReflow::Required,
         /*deferred_history_cell*/ None,
     )?;

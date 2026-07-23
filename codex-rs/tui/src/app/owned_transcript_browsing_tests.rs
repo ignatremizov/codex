@@ -169,6 +169,10 @@ async fn browsing_footer_adapts_to_width() -> Result<()> {
     let mut snapshots = Vec::new();
     for width in [80, 32] {
         let area = Rect::new(/*x*/ 0, /*y*/ 0, width, /*height*/ 8);
+        if let Some(Overlay::Transcript(overlay)) = &mut app.overlay {
+            overlay.browsing_footer = Some("Browsing".into());
+            overlay.render(area, &mut Buffer::empty(area));
+        }
         let footer = app
             .prompt_navigation_footer(width.saturating_sub(/*rhs*/ 2))
             .expect("browsing footer");
@@ -215,7 +219,7 @@ async fn inline_browsing_is_compact_and_escape_restores_the_existing_overlay() -
             true,
             true,
         ),
-        (KeyEvent::from(KeyCode::Esc), true, false),
+        (KeyEvent::from(KeyCode::Esc), false, false),
     ] {
         app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(key))
             .await?;
@@ -246,7 +250,7 @@ async fn browsing_details_use_the_remapped_chord_without_cancelling_preview() ->
         user_cell(&"second prompt\n".repeat(80)),
     ];
     let config = toml::from_str(
-        "[global]\nopen_transcript = [\"ctrl-x ctrl-t\", \"left f6\", \"enter f6\"]\ncopy = [\"ctrl-x ctrl-p\"]\n[pager]\nclose_transcript = [\"ctrl-x ctrl-t\"]\nscroll_up = []\nclose = [\"up ctrl-x\"]\npage_down = [\"ctrl-x ctrl-p\"]\njump_top = [\"ctrl-x ctrl-h\"]\n[composer]\nsubmit = []\n[editor]\nmove_left = []\ninsert_newline = []\n[vim_normal]\nmove_left = []",
+        "[global]\nopen_transcript = [\"ctrl-x ctrl-t\", \"left f6\", \"enter f6\"]\ncopy = [\"ctrl-x ctrl-p\"]\n[pager]\nclose_transcript = [\"ctrl-x ctrl-t\"]\nscroll_up = []\nclose = [\"up ctrl-x\"]\npage_down = [\"ctrl-x ctrl-p\"]\njump_top = [\"ctrl-x ctrl-h\"]\n[composer]\nsubmit = []\n[editor]\nmove_left = []\ninsert_newline = []\n[vim_normal]\nmove_left = []\n[list]\nmove_left = []\naccept = []",
     )?;
     app.keymap = RuntimeKeymap::from_config(&config).expect("valid transcript chord");
     let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
@@ -276,7 +280,14 @@ async fn browsing_details_use_the_remapped_chord_without_cancelling_preview() ->
             for key in keys {
                 app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(key))
                     .await?;
-                assert!(app.backtrack.overlay_preview_active);
+                assert_eq!(
+                    (
+                        app.backtrack.overlay_preview_active,
+                        app.backtrack.nth_user_message
+                    ),
+                    (true, 1),
+                    "details chords must not confirm or move the selected prompt: owned={owned}, key={key:?}"
+                );
             }
             let detailed = match &app.overlay {
                 Some(Overlay::Transcript(overlay)) => overlay.is_detailed(),

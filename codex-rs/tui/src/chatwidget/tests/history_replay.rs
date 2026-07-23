@@ -281,6 +281,92 @@ async fn replayed_review_prompt_does_not_seed_composer_history() {
 }
 
 #[tokio::test]
+async fn replay_and_projection_preserve_agent_message_phase() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let commentary = AppServerThreadItem::AgentMessage {
+        inter_agent_source: None,
+        id: "commentary-1".to_string(),
+        text: "working on it".to_string(),
+        phase: Some(MessagePhase::Commentary),
+        memory_citation: None,
+        delivery: None,
+        questions: None,
+    };
+    chat.replay_thread_item(
+        commentary.clone(),
+        "turn-1".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+    let replayed = drain_insert_history(&mut rx);
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(
+        replayed[0].transcript_navigation_kind(),
+        Some(crate::history_cell::TranscriptNavigationKind::Commentary)
+    );
+
+    let projected = crate::thread_transcript::thread_items_to_transcript_cells(
+        /*thread_id*/ None,
+        &chat.config.cwd,
+        [commentary],
+        crate::thread_transcript::RawReasoningVisibility::Hidden,
+        /*config*/ None,
+    );
+    assert_eq!(projected.len(), 1);
+    assert_eq!(
+        projected[0].transcript_navigation_kind(),
+        Some(crate::history_cell::TranscriptNavigationKind::Commentary)
+    );
+}
+
+#[tokio::test]
+async fn completed_empty_agent_message_does_not_retain_stale_stream_text() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+    chat.on_agent_message_delta("stale streamed text".to_string());
+    let thread_id = thread_id(&chat);
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id,
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::AgentMessage {
+                inter_agent_source: None,
+                id: "empty-1".to_string(),
+                text: "::git-push{cwd=\"/repo\"}".to_string(),
+                phase: Some(MessagePhase::FinalAnswer),
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let consolidations = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::ConsolidateAgentMessage {
+                source,
+                phase,
+                scrollback_reflow,
+                ..
+            } => Some((source, phase, scrollback_reflow)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(consolidations.len(), 1);
+    assert_eq!(
+        consolidations[0].0,
+        String::new(),
+        "directive-only completion must not reuse stale streamed text",
+    );
+    assert_eq!(consolidations[0].1, Some(MessagePhase::FinalAnswer));
+    assert_eq!(
+        consolidations[0].2,
+        crate::app_event::ConsolidationScrollbackReflow::Required
+    );
+}
+
+#[tokio::test]
 async fn replayed_delegated_tool_output_is_attributed_without_seeding_composer_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -1279,6 +1365,123 @@ async fn replayed_reasoning_item_shows_raw_reasoning_when_enabled() {
         other => panic!("expected InsertHistoryCell, got {other:?}"),
     };
     assert!(rendered.contains("Raw reasoning"));
+}
+
+#[tokio::test]
+async fn replayed_completed_file_change_reconstructs_patch_history_cell() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+
+    chat.replay_thread_item(
+        AppServerThreadItem::FileChange {
+            id: "patch-1".to_string(),
+            changes: vec![FileUpdateChange {
+                path: "src/main.rs".to_string(),
+                kind: PatchChangeKind::Add,
+                diff: "fn main() {}\n".to_string(),
+            }],
+            status: AppServerPatchApplyStatus::Completed,
+        },
+        "turn-1".to_string(),
+        ReplayKind::ThreadSnapshot,
+    );
+
+    let cell = match rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell, got {other:?}"),
+    };
+    assert_eq!(
+        Some(crate::history_cell::TranscriptNavigationKind::Patch),
+        cell.transcript_navigation_kind()
+    );
+}
+
+#[tokio::test]
+async fn replayed_in_progress_file_change_survives_buffered_completion() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+    let thread_id = ThreadId::new().to_string();
+    let changes = vec![FileUpdateChange {
+        path: "src/main.rs".to_string(),
+        kind: PatchChangeKind::Add,
+        diff: "fn main() {}\n".to_string(),
+    }];
+
+    chat.replay_thread_item(
+        AppServerThreadItem::FileChange {
+            id: "patch-1".to_string(),
+            changes: changes.clone(),
+            status: AppServerPatchApplyStatus::InProgress,
+        },
+        "turn-1".to_string(),
+        ReplayKind::ThreadSnapshot,
+    );
+    let cell = match rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell, got {other:?}"),
+    };
+    assert_eq!(
+        Some(crate::history_cell::TranscriptNavigationKind::Patch),
+        cell.transcript_navigation_kind()
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id,
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::FileChange {
+                id: "patch-1".to_string(),
+                changes,
+                status: AppServerPatchApplyStatus::Completed,
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn replayed_file_change_notifications_do_not_duplicate_patch_history_cell() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = drain_insert_history(&mut rx);
+    let thread_id = ThreadId::new().to_string();
+    let changes = vec![FileUpdateChange {
+        path: "src/main.rs".to_string(),
+        kind: PatchChangeKind::Add,
+        diff: "fn main() {}\n".to_string(),
+    }];
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: thread_id.clone(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            deadline_at_ms: None,
+            item: AppServerThreadItem::FileChange {
+                id: "patch-1".to_string(),
+                changes: changes.clone(),
+                status: AppServerPatchApplyStatus::InProgress,
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id,
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::FileChange {
+                id: "patch-1".to_string(),
+                changes,
+                status: AppServerPatchApplyStatus::Completed,
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+
+    assert_eq!(1, drain_insert_history(&mut rx).len());
 }
 
 #[tokio::test]

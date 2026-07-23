@@ -755,6 +755,7 @@ async fn transcript_fixed_keys_take_precedence_over_pager_chord_prefixes() -> Re
         press(&mut app, &mut tui, &mut app_server, ctrl('x')).await?;
         press(&mut app, &mut tui, &mut app_server, ctrl('u')).await?;
         assert!(app.overlay.is_none());
+        assert!(!app.transcript_view.is_review_browser());
         assert!(!app.transcript_view.is_detailed());
         assert_eq!(app.chat_widget.composer_text_with_pending(), "draft");
     }
@@ -785,24 +786,40 @@ async fn transcript_fixed_keys_take_precedence_over_pager_chord_prefixes() -> Re
         for key in &keys {
             press(&mut app, &mut tui, &mut app_server, *key).await?;
         }
+        assert!(
+            !app.transcript_view.is_review_browser(),
+            "close binding {binding} must leave Review before restoring global shortcuts"
+        );
         assert!(!app.transcript_view.is_detailed());
+        assert_eq!(
+            app.chat_widget.external_editor_state(),
+            crate::chatwidget::ExternalEditorState::Closed,
+            "close binding {binding} must not launch the editor while Review is active"
+        );
         assert_eq!(app.chat_widget.composer_text_with_pending(), "draft");
         for key in keys {
             press(&mut app, &mut tui, &mut app_server, key).await?;
         }
         assert_eq!(
             app.chat_widget.external_editor_state(),
-            crate::chatwidget::ExternalEditorState::Requested
+            crate::chatwidget::ExternalEditorState::Requested,
+            "binding {binding} must restore the global action after closing Review"
         );
         app.reset_external_editor_state(&mut tui);
     }
+    insta::assert_snapshot!(
+        "transcript_close_restores_composer",
+        render_bottom_popup(&app.chat_widget, /*width*/ 80)
+    );
     for voice in ["f9", "f9 v"] {
         app.keymap = RuntimeKeymap::from_config(&toml::from_str(&format!(
             "[chat]\ntoggle_voice = '{voice}'\n[pager]\nclose_transcript = 'f9'"
         ))?)
         .unwrap();
         app.open_transcript_overlay(&mut tui);
+        assert!(app.transcript_view.is_review_browser());
         press(&mut app, &mut tui, &mut app_server, KeyCode::F(9).into()).await?;
+        assert!(!app.transcript_view.is_review_browser());
         assert!(!app.transcript_view.is_detailed());
         assert!(!app.key_chord_matcher.is_pending());
     }
