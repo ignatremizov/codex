@@ -1,164 +1,271 @@
-# Transcript commentary navigation (TUI)
+# TUI transcript review mode and navigation
 
-Status: TODO
+Status: implemented; remote validation pending
 
-## Problem
+## Summary
 
-The `Ctrl+T` transcript overlay supports row scrolling, page scrolling, and
-jumping to the top or bottom. It does not provide a fast way to move between
-interim assistant updates.
+Improve the existing `Ctrl+T` transcript overlay for reviewing long Codex
+sessions.
 
-On a long-running task, useful commentary can be separated by large command
-outputs, patches, reasoning summaries, and final responses. Finding those
-updates currently requires scanning or scrolling through the full transcript.
-Backtrack navigation does not solve this problem because it moves between user
-inputs and is coupled to editing or rolling back a turn.
+The current overlay is an exact transcript. That is useful for auditing, but a
+single file read can insert hundreds of source lines and make it difficult to
+find:
 
-## Goal
+- assistant commentary emitted during a turn;
+- applied patches and their file summaries;
+- commands that changed repository state;
+- the final response.
 
-Add previous-commentary and next-commentary actions to the `Ctrl+T` transcript
-overlay. Each action should jump directly to the beginning of the corresponding
-assistant message whose canonical phase is `MessagePhase::Commentary`.
+V1 makes two focused changes:
 
-This is a transcript navigation feature. It must not require the model to call a
-notification tool or emit duplicate content.
+1. Open the transcript in a concise **Review** mode that reuses the summaries
+   already shown in the main TUI.
+2. Let `[` and `]` jump to the previous or next review target: assistant
+   commentary or a patch summary.
 
-## Non-goals
+Pressing `v` switches between Review mode and the existing exact **Full** mode.
+No source content is removed; Full mode remains available immediately.
 
-- Unread counts, badges, read state, or per-thread notification state.
-- A separate inbox or filtered commentary view.
-- A model-visible `leave_user_message` or equivalent tool.
-- New prompt guidance or changes to model context.
-- Protocol, rollout, thread-store, or app-server persistence changes.
-- Inferring commentary from message text, visual style, position, or prefixes.
-- Changing existing scrolling, transcript closing, or backtrack semantics.
+This work does not introduce per-entry trees, mouse capture, transcript search,
+arbitrary filters, or a new virtualization architecture.
 
 ## User experience
 
-While the transcript overlay is open:
+### Opening and closing
 
-- `[` jumps to the previous commentary message.
-- `]` jumps to the next commentary message.
-- The footer shows a compact hint such as `[/] commentary`.
-- A jump places the first row of the target commentary near the top of the
-  transcript viewport so the update can be read in context.
-- Repeated presses continue in the same direction.
-- Reaching the first or last commentary leaves the viewport at that target.
-  Navigation does not wrap.
-- If the transcript has no commentary, the actions are no-ops.
+- `Ctrl+T` opens the transcript overlay in Review mode.
+- Existing close keys continue to close it.
+- Closing preserves existing deferred-history and terminal restoration
+  behavior.
+- Reopening starts in Review mode. V1 does not add a preference or config key.
 
-The bindings should participate in the existing TUI keymap configuration and
-conflict validation. Suggested action names are:
+### Review mode
+
+Review mode uses each committed `HistoryCell`'s existing
+`display_hyperlink_lines(width)` representation.
+
+Consequences:
+
+- read/search/list exploration is shown as the compact `Explored` summary;
+- ordinary command output uses the configured inline output preview instead of
+  copying the entire retained output;
+- patch cells keep their existing file/count summaries;
+- commentary, final answers, user messages, plans, and notices remain in
+  chronological order;
+- hyperlinks and existing styling are preserved.
+
+The live tail uses the same Review representation while Review mode is active.
+
+Review mode does not add disclosure markers or local expansion. Users who need
+exact command text and output press `v` to switch to Full mode.
+
+### Full mode
+
+Full mode uses the current
+`HistoryCell::transcript_hyperlink_lines(width)` representation unchanged.
+
+It remains the exact retained transcript:
+
+- complete formatted command output;
+- existing command status and duration lines;
+- existing styling and terminal hyperlinks;
+- existing patch summaries;
+- existing deep-offset virtualization.
+
+Pressing `v` returns to Review mode.
+
+### Review-target navigation
+
+`[` jumps to the previous review target and `]` jumps to the next review
+target.
+
+V1 review targets are:
+
+- a consolidated assistant message with
+  `phase == Some(MessagePhase::Commentary)`;
+- a `PatchHistoryCell`.
+
+This intentionally covers mid-turn commentary and `apply_patch` results without
+inventing heuristics for arbitrary shell commands.
+
+Navigation rules:
+
+- Targets remain in transcript chronology.
+- Navigation does not wrap at either end.
+- If no matching target exists, the key is a no-op.
+- With no selected target, next chooses the first target whose chunk begins at
+  or below the viewport's top content row. This includes a target already
+  visible at the top or lower in the viewport.
+- With no selected target, previous chooses the last target whose chunk begins
+  at or above the viewport's top content row. This includes a target beginning
+  exactly at the top and a long target whose body crosses the top.
+- Repeated jumps continue relative to the last selected target.
+- A jump aligns the target near the top of the viewport when possible.
+- Manual row, page, top, or bottom scrolling clears the selected target. The
+  next jump is relative to the new viewport.
+- Switching Review/Full mode preserves the selected logical target.
+- Appending history does not move a user who has scrolled away from the bottom.
+
+No separate commentary-only and patch-only key pairs are added in V1.
+
+### Backtrack safety
+
+The existing transcript overlay also supports selecting an earlier user prompt
+for edit/branch behavior.
+
+While backtrack preview is active:
+
+- `[` and `]` do not navigate review targets;
+- `v` does not change detail mode;
+- pager row/page/top/bottom scrolling is disabled;
+- existing `Esc`, Left, Right, and Enter behavior has priority;
+- Enter can only act on the visibly highlighted backtrack selection.
+
+This prevents browser navigation from moving an armed edit target off-screen.
+
+### Header and hints
+
+The title identifies the active representation:
 
 ```text
-tui.keymap.pager.previous_commentary
-tui.keymap.pager.next_commentary
+T R A N S C R I P T · R E V I E W
+T R A N S C R I P T · F U L L
 ```
 
-The actions are transcript-specific even if their bindings live in
-`PagerKeymap`; static pager overlays must ignore them.
-
-## Commentary identity
-
-A navigation target is a logical assistant message with:
+Choose the first title that fits without clipping:
 
 ```text
-phase == Some(MessagePhase::Commentary)
+T R A N S C R I P T · R E V I E W
+TRANSCRIPT · REVIEW
+REVIEW
 ```
 
-The phase must come from the canonical `AgentMessageItem`. Messages with
-`MessagePhase::FinalAnswer` or no phase are not targets. Reasoning summaries,
-tool output, user messages, plans, notices, and synthetic UI cells are not
-targets.
+and equivalently for Full. The fixed historical preview keeps its legacy title
+behavior.
 
-Streaming can produce several temporary or continuation cells for one
-assistant message. Those cells must form one navigation target, anchored at the
-first cell or at the source-backed consolidated cell after completion. A single
-commentary message must never require several key presses to pass.
+The existing scroll/page hints remain. The transcript-specific hint row adds,
+when width permits:
 
-The current history-cell representation does not always retain message phase.
-Implementation should carry a small transcript-navigation classification or
-equivalent canonical metadata into committed cells. It must not recover phase
-by inspecting rendered output.
+```text
+v detail    [ ] review items    q close
+```
 
-## Navigation state
+When backtrack preview is active, its existing edit hints replace browser
+actions that are temporarily unavailable. Pager scrolling is disabled in that
+state, so its scroll/page hint row is blank rather than showing inert keys.
 
-Commentary navigation belongs to `TranscriptOverlay`, not global `App`
-backtrack state.
+Transcript-local keys are resolved before pager bindings. If a user configured
+`v`, `[`, or `]` as a pager scroll binding, the transcript action wins while
+this overlay is open. Static pagers continue to use the configured binding.
 
-The overlay should maintain an optional current commentary target:
+At narrow widths, lower-priority hints are omitted rather than wrapped. The
+title still communicates Review versus Full. Hint groups are fitted atomically
+in this priority order:
 
-- On the first previous action, select the closest commentary beginning before
-  the current viewport position.
-- On the first next action, select the closest commentary beginning after the
-  current viewport position.
-- After a target is selected, subsequent actions move relative to that target.
-- Manual scrolling clears the selected target so the next jump is based on the
-  new viewport position.
-- Inserting, consolidating, replacing, or trimming transcript cells must keep
-  targets valid or clear the selection if its target disappears.
-- Terminal resize and transcript reflow must preserve the logical target even
-  when its rendered row offset changes.
+1. close;
+2. detail toggle;
+3. review-target navigation;
+4. pager scroll/page controls.
 
-The existing live tail is not a target until it represents a committed
-commentary message. Once committed while the overlay is open, it should become
-available without reopening the overlay.
+If the next whole group does not fit, it and lower-priority groups are omitted.
+The renderer never relies on terminal clipping of a partial group.
 
-## Interaction with backtrack
+## Scope
 
-Commentary navigation must remain independent of transcript backtracking:
+### Included
 
-- `[` and `]` do not prime backtrack mode.
-- They do not change the highlighted user message.
-- They do not affect the pending rollback or branch selection.
-- Existing `Esc`, Left, Right, and Enter behavior remains unchanged.
-- Enter after a commentary jump must not edit or roll back anything unless
-  backtrack mode was separately activated.
+- Review and Full global transcript modes.
+- Review mode as the default on open.
+- One-key mode toggle.
+- Previous/next navigation across commentary and patch summaries.
+- Minimal assistant phase propagation required for commentary targets.
+- Viewport anchoring across mode changes.
+- Existing live-tail, append, trim, consolidation, and backtrack behavior.
+- Snapshot and state coverage for the new behavior.
 
-## Implementation direction
+### Excluded
 
-Prefer a small classification exposed by `HistoryCell`, for example a
-transcript navigation kind, over downcasting every possible assistant cell in
-`TranscriptOverlay`. Both streaming and source-backed assistant cells should
-retain the classification needed to group a logical commentary message.
+- Per-entry or per-command expansion.
+- Mouse or pointer interaction.
+- Navigation to arbitrary mutating shell commands.
+- Patch-detail expansion.
+- Transcript text search or category filtering.
+- Persistent/configurable transcript preferences.
+- Configurable transcript-specific keybindings.
+- Child-agent transcript nesting.
+- Main terminal-scrollback changes.
+- New protocol, app-server, rollout, or model-visible fields.
+- A new pager cache or virtualization design.
 
-`PagerView` already tracks chunk boundaries and can scroll a chunk into view.
-Add a variant that aligns a selected chunk's beginning with the viewport where
-possible, then use it from `TranscriptOverlay`. Do not duplicate wrapped-height
-calculation or maintain absolute row offsets across reflow.
+Deferred ideas are recorded in
+`docs/tui-transcript-browser-deferred.md`.
 
-Keep the generic pager unaware of message phases. It should only receive the
-target chunk index selected by the transcript overlay.
+## Implementation contract
 
-## Testing
+- Keep the existing `PagerView` virtualization. A mode change may rebuild
+  renderables and row layout; steady scrolling must remain viewport-bounded.
+- Preserve `HistoryCell index == PagerView chunk index`; the optional live tail
+  remains one extra final chunk.
+- Add `LiveReviewBrowser` and fixed `HistoricalFullPreview` transcript flavors.
+  Normal `Ctrl+T` and backtrack use the former; the resume-picker preview keeps
+  its current Full-only title, hints, and pager handling.
+- In Review, committed cells and the live tail use
+  `display_hyperlink_lines(width)`. In Full they use
+  `transcript_hyperlink_lines(width)`. Detail mode is part of the live-tail
+  cache key.
+- A mode toggle anchors the top visible committed cell, rebuilds, then aligns
+  the same cell near the top. It need not preserve an unrelated wrapped-row
+  offset inside the cell.
+- Add a TUI-private `HistoryCell::transcript_navigation_kind()` returning
+  `Commentary`, `Patch`, or `None`. Classify only canonical commentary phase and
+  `PatchHistoryCell`; do not infer targets from rendered text or command names.
+- Store the selected target as a committed-cell index. Append and mode changes
+  preserve it. Consolidation remaps the index to the replacement target or
+  shifts it by the removed count; arbitrary replacement/trim clears it.
+- Manual row/page/half-page/top/bottom scrolling clears target selection.
+- Carry completed `AgentMessageItem.phase` directly through
+  `ConsolidateAgentMessage` into the consolidated `AgentMarkdownCell`. Generic
+  flushes retain `None`; do not add pending phase state.
+- During live `ChatWidget` replay, reconstruct a patch cell from each completed
+  `FileChange` before existing completion handling. Do not change the flattened
+  resume-picker reconstruction.
+- Resolve live transcript keys as close, browser actions, then pager actions.
+  `App` owns backtrack priority and forwards only draw/resize, close, and the
+  existing Esc/Left/Right/Enter actions while preview is active.
+- Keep transcript-specific state and tests in the transcript child module where
+  practical; do not introduce protocol, config, rollout, or model-context
+  changes.
 
-Add focused unit and snapshot coverage for:
+## Validation
 
-- Previous and next jumps across mixed user, commentary, tool, and final-answer
-  cells.
-- First navigation from the bottom, middle, and top of the transcript.
-- No wrapping at the first and last commentary.
-- No-op behavior when no commentary exists.
-- Exclusion of final-answer and phase-unknown assistant messages.
-- One target for a commentary message split into continuation cells.
-- Target preservation across width changes and wrapped-height reflow.
-- Target updates when commentary is inserted or consolidated while the overlay
-  is open.
-- Selection clearing when manual scrolling occurs.
-- Independence from user-message backtrack highlighting and confirmation.
-- Footer hints at normal and narrow terminal widths.
-- Configurable bindings and keymap conflict detection.
+Automated coverage should establish:
 
-Because this changes visible TUI behavior, update or add `insta` snapshots for
-the transcript overlay footer and commentary-jump viewport.
+- distinct Review and Full rendering, title fallbacks, narrow atomic hints, and
+  the unchanged historical Full preview;
+- Review opening does not request full committed-cell output;
+- navigation order, viewport-relative initial selection, no wrapping, manual
+  scroll reset, append, consolidation, and replacement behavior;
+- exact commentary phase propagation, metadata-free flush behavior, and replay
+  patch reconstruction;
+- Review/Full live-tail invalidation and logical-cell anchoring;
+- modal backtrack behavior, including ignored browser and pager keys;
+- unchanged deep-offset virtualization, hyperlinks, and wide-Unicode rendering.
+
+Manual verification should use a long code-review thread: confirm file reads are
+concise in Review, jump through commentary and patches, inspect exact output in
+Full, toggle back to the same logical area, and exercise prompt backtracking.
 
 ## Acceptance criteria
 
-- A user can open `Ctrl+T` and reach adjacent commentary messages with one key
-  press per logical message.
-- Navigation uses canonical `MessagePhase::Commentary` metadata.
-- It remains correct after resize, live transcript updates, consolidation, and
-  replay.
-- Existing pager and backtrack controls behave exactly as before.
-- No unread state, model tool, additional model guidance, or model-context
-  content is introduced.
+- `Ctrl+T` opens a concise chronological Review transcript.
+- Full file-read output is absent from Review and immediately available in
+  Full.
+- Ordinary command output is preview-capped in Review and exact in Full.
+- `[` and `]` navigate commentary and patch summaries.
+- Navigation uses canonical assistant phase and concrete patch cells, never
+  rendered-text heuristics.
+- Mode changes preserve the logical transcript position.
+- Existing virtualization, Full rendering, live updates, hyperlinks,
+  backtrack, and static pager behavior remain intact.
+- No pointer modes, per-entry trees, config schema, protocol surface, rollout
+  format, or model-visible content changes.
