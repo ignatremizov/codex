@@ -837,6 +837,12 @@ pub(crate) struct ActiveCellTranscriptKey {
     pub(crate) animation_tick: Option<u64>,
 }
 
+#[derive(Clone, Copy)]
+enum ActiveCellTranscriptDetail {
+    Review,
+    Full,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum InterruptedTurnNoticeMode {
     #[default]
@@ -876,19 +882,28 @@ pub(crate) enum TurnAbortReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ThreadItemRenderSource {
     Live,
-    Replay(ReplayKind),
+    /// A persisted turn item has no preceding start notification to reconstruct its UI.
+    ReplayedTurnItem(ReplayKind),
+    /// Buffered notifications preserve start/completion sequencing during thread switches.
+    ReplayedNotification(ReplayKind),
 }
 
 impl ThreadItemRenderSource {
     fn is_replay(self) -> bool {
-        matches!(self, Self::Replay(_))
+        !matches!(self, Self::Live)
     }
 
     fn replay_kind(self) -> Option<ReplayKind> {
         match self {
             Self::Live => None,
-            Self::Replay(replay_kind) => Some(replay_kind),
+            Self::ReplayedTurnItem(replay_kind) | Self::ReplayedNotification(replay_kind) => {
+                Some(replay_kind)
+            }
         }
+    }
+
+    fn reconstructs_file_change(self) -> bool {
+        matches!(self, Self::ReplayedTurnItem(_))
     }
 }
 
@@ -1960,9 +1975,14 @@ impl ChatWidget {
     /// the main viewport updates.
     pub(crate) fn active_cell_transcript_key(&self) -> Option<ActiveCellTranscriptKey> {
         let cell = self.transcript.active_cell.as_ref();
+        let hook_cell = self.active_hook_cell.as_ref();
         let token_activity_cell = self.pending_token_activity_output();
         let rate_limit_reset_hint = self.pending_rate_limit_reset_hint();
-        if cell.is_none() && token_activity_cell.is_none() && rate_limit_reset_hint.is_none() {
+        if cell.is_none()
+            && hook_cell.is_none()
+            && token_activity_cell.is_none()
+            && rate_limit_reset_hint.is_none()
+        {
             return None;
         }
         Some(ActiveCellTranscriptKey {
@@ -1970,7 +1990,11 @@ impl ChatWidget {
             is_stream_continuation: cell
                 .map(|cell| cell.is_stream_continuation())
                 .unwrap_or(false),
-            animation_tick: cell.and_then(|cell| cell.transcript_animation_tick()),
+            animation_tick: cell
+                .and_then(|cell| cell.transcript_animation_tick())
+                .or_else(|| {
+                    hook_cell.and_then(super::history_cell::HistoryCell::transcript_animation_tick)
+                }),
         })
     }
 
@@ -1984,19 +2008,46 @@ impl ChatWidget {
         &self,
         width: u16,
     ) -> Option<Vec<HyperlinkLine>> {
+        self.active_cell_hyperlink_lines(width, ActiveCellTranscriptDetail::Full)
+    }
+
+    pub(crate) fn active_cell_display_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Option<Vec<HyperlinkLine>> {
+        self.active_cell_hyperlink_lines(width, ActiveCellTranscriptDetail::Review)
+    }
+
+    fn active_cell_hyperlink_lines(
+        &self,
+        width: u16,
+        detail: ActiveCellTranscriptDetail,
+    ) -> Option<Vec<HyperlinkLine>> {
+        let render = |cell: &dyn HistoryCell| match detail {
+            ActiveCellTranscriptDetail::Review => cell.display_hyperlink_lines(width),
+            ActiveCellTranscriptDetail::Full => cell.transcript_hyperlink_lines(width),
+        };
         let mut lines = Vec::new();
         if let Some(cell) = self.transcript.active_cell.as_ref() {
-            lines.extend(cell.transcript_hyperlink_lines(width));
+            lines.extend(render(cell.as_ref()));
+        }
+        if let Some(hook_cell) = self.active_hook_cell.as_ref() {
+            // Compute hook lines first so hidden hooks do not add a separator.
+            let hook_lines = render(hook_cell);
+            if !hook_lines.is_empty() && !lines.is_empty() {
+                lines.push(HyperlinkLine::from(""));
+            }
+            lines.extend(hook_lines);
         }
         if let Some(token_activity_cell) = self.pending_token_activity_output() {
-            let token_activity_lines = token_activity_cell.transcript_hyperlink_lines(width);
+            let token_activity_lines = render(token_activity_cell);
             if !token_activity_lines.is_empty() && !lines.is_empty() {
                 lines.push(HyperlinkLine::from(""));
             }
             lines.extend(token_activity_lines);
         }
         if let Some(rate_limit_reset_hint) = self.pending_rate_limit_reset_hint() {
-            let hint_lines = rate_limit_reset_hint.transcript_hyperlink_lines(width);
+            let hint_lines = render(rate_limit_reset_hint);
             if !hint_lines.is_empty() && !lines.is_empty() {
                 lines.push(HyperlinkLine::from(""));
             }

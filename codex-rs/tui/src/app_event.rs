@@ -39,6 +39,7 @@ use codex_connectors::AppInfo;
 use codex_file_search::FileMatch;
 use codex_message_history::HistoryBatchCursor;
 use codex_protocol::ThreadId;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -987,6 +988,7 @@ pub(crate) enum AppEvent {
         source: String,
         cwd: PathBuf,
         inline_visualization_context: Option<InlineVisualizationContext>,
+        phase: Option<MessagePhase>,
         scrollback_reflow: ConsolidationScrollbackReflow,
         deferred_history_cell: Option<Box<dyn HistoryCell>>,
     },
