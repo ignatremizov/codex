@@ -3,7 +3,7 @@
 This note keeps adjacent ideas out of the initial transcript review-mode
 implementation. None of these are V1 requirements.
 
-Integration status: Review/navigation remains a proposal at this documentation stop. The current TUI already has an owned viewport, transcript search and per-entry disclosure; this note defers extensions to those capabilities, not their existence. Both owned and inline transcript displays reuse `TranscriptView`. No implementation or CI qualification is asserted here.
+Integration status: Review/navigation is implemented in the shared `TranscriptView`, with remote executable qualification pending. The current TUI already has an owned viewport, transcript search and per-entry disclosure; this note defers extensions to those capabilities, not their existence.
 
 ## Candidate follow-ups
 
@@ -22,7 +22,7 @@ Command-string heuristics such as matching `git commit`, `perl -pi`, or `sed`
 would be incomplete and shell-dependent.
 
 A follow-up should first define a small canonical classification emitted by the
-execution presentation layer. The proposed Review mode would keep these commands visible with capped output without jumping directly to them.
+execution presentation layer. Review keeps ordinary command previews visible without classifying them as mutating-command navigation targets.
 
 ### Pointer interaction
 
@@ -59,6 +59,10 @@ the readability change.
 ### Main scrollback interaction
 
 The TUI already has an owned fullscreen history viewport. Extending interaction with terminal-emulator scrollback in inline sessions is a separate question; do not treat the owned viewport as missing or create another viewport architecture for Review mode.
+
+### Tool history after resume
+
+Remaining Legacy raw-only image/generic-tool compatibility and regression requirements are recorded in `docs/tui-resume-tool-history.md`. Preserve the existing command/poll and structured-item projections, full code-mode/CUA cells, and exact rollback boundaries. These category-specific follow-ups are not evidence that all tool projection is missing and are not new Review filters or pager features.
 
 ### Subagent transcript inspection
 
