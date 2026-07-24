@@ -156,7 +156,9 @@ impl ChatWidget {
                 changes,
                 status,
             } => {
-                self.on_patch_apply_begin(file_update_changes_to_display(changes.clone()));
+                if from_replay {
+                    self.on_patch_apply_begin(file_update_changes_to_display(changes.clone()));
+                }
                 self.on_file_change_completed(ThreadItem::FileChange {
                     id,
                     changes,

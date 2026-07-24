@@ -193,8 +193,8 @@ fn live_transcript_title_fallbacks_snapshot() {
     );
 }
 
-#[test]
-fn live_overlay_handles_mode_navigation_and_manual_scroll() {
+#[tokio::test]
+async fn live_overlay_handles_mode_navigation_and_manual_scroll() {
     let mut overlay = TranscriptOverlay::new(
         review_cells(),
         crate::keymap::RuntimeKeymap::defaults().pager,
@@ -228,8 +228,8 @@ fn live_overlay_handles_mode_navigation_and_manual_scroll() {
     assert_eq!(None, overlay.view.pending_align_chunk_top);
 }
 
-#[test]
-fn detail_toggle_invalidates_and_rebuilds_live_tail_in_new_mode() {
+#[tokio::test]
+async fn detail_toggle_invalidates_and_rebuilds_live_tail_in_new_mode() {
     let mut overlay = TranscriptOverlay::new(
         Vec::new(),
         crate::keymap::RuntimeKeymap::defaults().pager,
