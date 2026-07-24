@@ -67,6 +67,13 @@ Making normal terminal scrollback app-interactive requires Codex to own a
 fullscreen history viewport rather than relying on terminal-emulator
 scrollback. That is a separate product and architecture project.
 
+### Tool history after resume
+
+Restoring commands and other durable tool activity that app-server does not
+currently project back into resumed TUI history is specified separately in
+`docs/tui-resume-tool-history.md`. It is a rollout-to-`ThreadItem` projection
+gap, not another Review-mode filter or pager feature.
+
 ### Subagent transcript inspection
 
 Inspecting subagent spawns, follow-ups, edits, and responses is specified
