@@ -1114,6 +1114,11 @@ impl TranscriptOverlay {
         if let Some(tail) = tail_renderable {
             self.view.push_renderable(tail);
         }
+        if let Some(highlight_cell) = self.highlight_cell {
+            self.view.scroll_chunk_into_view(highlight_cell);
+        } else if let Some(review_target) = self.browser.selected_review_target() {
+            self.view.align_chunk_to_top(review_target);
+        }
     }
 
     /// Removes and returns the cached live-tail renderable, if present.
@@ -2055,6 +2060,7 @@ mod tests {
             Some(2),
             "highlight inside consolidated range should point to replacement cell",
         );
+        assert_eq!(overlay.view.pending_scroll_chunk, Some(2));
     }
 
     #[test]
@@ -2082,6 +2088,7 @@ mod tests {
             Some(4),
             "highlight after consolidated range should shift left by removed cells",
         );
+        assert_eq!(overlay.view.pending_scroll_chunk, Some(4));
     }
 
     #[test]

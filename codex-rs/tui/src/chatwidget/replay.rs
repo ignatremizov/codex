@@ -152,9 +152,14 @@ impl ChatWidget {
             } => self.on_command_execution_started(item, /*deadline_at_ms*/ None),
             item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_completed(item),
             ThreadItem::FileChange {
+                changes,
                 status: codex_app_server_protocol::PatchApplyStatus::InProgress,
                 ..
-            } => {}
+            } => {
+                if render_source.reconstructs_file_change() {
+                    self.on_patch_apply_begin(file_update_changes_to_display(changes));
+                }
+            }
             ThreadItem::FileChange {
                 id,
                 changes,

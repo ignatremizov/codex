@@ -62,6 +62,12 @@ fn review_cells() -> Vec<Arc<dyn HistoryCell>> {
     ]
 }
 
+fn render_overlay_once(overlay: &mut TranscriptOverlay) {
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buffer = Buffer::empty(area);
+    overlay.render(area, &mut buffer);
+}
+
 #[test]
 fn historical_preview_stays_full() {
     let mut state = TranscriptBrowserState::new(TranscriptFlavor::HistoricalFullPreview);
@@ -225,6 +231,7 @@ async fn live_overlay_handles_mode_navigation_and_manual_scroll() {
         TranscriptFlavor::LiveReviewBrowser,
     );
     let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    render_overlay_once(&mut overlay);
 
     overlay
         .handle_event(
@@ -260,6 +267,7 @@ async fn detail_toggle_preserves_pending_review_target_alignment() {
         TranscriptFlavor::LiveReviewBrowser,
     );
     let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    render_overlay_once(&mut overlay);
 
     overlay
         .handle_event(
@@ -276,6 +284,63 @@ async fn detail_toggle_preserves_pending_review_target_alignment() {
 
     assert_eq!(Some(1), overlay.selected_review_target());
     assert_eq!(Some(1), overlay.view.pending_align_chunk_top);
+}
+
+#[tokio::test]
+async fn consolidation_restores_pending_review_target_alignment() {
+    let mut overlay = TranscriptOverlay::new(
+        review_cells(),
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    render_overlay_once(&mut overlay);
+
+    for _ in 0..2 {
+        overlay
+            .handle_event(
+                &mut tui,
+                TuiEvent::Key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE)),
+            )
+            .expect("navigate");
+    }
+    overlay.consolidate_cells(
+        0..2,
+        Arc::new(PlainHistoryCell::new(vec!["consolidated".into()])),
+    );
+
+    assert_eq!(Some(2), overlay.selected_review_target());
+    assert_eq!(Some(2), overlay.view.pending_align_chunk_top);
+}
+
+#[tokio::test]
+async fn browser_actions_wait_for_initial_viewport_render() {
+    let mut overlay = TranscriptOverlay::new(
+        review_cells(),
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+
+    for character in ['v', '[', ']'] {
+        overlay
+            .handle_event(
+                &mut tui,
+                TuiEvent::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+            )
+            .expect("handle browser action");
+    }
+    assert_eq!(TranscriptDetailMode::Review, overlay.browser.detail_mode());
+    assert_eq!(None, overlay.selected_review_target());
+
+    render_overlay_once(&mut overlay);
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
+        )
+        .expect("toggle detail");
+    assert_eq!(TranscriptDetailMode::Full, overlay.browser.detail_mode());
 }
 
 #[test]
@@ -323,6 +388,7 @@ async fn detail_toggle_invalidates_and_rebuilds_live_tail_in_new_mode() {
         Some(TranscriptDetailMode::Review)
     );
     let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    render_overlay_once(&mut overlay);
 
     overlay
         .handle_event(

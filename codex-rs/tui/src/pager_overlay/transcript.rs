@@ -86,7 +86,6 @@ impl TranscriptBrowserState {
         self.selected_review_target = None;
     }
 
-    #[cfg(test)]
     pub(super) fn selected_review_target(self) -> Option<usize> {
         self.selected_review_target
     }
@@ -396,6 +395,15 @@ impl TranscriptOverlay {
             TuiEvent::Key(key_event) => match key_event {
                 e if self.is_close_key(e) => {
                     self.is_done = true;
+                    Ok(())
+                }
+                e if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser
+                    && self.view.last_content_height.is_none()
+                    && (is_plain_char(e, 'v')
+                        || is_review_navigation_char(e, '[')
+                        || is_review_navigation_char(e, ']')) =>
+                {
+                    tui.frame_requester().schedule_frame();
                     Ok(())
                 }
                 e if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser
