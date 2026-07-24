@@ -6865,8 +6865,12 @@ async fn backtrack_confirmation_waits_for_selected_highlight_draw() -> Result<()
     .await?;
     assert!(app.overlay.is_some());
 
-    app.handle_backtrack_overlay_event(&mut tui, TuiEvent::Draw)
-        .await?;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    let Some(Overlay::Transcript(overlay)) = &mut app.overlay else {
+        panic!("expected transcript overlay");
+    };
+    overlay.render(area, &mut buffer);
     app.handle_backtrack_overlay_event(
         &mut tui,
         TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
