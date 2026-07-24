@@ -213,9 +213,9 @@ Deferred ideas are recorded in
   `display_hyperlink_lines(width)`. In Full they use
   `transcript_hyperlink_lines(width)`. Detail mode is part of the live-tail
   cache key.
-- A mode toggle anchors the top visible committed cell, rebuilds, then aligns
-  the same cell near the top. It need not preserve an unrelated wrapped-row
-  offset inside the cell.
+- A mode toggle anchors an already queued review target, or otherwise the top
+  visible committed cell, rebuilds, then aligns the same cell near the top. It
+  need not preserve an unrelated wrapped-row offset inside the cell.
 - Add a TUI-private `HistoryCell::transcript_navigation_kind()` returning
   `Commentary`, `Patch`, or `None`. Classify only canonical commentary phase and
   `PatchHistoryCell`; do not infer targets from rendered text or command names.
@@ -226,9 +226,11 @@ Deferred ideas are recorded in
 - Carry completed `AgentMessageItem.phase` directly through
   `ConsolidateAgentMessage` into the consolidated `AgentMarkdownCell`. Generic
   flushes retain `None`; do not add pending phase state.
-- During live `ChatWidget` replay, reconstruct a patch cell from each completed
-  `FileChange` before existing completion handling. Do not change the flattened
-  resume-picker reconstruction.
+- During persisted turn-item replay, reconstruct a patch cell from each
+  completed `FileChange` before existing completion handling. Buffered
+  notification replay retains its `ItemStarted`/`ItemCompleted` sequencing and
+  must not reconstruct the same patch again at completion. Do not change the
+  flattened resume-picker reconstruction.
 - Resolve live transcript keys as close, browser actions, then pager actions.
   `App` owns backtrack priority and forwards only draw/resize, close, and the
   existing Esc/Left/Right/Enter actions while preview is active.
@@ -248,7 +250,9 @@ Automated coverage should establish:
 - exact commentary phase propagation, metadata-free flush behavior, and replay
   patch reconstruction;
 - Review/Full live-tail invalidation and logical-cell anchoring;
-- modal backtrack behavior, including ignored browser and pager keys;
+- modal backtrack behavior, including ignored browser and pager keys and
+  confirmation only after the selected highlight has drawn;
+- narrow footer rendering and replayed file-change start/completion pairs;
 - unchanged deep-offset virtualization, hyperlinks, and wide-Unicode rendering.
 
 Manual verification should use a long code-review thread: confirm file reads are
