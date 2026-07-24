@@ -193,6 +193,30 @@ fn live_transcript_title_fallbacks_snapshot() {
     );
 }
 
+#[test]
+fn live_review_overlay_renders_narrow_footer_without_percent() {
+    let mut overlay = TranscriptOverlay::new(
+        review_cells(),
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    let area = Rect::new(0, 0, 4, 10);
+    let mut buffer = Buffer::empty(area);
+
+    overlay.render(area, &mut buffer);
+
+    let separator_y = area.y + area.height.saturating_sub(4);
+    let separator = (area.x..area.right())
+        .map(|x| buffer[(x, separator_y)].symbol())
+        .collect::<String>();
+    assert_snapshot!(
+        format!("{}\n{separator}", overlay.view.title),
+        @r"
+    RE
+    ────"
+    );
+}
+
 #[tokio::test]
 async fn live_overlay_handles_mode_navigation_and_manual_scroll() {
     let mut overlay = TranscriptOverlay::new(
@@ -226,6 +250,54 @@ async fn live_overlay_handles_mode_navigation_and_manual_scroll() {
         .expect("scroll");
     assert_eq!(None, overlay.selected_review_target());
     assert_eq!(None, overlay.view.pending_align_chunk_top);
+}
+
+#[tokio::test]
+async fn detail_toggle_preserves_pending_review_target_alignment() {
+    let mut overlay = TranscriptOverlay::new(
+        review_cells(),
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE)),
+        )
+        .expect("navigate");
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
+        )
+        .expect("toggle detail");
+
+    assert_eq!(Some(1), overlay.selected_review_target());
+    assert_eq!(Some(1), overlay.view.pending_align_chunk_top);
+}
+
+#[test]
+fn review_navigation_rejects_ctrl_or_alt_only_brackets() {
+    for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+        assert!(!is_review_navigation_char(
+            KeyEvent::new(KeyCode::Char(']'), modifiers),
+            ']'
+        ));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn review_navigation_accepts_altgr_brackets() {
+    assert!(is_review_navigation_char(
+        KeyEvent::new(
+            KeyCode::Char(']'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ),
+        ']'
+    ));
 }
 
 #[tokio::test]

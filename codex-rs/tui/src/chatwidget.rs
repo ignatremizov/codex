@@ -862,19 +862,28 @@ fn contains_plan_keyword(text: &str) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ThreadItemRenderSource {
     Live,
-    Replay(ReplayKind),
+    /// A persisted turn item has no preceding start notification to reconstruct its UI.
+    ReplayedTurnItem(ReplayKind),
+    /// Buffered notifications preserve start/completion sequencing during thread switches.
+    ReplayedNotification(ReplayKind),
 }
 
 impl ThreadItemRenderSource {
     fn is_replay(self) -> bool {
-        matches!(self, Self::Replay(_))
+        !matches!(self, Self::Live)
     }
 
     fn replay_kind(self) -> Option<ReplayKind> {
         match self {
             Self::Live => None,
-            Self::Replay(replay_kind) => Some(replay_kind),
+            Self::ReplayedTurnItem(replay_kind) | Self::ReplayedNotification(replay_kind) => {
+                Some(replay_kind)
+            }
         }
+    }
+
+    fn reconstructs_file_change(self) -> bool {
+        matches!(self, Self::ReplayedTurnItem(_))
     }
 }
 

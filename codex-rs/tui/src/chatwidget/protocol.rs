@@ -400,7 +400,10 @@ impl ChatWidget {
         self.handle_thread_item(
             notification.item,
             notification.turn_id,
-            replay_kind.map_or(ThreadItemRenderSource::Live, ThreadItemRenderSource::Replay),
+            replay_kind.map_or(
+                ThreadItemRenderSource::Live,
+                ThreadItemRenderSource::ReplayedNotification,
+            ),
         );
         if completed_context_compaction
             && self.status_state.current_status.header

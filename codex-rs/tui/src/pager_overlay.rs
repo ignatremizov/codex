@@ -401,7 +401,10 @@ impl PagerView {
         };
         let pct_text = format!(" {percent}% ");
         let pct_w = pct_text.chars().count() as u16;
-        let pct_x = sep_rect.x + sep_rect.width - pct_w - 1;
+        let Some(pct_offset) = sep_rect.width.checked_sub(pct_w.saturating_add(1)) else {
+            return;
+        };
+        let pct_x = sep_rect.x.saturating_add(pct_offset);
         Span::from(pct_text)
             .dim()
             .render_ref(Rect::new(pct_x, sep_rect.y, pct_w, 1), buf);
@@ -798,6 +801,7 @@ pub(crate) struct TranscriptOverlay {
     cells: Vec<Arc<dyn HistoryCell>>,
     browser: TranscriptBrowserState,
     highlight_cell: Option<usize>,
+    highlight_draw_pending: bool,
     /// Cache key for the render-only live tail appended after committed cells.
     live_tail_key: Option<LiveTailKey>,
     is_done: bool,
@@ -844,6 +848,7 @@ impl TranscriptOverlay {
             cells: transcript_cells,
             browser,
             highlight_cell: None,
+            highlight_draw_pending: false,
             live_tail_key: None,
             is_done: false,
         }
@@ -1064,6 +1069,7 @@ impl TranscriptOverlay {
         let previous_highlight = self.highlight_cell;
         self.highlight_cell = cell;
         if previous_highlight != self.highlight_cell {
+            self.highlight_draw_pending = true;
             for index in [previous_highlight, self.highlight_cell]
                 .into_iter()
                 .flatten()
@@ -1084,6 +1090,10 @@ impl TranscriptOverlay {
         if let Some(idx) = self.highlight_cell {
             self.view.scroll_chunk_into_view(idx);
         }
+    }
+
+    pub(crate) fn highlight_draw_pending(&self) -> bool {
+        self.highlight_draw_pending
     }
 
     /// Returns whether the underlying pager view is currently pinned to the bottom.

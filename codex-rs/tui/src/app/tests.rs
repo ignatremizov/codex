@@ -6843,6 +6843,40 @@ async fn backtrack_preview_suppresses_transcript_browser_and_pager_keys() -> Res
 }
 
 #[tokio::test]
+async fn backtrack_confirmation_waits_for_selected_highlight_draw() -> Result<()> {
+    let mut app = make_test_app().await;
+    app.transcript_cells = vec![Arc::new(AgentMarkdownCell::new_with_phase(
+        "commentary".to_string(),
+        Path::new("/tmp"),
+        Some(codex_protocol::models::MessagePhase::Commentary),
+    ))];
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.open_transcript_overlay(&mut tui);
+    app.backtrack.overlay_preview_active = true;
+    let Some(Overlay::Transcript(overlay)) = &mut app.overlay else {
+        panic!("expected transcript overlay");
+    };
+    overlay.set_highlight_cell(Some(0));
+
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    )
+    .await?;
+    assert!(app.overlay.is_some());
+
+    app.handle_backtrack_overlay_event(&mut tui, TuiEvent::Draw)
+        .await?;
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    )
+    .await?;
+    assert!(app.overlay.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn clear_only_ui_reset_allows_active_skill_warning_to_render_again() {
     let mut app = make_test_app().await;
     let error = SkillErrorInfo {

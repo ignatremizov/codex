@@ -5,6 +5,7 @@ use crate::history_cell::HistoryCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
+use crate::key_hint::is_altgr;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crossterm::event::KeyCode;
@@ -193,6 +194,12 @@ fn is_plain_char(key_event: KeyEvent, character: char) -> bool {
         && key_event.code == KeyCode::Char(character)
 }
 
+fn is_review_navigation_char(key_event: KeyEvent, character: char) -> bool {
+    matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+        && (key_event.modifiers == KeyModifiers::NONE || is_altgr(key_event.modifiers))
+        && key_event.code == KeyCode::Char(character)
+}
+
 pub(super) fn transcript_title(browser: TranscriptBrowserState) -> String {
     match (browser.flavor(), browser.detail_mode()) {
         (TranscriptFlavor::HistoricalFullPreview, _) => "T R A N S C R I P T".to_string(),
@@ -253,7 +260,8 @@ impl TranscriptOverlay {
         }
         let anchor = self
             .view
-            .first_visible_chunk()
+            .pending_align_chunk_top
+            .unwrap_or_else(|| self.view.first_visible_chunk())
             .min(self.cells.len().saturating_sub(1));
         self.browser.toggle_detail_mode();
         self.take_live_tail_renderable();
@@ -380,6 +388,7 @@ impl TranscriptOverlay {
         self.view.title = transcript_title_for_width(self.browser, area.width);
         self.view.render(top, buf);
         self.render_hints(bottom, buf);
+        self.highlight_draw_pending = false;
     }
 
     pub(crate) fn handle_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
@@ -397,14 +406,14 @@ impl TranscriptOverlay {
                     Ok(())
                 }
                 e if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser
-                    && is_plain_char(e, '[') =>
+                    && is_review_navigation_char(e, '[') =>
                 {
                     self.navigate_review_target(TranscriptNavigationDirection::Previous);
                     tui.frame_requester().schedule_frame();
                     Ok(())
                 }
                 e if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser
-                    && is_plain_char(e, ']') =>
+                    && is_review_navigation_char(e, ']') =>
                 {
                     self.navigate_review_target(TranscriptNavigationDirection::Next);
                     tui.frame_requester().schedule_frame();

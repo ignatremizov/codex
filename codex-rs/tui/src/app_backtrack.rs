@@ -135,7 +135,17 @@ impl App {
                     kind: KeyEventKind::Press,
                     ..
                 }) => {
-                    self.overlay_confirm_backtrack(tui);
+                    if self.overlay.as_ref().is_some_and(|overlay| {
+                        matches!(
+                            overlay,
+                            Overlay::Transcript(transcript)
+                                if transcript.highlight_draw_pending()
+                        )
+                    }) {
+                        tui.frame_requester().schedule_frame();
+                    } else {
+                        self.overlay_confirm_backtrack(tui);
+                    }
                     Ok(true)
                 }
                 TuiEvent::Key(key_event)
