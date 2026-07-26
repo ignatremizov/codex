@@ -70,7 +70,7 @@ async fn verification_is_delivered_to_one_owner_and_other_connections_cannot_res
     outgoing
         .notify_client_response(ConnectionId(1), id.clone(), proof.clone())
         .await;
-    assert_eq!(response.await.unwrap(), Ok(proof));
+    assert_eq!(response.await.unwrap().result, Ok(proof));
     assert!(
         !outgoing
             .request_id_to_callback

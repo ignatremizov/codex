@@ -3,6 +3,8 @@
 #[path = "tests/account_display_tests.rs"]
 mod account_display_tests;
 
+#[path = "tests/approval_timeout_tests.rs"]
+mod approval_timeout_tests;
 #[path = "tests/copy_mode_tests.rs"]
 mod copy_mode_tests;
 #[path = "tests/math_interruption_tests.rs"]
@@ -7493,7 +7495,8 @@ fn exec_approval_request(
             thread_id: thread_id.to_string(),
             turn_id: turn_id.to_string(),
             item_id: item_id.to_string(),
-            started_at_ms: 0,
+            started_at_ms: Some(0),
+            expires_at_ms: None,
             approval_id: approval_id.map(str::to_string),
             environment_id: None,
             reason: Some("needs approval".to_string()),

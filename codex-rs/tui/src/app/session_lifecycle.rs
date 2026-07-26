@@ -938,6 +938,10 @@ impl App {
                 let previous_pending = std::mem::take(&mut self.pending_app_server_requests);
                 for event in &self.pending_primary_events {
                     if let ThreadBufferedEvent::Request(request) = event {
+                        if let Some(received_at) = previous_pending.request_received_at(request) {
+                            self.pending_app_server_requests
+                                .note_request_receipt(request, received_at);
+                        }
                         let retained = previous_pending.buffered_request((**request).clone());
                         #[cfg(test)]
                         let retained = retained.or_else(|| {

@@ -610,6 +610,9 @@ impl App {
         buffered_request: BufferedServerRequest,
     ) {
         let request = &buffered_request.request;
+        // Receipt precedes startup/subagent buffering and any asynchronous metadata lookup.
+        self.pending_app_server_requests
+            .note_request_receipt(request, std::time::Instant::now());
         let thread_id = server_request_thread_id(request);
         if thread_id
             .is_some_and(|thread_id| self.temporary_structured_requests.contains_key(&thread_id))
