@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::diff_model::FileChange;
 use codex_app_server_protocol::AdditionalPermissionProfile;
@@ -31,6 +32,12 @@ pub(crate) struct ExecApprovalRequestEvent {
     pub(crate) turn_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) environment_id: Option<String>,
+    #[serde(default)]
+    pub(crate) started_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) expires_at_ms: Option<i64>,
+    #[serde(skip, default = "Instant::now")]
+    pub(crate) received_at: Instant,
     pub(crate) command: Vec<String>,
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) reason: Option<String>,

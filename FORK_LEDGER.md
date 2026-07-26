@@ -100,6 +100,19 @@ current client settings, and fullscreen session tips are not duplicated into tra
 Entrypoints include `tui/src/app/owned_transcript.rs`, `tui/src/app_backtrack.rs`, and
 `tui/src/pager_overlay/transcript.rs`. Snapshot and executable qualification remain pending.
 
+### Fail-closed human command approval deadlines
+
+Ownership anchor: `feat(approvals): enforce fail-closed human command deadlines`.
+`core/src/session/command_approval.rs` and `request_command_approval.rs` own the monotonic
+deadline, exact-turn generation, and one-use response claim. The private queued submission
+retains upstream residency and trace/turn lineage while preserving rollback quarantine.
+`app-server/src/command_execution_completion.rs` validates exact actor/listener/lifecycle receipts
+after output backpressure; callback IDs alone never establish root-command authority.
+The TUI retains the first receipt through buffering and replay, and expiry cannot approve work
+or act on a later queued request. Absent timing remains untimed. Guardian, hooks, patch approvals,
+and permission requests retain their separate policies. Human analytics uses structured trigger
+fields, not opaque callback-ID presence. Generated contracts and executable qualification are pending.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.

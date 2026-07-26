@@ -1661,10 +1661,11 @@ impl AnalyticsReducer {
                         .and_then(|network| network.enabled)
                         .unwrap_or(false);
                 let requested_additional_permissions = params.additional_permissions.is_some();
+                // Every human callback now has an opaque ID, including root commands and
+                // network approvals. The public request does not prove execve interception;
+                // retain the generic command trigger unless structured fields narrow it.
                 let trigger = if is_stdin_review {
                     ReviewTrigger::Initial
-                } else if params.approval_id.is_some() {
-                    ReviewTrigger::ExecveIntercept
                 } else if requested_network_access {
                     ReviewTrigger::NetworkPolicyDenial
                 } else if requested_additional_permissions {
@@ -1672,7 +1673,7 @@ impl AnalyticsReducer {
                 } else {
                     ReviewTrigger::Initial
                 };
-                let Some(started_at_ms) = option_i64_to_u64(Some(params.started_at_ms)) else {
+                let Some(started_at_ms) = option_i64_to_u64(params.started_at_ms) else {
                     return;
                 };
                 self.pending_reviews.insert(

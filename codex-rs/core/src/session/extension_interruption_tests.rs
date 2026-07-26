@@ -46,6 +46,7 @@ async fn interrupt_if_no_pending_input_handles_cancelled_submission() {
         Arc::clone(&session),
         SessionIo {
             tx_sub,
+            session: Arc::downgrade(&session),
             rx_event,
             submission_admission: Arc::clone(&session.submission_admission),
             agent_status: watch::channel(AgentStatus::PendingInit).1,

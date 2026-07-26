@@ -552,6 +552,39 @@ pub(super) async fn handle_thread_listener_command(
         ThreadListenerCommand::EmitThreadGoalSnapshot { state_db } => {
             send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db).await;
         }
+        ThreadListenerCommand::CompleteCommandExecution {
+            turn_id,
+            item_id,
+            completion_item,
+            source,
+            status,
+            receipt,
+            completion_tx,
+        } => {
+            let subscribed_connection_ids = thread_state_manager
+                .subscribed_connection_ids(conversation_id)
+                .await;
+            let scoped_outgoing = ThreadScopedOutgoingMessageSender::new(
+                Arc::clone(outgoing),
+                subscribed_connection_ids,
+                conversation_id,
+            );
+            crate::bespoke_event_handling::complete_command_execution_item(
+                &conversation_id,
+                turn_id,
+                item_id,
+                completion_item,
+                /*process_id*/ None,
+                source,
+                status,
+                Some(conversation),
+                Some(receipt),
+                &scoped_outgoing,
+                thread_state,
+            )
+            .await;
+            let _ = completion_tx.send(());
+        }
         ThreadListenerCommand::ResolveServerRequest {
             request_id,
             completion_tx,
