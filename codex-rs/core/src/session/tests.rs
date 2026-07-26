@@ -6962,19 +6962,22 @@ async fn standalone_settings_invalidate_continuation_before_delivering_acceptanc
     let (reply, mut accepted) = tokio::sync::oneshot::channel();
     let (tx_sub, rx_sub) = async_channel::bounded(1);
     tx_sub
-        .send(Submission {
-            id: "settings".into(),
-            turn_extension_init: None,
-            op: Op::ThreadSettings {
-                thread_settings: codex_protocol::protocol::ThreadSettingsOverrides::default(),
-                reply: Some(reply),
-            },
-            trace: None,
-            parent_turn_id: None,
-            root_turn_id: None,
-            residency_guard: None,
-            message_delivery: None,
-        })
+        .send(
+            Submission {
+                id: "settings".into(),
+                turn_extension_init: None,
+                op: Op::ThreadSettings {
+                    thread_settings: codex_protocol::protocol::ThreadSettingsOverrides::default(),
+                    reply: Some(reply),
+                },
+                trace: None,
+                parent_turn_id: None,
+                root_turn_id: None,
+                residency_guard: None,
+                message_delivery: None,
+            }
+            .into(),
+        )
         .await
         .expect("submit settings");
     let mut submissions = Box::pin(tokio::task::unconstrained(submission_loop(
@@ -8951,6 +8954,7 @@ async fn submit_with_trace_captures_current_span_trace_context() {
     let (_tx_event, rx_event) = async_channel::unbounded();
     let io = SessionIo {
         tx_sub,
+        session: std::sync::Weak::new(),
         rx_event,
         submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
@@ -8987,7 +8991,7 @@ async fn submit_with_trace_captures_current_span_trace_context() {
     .instrument(request_span)
     .await;
 
-    let submitted = rx_sub.recv().await.expect("submission");
+    let submitted = rx_sub.recv().await.expect("submission").submission;
     assert_eq!(submitted.trace, Some(expected_trace));
 }
 
@@ -9779,15 +9783,16 @@ async fn submission_loop_channel_close_aborts_active_turn_before_thread_stop_lif
 #[tokio::test]
 async fn shutdown_and_wait_allows_multiple_waiters() {
     let (_session, _turn_context) = make_session_and_context().await;
-    let (tx_sub, rx_sub) = async_channel::bounded::<Submission>(4);
+    let (tx_sub, rx_sub) = async_channel::bounded::<super::command_approval::QueuedSubmission>(4);
     let (_tx_event, rx_event) = async_channel::unbounded();
     let session_loop_handle = tokio::spawn(async move {
-        let shutdown = rx_sub.recv().await.expect("shutdown submission");
+        let shutdown = rx_sub.recv().await.expect("shutdown submission").submission;
         assert!(matches!(shutdown.op, Op::Shutdown));
         tokio::time::sleep(StdDuration::from_millis(50)).await;
     });
     let io = Arc::new(SessionIo {
         tx_sub,
+        session: std::sync::Weak::new(),
         rx_event,
         submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
@@ -9825,6 +9830,7 @@ async fn shutdown_and_wait_waits_when_shutdown_is_already_in_progress() {
     });
     let io = Arc::new(SessionIo {
         tx_sub,
+        session: std::sync::Weak::new(),
         rx_event,
         submission_admission: Arc::new(SubmissionAdmission::default()),
         agent_status: watch::channel(AgentStatus::PendingInit).1,
