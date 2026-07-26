@@ -356,26 +356,34 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                     &launch.proxy,
                 )
                 .await;
-                if routes_approval_policy_to_guardian(
-                    ctx.step_context.settings.approval_policy(),
-                    ctx.step_context.settings.approvals_reviewer(),
-                ) && network
+                if network
                     .remote_policy_decider(launch.proxy.allow_local_binding)
                     .is_some()
                 {
+                    let review_timeout = if routes_approval_policy_to_guardian(
+                        ctx.step_context.settings.approval_policy(),
+                        ctx.step_context.settings.approvals_reviewer(),
+                    ) {
+                        GUARDIAN_REVIEW_TIMEOUT
+                    } else {
+                        // Human approvals use their own deadline. Without one, retain
+                        // an effectively unbounded wait rather than disabling the callback.
+                        Duration::from_millis(
+                            ctx.step_context
+                                .turn
+                                .config
+                                .approval_timeout_ms
+                                .unwrap_or(u64::MAX),
+                        )
+                    };
                     let timeout = ctx
                         .session
                         .hooks()
                         .max_permission_request_timeout()
-                        .saturating_add(GUARDIAN_REVIEW_TIMEOUT)
+                        .saturating_add(review_timeout)
                         .saturating_add(REMOTE_NETWORK_POLICY_DECISION_MARGIN);
                     launch.policy_decision_timeout_ms =
-                        Some(u64::try_from(timeout.as_millis()).map_err(|_| {
-                            ToolError::Rejected(
-                                "remote network policy decision timeout exceeds protocol limit"
-                                    .to_string(),
-                            )
-                        })?);
+                        Some(u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX));
                 }
                 (env, None, launch.proxy.enabled.then_some(launch))
             }
