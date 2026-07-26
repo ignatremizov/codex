@@ -11,20 +11,29 @@
 //! This module does not evaluate whether an action is safe to run; it only
 //! presents choices and routes user decisions.
 
+#[path = "approval_countdown.rs"]
+mod countdown;
+
+use countdown::approval_footer_hint_with_remaining;
+use countdown::approval_request_timeout;
+use countdown::saturating_instant_add;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 #[cfg(test)]
 use crate::app_command::AppCommand as Op;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
+#[cfg(test)]
 use crate::bottom_pane::BottomPaneView;
+#[cfg(test)]
 use crate::bottom_pane::CancellationEvent;
 use crate::bottom_pane::list_selection_view::ListSelectionView;
 use crate::bottom_pane::list_selection_view::SelectionItem;
 use crate::bottom_pane::list_selection_view::SelectionViewParams;
-use crate::bottom_pane::popup_consts::accept_cancel_hint_line;
 use crate::diff_model::FileChange;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell;
@@ -33,7 +42,6 @@ use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::ApprovalKeymap;
-use crate::keymap::ListAction;
 use crate::keymap::ListKeymap;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::ColumnRenderable;
@@ -85,6 +93,9 @@ pub(crate) struct ExecApprovalRequest {
     pub thread_label: Option<String>,
     pub id: String,
     pub environment_id: Option<String>,
+    pub started_at_ms: i64,
+    pub expires_at_ms: Option<i64>,
+    pub received_at: Instant,
     pub command: Vec<String>,
     pub reason: Option<String>,
     pub available_decisions: Vec<CommandExecutionApprovalDecision>,
@@ -176,6 +187,7 @@ pub(crate) struct ApprovalOverlay {
     app_event_tx: AppEventSender,
     list: ListSelectionView,
     options: Vec<ApprovalOption>,
+    current_deadline: Option<Instant>,
     current_complete: bool,
     done: bool,
     features: Features,
@@ -197,6 +209,7 @@ impl ApprovalOverlay {
             app_event_tx: app_event_tx.clone(),
             list: ListSelectionView::new(Default::default(), app_event_tx, list_keymap.clone()),
             options: Vec::new(),
+            current_deadline: None,
             current_complete: false,
             done: false,
             features,
@@ -230,6 +243,15 @@ impl ApprovalOverlay {
 
     fn set_current(&mut self, request: ApprovalRequest) {
         self.current_complete = false;
+        let received_at = match &request {
+            ApprovalRequest::Exec(request) => Some(request.received_at),
+            ApprovalRequest::Permissions(_)
+            | ApprovalRequest::ApplyPatch(_)
+            | ApprovalRequest::McpElicitation(_) => None,
+        };
+        self.current_deadline = received_at
+            .zip(approval_request_timeout(&request))
+            .map(|(received_at, timeout)| saturating_instant_add(received_at, timeout));
         let header = build_header(&request);
         let (options, params) = Self::build_options(
             &request,
@@ -580,48 +602,6 @@ impl ApprovalOverlay {
     }
 }
 
-impl BottomPaneView for ApprovalOverlay {
-    fn keymap_contexts(&self) -> crate::keymap::KeymapContextSet {
-        crate::keymap::KeymapContextSet::new(crate::keymap::KeymapContext::Approval)
-            .with(crate::keymap::KeymapContext::List)
-    }
-
-    fn handle_key_event(&mut self, key_event: KeyEvent) {
-        if self.try_handle_shortcut(&key_event) {
-            return;
-        }
-        self.list.handle_key_event(key_event);
-        if let Some(idx) = self.list.take_last_selected_index() {
-            self.apply_selection(idx);
-        }
-    }
-
-    fn on_ctrl_c(&mut self) -> CancellationEvent {
-        self.cancel_current_request();
-        CancellationEvent::Handled
-    }
-
-    fn is_complete(&self) -> bool {
-        self.done
-    }
-
-    fn try_consume_approval_request(
-        &mut self,
-        request: ApprovalRequest,
-    ) -> Option<ApprovalRequest> {
-        self.enqueue_request(request);
-        None
-    }
-
-    fn dismiss_app_server_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
-        self.dismiss_resolved_request(request)
-    }
-
-    fn terminal_title_requires_action(&self) -> bool {
-        true
-    }
-}
-
 impl Renderable for ApprovalOverlay {
     fn desired_height(&self, width: u16) -> u16 {
         self.list.desired_height(width)
@@ -641,25 +621,18 @@ fn approval_footer_hint(
     approval_keymap: &ApprovalKeymap,
     list_keymap: &ListKeymap,
 ) -> Line<'static> {
-    let mut spans = accept_cancel_hint_line(
-        list_keymap.primary_hint(ListAction::Accept),
-        "to confirm",
-        list_keymap.primary_hint(ListAction::Cancel),
-        "to cancel",
+    approval_footer_hint_with_remaining(
+        request,
+        approval_keymap,
+        list_keymap,
+        match request {
+            ApprovalRequest::Exec(exec) => approval_request_timeout(request)
+                .map(|timeout| timeout.saturating_sub(exec.received_at.elapsed())),
+            ApprovalRequest::Permissions(_)
+            | ApprovalRequest::ApplyPatch(_)
+            | ApprovalRequest::McpElicitation(_) => None,
+        },
     )
-    .spans;
-    if request.thread_label().is_some()
-        && let Some(open_thread) =
-            approval_keymap.primary_hint("open_thread", &approval_keymap.open_thread)
-    {
-        if !spans.is_empty() {
-            spans.push(" or ".into());
-        } else {
-            spans.push("Press ".into());
-        }
-        spans.extend([open_thread.into(), " to open thread".into()]);
-    }
-    Line::from(spans)
 }
 
 fn network_approval_target(
@@ -1134,7 +1107,7 @@ mod tests {
         AbsolutePathBuf::from_absolute_path(path).expect("absolute path")
     }
 
-    fn render_overlay_lines(view: &ApprovalOverlay, width: u16) -> String {
+    pub(super) fn render_overlay_lines(view: &ApprovalOverlay, width: u16) -> String {
         let height = view.desired_height(width);
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
         view.render(Rect::new(0, 0, width, height), &mut buf);
@@ -1176,7 +1149,7 @@ mod tests {
         })
     }
 
-    fn make_overlay(
+    pub(super) fn make_overlay(
         request: ApprovalRequest,
         app_event_tx: AppEventSender,
         features: Features,
@@ -1207,13 +1180,16 @@ mod tests {
         )
     }
 
-    fn make_exec_request() -> ApprovalRequest {
+    pub(super) fn make_exec_request() -> ApprovalRequest {
         ApprovalRequest::Exec(ExecApprovalRequest {
             kind: Default::default(),
             thread_id: ThreadId::new(),
             thread_label: None,
             id: "test".to_string(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command: vec!["echo".to_string(), "hi".to_string()],
             reason: Some("reason".to_string()),
             available_decisions: vec![
@@ -1225,7 +1201,7 @@ mod tests {
         })
     }
 
-    fn make_permissions_request() -> ApprovalRequest {
+    pub(super) fn make_permissions_request() -> ApprovalRequest {
         ApprovalRequest::Permissions(PermissionsApprovalRequest {
             thread_id: ThreadId::new(),
             thread_label: None,
@@ -1408,6 +1384,9 @@ mod tests {
                 thread_label: None,
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1453,6 +1432,9 @@ mod tests {
                 thread_label: None,
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["curl".to_string(), "https://example.com".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1539,6 +1521,9 @@ mod tests {
                 thread_label: Some("Robie [explorer]".to_string()),
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1575,6 +1560,9 @@ mod tests {
                 thread_label: Some("Robie [explorer]".to_string()),
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1615,6 +1603,9 @@ mod tests {
                 thread_label: Some("Robie [explorer]".to_string()),
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1645,6 +1636,9 @@ mod tests {
                 thread_label: None,
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["echo".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1699,6 +1693,9 @@ mod tests {
                 thread_label: None,
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["curl".to_string(), "https://example.com".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1740,6 +1737,9 @@ mod tests {
             thread_label: None,
             id: "test".into(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command,
             reason: None,
             available_decisions: vec![
@@ -2042,6 +2042,9 @@ mod tests {
             thread_label: None,
             id: "test".into(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command: vec!["cat".into(), "/tmp/readme.txt".into()],
             reason: None,
             available_decisions: vec![
@@ -2100,6 +2103,9 @@ mod tests {
             thread_label: None,
             id: "test".into(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command: vec!["cat".into(), "/tmp/readme.txt".into()],
             reason: Some("need filesystem access".into()),
             available_decisions: vec![
@@ -2226,6 +2232,9 @@ mod tests {
             thread_label: None,
             id: "test".into(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command: vec!["curl".into(), "https://example.com".into()],
             reason: Some("network request blocked".into()),
             available_decisions: vec![
@@ -2364,6 +2373,9 @@ mod tests {
                 thread_label: None,
                 id: "test".into(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec![
                     "network-access".to_string(),
                     "https://example.com:8443".to_string(),

@@ -1,5 +1,8 @@
 //! App-level orchestration tests for the TUI.
 
+#[path = "tests/approval_timeout_tests.rs"]
+mod approval_timeout_tests;
+
 #[path = "tests/thread_switch_replay_tests.rs"]
 mod thread_switch_replay_tests;
 
@@ -4131,6 +4134,7 @@ async fn active_thread_file_change_approval_recovers_buffered_changes() {
             thread_id: thread_id.to_string(),
             turn_id: "turn-active-approval".to_string(),
             started_at_ms: 0,
+            deadline_at_ms: None,
             item: ThreadItem::FileChange {
                 id: "patch-active-approval".to_string(),
                 changes: vec![FileUpdateChange {
@@ -7145,7 +7149,8 @@ fn exec_approval_request(
             thread_id: thread_id.to_string(),
             turn_id: turn_id.to_string(),
             item_id: item_id.to_string(),
-            started_at_ms: 0,
+            started_at_ms: Some(0),
+            expires_at_ms: None,
             approval_id: approval_id.map(str::to_string),
             environment_id: None,
             reason: Some("needs approval".to_string()),

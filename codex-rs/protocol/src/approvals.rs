@@ -287,8 +287,9 @@ pub struct ExecApprovalRequestEvent {
     pub script_path: Option<String>,
     /// Identifier for this specific approval callback.
     ///
-    /// When absent, the approval is for the command item itself (`call_id`).
-    /// This is present for subcommand approvals (via execve intercept) and stdin writes.
+    /// New human command approvals always carry a fresh opaque callback ID,
+    /// independently of command, subcommand, or stdin presentation. Older
+    /// producers may omit it; consumers then use `call_id` for response routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub approval_id: Option<String>,
@@ -308,6 +309,11 @@ pub struct ExecApprovalRequestEvent {
     pub environment_id: Option<String>,
     #[ts(type = "number")]
     pub started_at_ms: i64,
+    /// Unix timestamp (in milliseconds) when this approval request expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "number | null")]
+    pub expires_at_ms: Option<i64>,
     /// The command to be executed.
     pub command: Vec<String>,
     /// The command's working directory, or the launch directory for terminal input.

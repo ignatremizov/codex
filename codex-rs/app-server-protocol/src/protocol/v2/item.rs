@@ -1590,16 +1590,21 @@ pub struct CommandExecutionRequestApprovalParams {
     pub turn_id: String,
     pub item_id: String,
     /// Unix timestamp (in milliseconds) when this approval request started.
-    #[ts(type = "number")]
-    pub started_at_ms: i64,
+    ///
+    /// Older servers may omit timing metadata.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub started_at_ms: Option<i64>,
+    /// Unix timestamp (in milliseconds) when this approval request expires.
+    ///
+    /// `None` means that this approval has no deadline.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub expires_at_ms: Option<i64>,
     /// Unique identifier for this specific approval callback.
     ///
-    /// For regular shell/unified_exec approvals, this is null.
-    ///
-    /// For zsh-exec-bridge subcommand approvals, multiple callbacks can belong to
-    /// one parent `itemId`, so `approvalId` is a distinct opaque callback id
-    /// (a UUID) used to disambiguate routing.
-    /// Stdin approvals also use a distinct callback id; inspect `kind` to distinguish them.
+    /// Opaque identifier for this approval callback. It is present for every human command
+    /// approval and is distinct from `itemId`, which retains command provenance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub approval_id: Option<String>,

@@ -17,6 +17,10 @@ terminating the process or sending a delayed clear. An individually cancelled
 poll with no subsequent visible lifecycle event may retain its advisory estimate
 until expiry; an interrupted turn clears it immediately.
 
+# Human command approval deadlines
+
+The optional `approval_timeout_ms` configuration sets a fail-closed deadline for human command approvals. When the deadline expires, the command is denied without execution. Approval request payloads expose nullable `startedAtMs` and `expiresAtMs` values; omitted timing remains untimed for compatibility with older clients. This policy applies only to human command approvals and does not change patch approvals, Guardian reviews, permission requests, hooks, or other elicitation types.
+
 # Legacy command history reconstruction
 
 Cold history reads can reconstruct `exec_command` and `write_stdin` results from

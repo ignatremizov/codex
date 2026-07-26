@@ -145,9 +145,9 @@ async fn stdin_reviews_retained_grants_after_turn_permissions_expire() -> Result
             text_elements: Vec::new(),
         }]))
         .await?;
-    for (id, decision) in [
-        ("denied", ReviewDecision::denied("blocked input")),
-        ("allowed", ReviewDecision::Approved),
+    for decision in [
+        ReviewDecision::denied("blocked input"),
+        ReviewDecision::Approved,
     ] {
         let request = wait_for_event_match(&test.codex, |event| match event {
             EventMsg::ExecApprovalRequest(request) => Some(request.clone()),
@@ -155,13 +155,10 @@ async fn stdin_reviews_retained_grants_after_turn_permissions_expire() -> Result
         })
         .await;
         assert_eq!(
-            (
-                request.kind,
-                request.call_id.as_str(),
-                request.effective_approval_id().as_str()
-            ),
-            (ExecApprovalKind::WriteStdin, "open", id)
+            (request.kind, request.call_id.as_str()),
+            (ExecApprovalKind::WriteStdin, "open")
         );
+        assert!(request.approval_id.is_some());
         assert_eq!(
             request.additional_permissions,
             Some(serde_json::from_value::<AdditionalPermissionProfile>(
@@ -170,7 +167,7 @@ async fn stdin_reviews_retained_grants_after_turn_permissions_expire() -> Result
         );
         test.codex
             .submit(Op::ExecApproval {
-                id: id.into(),
+                id: request.effective_approval_id(),
                 turn_id: Some(request.turn_id),
                 decision,
             })

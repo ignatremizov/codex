@@ -811,6 +811,54 @@ model = "gpt-dev"
     .expect("profile-v2 should allow unrelated legacy profiles in base user config");
 }
 
+#[tokio::test]
+async fn profile_overrides_and_inherits_approval_timeout() {
+    let tmp = tempdir().expect("tempdir");
+    let base_config = tmp.path().join(CONFIG_TOML_FILE);
+    let selected_config = tmp.path().join("work.config.toml");
+    std::fs::write(&base_config, "approval_timeout_ms = 120000\n").expect("write base config");
+
+    let mut overrides = LoaderOverrides::without_managed_config_for_tests();
+    overrides.user_config_path = Some(AbsolutePathBuf::resolve_path_against_base(
+        "work.config.toml",
+        tmp.path(),
+    ));
+    overrides.user_config_profile = Some("work".parse().expect("profile-v2 name"));
+
+    std::fs::write(&selected_config, "approval_timeout_ms = 0\n")
+        .expect("write overriding profile config");
+    let stack = load_config_layers_state(
+        &TestFileSystem,
+        tmp.path(),
+        /*cwd*/ None,
+        &[],
+        overrides.clone(),
+        &crate::NoopThreadConfigLoader,
+    )
+    .await
+    .expect("load overriding profile config");
+    assert_eq!(
+        stack.effective_config().get("approval_timeout_ms"),
+        Some(&TomlValue::Integer(0))
+    );
+
+    std::fs::write(&selected_config, "").expect("write inheriting profile config");
+    let stack = load_config_layers_state(
+        &TestFileSystem,
+        tmp.path(),
+        /*cwd*/ None,
+        &[],
+        overrides,
+        &crate::NoopThreadConfigLoader,
+    )
+    .await
+    .expect("load inheriting profile config");
+    assert_eq!(
+        stack.effective_config().get("approval_timeout_ms"),
+        Some(&TomlValue::Integer(120000))
+    );
+}
+
 #[test]
 fn local_layer_projection_preserves_override_blockers_and_cloud_position() {
     let tmp = tempdir().expect("tempdir");

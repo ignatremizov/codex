@@ -940,6 +940,7 @@ impl ThreadItemRenderSource {
 fn exec_approval_request_from_params(
     params: CommandExecutionRequestApprovalParams,
     fallback_cwd: &AbsolutePathBuf,
+    received_at: std::time::Instant,
 ) -> ExecApprovalRequestEvent {
     // TODO(anp): Keep this as PathUri once `tui::approval_events::ExecApprovalRequestEvent` and
     // approval rendering support foreign paths.
@@ -962,6 +963,9 @@ fn exec_approval_request_from_params(
         turn_id: params.turn_id,
         approval_id: params.approval_id,
         environment_id: params.environment_id,
+        started_at_ms: params.started_at_ms.unwrap_or_default(),
+        expires_at_ms: params.started_at_ms.and(params.expires_at_ms),
+        received_at,
         proposed_execpolicy_amendment: params.proposed_execpolicy_amendment,
         proposed_network_policy_amendments: params.proposed_network_policy_amendments,
         available_decisions: params.available_decisions,

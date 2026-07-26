@@ -4504,6 +4504,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         /*approval_id*/ None,
                     ),
                     /*replay_kind*/ None,
+                    Some(std::time::Instant::now()),
                 );
                 app.agent_navigation.mark_stopped(child_thread_id);
                 release_tx.send(()).expect("release blocked thread list");

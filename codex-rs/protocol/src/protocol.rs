@@ -4233,7 +4233,7 @@ pub enum ReviewDecision {
     /// it should continue the session and try something else.
     Denied { rejection: String },
 
-    /// Automatic approval review timed out before reaching a decision.
+    /// Human or automatic approval review timed out before reaching a decision.
     TimedOut,
 
     /// User has denied this command and the agent should not do anything until

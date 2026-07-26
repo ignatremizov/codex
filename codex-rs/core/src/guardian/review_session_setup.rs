@@ -133,6 +133,7 @@ impl PreparedGuardianContext {
         let session = Arc::clone(&thread.session);
         let io = SessionIo {
             tx_sub: thread.io.tx_sub.clone(),
+            session: thread.io.session.clone(),
             submission_admission: Arc::clone(&thread.io.submission_admission),
             rx_event: thread.io.rx_event.clone(),
             agent_status: thread.io.agent_status.clone(),

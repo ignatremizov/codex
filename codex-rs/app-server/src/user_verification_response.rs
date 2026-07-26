@@ -11,9 +11,12 @@ use crate::outgoing_message::ClientRequestResult;
 pub(crate) fn from_client_result(
     result: Result<ClientRequestResult, oneshot::error::RecvError>,
 ) -> McpServerElicitationRequestResponse {
-    let response = result.ok().and_then(Result::ok).and_then(|value| {
-        serde_json::from_value::<McpServerElicitationRequestResponse>(value).ok()
-    });
+    let response = result
+        .ok()
+        .and_then(|response| response.result.ok())
+        .and_then(|value| {
+            serde_json::from_value::<McpServerElicitationRequestResponse>(value).ok()
+        });
     if let Some(mut response) = response {
         response.meta = None;
         match response.action {

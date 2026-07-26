@@ -1080,7 +1080,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
             .call_id
             .starts_with("network#local#http#codex-network-test.invalid#80#")
     );
-    assert_eq!(approval.approval_id.as_deref(), None);
+    assert!(approval.approval_id.is_some());
     let first_approval_call_id = approval.call_id.clone();
     assert!(!approval.turn_id.is_empty());
     assert_eq!(approval.cwd, test.config.cwd.clone().into());
@@ -1113,7 +1113,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     )
     .await?;
     let approval = expect_network_approval(&test, LOCAL_ENVIRONMENT_ID).await?;
-    assert_eq!(approval.approval_id.as_deref(), None);
+    assert!(approval.approval_id.is_some());
     assert_ne!(approval.call_id, first_approval_call_id);
     test.codex
         .submit(Op::ExecApproval {

@@ -232,6 +232,8 @@ fn next_goal_draft(
 
 mod app_server;
 mod approval_requests;
+#[path = "tests/approval_timeout_tests.rs"]
+mod approval_timeout_tests;
 #[path = "tests/backend_banners_tests.rs"]
 mod backend_banners_tests;
 #[path = "tests/bedrock_catalog_tests.rs"]

@@ -39,6 +39,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
     let io = Arc::new(SessionIo {
+        session: std::sync::Weak::new(),
         tx_sub,
         submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
         rx_event: rx_events,
@@ -117,7 +118,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
 
     let mut ops = Vec::new();
     while let Ok(sub) = rx_sub.try_recv() {
-        ops.push(sub.op);
+        ops.push(sub.submission.op);
     }
     assert!(
         ops.iter().any(|op| matches!(op, Op::Interrupt)),
@@ -135,6 +136,7 @@ async fn forwarded_session_preserves_submission_trace_context() {
     let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
     let io = Arc::new(SessionIo {
+        session: std::sync::Weak::new(),
         tx_sub,
         submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
         rx_event: rx_events,
@@ -162,10 +164,10 @@ async fn forwarded_session_preserves_submission_trace_context() {
         .await
         .expect("submission hung")
         .expect("forwarded submission missing");
-    assert_eq!("sub-1", forwarded.id);
-    assert!(matches!(forwarded.op, Op::Interrupt));
+    assert_eq!("sub-1", forwarded.submission.id);
+    assert!(matches!(forwarded.submission.op, Op::Interrupt));
     assert_eq!(
-        forwarded.trace,
+        forwarded.submission.trace,
         Some(codex_protocol::protocol::W3cTraceContext {
             traceparent: Some(
                 "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01".to_string(),
@@ -173,9 +175,15 @@ async fn forwarded_session_preserves_submission_trace_context() {
             tracestate: Some("vendor=state".to_string()),
         })
     );
-    assert_eq!(Some("parent-turn".to_string()), forwarded.parent_turn_id);
+    assert_eq!(
+        Some("parent-turn".to_string()),
+        forwarded.submission.parent_turn_id
+    );
 
-    assert_eq!(Some("root-turn".to_string()), forwarded.root_turn_id);
+    assert_eq!(
+        Some("root-turn".to_string()),
+        forwarded.submission.root_turn_id
+    );
     cancel.cancel();
 }
 
@@ -184,6 +192,7 @@ async fn forwarded_session_cancellation_preserves_accepted_rollback() {
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let io = Arc::new(SessionIo {
+        session: std::sync::Weak::new(),
         tx_sub,
         submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
         rx_event: rx_events,
@@ -203,13 +212,16 @@ async fn forwarded_session_cancellation_preserves_accepted_rollback() {
         .recv()
         .await
         .expect("accepted rollback remains queued");
-    assert_eq!(accepted.id, rollback_id);
-    assert!(matches!(accepted.op, Op::ThreadRollback { num_turns: 1 }));
+    assert_eq!(accepted.submission.id, rollback_id);
+    assert!(matches!(
+        accepted.submission.op,
+        Op::ThreadRollback { num_turns: 1 }
+    ));
     let shutdown = timeout(Duration::from_secs(1), rx_sub.recv())
         .await
         .expect("cancellation should request shutdown")
         .expect("shutdown should be queued");
-    assert!(matches!(shutdown.op, Op::Shutdown));
+    assert!(matches!(shutdown.submission.op, Op::Shutdown));
     assert!(io.submission_admission.check_ready().is_err());
 }
 

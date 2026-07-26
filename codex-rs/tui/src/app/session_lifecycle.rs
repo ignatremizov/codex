@@ -883,9 +883,27 @@ impl App {
                     | ThreadBufferedEvent::Mcp(_)
                     | ThreadBufferedEvent::FeedbackSubmission(_) => true,
                 });
+                let receipts = self
+                    .pending_primary_events
+                    .iter()
+                    .filter_map(|event| {
+                        let ThreadBufferedEvent::Request(request) = event else {
+                            return None;
+                        };
+                        self.pending_app_server_requests
+                            .request_received_at(request)
+                            .map(|received_at| (request.id().clone(), received_at))
+                    })
+                    .collect::<std::collections::HashMap<_, _>>();
                 self.pending_app_server_requests.clear();
                 let mut unsupported_requests = Vec::new();
                 for event in &self.pending_primary_events {
+                    if let ThreadBufferedEvent::Request(request) = event
+                        && let Some(received_at) = receipts.get(request.id())
+                    {
+                        self.pending_app_server_requests
+                            .note_request_receipt(request, *received_at);
+                    }
                     if let ThreadBufferedEvent::Request(request) = event
                         && let Some(unsupported) = self
                             .pending_app_server_requests

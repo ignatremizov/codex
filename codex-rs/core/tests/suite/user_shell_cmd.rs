@@ -290,10 +290,13 @@ async fn user_shell_command_uses_configured_timeout() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex().with_config(|config| {
         let user_config_path = config.codex_home.join(CONFIG_TOML_FILE);
-        config.config_layer_stack = config.config_layer_stack.with_user_config(
-            &user_config_path,
-            toml::toml! { user_shell_command_timeout_ms = 60_000 }.into(),
-        );
+        config.config_layer_stack = config
+            .config_layer_stack
+            .with_user_config(
+                &user_config_path,
+                toml::toml! { user_shell_command_timeout_ms = 60_000 }.into(),
+            )
+            .expect("valid user config layer");
     });
     let fixture = builder.build_with_remote_and_local_env(&server).await?;
     let local_cwd = fixture.cwd_path().abs();
@@ -397,10 +400,13 @@ async fn zero_user_shell_command_timeout_remains_interruptible() -> anyhow::Resu
     let server = start_mock_server().await;
     let mut builder = test_codex().with_config(|config| {
         let user_config_path = config.codex_home.join(CONFIG_TOML_FILE);
-        config.config_layer_stack = config.config_layer_stack.with_user_config(
-            &user_config_path,
-            toml::toml! { user_shell_command_timeout_ms = 0 }.into(),
-        );
+        config.config_layer_stack = config
+            .config_layer_stack
+            .with_user_config(
+                &user_config_path,
+                toml::toml! { user_shell_command_timeout_ms = 0 }.into(),
+            )
+            .expect("valid user config layer");
     });
     let fixture = builder.build_with_remote_and_local_env(&server).await?;
     let local_cwd = fixture.cwd_path().abs();
