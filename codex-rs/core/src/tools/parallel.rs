@@ -185,6 +185,7 @@ impl ToolCallRuntime {
         let router = Arc::clone(router);
         let session = Arc::clone(&self.session);
         let turn = Arc::clone(&step_context.turn);
+        let servicing_turn = Arc::clone(&self.step_context.turn);
         let tracker = Arc::clone(&self.tracker);
         let lock = Arc::clone(&self.parallel_execution);
         let invocation_cancellation_token = cancellation_token.clone();
@@ -320,6 +321,27 @@ impl ToolCallRuntime {
                     let _ = execution_started_at.set(Instant::now());
                 }
 
+                // The cell retains its original policy and presentation. Only this
+                // worker's exact live task may service a cross-turn approval.
+                let _code_mode_approval = if matches!(&source, ToolCallSource::CodeMode { .. })
+                    && servicing_turn.sub_id != turn.sub_id
+                {
+                    Some(
+                        session
+                            .bind_code_mode_command_approval(
+                                &servicing_turn,
+                                &turn,
+                                &dispatch_call.call_id,
+                                invocation_cancellation_token.clone(),
+                            )
+                            .await
+                            .map_err(|error| {
+                                FunctionCallError::RespondToModel(error.to_string())
+                            })?,
+                    )
+                } else {
+                    None
+                };
                 let result = router
                     .dispatch_tool_call_with_state(
                         session,

@@ -110,6 +110,7 @@ use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ElicitationRequest;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::approvals::ExecApprovalKind;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
@@ -122,7 +123,6 @@ use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::EnteredReviewModeItem;
-use codex_protocol::items::ModelInvocationContext;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ActivePermissionProfile;
@@ -176,7 +176,6 @@ use codex_rollout_trace::ThreadStartedTraceMetadata;
 use codex_rollout_trace::ThreadTraceContext;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::policy_transforms::intersect_permission_profiles_with_context;
-use codex_shell_command::parse_command::parse_command;
 use codex_terminal_detection::user_agent;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::LiveThread;
@@ -238,15 +237,19 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+#[cfg(test)]
+pub(crate) mod approval_test_support;
 pub(crate) mod async_compaction;
 mod checkpoint_publication;
 mod code_mode_warning;
+pub(crate) mod command_approval;
 mod compacted_media_repair;
 mod config_refresh;
 pub(crate) mod context_window;
 mod daemon_recovery;
 mod durable_context;
 mod private_session_event;
+mod request_command_approval;
 pub(crate) mod rollback;
 mod submission_admission;
 pub(crate) use submission_admission::SubmissionAdmission;
@@ -355,7 +358,6 @@ use crate::unified_exec::UnifiedExecProcessManager;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
 use crate::windows_sandbox::local_binding_policy_for_sandbox;
 use crate::windows_sandbox::managed_proxy_routing_for_windows_sandbox;
-use codex_core_plugins::PluginCommandAttribution;
 use codex_core_plugins::PluginsManager;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_git_utils::get_git_repo_root;
@@ -372,7 +374,6 @@ use codex_otel::SessionTelemetry;
 use codex_otel::THREAD_STARTED_METRIC;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ResponseItemId;
-use codex_protocol::approvals::ExecApprovalKind;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
@@ -390,7 +391,6 @@ use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::ModelRerouteEvent;
 use codex_protocol::protocol::ModelRerouteReason;
 use codex_protocol::protocol::ModelVerification;
@@ -448,7 +448,8 @@ pub(crate) enum NetworkApprovalTurn {
 /// completion future observes that shutdown.
 #[derive(Clone)]
 pub(crate) struct SessionIo {
-    pub(crate) tx_sub: Sender<Submission>,
+    pub(crate) tx_sub: Sender<command_approval::QueuedSubmission>,
+    pub(crate) session: std::sync::Weak<Session>,
     pub(crate) rx_event: Receiver<Event>,
     /// Serializes enqueueing with rollback reservation and reload quarantine transitions.
     pub(crate) submission_admission: Arc<SubmissionAdmission>,
@@ -1078,6 +1079,7 @@ impl Session {
         })));
         let io = SessionIo {
             tx_sub,
+            session: Arc::downgrade(&session),
             rx_event,
             submission_admission: Arc::clone(&session.submission_admission),
             agent_status: agent_status_rx,
@@ -1107,17 +1109,29 @@ impl SessionIo {
 
     pub(crate) fn try_submit(&self, op: Op) -> CodexResult<String> {
         let id = new_submission_id();
+        let submission = Submission {
+            message_delivery: None,
+            id: id.clone(),
+            op,
+            turn_extension_init: None,
+            trace: current_span_w3c_trace_context(),
+            parent_turn_id: None,
+            root_turn_id: None,
+            residency_guard: None,
+        };
+        let approval = if matches!(&submission.op, Op::ExecApproval { .. }) {
+            self.session
+                .upgrade()
+                .ok_or(CodexErr::InternalAgentDied)?
+                .try_claim_command_approval(&submission)?
+        } else {
+            None
+        };
         self.submission_admission.try_enqueue(
             &self.tx_sub,
-            Submission {
-                message_delivery: None,
-                id: id.clone(),
-                op,
-                turn_extension_init: None,
-                trace: current_span_w3c_trace_context(),
-                parent_turn_id: None,
-                root_turn_id: None,
-                residency_guard: None,
+            command_approval::QueuedSubmission {
+                submission,
+                approval,
             },
         )?;
         Ok(id)
@@ -1156,7 +1170,24 @@ impl SessionIo {
         if sub.trace.is_none() {
             sub.trace = current_span_w3c_trace_context();
         }
-        self.submission_admission.enqueue(&self.tx_sub, sub).await
+        let approval = if matches!(&sub.op, Op::ExecApproval { .. }) {
+            self.session
+                .upgrade()
+                .ok_or(CodexErr::InternalAgentDied)?
+                .claim_command_approval(&sub)
+                .await?
+        } else {
+            None
+        };
+        self.submission_admission
+            .enqueue(
+                &self.tx_sub,
+                command_approval::QueuedSubmission {
+                    submission: sub,
+                    approval,
+                },
+            )
+            .await
     }
 
     /// Submits an ordered turn-input call and waits only for Core's routing decision.
@@ -2849,19 +2880,12 @@ impl Session {
     /// commands can use the newly approved prefix.
     pub(crate) async fn persist_execpolicy_amendment(
         &self,
+        codex_home: &AbsolutePathBuf,
         amendment: &ExecPolicyAmendment,
     ) -> Result<(), ExecPolicyUpdateError> {
-        let codex_home = self
-            .state
-            .lock()
-            .await
-            .session_configuration
-            .codex_home()
-            .clone();
-
         self.services
             .exec_policy
-            .append_amendment_and_update(&codex_home, amendment)
+            .append_amendment_and_update(codex_home, amendment)
             .await?;
 
         Ok(())
@@ -3031,142 +3055,6 @@ impl Session {
             self.services.elicitations.register(),
             self.start_user_wait_timing(turn, owner.as_deref()),
         )
-    }
-
-    /// Emit an exec approval request event and await the user's decision.
-    ///
-    /// The request is keyed by `call_id` + `approval_id` so matching responses
-    /// are delivered to the correct in-flight turn. If the pending approval is
-    /// cleared before a response arrives, treat it as an abort so interrupted
-    /// turns do not continue on a synthetic denial.
-    ///
-    /// Note that if `available_decisions` is `None`, then the other fields will
-    /// be used to derive the available decisions via
-    /// [ExecApprovalRequestEvent::default_available_decisions].
-    #[allow(clippy::too_many_arguments)]
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "active turn checks and turn state updates must remain atomic"
-    )]
-    pub async fn request_command_approval(
-        &self,
-        turn_context: &TurnContext,
-        kind: ExecApprovalKind,
-        model_context: ModelInvocationContext,
-        call_id: String,
-        timing_call_id: Option<&str>,
-        approval_id: Option<String>,
-        environment_id: Option<String>,
-        command: Vec<String>,
-        cwd: PathUri,
-        reason: Option<String>,
-        network_approval: Option<(NetworkApprovalContext, NetworkApprovalTurn)>,
-        proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
-        additional_permissions: Option<AdditionalPermissionProfile>,
-        available_decisions: Option<Vec<ReviewDecision>>,
-        plugin_attribution_override: Option<PluginCommandAttribution>,
-    ) -> ReviewDecision {
-        let (network_approval_context, turn_binding) = network_approval.unzip();
-        let user_wait_owner = self.user_wait_timing_owner(turn_context, timing_call_id);
-        let _elicitation = self.services.elicitations.register();
-        //  command-level approvals use `call_id`.
-        // `approval_id` identifies subcommand callbacks and stdin writes.
-        let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
-        // Add the tx_approve callback to the map before sending the request.
-        let (tx_approve, rx_approve) = oneshot::channel();
-        let (prev_entry, _network_prompt) = {
-            let mut active = self.active_turn.lock().await;
-            // The proxy reviews with the active turn's settings. A sandbox retry
-            // keeps its originating step's settings even after a background cell yields.
-            if let Some(binding) = turn_binding
-                && active
-                    .as_ref()
-                    .and_then(|turn| turn.task.as_ref())
-                    .is_none_or(|task| {
-                        binding == NetworkApprovalTurn::Originating
-                            && task.turn_context.sub_id != turn_context.sub_id
-                    })
-            {
-                return ReviewDecision::Abort;
-            }
-            match active.as_mut() {
-                Some(at) => {
-                    let mut ts = at.turn_state.lock().await;
-                    let prev = ts.insert_pending_approval(
-                        effective_approval_id.clone(),
-                        tx_approve,
-                        kind,
-                        turn_context.sub_id.clone(),
-                    );
-                    let prompt = network_approval_context.as_ref().map(|_| {
-                        ts.track_network_prompt(
-                            &self.tx_event,
-                            &turn_context.sub_id,
-                            &effective_approval_id,
-                        )
-                    });
-                    (prev, prompt)
-                }
-                None => (None, None),
-            }
-        };
-        if prev_entry.is_some() {
-            warn!("Overwriting existing pending approval for call_id: {effective_approval_id}");
-        }
-
-        let parsed_cmd = parse_command(&command);
-        let proposed_network_policy_amendments = network_approval_context.as_ref().map(|context| {
-            vec![
-                NetworkPolicyAmendment {
-                    host: context.host.clone(),
-                    action: NetworkPolicyRuleAction::Allow,
-                },
-                NetworkPolicyAmendment {
-                    host: context.host.clone(),
-                    action: NetworkPolicyRuleAction::Deny,
-                },
-            ]
-        });
-        let available_decisions = available_decisions.unwrap_or_else(|| {
-            ExecApprovalRequestEvent::default_available_decisions(
-                network_approval_context.as_ref(),
-                proposed_execpolicy_amendment.as_ref(),
-                proposed_network_policy_amendments.as_deref(),
-                additional_permissions.as_ref(),
-            )
-        });
-        let plugin_attribution = plugin_attribution_override.or_else(|| {
-            cwd.to_abs_path()
-                .ok()
-                .and_then(|cwd| turn_context.plugin_attribution_for_command(&command, &cwd))
-        });
-        let (plugin_id, script_path) = plugin_attribution
-            .as_ref()
-            .map(PluginCommandAttribution::serialized_fields)
-            .unzip();
-        let event = EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
-            model_context: Some(model_context),
-            kind,
-            call_id,
-            plugin_id,
-            script_path,
-            approval_id,
-            turn_id: turn_context.sub_id.clone(),
-            environment_id,
-            started_at_ms: now_unix_timestamp_ms(),
-            command,
-            cwd: cwd.into(),
-            reason,
-            network_approval_context,
-            proposed_execpolicy_amendment,
-            proposed_network_policy_amendments,
-            additional_permissions,
-            available_decisions: Some(available_decisions),
-            parsed_cmd,
-        });
-        let _user_wait = self.start_user_wait_timing(turn_context, user_wait_owner.as_deref());
-        self.send_event(turn_context, event).await;
-        rx_approve.await.unwrap_or(ReviewDecision::Abort)
     }
 
     #[expect(

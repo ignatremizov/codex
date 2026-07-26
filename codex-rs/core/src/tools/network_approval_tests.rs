@@ -167,12 +167,12 @@ async fn execution_cancellation_respects_network_approval_boundary(
             }
             queued = Some((waiter, timing, started));
             let commit_guard = service.session_policy_commit_lock.lock().await;
-            session
-                .notify_approval(
-                    &approval.effective_approval_id(),
-                    ReviewDecision::ApprovedForSession,
-                )
-                .await;
+            crate::session::approval_test_support::respond_to_approval(
+                &session,
+                &approval,
+                ReviewDecision::ApprovedForSession,
+            )
+            .await;
             // Consume the approval and stop at the held policy commit lock.
             assert!(poll!(decision.as_mut()).is_pending());
             // The visible prompt closed, but the queued execution still holds tool results.
@@ -239,13 +239,25 @@ async fn execution_cancellation_respects_network_approval_boundary(
     }
     assert_eq!(resolved, [approval.effective_approval_id()]);
     // The app-server may already have received Cancel when it learns this prompt was withdrawn.
-    session
-        .resolve_exec_approval(
-            approval.effective_approval_id(),
-            Some(approval.turn_id),
-            ReviewDecision::Abort,
-        )
-        .await;
+    assert!(
+        session
+            .claim_command_approval(&crate::session::Submission {
+                id: "withdrawn-network-response".into(),
+                op: codex_protocol::protocol::Op::ExecApproval {
+                    id: approval.effective_approval_id(),
+                    turn_id: Some(approval.turn_id),
+                    decision: ReviewDecision::Abort,
+                },
+                turn_extension_init: None,
+                trace: None,
+                parent_turn_id: None,
+                root_turn_id: None,
+                residency_guard: None,
+                message_delivery: None,
+            })
+            .await
+            .is_err()
+    );
     assert!(session.active_turn.lock().await.is_some());
     session
         .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)

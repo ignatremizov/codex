@@ -5,10 +5,13 @@ use serde_json::json;
 #[test]
 fn accepted_device_proof_uses_existing_content_and_discards_metadata() {
     assert_eq!(
-        from_client_result(Ok(Ok(json!({
-            "action": "accept", "content": {"credentialId": "AQID", "signature": "BAUG"},
-            "_meta": {"ignored": "untrusted"},
-        })))),
+        from_client_result(Ok(ClientRequestResult {
+            received_at: tokio::time::Instant::now(),
+            result: Ok(json!({
+                "action": "accept", "content": {"credentialId": "AQID", "signature": "BAUG"},
+                "_meta": {"ignored": "untrusted"},
+            })),
+        })),
         McpServerElicitationRequestResponse {
             action: McpServerElicitationAction::Accept,
             content: Some(json!({"credentialId": "AQID", "signature": "BAUG"})),
@@ -31,7 +34,10 @@ fn invalid_response_or_accept_without_proof_cancels() {
         ),
     ] {
         assert_eq!(
-            from_client_result(Ok(Ok(response))),
+            from_client_result(Ok(ClientRequestResult {
+                received_at: tokio::time::Instant::now(),
+                result: Ok(response),
+            })),
             McpServerElicitationRequestResponse {
                 action: McpServerElicitationAction::Cancel,
                 content: None,
@@ -55,9 +61,12 @@ fn terminal_response_keeps_only_a_known_reason() {
         (json!(null), None),
     ] {
         assert_eq!(
-            from_client_result(Ok(Ok(
-                json!({"action": "cancel", "content": {"signature": "discard"}, "_meta": input})
-            ))),
+            from_client_result(Ok(ClientRequestResult {
+                received_at: tokio::time::Instant::now(),
+                result: Ok(
+                    json!({"action": "cancel", "content": {"signature": "discard"}, "_meta": input})
+                ),
+            })),
             McpServerElicitationRequestResponse {
                 action: McpServerElicitationAction::Cancel,
                 content: None,
@@ -73,11 +82,14 @@ async fn runtime_failures_keep_their_reason_without_error_text() {
         (Some(json!({"reason": "turnTransition"})), "interrupted"),
         (None, "responseError"),
     ] {
-        let response = from_client_result(Ok(Err(codex_app_server_protocol::JSONRPCErrorError {
-            code: -1,
-            message: "private error details".into(),
-            data,
-        })));
+        let response = from_client_result(Ok(ClientRequestResult {
+            received_at: tokio::time::Instant::now(),
+            result: Err(codex_app_server_protocol::JSONRPCErrorError {
+                code: -1,
+                message: "private error details".into(),
+                data,
+            }),
+        }));
         assert_eq!(
             response,
             McpServerElicitationRequestResponse {

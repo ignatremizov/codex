@@ -10,6 +10,7 @@ impl ChatWidget {
         &mut self,
         request: ServerRequest,
         replay_kind: Option<ReplayKind>,
+        received_at: Option<std::time::Instant>,
     ) {
         if self.has_misalignment_policy_violation() {
             return;
@@ -18,10 +19,17 @@ impl ChatWidget {
         let id = request.id().to_string();
         match request {
             ServerRequest::CommandExecutionRequestApproval { params, .. } => {
+                let received_at = match received_at {
+                    Some(received_at) => received_at,
+                    None if params.started_at_ms.is_some() && params.expires_at_ms.is_some() => {
+                        return;
+                    }
+                    None => std::time::Instant::now(),
+                };
                 let fallback_cwd = self.config.cwd.clone();
                 self.on_exec_approval_request(
                     id,
-                    exec_approval_request_from_params(params, &fallback_cwd),
+                    exec_approval_request_from_params(params, &fallback_cwd, received_at),
                 );
             }
             ServerRequest::FileChangeRequestApproval { params, .. } => {

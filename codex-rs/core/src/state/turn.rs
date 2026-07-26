@@ -22,6 +22,8 @@ use tokio::sync::oneshot;
 use super::TurnTokenUsage;
 use crate::agent::types::AgentExecutionGuard;
 use crate::session::TurnInputQueue;
+use crate::session::command_approval::CommandApprovalIdentity;
+use crate::session::command_approval::PendingCommandApproval;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
@@ -94,6 +96,7 @@ pub(crate) struct RunningTask {
 #[derive(Default)]
 pub(crate) struct TurnState {
     pending_approvals: Arc<PendingApprovals>,
+    pub(crate) command_approvals: Arc<CommandApprovals>,
     pending_request_permissions: HashMap<String, PendingRequestPermissions>,
     pending_user_input: HashMap<String, oneshot::Sender<AcceptedUserInputResponse>>,
     pending_elicitations: HashMap<(String, RequestId), oneshot::Sender<ElicitationResponse>>,
@@ -118,10 +121,20 @@ pub(crate) struct PendingApproval {
 
 impl PendingApproval {
     pub(crate) fn validate(&self, decision: ReviewDecision) -> ReviewDecision {
-        if self.kind == codex_protocol::approvals::ExecApprovalKind::HumanCommand
+        Self::validate_decision(self.kind, decision)
+    }
+
+    pub(crate) fn validate_decision(
+        kind: codex_protocol::approvals::ExecApprovalKind,
+        decision: ReviewDecision,
+    ) -> ReviewDecision {
+        if kind == codex_protocol::approvals::ExecApprovalKind::HumanCommand
             && !matches!(
                 decision,
-                ReviewDecision::Approved | ReviewDecision::Denied { .. } | ReviewDecision::Abort
+                ReviewDecision::Approved
+                    | ReviewDecision::Denied { .. }
+                    | ReviewDecision::Abort
+                    | ReviewDecision::TimedOut
             )
         {
             ReviewDecision::denied("Managed command policy requires a one-time human approval.")
@@ -147,45 +160,53 @@ pub(crate) struct PendingRequestPermissions {
 }
 
 type PendingApprovals = SyncMutex<HashMap<String, PendingApproval>>;
+type CommandApprovals = SyncMutex<HashMap<String, PendingCommandApproval>>;
 
-/// The originating turn and its unique prompt ID stay valid even if the active turn changes.
-pub(crate) struct NetworkApprovalPrompt<'a> {
-    approvals: Weak<PendingApprovals>,
-    events: &'a async_channel::Sender<Event>,
-    turn_id: &'a str,
-    approval_id: &'a str,
+/// Resolution follows the original prompt even when a different turn services its decision.
+/// The waiter invalidates its cell before dropping this exact-registration cleanup guard.
+pub(crate) struct NetworkApprovalPrompt {
+    approvals: Weak<CommandApprovals>,
+    identity: CommandApprovalIdentity,
+    events: async_channel::Sender<Event>,
+    turn_id: String,
+    approval_id: String,
 }
 
-impl Drop for NetworkApprovalPrompt<'_> {
+impl Drop for NetworkApprovalPrompt {
     fn drop(&mut self) {
         if let Some(approvals) = self.approvals.upgrade() {
-            approvals
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(self.approval_id);
+            let mut approvals = approvals.lock().unwrap_or_else(PoisonError::into_inner);
+            if approvals
+                .get(&self.approval_id)
+                .is_some_and(|pending| self.identity.matches(pending))
+            {
+                approvals.remove(&self.approval_id);
+            }
         }
-        // The session channel is unbounded. Enqueue resolution before a same-host waiter can prompt.
+        // The session channel is unbounded. Resolve before a same-host waiter can prompt.
         let _ = self.events.try_send(Event {
-            id: self.turn_id.to_owned(),
+            id: self.turn_id.clone(),
             msg: EventMsg::NetworkApprovalResolved {
-                approval_id: self.approval_id.to_owned(),
+                approval_id: self.approval_id.clone(),
             },
         });
     }
 }
 
 impl TurnState {
-    pub(crate) fn track_network_prompt<'a>(
+    pub(crate) fn track_network_prompt(
         &self,
-        events: &'a async_channel::Sender<Event>,
-        turn_id: &'a str,
-        approval_id: &'a str,
-    ) -> NetworkApprovalPrompt<'a> {
+        events: &async_channel::Sender<Event>,
+        turn_id: &str,
+        approval_id: &str,
+        identity: CommandApprovalIdentity,
+    ) -> NetworkApprovalPrompt {
         NetworkApprovalPrompt {
-            approvals: Arc::downgrade(&self.pending_approvals),
-            events,
-            turn_id,
-            approval_id,
+            approvals: Arc::downgrade(&self.command_approvals),
+            identity,
+            events: events.clone(),
+            turn_id: turn_id.to_owned(),
+            approval_id: approval_id.to_owned(),
         }
     }
 
@@ -228,6 +249,10 @@ impl TurnState {
 
     pub(crate) fn clear_pending_waiters(&mut self) {
         self.pending_approvals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.command_approvals
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clear();

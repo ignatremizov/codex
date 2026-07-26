@@ -3093,6 +3093,12 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
     MockResponsesConfig::new(&server.uri())
         .with_approval_policy("on-request")
         .write(codex_home.as_path())?;
+    let config_path = codex_home.join("config.toml");
+    let config_toml = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        config_path,
+        format!("approval_timeout_ms = 120000\n{config_toml}"),
+    )?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.as_path())
@@ -3137,6 +3143,13 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         panic!("expected CommandExecutionRequestApproval request");
     };
     assert_eq!(params.item_id, "call1");
+    let started_at_ms = params
+        .started_at_ms
+        .context("command approval must carry its start time")?;
+    assert_eq!(
+        params.expires_at_ms,
+        Some(started_at_ms.saturating_add(120_000))
+    );
     assert_eq!(
         params.environment_id.as_deref(),
         Some(expected_environment_id.as_str())
@@ -3145,7 +3158,9 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         params.command.as_deref(),
         Some(expected_approval_command.as_str())
     );
-    let approval_started_at_ms = params.started_at_ms;
+    let approval_started_at_ms = params
+        .started_at_ms
+        .expect("command approval should report a start timestamp");
     let resolved_request_id = request_id.clone();
 
     // Approve and wait for task completion

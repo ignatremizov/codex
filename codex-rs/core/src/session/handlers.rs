@@ -12,6 +12,8 @@ use tracing::Instrument;
 use tracing::debug_span;
 use tracing::info_span;
 
+use crate::session::command_approval::CommandApprovalClaim;
+use crate::session::command_approval::QueuedSubmission;
 use crate::session::session::Session;
 use crate::session::thread_settings;
 use crate::session::turn_input;
@@ -27,7 +29,6 @@ use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
 use crate::thread_manager::AgentTreeShutdownFailure;
 use crate::thread_manager::thread_store_error_kind;
-use codex_protocol::approvals::ExecApprovalKind;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
@@ -176,51 +177,63 @@ pub async fn resolve_elicitation(
     }
 }
 
-impl Session {
-    /// Claim the prompt before applying a decision that can outlive the requesting execution.
-    pub(crate) async fn resolve_exec_approval(
-        self: &Arc<Self>,
-        approval_id: String,
-        turn_id: Option<String>,
-        decision: ReviewDecision,
-    ) {
-        let Some((pending, active_turn_id)) = self
-            .take_pending_approval(&approval_id, turn_id.as_deref())
+/// Propagate a user's exec approval decision to the session.
+/// Also optionally applies an execpolicy amendment.
+#[allow(
+    clippy::await_holding_invalid_type,
+    reason = "the accepted claim excludes turn replacement until policy persistence finishes"
+)]
+pub async fn exec_approval(
+    sess: &Arc<Session>,
+    approval_id: String,
+    _turn_id: Option<String>,
+    decision: ReviewDecision,
+    submission_id: &str,
+    claim: Option<CommandApprovalClaim>,
+) {
+    let Some(claim) = claim else {
+        return;
+    };
+    let Some(accepted) = sess
+        .consume_command_approval(&approval_id, submission_id, claim)
+        .await
+    else {
+        return;
+    };
+    // A valid callback does not broaden a managed one-time command grant.
+    let decision = crate::state::PendingApproval::validate_decision(accepted.kind, decision);
+    let amendment_error = if let ReviewDecision::ApprovedExecpolicyAmendment {
+        proposed_execpolicy_amendment,
+    } = &decision
+    {
+        sess.persist_execpolicy_amendment(&accepted.codex_home, proposed_execpolicy_amendment)
             .await
-        else {
-            return;
-        };
-        let decision = pending.validate(decision);
-        if decision == ReviewDecision::Abort {
-            let turn_id = if pending.kind == ExecApprovalKind::HumanCommand {
-                Some(&pending.turn_id)
-            } else {
-                active_turn_id.as_ref()
-            };
-            if let Some(turn_id) = turn_id {
-                self.abort_turn_if_active(
-                    turn_id,
-                    TurnAbortReason::Interrupted,
-                    /*error*/ None,
-                )
+            .err()
+    } else {
+        None
+    };
+    // The accepted claim retains active-turn exclusion through policy persistence.
+    // Release it before event delivery or the exact-origin abort cleanup acquires it again.
+    drop(accepted.active_guard);
+    if let Some(err) = amendment_error {
+        let message = format!("Failed to apply execpolicy amendment: {err}");
+        tracing::warn!("{message}");
+        let warning = EventMsg::Warning(WarningEvent { message });
+        sess.send_event_raw(Event {
+            id: accepted.turn_id.clone(),
+            msg: warning,
+        })
+        .await;
+    }
+    match decision {
+        ReviewDecision::Abort => {
+            accepted.sender.send(ReviewDecision::Abort).ok();
+            sess.abort_command_approval_turn(&accepted.turn, &accepted.servicing_turn_id)
                 .await;
-            }
-        } else if let ReviewDecision::ApprovedExecpolicyAmendment {
-            proposed_execpolicy_amendment,
-        } = &decision
-            && let Err(err) = self
-                .persist_execpolicy_amendment(proposed_execpolicy_amendment)
-                .await
-        {
-            let message = format!("Failed to apply execpolicy amendment: {err}");
-            tracing::warn!("{message}");
-            self.send_event_raw(Event {
-                id: turn_id.unwrap_or(approval_id),
-                msg: EventMsg::Warning(WarningEvent { message }),
-            })
-            .await;
         }
-        let _ = pending.sender.send(decision);
+        other => {
+            accepted.sender.send(other).ok();
+        }
     }
 }
 
@@ -468,7 +481,7 @@ pub async fn review(
 pub(super) async fn submission_loop(
     sess: Arc<Session>,
     config: Arc<Config>,
-    rx_sub: Receiver<Submission>,
+    rx_sub: Receiver<QueuedSubmission>,
 ) {
     // Session shutdown and tree shutdown both use the existing teardown handler.
     let mut shutdown_received = false;
@@ -477,7 +490,10 @@ pub(super) async fn submission_loop(
         updates.mark_changed();
     }
     loop {
-        let sub = tokio::select! {
+        let QueuedSubmission {
+            submission: sub,
+            approval,
+        } = tokio::select! {
             biased;
             _ = sess.services.local_agent_runtime.shutdown.cancelled() => {
                 shutdown_received = shutdown(&sess, super::new_submission_id()).await;
@@ -695,8 +711,7 @@ pub(super) async fn submission_loop(
                     turn_id,
                     decision,
                 } => {
-                    sess.resolve_exec_approval(approval_id, turn_id, decision)
-                        .await;
+                    exec_approval(&sess, approval_id, turn_id, decision, &sub.id, approval).await;
                     false
                 }
                 Op::PatchApproval { id, decision } => {

@@ -20,7 +20,7 @@ pub(crate) async fn on_call_response(
     receiver: oneshot::Receiver<ClientRequestResult>,
     conversation: Arc<CodexThread>,
 ) {
-    let response = receiver.await;
+    let response = receiver.await.map(|response| response.result);
     let (response, _error) = match response {
         Ok(Ok(value)) => decode_response(value),
         Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return,

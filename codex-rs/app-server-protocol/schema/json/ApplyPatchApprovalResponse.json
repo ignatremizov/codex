@@ -117,7 +117,7 @@
           "type": "object"
         },
         {
-          "description": "Automatic approval review timed out before reaching a decision.",
+          "description": "Human or automatic approval review timed out before reaching a decision.",
           "enum": [
             "timed_out"
           ],
