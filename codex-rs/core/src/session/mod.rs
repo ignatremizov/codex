@@ -555,6 +555,41 @@ pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 512;
 const CYBER_VERIFY_URL: &str = "https://chatgpt.com/cyber";
 const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyber-safety";
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CommandApprovalTiming {
+    LocalConfig,
+    InheritedTimed {
+        started_at_ms: i64,
+        expires_at_ms: i64,
+    },
+    InheritedUntimed,
+}
+
+pub(crate) fn saturating_instant_add_ms(
+    now: tokio::time::Instant,
+    timeout_ms: u64,
+) -> tokio::time::Instant {
+    if let Some(deadline) = now.checked_add(std::time::Duration::from_millis(timeout_ms)) {
+        return deadline;
+    }
+
+    let mut lower = 0;
+    let mut upper = timeout_ms;
+    while lower < upper {
+        let midpoint = lower + (upper - lower).div_ceil(2);
+        if now
+            .checked_add(std::time::Duration::from_millis(midpoint))
+            .is_some()
+        {
+            lower = midpoint;
+        } else {
+            upper = midpoint - 1;
+        }
+    }
+    now.checked_add(std::time::Duration::from_millis(lower))
+        .unwrap_or(now)
+}
+
 impl Session {
     /// Spawn and initialize a new session.
     /// Hide the concrete startup future from callers while keeping initialization lazy.
@@ -3332,10 +3367,6 @@ impl Session {
     /// be used to derive the available decisions via
     /// [ExecApprovalRequestEvent::default_available_decisions].
     #[allow(clippy::too_many_arguments)]
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "active turn checks and turn state updates must remain atomic"
-    )]
     pub async fn request_command_approval(
         &self,
         turn_context: &TurnContext,
@@ -3352,25 +3383,103 @@ impl Session {
         available_decisions: Option<Vec<ReviewDecision>>,
         plugin_attribution_override: Option<PluginCommandAttribution>,
     ) -> ReviewDecision {
-        let _elicitation = self.services.elicitations.register();
+        self.request_command_approval_with_timing(
+            turn_context,
+            call_id,
+            approval_id,
+            environment_id,
+            command,
+            cwd,
+            reason,
+            network_approval_context,
+            proposed_execpolicy_amendment,
+            additional_permissions,
+            available_decisions,
+            plugin_attribution_override,
+            CommandApprovalTiming::LocalConfig,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
+    pub(crate) async fn request_command_approval_with_timing(
+        &self,
+        turn_context: &TurnContext,
+        call_id: String,
+        approval_id: Option<String>,
+        environment_id: Option<String>,
+        command: Vec<String>,
+        cwd: AbsolutePathBuf,
+        reason: Option<String>,
+        network_approval_context: Option<NetworkApprovalContext>,
+        proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
+        additional_permissions: Option<AdditionalPermissionProfile>,
+        available_decisions: Option<Vec<ReviewDecision>>,
+        plugin_attribution_override: Option<PluginCommandAttribution>,
+        timing: CommandApprovalTiming,
+    ) -> ReviewDecision {
         //  command-level approvals use `call_id`.
         // `approval_id` identifies subcommand callbacks and stdin writes.
         let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
+        let monotonic_now = tokio::time::Instant::now();
+        let wall_now_ms = now_unix_timestamp_ms();
+        if matches!(timing, CommandApprovalTiming::LocalConfig)
+            && turn_context.config.approval_timeout_ms == Some(0)
+        {
+            return ReviewDecision::TimedOut;
+        }
+        let _elicitation = self.services.elicitations.register();
+        let (started_at_ms, expires_at_ms, approval_deadline) = match timing {
+            CommandApprovalTiming::InheritedTimed {
+                started_at_ms,
+                expires_at_ms,
+            } => {
+                let timeout_ms = expires_at_ms.saturating_sub(started_at_ms);
+                (
+                    started_at_ms,
+                    Some(expires_at_ms),
+                    Some(saturating_instant_add_ms(
+                        monotonic_now,
+                        u64::try_from(timeout_ms).unwrap_or(0),
+                    )),
+                )
+            }
+            CommandApprovalTiming::InheritedUntimed => (wall_now_ms, None, None),
+            CommandApprovalTiming::LocalConfig => {
+                let expires_at_ms = turn_context.config.approval_timeout_ms.map(|timeout_ms| {
+                    wall_now_ms.saturating_add(i64::try_from(timeout_ms).unwrap_or(i64::MAX))
+                });
+                let approval_deadline = turn_context
+                    .config
+                    .approval_timeout_ms
+                    .map(|timeout_ms| saturating_instant_add_ms(monotonic_now, timeout_ms));
+                (wall_now_ms, expires_at_ms, approval_deadline)
+            }
+        };
         // Add the tx_approve callback to the map before sending the request.
-        let (tx_approve, rx_approve) = oneshot::channel();
-        let prev_entry = {
+        let (tx_approve, mut rx_approve) = oneshot::channel();
+        let approval_identity = {
             let mut active = self.active_turn.lock().await;
             match active.as_mut() {
                 Some(at) => {
                     let mut ts = at.turn_state.lock().await;
-                    ts.insert_pending_approval(effective_approval_id.clone(), tx_approve)
+                    ts.insert_pending_approval(
+                        effective_approval_id.clone(),
+                        approval_deadline,
+                        tx_approve,
+                    )
                 }
                 None => None,
             }
         };
-        if prev_entry.is_some() {
-            warn!("Overwriting existing pending approval for call_id: {effective_approval_id}");
-        }
+        let Some(approval_identity) = approval_identity else {
+            warn!("Pending approval already exists for call_id: {effective_approval_id}");
+            return ReviewDecision::Abort;
+        };
 
         let parsed_cmd = parse_command(&command);
         let proposed_network_policy_amendments = network_approval_context.as_ref().map(|context| {
@@ -3410,7 +3519,8 @@ impl Session {
             approval_id,
             turn_id: turn_context.sub_id.clone(),
             environment_id,
-            started_at_ms: now_unix_timestamp_ms(),
+            started_at_ms,
+            expires_at_ms,
             command,
             cwd: cwd.into(),
             reason,
@@ -3422,7 +3532,39 @@ impl Session {
             parsed_cmd,
         });
         self.send_event(turn_context, event).await;
-        rx_approve.await.unwrap_or(ReviewDecision::Abort)
+        let Some(approval_deadline) = approval_deadline else {
+            return rx_approve.await.unwrap_or(ReviewDecision::Abort);
+        };
+        tokio::select! {
+            biased;
+            () = tokio::time::sleep_until(approval_deadline) => {
+                let entry = {
+                    let mut active = self.active_turn.lock().await;
+                    match active.as_mut() {
+                        Some(at) => {
+                            let mut ts = at.turn_state.lock().await;
+                            ts.remove_pending_approval_if_same(
+                                &effective_approval_id,
+                                &approval_identity,
+                            )
+                        }
+                        None => None,
+                    }
+                };
+                if entry.is_some() {
+                    ReviewDecision::TimedOut
+                } else {
+                    rx_approve.await.unwrap_or(ReviewDecision::Abort)
+                }
+            }
+            decision = &mut rx_approve => match decision {
+                Ok(decision) => decision,
+                Err(_) if tokio::time::Instant::now() >= approval_deadline => {
+                    ReviewDecision::TimedOut
+                }
+                Err(_) => ReviewDecision::Abort,
+            },
+        }
     }
 
     #[expect(
@@ -3441,18 +3583,23 @@ impl Session {
         // Add the tx_approve callback to the map before sending the request.
         let (tx_approve, rx_approve) = oneshot::channel();
         let approval_id = call_id.clone();
-        let prev_entry = {
+        let approval_identity = {
             let mut active = self.active_turn.lock().await;
             match active.as_mut() {
                 Some(at) => {
                     let mut ts = at.turn_state.lock().await;
-                    ts.insert_pending_approval(approval_id.clone(), tx_approve)
+                    ts.insert_pending_approval(
+                        approval_id.clone(),
+                        /*deadline*/ None,
+                        tx_approve,
+                    )
                 }
                 None => None,
             }
         };
-        if prev_entry.is_some() {
-            warn!("Overwriting existing pending approval for call_id: {approval_id}");
+        if approval_identity.is_none() {
+            warn!("Pending approval already exists for call_id: {approval_id}");
+            return ReviewDecision::Abort;
         }
 
         let event = EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
@@ -3919,7 +4066,10 @@ impl Session {
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"
     )]
-    pub async fn notify_approval(&self, approval_id: &str, decision: ReviewDecision) {
+    pub(crate) async fn take_pending_approval(
+        &self,
+        approval_id: &str,
+    ) -> Option<oneshot::Sender<ReviewDecision>> {
         let entry = {
             let mut active = self.active_turn.lock().await;
             match active.as_mut() {
@@ -3930,13 +4080,51 @@ impl Session {
                 None => None,
             }
         };
-        match entry {
+        if entry.is_none() {
+            warn!("No live pending approval found for call_id: {approval_id}");
+        }
+        entry
+    }
+
+    pub async fn notify_approval(&self, approval_id: &str, decision: ReviewDecision) -> bool {
+        match self.take_pending_approval(approval_id).await {
             Some(tx_approve) => {
                 tx_approve.send(decision).ok();
+                true
             }
-            None => {
-                warn!("No pending approval found for call_id: {approval_id}");
-            }
+            None => false,
+        }
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
+    pub(crate) async fn claim_pending_approval(&self, approval_id: &str) -> bool {
+        let mut active = self.active_turn.lock().await;
+        let Some(active) = active.as_mut() else {
+            return false;
+        };
+        let mut turn_state = active.turn_state.lock().await;
+        turn_state.claim_pending_approval(approval_id)
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
+    pub(crate) async fn release_pending_approval_claim(&self, approval_id: &str) {
+        let mut active = self.active_turn.lock().await;
+        let Some(active) = active.as_mut() else {
+            return;
+        };
+        let expired = active
+            .turn_state
+            .lock()
+            .await
+            .release_pending_approval_claim(approval_id);
+        if let Some(sender) = expired {
+            sender.send(ReviewDecision::TimedOut).ok();
         }
     }
 

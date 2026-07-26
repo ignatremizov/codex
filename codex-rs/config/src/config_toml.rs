@@ -179,6 +179,9 @@ pub struct ConfigToml {
     #[schemars(with = "Option<crate::schema::ConfigAskForApproval>")]
     pub approval_policy: Option<AskForApproval>,
 
+    /// Maximum time to wait for a command approval response, in milliseconds.
+    pub approval_timeout_ms: Option<u64>,
+
     /// Configures who approval requests are routed to for review once they have
     /// been escalated. This does not disable separate safety checks such as
     /// ARC.

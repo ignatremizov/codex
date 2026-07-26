@@ -1569,7 +1569,7 @@ impl AnalyticsReducer {
                 } else {
                     ReviewTrigger::Initial
                 };
-                let Some(started_at_ms) = option_i64_to_u64(Some(params.started_at_ms)) else {
+                let Some(started_at_ms) = option_i64_to_u64(params.started_at_ms) else {
                     return;
                 };
                 self.pending_reviews.insert(

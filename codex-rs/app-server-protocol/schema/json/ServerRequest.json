@@ -395,6 +395,15 @@
             "null"
           ]
         },
+        "expiresAtMs": {
+          "default": null,
+          "description": "Unix timestamp (in milliseconds) when this approval request expires.\n\nIf either timestamp is absent, clients must treat the approval as untimed.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },
@@ -446,9 +455,13 @@
           ]
         },
         "startedAtMs": {
+          "default": null,
           "description": "Unix timestamp (in milliseconds) when this approval request started.",
           "format": "int64",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "threadId": {
           "type": "string"
@@ -459,7 +472,6 @@
       },
       "required": [
         "itemId",
-        "startedAtMs",
         "threadId",
         "turnId"
       ],

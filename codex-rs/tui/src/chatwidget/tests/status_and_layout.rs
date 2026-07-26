@@ -2734,6 +2734,9 @@ async fn status_widget_and_approval_modal_snapshot() {
         approval_id: Some("call-approve-exec".into()),
         turn_id: "turn-approve-exec".into(),
         environment_id: None,
+        started_at_ms: 0,
+        expires_at_ms: None,
+        received_at: std::time::Instant::now(),
         command: vec!["echo".into(), "hello world".into()],
         cwd: test_path_buf("/tmp").abs(),
         reason: Some(

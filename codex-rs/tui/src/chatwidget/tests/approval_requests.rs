@@ -15,6 +15,9 @@ async fn exec_approval_emits_proposed_command_and_decision_history() {
         approval_id: Some("call-short".into()),
         turn_id: "turn-short".into(),
         environment_id: Some("remote".to_string()),
+        started_at_ms: 0,
+        expires_at_ms: None,
+        received_at: std::time::Instant::now(),
         command: vec!["bash".into(), "-lc".into(), "echo hello world".into()],
         cwd: AbsolutePathBuf::current_dir().expect("current dir"),
         reason: Some(
@@ -58,7 +61,8 @@ fn app_server_exec_approval_request_splits_shell_wrapped_command() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             item_id: "item-1".to_string(),
-            started_at_ms: 0,
+            started_at_ms: Some(0),
+            expires_at_ms: None,
             approval_id: Some("approval-1".to_string()),
             environment_id: None,
             reason: None,
@@ -124,6 +128,34 @@ async fn app_server_write_stdin_approval_renders_terminal_input() {
 }
 
 #[test]
+fn app_server_exec_approval_request_without_complete_timing_is_untimed() {
+    let request = exec_approval_request_from_params(
+        AppServerCommandExecutionRequestApprovalParams {
+            kind: Default::default(),
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "item-1".to_string(),
+            started_at_ms: None,
+            expires_at_ms: Some(120_000),
+            approval_id: Some("approval-1".to_string()),
+            environment_id: None,
+            reason: None,
+            network_approval_context: None,
+            command: Some("true".to_string()),
+            cwd: None,
+            command_actions: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: None,
+            available_decisions: None,
+        },
+        &test_path_buf("/tmp").abs(),
+    );
+
+    assert_eq!((request.started_at_ms, request.expires_at_ms), (0, None));
+}
+
+#[test]
 fn app_server_exec_approval_request_preserves_permissions_context() {
     let read_path = AbsolutePathBuf::try_from(PathBuf::from(test_path_display("/tmp/read-only")))
         .expect("absolute read path");
@@ -137,7 +169,8 @@ fn app_server_exec_approval_request_preserves_permissions_context() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             item_id: "item-1".to_string(),
-            started_at_ms: 0,
+            started_at_ms: Some(0),
+            expires_at_ms: None,
             approval_id: Some("approval-1".to_string()),
             environment_id: None,
             reason: None,
@@ -198,7 +231,8 @@ async fn network_exec_approval_history_describes_session_host_allowance() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             item_id: "item-1".to_string(),
-            started_at_ms: 0,
+            started_at_ms: Some(0),
+            expires_at_ms: None,
             approval_id: Some("approval-1".to_string()),
             environment_id: None,
             reason: None,
@@ -241,7 +275,8 @@ async fn network_exec_approval_history_describes_one_time_host_allowance() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             item_id: "item-1".to_string(),
-            started_at_ms: 0,
+            started_at_ms: Some(0),
+            expires_at_ms: None,
             approval_id: Some("approval-1".to_string()),
             environment_id: None,
             reason: None,
@@ -284,7 +319,8 @@ async fn network_exec_approval_history_describes_canceled_host_request() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             item_id: "item-1".to_string(),
-            started_at_ms: 0,
+            started_at_ms: Some(0),
+            expires_at_ms: None,
             approval_id: Some("approval-1".to_string()),
             environment_id: None,
             reason: None,
@@ -380,6 +416,9 @@ async fn exec_approval_uses_approval_id_when_present() {
             approval_id: Some("approval-subcommand".into()),
             turn_id: "turn-short".into(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command: vec!["bash".into(), "-lc".into(), "echo hello world".into()],
             cwd: AbsolutePathBuf::current_dir().expect("current dir"),
             reason: Some(
@@ -424,6 +463,9 @@ async fn exec_approval_decision_truncates_multiline_and_long_commands() {
         approval_id: Some("call-multi".into()),
         turn_id: "turn-multi".into(),
         environment_id: None,
+        started_at_ms: 0,
+        expires_at_ms: None,
+        received_at: std::time::Instant::now(),
         command: vec!["bash".into(), "-lc".into(), "echo line1\necho line2".into()],
         cwd: AbsolutePathBuf::current_dir().expect("current dir"),
         reason: Some(
@@ -477,6 +519,9 @@ async fn exec_approval_decision_truncates_multiline_and_long_commands() {
         approval_id: Some("call-long".into()),
         turn_id: "turn-long".into(),
         environment_id: None,
+        started_at_ms: 0,
+        expires_at_ms: None,
+        received_at: std::time::Instant::now(),
         command: vec!["bash".into(), "-lc".into(), long],
         cwd: AbsolutePathBuf::current_dir().expect("current dir"),
         reason: None,

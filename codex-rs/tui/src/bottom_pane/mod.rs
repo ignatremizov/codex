@@ -2166,6 +2166,9 @@ mod tests {
             thread_label: None,
             id: "1".to_string(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command: vec!["echo".into(), "ok".into()],
             reason: None,
             available_decisions: vec![

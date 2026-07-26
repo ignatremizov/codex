@@ -1315,6 +1315,48 @@ async fn runtime_config_defaults_model_availability_nux() {
 }
 
 #[test]
+fn config_toml_deserializes_approval_timeout_ms() {
+    let cfg: ConfigToml = toml::from_str("approval_timeout_ms = 120000")
+        .expect("TOML deserialization should succeed for approval_timeout_ms");
+
+    assert_eq!(cfg.approval_timeout_ms, Some(120_000));
+}
+
+#[tokio::test]
+async fn runtime_config_uses_configured_approval_timeout_ms() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            approval_timeout_ms: Some(120_000),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(cfg.approval_timeout_ms, Some(120_000));
+}
+
+#[tokio::test]
+async fn runtime_config_accepts_any_approval_timeout_ms() {
+    for approval_timeout_ms in [0, 1, u64::MAX] {
+        let cfg = Config::load_from_base_config_with_overrides(
+            ConfigToml {
+                approval_timeout_ms: Some(approval_timeout_ms),
+                ..Default::default()
+            },
+            ConfigOverrides::default(),
+            tempdir().expect("tempdir").abs(),
+        )
+        .await
+        .expect("approval timeout should load");
+
+        assert_eq!(cfg.approval_timeout_ms, Some(approval_timeout_ms));
+    }
+}
+
+#[test]
 fn config_toml_deserializes_user_shell_command_timeout_ms() {
     let cfg: ConfigToml = toml::from_str("user_shell_command_timeout_ms = 0")
         .expect("TOML deserialization should succeed for user_shell_command_timeout_ms");

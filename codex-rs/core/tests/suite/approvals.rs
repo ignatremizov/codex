@@ -2019,6 +2019,142 @@ fn scenario_group(scenario: &ScenarioSpec) -> ScenarioGroup {
     }
 }
 
+#[tokio::test]
+async fn command_approval_timeout_rejects_without_execution_and_turn_continues() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let call_id = "timed-out-command";
+    let sentinel_name = "approval-timeout-sentinel";
+    let test = test_codex()
+        .with_config(|config| {
+            config.approval_timeout_ms = Some(5_000);
+            config.approvals_reviewer = ApprovalsReviewer::User;
+            config
+                .features
+                .enable(Feature::UnifiedExec)
+                .expect("test config should allow unified exec");
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            config
+                .set_legacy_sandbox_policy(SandboxPolicy::WorkspaceWrite {
+                    writable_roots: Vec::new(),
+                    network_access: false,
+                    exclude_tmpdir_env_var: false,
+                    exclude_slash_tmp: false,
+                })
+                .expect("set sandbox policy");
+        })
+        .with_model("gpt-5.2")
+        .build_with_auto_env(&server)
+        .await?;
+
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-timeout-request"),
+                ev_function_call(
+                    call_id,
+                    "exec_command",
+                    &serde_json::to_string(&json!({
+                        "cmd": "echo SHOULD_NOT_RUN > approval-timeout-sentinel",
+                        "yield_time_ms": 5_000,
+                        "sandbox_permissions": SandboxPermissions::RequireEscalated,
+                    }))?,
+                ),
+                ev_completed("resp-timeout-request"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-timeout-complete", "done"),
+                ev_completed("resp-timeout-complete"),
+            ]),
+        ],
+    )
+    .await;
+
+    let session_model = test.session_configured.model.clone();
+    let (sandbox_policy, permission_profile) = turn_permission_fields(
+        PermissionProfile::workspace_write(),
+        test.config.cwd.as_path(),
+    );
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "time out this command, then finish without running it".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
+                approval_policy: Some(AskForApproval::OnRequest),
+                approvals_reviewer: Some(ApprovalsReviewer::User),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
+                    mode: codex_protocol::config_types::ModeKind::Default,
+                    settings: codex_protocol::config_types::Settings {
+                        model: session_model,
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                    },
+                }),
+                ..Default::default()
+            },
+        })
+        .await?;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        expect_exec_approval(&test, "echo SHOULD_NOT_RUN > approval-timeout-sentinel"),
+    )
+    .await
+    .context("timed out waiting for command approval request")?;
+
+    tokio::time::timeout(Duration::from_secs(10), wait_for_completion(&test))
+        .await
+        .context("timed out waiting for turn completion after approval expiration")?;
+
+    let response_requests = responses.requests();
+    assert_eq!(response_requests.len(), 2);
+    let timeout_output = parse_result(
+        &response_requests
+            .last()
+            .expect("follow-up response request")
+            .function_call_output(call_id),
+    );
+    assert_eq!(timeout_output.exit_code, None);
+    assert!(
+        timeout_output.stdout.contains(
+            "command approval expired; the command was not executed. Use a safer approach"
+        ),
+        "unexpected approval timeout output: {timeout_output:?}"
+    );
+    let sentinel_path = test
+        .executor_environment()
+        .selection()
+        .cwd
+        .join(sentinel_name)?;
+    let sentinel_metadata = tokio::time::timeout(
+        Duration::from_secs(10),
+        test.fs().get_metadata(
+            &sentinel_path,
+            codex_exec_server::GetMetadataOptions::default(),
+            /*sandbox*/ None,
+        ),
+    )
+    .await
+    .context("timed out checking for the command sentinel")?;
+    match sentinel_metadata {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+        Ok(_) => panic!("timed-out command created the sentinel file"),
+    }
+    tokio::time::timeout(Duration::from_secs(10), test.codex.shutdown_and_wait())
+        .await
+        .context("timed out shutting down the approval timeout test")??;
+    Ok(())
+}
+
 async fn run_scenario(scenario: &ScenarioSpec) -> Result<()> {
     eprintln!("running approval scenario: {}", scenario.name);
     let server = start_mock_server().await;
