@@ -694,6 +694,9 @@ pub struct Config {
     /// ARC.
     pub approvals_reviewer: ApprovalsReviewer,
 
+    /// Maximum time to wait for a command approval response.
+    pub approval_timeout_ms: Option<u64>,
+
     /// Model used specifically to decode remote compaction handoff text for display.
     pub remote_compaction_handoff_model: Option<String>,
 
@@ -4036,6 +4039,7 @@ impl Config {
             );
             approvals_reviewer = constrained_approvals_reviewer.value();
         }
+        let approval_timeout_ms = cfg.approval_timeout_ms;
         let web_search_mode =
             resolve_web_search_mode(&cfg, &features).unwrap_or(WebSearchMode::Cached);
         let web_search_config = resolve_web_search_config(&cfg);
@@ -4628,6 +4632,7 @@ impl Config {
             explicit_permission_profile_mode,
             custom_permission_profiles,
             approvals_reviewer: constrained_approvals_reviewer.value(),
+            approval_timeout_ms,
             remote_compaction_handoff_model,
             remote_compaction_handoff_fallback_model,
             remote_compaction_handoff_enabled: true,

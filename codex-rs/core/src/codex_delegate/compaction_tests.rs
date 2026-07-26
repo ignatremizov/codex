@@ -129,6 +129,7 @@ async fn closed_shutdown_channel_still_waits_for_actual_termination() {
         startup
             .io
             .set(SessionIo {
+                session: std::sync::Weak::new(),
                 tx_sub,
                 submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
                 rx_event,
@@ -171,6 +172,7 @@ async fn panicked_lifetime_owner_is_not_an_ordinary_retryable_decoder_error() {
         startup
             .io
             .set(SessionIo {
+                session: std::sync::Weak::new(),
                 tx_sub,
                 submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
                 rx_event,

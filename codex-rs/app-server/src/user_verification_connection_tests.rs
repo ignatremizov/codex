@@ -148,7 +148,7 @@ async fn user_verification_disconnect_releases_ownership_before_rpc_drain() -> R
             },
         )
         .await;
-    assert_eq!(response.await?, Ok(proof));
+    assert_eq!(response.await?.result, Ok(proof));
     release.send(()).expect("release draining handler");
     running.await?;
     disconnect.await;
