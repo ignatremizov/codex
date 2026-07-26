@@ -89,7 +89,7 @@ pub(crate) struct RunningTask {
 /// Mutable state for a single turn.
 #[derive(Default)]
 pub(crate) struct TurnState {
-    pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
+    pending_approvals: HashMap<String, PendingApproval>,
     pending_request_permissions: HashMap<String, PendingRequestPermissions>,
     pending_user_input: HashMap<String, oneshot::Sender<RequestUserInputResponse>>,
     pending_elicitations: HashMap<(String, RequestId), oneshot::Sender<ElicitationResponse>>,
@@ -107,6 +107,13 @@ pub(crate) struct TurnState {
     pub(crate) last_known_step_context: Option<Arc<StepContext>>,
 }
 
+struct PendingApproval {
+    identity: Arc<()>,
+    deadline: Option<tokio::time::Instant>,
+    claimed: bool,
+    tx: oneshot::Sender<ReviewDecision>,
+}
+
 pub(crate) struct PendingRequestPermissions {
     pub(crate) tx_response: oneshot::Sender<RequestPermissionsResponse>,
     pub(crate) requested_permissions: RequestPermissionProfile,
@@ -117,16 +124,75 @@ impl TurnState {
     pub(crate) fn insert_pending_approval(
         &mut self,
         key: String,
+        deadline: Option<tokio::time::Instant>,
         tx: oneshot::Sender<ReviewDecision>,
+    ) -> Option<Arc<()>> {
+        match self.pending_approvals.entry(key) {
+            std::collections::hash_map::Entry::Occupied(_) => None,
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let identity = Arc::new(());
+                entry.insert(PendingApproval {
+                    identity: Arc::clone(&identity),
+                    deadline,
+                    claimed: false,
+                    tx,
+                });
+                Some(identity)
+            }
+        }
+    }
+
+    pub(crate) fn claim_pending_approval(&mut self, key: &str) -> bool {
+        let Some(pending) = self.pending_approvals.get_mut(key) else {
+            return false;
+        };
+        if pending
+            .deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+        {
+            return false;
+        }
+        pending.claimed = true;
+        true
+    }
+
+    pub(crate) fn release_pending_approval_claim(
+        &mut self,
+        key: &str,
     ) -> Option<oneshot::Sender<ReviewDecision>> {
-        self.pending_approvals.insert(key, tx)
+        let pending = self.pending_approvals.get_mut(key)?;
+        pending.claimed = false;
+        if pending.is_expired_and_unclaimed() {
+            self.pending_approvals.remove(key).map(|pending| pending.tx)
+        } else {
+            None
+        }
     }
 
     pub(crate) fn remove_pending_approval(
         &mut self,
         key: &str,
     ) -> Option<oneshot::Sender<ReviewDecision>> {
-        self.pending_approvals.remove(key)
+        if self.pending_approvals.get(key)?.is_expired_and_unclaimed() {
+            return None;
+        }
+        self.pending_approvals.remove(key).map(|pending| pending.tx)
+    }
+
+    pub(crate) fn remove_pending_approval_if_same(
+        &mut self,
+        key: &str,
+        identity: &Arc<()>,
+    ) -> Option<oneshot::Sender<ReviewDecision>> {
+        let matches = self
+            .pending_approvals
+            .get(key)
+            .is_some_and(|pending| Arc::ptr_eq(&pending.identity, identity) && !pending.claimed);
+        if matches {
+            self.pending_approvals.remove(key).map(|pending| pending.tx)
+        } else {
+            None
+        }
     }
 
     pub(crate) fn clear_pending_waiters(&mut self) {
@@ -283,5 +349,14 @@ impl TurnState {
 
     pub(crate) fn strict_auto_review_enabled(&self) -> bool {
         self.strict_auto_review_enabled
+    }
+}
+
+impl PendingApproval {
+    fn is_expired_and_unclaimed(&self) -> bool {
+        !self.claimed
+            && self
+                .deadline
+                .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
     }
 }

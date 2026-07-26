@@ -483,7 +483,13 @@ impl ApprovalResolution {
             }
             ReviewDecision::Denied { rejection } => Err(ToolError::Rejected(rejection)),
             ReviewDecision::TimedOut => {
-                Err(ToolError::Rejected(guardian_timeout_message(model_info)))
+                let message = match source {
+                    ApprovalResolutionSource::Guardian => guardian_timeout_message(model_info),
+                    ApprovalResolutionSource::Hook | ApprovalResolutionSource::User => {
+                        command_approval_timeout_message()
+                    }
+                };
+                Err(ToolError::Rejected(message))
             }
             ReviewDecision::Abort => Err(ToolError::Codex(CodexErr::TurnAborted)),
             decision => Ok(decision),
@@ -890,6 +896,10 @@ impl Session {
             }
         }
     }
+}
+
+pub(crate) fn command_approval_timeout_message() -> String {
+    "command approval expired; the command was not executed. Use a safer approach".to_string()
 }
 
 fn record_resolution(ctx: &ApprovalContext, resolution: &ApprovalResolution) {

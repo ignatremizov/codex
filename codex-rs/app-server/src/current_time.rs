@@ -115,8 +115,12 @@ async fn request_current_time(
         .await;
 
     let result = match timeout_at(deadline, rx).await {
-        Ok(Ok(Ok(result))) => result,
-        Ok(Ok(Err(err))) => {
+        Ok(Ok(crate::outgoing_message::ClientRequestResult {
+            result: Ok(result), ..
+        })) => result,
+        Ok(Ok(crate::outgoing_message::ClientRequestResult {
+            result: Err(err), ..
+        })) => {
             bail!(
                 "current-time request failed: code={} message={}",
                 err.code,

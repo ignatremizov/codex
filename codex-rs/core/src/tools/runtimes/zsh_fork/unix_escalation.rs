@@ -1,11 +1,15 @@
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecExpiration;
 use crate::guardian::GuardianReviewContext;
+use crate::guardian::guardian_timeout_message;
+use crate::guardian::routes_approval_to_guardian;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::approvals::ApprovalAction;
 use crate::tools::approvals::ApprovalContext;
+use crate::tools::approvals::command_approval_timeout_message;
+use crate::tools::runtimes::build_sandbox_command;
 use crate::tools::runtimes::exec_env_for_sandbox_permissions;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::ToolCtx;
@@ -366,14 +370,17 @@ impl CoreShellActionProvider {
                         ReviewDecision::Denied { rejection } => {
                             EscalationDecision::deny(Some(rejection))
                         }
-                        ReviewDecision::TimedOut => EscalationDecision::deny(Some(
-                            crate::guardian::guardian_timeout_message(
-                                self.review_context.turn().model_info(),
-                            ),
-                        )),
+                        ReviewDecision::TimedOut => {
+                            let message = if routes_approval_to_guardian(self.review_context.turn())
+                            {
+                                guardian_timeout_message(self.review_context.turn().model_info())
+                            } else {
+                                command_approval_timeout_message()
+                            };
+                            EscalationDecision::deny(Some(message))
+                        }
                         ReviewDecision::ApprovedMcpPolicyAmendment => {
                             error!("Shell escalation received ApprovedMcpPolicyAmendment");
-
                             EscalationDecision::deny(Some(
                                 "Error while requesting approval".to_string(),
                             ))

@@ -242,7 +242,6 @@ pub(crate) const HARD_MIN_MULTI_AGENT_V2_TIMEOUT_MS: i64 = 0;
 pub(crate) const HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS: i64 =
     DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 1;
-pub(crate) const DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS: Option<u64> = None;
 pub(crate) const DEFAULT_USER_SHELL_COMMAND_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 const LOCAL_DEV_BUILD_VERSION: &str = "0.0.0";
 
@@ -659,6 +658,9 @@ pub struct Config {
     /// been escalated. This does not disable separate safety checks such as
     /// ARC.
     pub approvals_reviewer: ApprovalsReviewer,
+
+    /// Maximum time to wait for a command approval response.
+    pub approval_timeout_ms: Option<u64>,
 
     /// Model used specifically to decode remote compaction handoff text for display.
     pub remote_compaction_handoff_model: Option<String>,
@@ -3762,6 +3764,7 @@ impl Config {
             );
             approvals_reviewer = constrained_approvals_reviewer.value();
         }
+        let approval_timeout_ms = cfg.approval_timeout_ms;
         let web_search_mode =
             resolve_web_search_mode(&cfg, &features).unwrap_or(WebSearchMode::Cached);
         let web_search_config = resolve_web_search_config(&cfg);
@@ -4265,6 +4268,7 @@ impl Config {
             explicit_permission_profile_mode,
             custom_permission_profiles,
             approvals_reviewer: constrained_approvals_reviewer.value(),
+            approval_timeout_ms,
             remote_compaction_handoff_model,
             remote_compaction_handoff_fallback_model,
             remote_compaction_handoff_enabled: true,

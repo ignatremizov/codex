@@ -195,12 +195,15 @@ async fn run_codex_tool_session_inner(
 
                 match event.msg {
                     EventMsg::ExecApprovalRequest(ev) => {
+                        let approval_deadline =
+                            command_approval_deadline(ev.started_at_ms, ev.expires_at_ms);
                         let approval_id = ev.effective_approval_id();
                         let ExecApprovalRequestEvent {
                             kind: _,
                             turn_id: _,
                             environment_id: _,
                             started_at_ms: _,
+                            expires_at_ms: _,
                             command,
                             cwd,
                             call_id,
@@ -223,6 +226,7 @@ async fn run_codex_tool_session_inner(
                             request_id.clone(),
                             request_id_str.clone(),
                             event.id.clone(),
+                            approval_deadline,
                             call_id,
                             approval_id,
                             parsed_cmd,
@@ -400,10 +404,61 @@ async fn run_codex_tool_session_inner(
     }
 }
 
+fn saturating_instant_add_ms(now: tokio::time::Instant, timeout_ms: u64) -> tokio::time::Instant {
+    if let Some(deadline) = now.checked_add(std::time::Duration::from_millis(timeout_ms)) {
+        return deadline;
+    }
+
+    let mut lower = 0;
+    let mut upper = timeout_ms;
+    while lower < upper {
+        let midpoint = lower + (upper - lower).div_ceil(2);
+        if now
+            .checked_add(std::time::Duration::from_millis(midpoint))
+            .is_some()
+        {
+            lower = midpoint;
+        } else {
+            upper = midpoint - 1;
+        }
+    }
+    now.checked_add(std::time::Duration::from_millis(lower))
+        .unwrap_or(now)
+}
+
+fn command_approval_deadline(
+    started_at_ms: i64,
+    expires_at_ms: Option<i64>,
+) -> Option<tokio::time::Instant> {
+    let timeout_ms = expires_at_ms?.saturating_sub(started_at_ms);
+    Some(saturating_instant_add_ms(
+        tokio::time::Instant::now(),
+        u64::try_from(timeout_ms).unwrap_or(0),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn command_approval_deadline_uses_declared_duration() {
+        let before = tokio::time::Instant::now();
+        let deadline = command_approval_deadline(10_000, Some(70_000)).expect("approval deadline");
+        let after = tokio::time::Instant::now();
+
+        assert!(deadline >= before + std::time::Duration::from_secs(/*secs*/ 59));
+        assert!(deadline <= after + std::time::Duration::from_secs(/*secs*/ 61));
+    }
+
+    #[test]
+    fn maximum_command_approval_deadline_remains_active() {
+        let now = tokio::time::Instant::now();
+        let deadline = command_approval_deadline(0, Some(i64::MAX)).expect("approval deadline");
+
+        assert!(deadline > now);
+    }
 
     #[test]
     fn call_tool_result_includes_thread_id_in_structured_content() {

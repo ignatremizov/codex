@@ -14,7 +14,12 @@ export type CommandExecutionRequestApprovalParams = {/**
 kind: CommandExecutionApprovalKind, threadId: string, turnId: string, itemId: string, /**
  * Unix timestamp (in milliseconds) when this approval request started.
  */
-startedAtMs: number, /**
+startedAtMs?: number, /**
+ * Unix timestamp (in milliseconds) when this approval request expires.
+ *
+ * If either timestamp is absent, clients must treat the approval as untimed.
+ */
+expiresAtMs?: number, /**
  * Unique identifier for this specific approval callback.
  *
  * For regular shell/unified_exec approvals, this is null.
