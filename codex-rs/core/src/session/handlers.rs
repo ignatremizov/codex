@@ -10,6 +10,8 @@ use tracing::Instrument;
 use tracing::debug_span;
 use tracing::info_span;
 
+use crate::session::command_approval::CommandApprovalClaim;
+use crate::session::command_approval::QueuedSubmission;
 use crate::session::session::Session;
 use crate::session::thread_settings;
 use crate::session::turn_input;
@@ -170,34 +172,59 @@ pub async fn resolve_elicitation(
 
 /// Propagate a user's exec approval decision to the session.
 /// Also optionally applies an execpolicy amendment.
+#[allow(
+    clippy::await_holding_invalid_type,
+    reason = "the accepted claim excludes turn replacement until policy persistence finishes"
+)]
 pub async fn exec_approval(
     sess: &Arc<Session>,
     approval_id: String,
-    turn_id: Option<String>,
+    _turn_id: Option<String>,
     decision: ReviewDecision,
+    submission_id: &str,
+    claim: Option<CommandApprovalClaim>,
 ) {
-    let event_turn_id = turn_id.unwrap_or_else(|| approval_id.clone());
-    if let ReviewDecision::ApprovedExecpolicyAmendment {
+    let Some(claim) = claim else {
+        return;
+    };
+    let Some(accepted) = sess
+        .consume_command_approval(&approval_id, submission_id, claim)
+        .await
+    else {
+        return;
+    };
+    let amendment_error = if let ReviewDecision::ApprovedExecpolicyAmendment {
         proposed_execpolicy_amendment,
     } = &decision
-        && let Err(err) = sess
-            .persist_execpolicy_amendment(proposed_execpolicy_amendment)
-            .await
     {
+        sess.persist_execpolicy_amendment(&accepted.codex_home, proposed_execpolicy_amendment)
+            .await
+            .err()
+    } else {
+        None
+    };
+    // The accepted claim retains active-turn exclusion through policy persistence.
+    // Release it before event delivery or the exact-origin abort cleanup acquires it again.
+    drop(accepted.active_guard);
+    if let Some(err) = amendment_error {
         let message = format!("Failed to apply execpolicy amendment: {err}");
         tracing::warn!("{message}");
         let warning = EventMsg::Warning(WarningEvent { message });
         sess.send_event_raw(Event {
-            id: event_turn_id.clone(),
+            id: accepted.turn_id.clone(),
             msg: warning,
         })
         .await;
     }
     match decision {
         ReviewDecision::Abort => {
-            sess.interrupt_task().await;
+            accepted.sender.send(ReviewDecision::Abort).ok();
+            sess.abort_command_approval_turn(&accepted.turn, &accepted.turn_id)
+                .await;
         }
-        other => sess.notify_approval(&approval_id, other).await,
+        other => {
+            accepted.sender.send(other).ok();
+        }
     }
 }
 
@@ -415,11 +442,15 @@ pub async fn review(
 pub(super) async fn submission_loop(
     sess: Arc<Session>,
     config: Arc<Config>,
-    rx_sub: Receiver<Submission>,
+    rx_sub: Receiver<QueuedSubmission>,
 ) {
     // To break out of this loop, send Op::Shutdown.
     let mut shutdown_received = false;
-    while let Ok(sub) = rx_sub.recv().await {
+    while let Ok(QueuedSubmission {
+        submission: sub,
+        approval,
+    }) = rx_sub.recv().await
+    {
         if sess.submission_admission.requires_reload()
             && !matches!(
                 &sub.op,
@@ -550,7 +581,7 @@ pub(super) async fn submission_loop(
                     turn_id,
                     decision,
                 } => {
-                    exec_approval(&sess, approval_id, turn_id, decision).await;
+                    exec_approval(&sess, approval_id, turn_id, decision, &sub.id, approval).await;
                     false
                 }
                 Op::PatchApproval { id, decision } => {

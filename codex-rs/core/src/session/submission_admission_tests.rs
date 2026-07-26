@@ -1,6 +1,7 @@
 use super::*;
 use crate::session::SessionIo;
 use crate::session::completed_session_loop_termination;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::AgentStatus;
 use pretty_assertions::assert_eq;
 use std::time::Duration as StdDuration;
@@ -27,7 +28,10 @@ fn try_enqueue_rejects_held_send_order_without_reserving() {
             submission("rollback", Op::ThreadRollback { num_turns: 1 }),
         )
         .expect_err("must reject without waiting for send order");
-    assert!(matches!(error, CodexErr::InvalidRequest(_)));
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
     assert!(admission.check_ready().is_ok());
     assert!(receiver.try_recv().is_err());
     drop(order);
@@ -38,7 +42,11 @@ fn try_enqueue_rejects_held_send_order_without_reserving() {
         )
         .expect("lock rejection must not retain a reservation");
     assert_eq!(
-        receiver.try_recv().expect("accepted rollback").id,
+        receiver
+            .try_recv()
+            .expect("accepted rollback")
+            .submission
+            .id,
         "accepted"
     );
 }
@@ -48,7 +56,7 @@ fn try_enqueue_full_queue_releases_only_the_failed_reservation() {
     let (sender, receiver) = async_channel::bounded(1);
     let admission = Arc::new(SubmissionAdmission::default());
     sender
-        .try_send(submission("before", Op::Compact))
+        .try_send(submission("before", Op::Compact).into())
         .expect("fill queue");
     let error = admission
         .try_enqueue(
@@ -56,10 +64,17 @@ fn try_enqueue_full_queue_releases_only_the_failed_reservation() {
             submission("rejected", Op::ThreadRollback { num_turns: 1 }),
         )
         .expect_err("must reject full queue");
-    assert!(matches!(error, CodexErr::InvalidRequest(_)));
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
     assert!(admission.check_ready().is_ok());
     assert_eq!(
-        receiver.try_recv().expect("original submission").id,
+        receiver
+            .try_recv()
+            .expect("original submission")
+            .submission
+            .id,
         "before"
     );
     assert!(receiver.try_recv().is_err());
@@ -72,7 +87,11 @@ fn try_enqueue_full_queue_releases_only_the_failed_reservation() {
     admission.rollback_completed("rejected");
     assert!(admission.check_ready().is_err());
     assert_eq!(
-        receiver.try_recv().expect("accepted rollback").id,
+        receiver
+            .try_recv()
+            .expect("accepted rollback")
+            .submission
+            .id,
         "accepted"
     );
 }
@@ -88,7 +107,10 @@ fn try_enqueue_closed_queue_releases_the_failed_reservation() {
             submission("rejected", Op::ThreadRollback { num_turns: 1 }),
         )
         .expect_err("closed queue cannot accept work");
-    assert!(matches!(error, CodexErr::InternalAgentDied));
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InternalAgentDied
+    ));
     assert!(admission.check_ready().is_ok());
 }
 
@@ -97,6 +119,7 @@ fn try_submit_preserves_trace_and_correlates_accepted_reservation() {
     let (tx_sub, rx_sub) = async_channel::bounded(1);
     let (_tx_event, rx_event) = async_channel::unbounded();
     let io = SessionIo {
+        session: std::sync::Weak::new(),
         tx_sub,
         rx_event,
         submission_admission: Arc::new(SubmissionAdmission::default()),
@@ -123,13 +146,16 @@ fn try_submit_preserves_trace_and_correlates_accepted_reservation() {
         )
     });
     let accepted = rx_sub.try_recv().expect("accepted rollback");
-    assert!(matches!(accepted.op, Op::ThreadRollback { num_turns: 1 }));
+    assert!(matches!(
+        accepted.submission.op,
+        Op::ThreadRollback { num_turns: 1 }
+    ));
     assert_eq!(
         (
-            accepted.id,
-            accepted.trace,
-            accepted.parent_turn_id,
-            accepted.root_turn_id
+            accepted.submission.id,
+            accepted.submission.trace,
+            accepted.submission.parent_turn_id,
+            accepted.submission.root_turn_id
         ),
         (id.clone(), Some(expected_trace), None, None),
     );
@@ -159,7 +185,10 @@ fn failed_reservation_cleanup_and_try_enqueue_preserve_quarantine() {
     admission
         .try_enqueue(&sender, submission("shutdown", Op::Shutdown))
         .expect("quarantined shutdown is still admitted");
-    assert_eq!(receiver.try_recv().expect("shutdown").id, "shutdown");
+    assert_eq!(
+        receiver.try_recv().expect("shutdown").submission.id,
+        "shutdown"
+    );
     assert!(admission.requires_reload());
 }
 
@@ -168,6 +197,7 @@ async fn submission_admission_rejects_work_queued_behind_rollback() {
     let (tx_sub, rx_sub) = async_channel::bounded(2);
     let (_tx_event, rx_event) = async_channel::unbounded();
     let io = SessionIo {
+        session: std::sync::Weak::new(),
         tx_sub,
         rx_event,
         submission_admission: Arc::new(SubmissionAdmission::default()),
@@ -183,11 +213,14 @@ async fn submission_admission_rejects_work_queued_behind_rollback() {
         .await
         .expect_err("work behind a pending rollback should be rejected");
     assert!(
-        matches!(err, CodexErr::InvalidRequest(message) if message == "thread rollback is already in progress")
+        matches!(err.details(), CodexErrorDetails::InvalidRequest(message) if message == "thread rollback is already in progress")
     );
 
     let queued = rx_sub.recv().await.expect("rollback should be queued");
-    assert!(matches!(queued.op, Op::ThreadRollback { num_turns: 1 }));
+    assert!(matches!(
+        queued.submission.op,
+        Op::ThreadRollback { num_turns: 1 }
+    ));
     assert!(matches!(
         rx_sub.try_recv(),
         Err(async_channel::TryRecvError::Empty)
@@ -199,6 +232,7 @@ async fn submission_admission_transition_does_not_wait_for_channel_capacity() {
     let (tx_sub, rx_sub) = async_channel::bounded(1);
     let (_tx_event, rx_event) = async_channel::unbounded();
     let io = Arc::new(SessionIo {
+        session: std::sync::Weak::new(),
         tx_sub,
         rx_event,
         submission_admission: Arc::new(SubmissionAdmission::default()),
@@ -227,13 +261,16 @@ async fn submission_admission_transition_does_not_wait_for_channel_capacity() {
     io.submission_admission.rollback_requires_reload();
 
     let rollback = rx_sub.recv().await.expect("rollback should be queued");
-    assert!(matches!(rollback.op, Op::ThreadRollback { num_turns: 1 }));
+    assert!(matches!(
+        rollback.submission.op,
+        Op::ThreadRollback { num_turns: 1 }
+    ));
     shutdown
         .await
         .expect("shutdown task should not panic")
         .expect("shutdown should queue after capacity is released");
     let shutdown = rx_sub.recv().await.expect("shutdown should be queued");
-    assert!(matches!(shutdown.op, Op::Shutdown));
+    assert!(matches!(shutdown.submission.op, Op::Shutdown));
 }
 
 #[tokio::test]
@@ -241,6 +278,7 @@ async fn cancelling_blocked_rollback_submission_releases_admission() {
     let (tx_sub, rx_sub) = async_channel::bounded(1);
     let (_tx_event, rx_event) = async_channel::unbounded();
     let io = Arc::new(SessionIo {
+        session: std::sync::Weak::new(),
         tx_sub,
         rx_event,
         submission_admission: Arc::new(SubmissionAdmission::default()),
@@ -271,7 +309,7 @@ async fn cancelling_blocked_rollback_submission_releases_admission() {
     assert!(io.submission_admission.check_ready().is_ok());
 
     let queued = rx_sub.recv().await.expect("interrupt should be queued");
-    assert!(matches!(queued.op, Op::Interrupt));
+    assert!(matches!(queued.submission.op, Op::Interrupt));
     io.submit(Op::Compact)
         .await
         .expect("admission should accept work after rollback cancellation");
@@ -319,8 +357,14 @@ async fn quarantine_rejects_reply_bearing_submissions_and_stale_completion() {
         .enqueue(&sender, submission("shutdown", Op::Shutdown))
         .await
         .expect("shutdown remains admitted");
-    assert_eq!(receiver.recv().await.expect("rollback").id, "rollback");
-    assert_eq!(receiver.recv().await.expect("shutdown").id, "shutdown");
+    assert_eq!(
+        receiver.recv().await.expect("rollback").submission.id,
+        "rollback"
+    );
+    assert_eq!(
+        receiver.recv().await.expect("shutdown").submission.id,
+        "shutdown"
+    );
     assert!(receiver.try_recv().is_err());
 }
 
@@ -329,13 +373,16 @@ async fn cancelled_reservation_cannot_reopen_quarantine() {
     let (sender, receiver) = async_channel::bounded(1);
     let admission = Arc::new(SubmissionAdmission::default());
     sender
-        .send(Submission {
-            id: "before".to_string(),
-            op: Op::Compact,
-            trace: None,
-            parent_turn_id: None,
-            root_turn_id: None,
-        })
+        .send(
+            Submission {
+                id: "before".to_string(),
+                op: Op::Compact,
+                trace: None,
+                parent_turn_id: None,
+                root_turn_id: None,
+            }
+            .into(),
+        )
         .await
         .expect("fill channel");
     let mut pending = Box::pin(admission.enqueue(
@@ -352,6 +399,9 @@ async fn cancelled_reservation_cannot_reopen_quarantine() {
     admission.rollback_requires_reload();
     drop(pending);
     assert!(admission.requires_reload());
-    assert_eq!(receiver.recv().await.expect("original work").id, "before");
+    assert_eq!(
+        receiver.recv().await.expect("original work").submission.id,
+        "before"
+    );
     assert!(receiver.try_recv().is_err());
 }

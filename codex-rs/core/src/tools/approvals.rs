@@ -458,12 +458,21 @@ impl ApprovalResolution {
                 Err(ToolError::Rejected(rejection.to_string()))
             }
             ReviewDecision::Denied { rejection } => Err(ToolError::Rejected(rejection)),
-            ReviewDecision::TimedOut => Err(ToolError::Rejected(
-                ResolvedModelMessages::from_model(model_info)
-                    .auto_review()
-                    .timeout_instructions
-                    .to_string(),
-            )),
+            ReviewDecision::TimedOut => {
+                let message = match source {
+                    ApprovalResolutionSource::Guardian | ApprovalResolutionSource::Hook => {
+                        ResolvedModelMessages::from_model(model_info)
+                            .auto_review()
+                            .timeout_instructions
+                            .to_string()
+                    }
+                    ApprovalResolutionSource::User => {
+                        "command approval expired; the command was not executed. Use a safer approach"
+                            .to_string()
+                    }
+                };
+                Err(ToolError::Rejected(message))
+            }
             ReviewDecision::Abort => Err(ToolError::Codex(CodexErr::TurnAborted)),
             decision => Ok(decision),
         }

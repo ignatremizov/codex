@@ -228,6 +228,14 @@ impl CodexThread {
         }
     }
 
+    /// Whether this live approval belongs to a root command on the originating turn.
+    /// This presentation query does not claim or approve execution.
+    pub async fn is_root_command_approval(&self, approval_id: &str, turn_id: &str) -> bool {
+        self.session
+            .is_root_command_approval(approval_id, turn_id)
+            .await
+    }
+
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
         self.io.submit(op).await
     }

@@ -41,7 +41,13 @@ pub(crate) use codex_app_server_transport::QueuedOutgoingMessage;
 #[cfg(test)]
 use codex_protocol::account::PlanType;
 
-pub(crate) type ClientRequestResult = std::result::Result<Result, JSONRPCErrorError>;
+#[derive(Debug)]
+pub(crate) struct ClientRequestResult {
+    pub(crate) received_at: tokio::time::Instant,
+    pub(crate) result: ClientResponseResult,
+}
+
+pub(crate) type ClientResponseResult = std::result::Result<Result, JSONRPCErrorError>;
 
 static IN_FLIGHT_REQUESTS: Gauge = Gauge::new("app.requests.in_flight");
 static PENDING_SERVER_REQUESTS: Gauge = Gauge::new("app.server_requests.pending");
@@ -208,6 +214,38 @@ impl ThreadScopedOutgoingMessageSender {
             .await;
     }
 
+    pub(crate) async fn send_server_notification_guarded<T>(
+        &self,
+        notification: ServerNotification,
+        state: &tokio::sync::Mutex<T>,
+        validate: impl Fn(&T) -> bool,
+    ) {
+        if self.connection_ids.is_empty() {
+            return;
+        }
+        let mut tracked = false;
+        for connection_id in self.connection_ids.iter().copied() {
+            let Ok(permit) = self.outgoing.sender.reserve().await else {
+                return;
+            };
+            let state = state.lock().await;
+            if !validate(&state) {
+                return;
+            }
+            if !tracked {
+                self.outgoing
+                    .analytics_events_client
+                    .track_notification(&notification);
+                tracked = true;
+            }
+            permit.send(OutgoingEnvelope::ToConnection {
+                connection_id,
+                message: timestamped_server_notification(notification.clone()),
+                write_complete_tx: None,
+            });
+        }
+    }
+
     pub(crate) async fn send_global_server_notification(&self, notification: ServerNotification) {
         self.outgoing.send_server_notification(notification).await;
     }
@@ -227,6 +265,10 @@ impl ThreadScopedOutgoingMessageSender {
                 }),
             )
             .await
+    }
+
+    pub(crate) async fn cancel_request(&self, request_id: &RequestId) -> bool {
+        self.outgoing.cancel_request(request_id).await
     }
 
     pub(crate) async fn send_response<T>(&self, request_id: ConnectionRequestId, response: T)
@@ -470,6 +512,7 @@ impl OutgoingMessageSender {
         id: RequestId,
         result: Result,
     ) {
+        let received_at = tokio::time::Instant::now();
         let entry = self.take_connection_callback(connection_id, &id).await;
 
         match entry {
@@ -484,7 +527,14 @@ impl OutgoingMessageSender {
                             .track_server_response(completed_at_ms, response);
                     }
                 }
-                if entry.callback.send(Ok(result)).is_err() {
+                if entry
+                    .callback
+                    .send(ClientRequestResult {
+                        received_at,
+                        result: Ok(result),
+                    })
+                    .is_err()
+                {
                     warn!("could not notify callback for {id:?}: receiver dropped");
                 }
             }
@@ -500,6 +550,7 @@ impl OutgoingMessageSender {
         id: RequestId,
         error: JSONRPCErrorError,
     ) {
+        let received_at = tokio::time::Instant::now();
         let entry = self.take_connection_callback(connection_id, &id).await;
 
         match entry {
@@ -508,7 +559,14 @@ impl OutgoingMessageSender {
                 warn!(code = error.code, "client responded with error for {id:?}");
                 self.analytics_events_client
                     .track_server_request_aborted(now_unix_timestamp_ms(), id.clone());
-                if entry.callback.send(Err(error)).is_err() {
+                if entry
+                    .callback
+                    .send(ClientRequestResult {
+                        received_at,
+                        result: Err(error),
+                    })
+                    .is_err()
+                {
                     warn!("could not notify callback for {id:?}: receiver dropped");
                 }
             }
@@ -542,7 +600,13 @@ impl OutgoingMessageSender {
             self.analytics_events_client
                 .track_server_request_aborted(now_unix_timestamp_ms(), entry.request.id().clone());
             if let Some(error) = error.as_ref()
-                && entry.callback.send(Err(error.clone())).is_err()
+                && entry
+                    .callback
+                    .send(ClientRequestResult {
+                        received_at: tokio::time::Instant::now(),
+                        result: Err(error.clone()),
+                    })
+                    .is_err()
             {
                 let request_id = entry.request.id();
                 warn!("could not notify callback for {request_id:?}: receiver dropped");
@@ -622,7 +686,13 @@ impl OutgoingMessageSender {
             self.analytics_events_client
                 .track_server_request_aborted(now_unix_timestamp_ms(), entry.request.id().clone());
             if let Some(error) = error.as_ref()
-                && entry.callback.send(Err(error.clone())).is_err()
+                && entry
+                    .callback
+                    .send(ClientRequestResult {
+                        received_at: tokio::time::Instant::now(),
+                        result: Err(error.clone()),
+                    })
+                    .is_err()
             {
                 let request_id = entry.request.id();
                 warn!("could not notify callback for {request_id:?}: receiver dropped");
@@ -1191,7 +1261,8 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
                 item_id: "item-1".to_string(),
-                started_at_ms: 0,
+                started_at_ms: Some(0),
+                expires_at_ms: None,
                 approval_id: None,
                 environment_id: None,
                 reason: None,
@@ -1490,7 +1561,7 @@ mod tests {
             .await
             .expect("wait should not time out")
             .expect("waiter should receive a callback");
-        assert_eq!(result, Err(error));
+        assert_eq!(result.result, Err(error));
     }
 
     #[tokio::test]
@@ -1609,8 +1680,8 @@ mod tests {
             .await
             .expect("user input waiter should resolve")
             .expect("user input waiter should receive a callback");
-        assert_eq!(dynamic_tool_result, Err(error.clone()));
-        assert_eq!(user_input_result, Err(error));
+        assert_eq!(dynamic_tool_result.result, Err(error.clone()));
+        assert_eq!(user_input_result.result, Err(error));
         assert!(
             outgoing
                 .pending_requests_for_thread(thread_id)

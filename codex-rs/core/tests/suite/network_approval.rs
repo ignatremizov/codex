@@ -99,6 +99,9 @@ use test_case::test_case;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
+#[path = "network_approval_remote_human_tests.rs"]
+mod remote_human_tests;
+
 const NETWORK_TEST_HOST: &str = "codex-network-test.invalid";
 const NETWORK_TEST_TARGET: &str = "http://codex-network-test.invalid:80";
 
@@ -1080,7 +1083,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
             .call_id
             .starts_with("network#local#http#codex-network-test.invalid#80#")
     );
-    assert_eq!(approval.approval_id.as_deref(), None);
+    assert!(approval.approval_id.is_some());
     let first_approval_call_id = approval.call_id.clone();
     assert!(!approval.turn_id.is_empty());
     assert_eq!(approval.cwd, test.config.cwd.clone().into());
@@ -1113,7 +1116,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     )
     .await?;
     let approval = expect_network_approval(&test, LOCAL_ENVIRONMENT_ID).await?;
-    assert_eq!(approval.approval_id.as_deref(), None);
+    assert!(approval.approval_id.is_some());
     assert_ne!(approval.call_id, first_approval_call_id);
     test.codex
         .submit(Op::ExecApproval {
@@ -1954,7 +1957,7 @@ async fn thread_turnover_closes_managed_proxy_tunnels() -> Result<()> {
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let mut config = test.config.clone();
     let mut network = NetworkProxyConfig {
         enabled: true,
@@ -3410,6 +3413,23 @@ async fn expect_network_approval_for_turn(
     expected_environment_id: &str,
     expected_turn_id: &str,
 ) -> Result<ExecApprovalRequestEvent> {
+    expect_network_approval_target_for_turn(
+        test,
+        expected_environment_id,
+        NETWORK_TEST_TARGET,
+        NetworkApprovalProtocol::Http,
+        expected_turn_id,
+    )
+    .await
+}
+
+async fn expect_network_approval_target_for_turn(
+    test: &TestCodex,
+    expected_environment_id: &str,
+    expected_target: &str,
+    expected_protocol: NetworkApprovalProtocol,
+    expected_turn_id: &str,
+) -> Result<ExecApprovalRequestEvent> {
     let event = wait_for_event_with_timeout(
         &test.codex,
         |event| match event {
@@ -3425,8 +3445,8 @@ async fn expect_network_approval_for_turn(
             assert_network_approval_target(
                 &approval,
                 expected_environment_id,
-                NETWORK_TEST_TARGET,
-                NetworkApprovalProtocol::Http,
+                expected_target,
+                expected_protocol,
             );
             Ok(approval)
         }

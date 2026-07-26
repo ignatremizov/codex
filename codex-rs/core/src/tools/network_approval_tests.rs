@@ -109,12 +109,12 @@ async fn execution_cancellation_respects_network_approval_boundary(
         }
         ExecutionCancellationTiming::AcceptedReview => {
             let commit_guard = service.session_policy_commit_lock.lock().await;
-            session
-                .notify_approval(
-                    &approval.effective_approval_id(),
-                    ReviewDecision::ApprovedForSession,
-                )
-                .await;
+            crate::session::approval_test_support::respond_to_approval(
+                &session,
+                &approval,
+                ReviewDecision::ApprovedForSession,
+            )
+            .await;
             // Consume the approval and stop at the held policy commit lock.
             assert!(poll!(decision.as_mut()).is_pending());
             service.record_call_outcome("execution-1", "original execution denial".to_string());

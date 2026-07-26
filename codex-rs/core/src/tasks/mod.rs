@@ -572,13 +572,44 @@ impl Session {
         turn_id: &str,
         reason: TurnAbortReason,
     ) -> bool {
+        self.abort_turn_matching(
+            |active| {
+                active
+                    .task
+                    .as_ref()
+                    .is_some_and(|task| task.turn_context.sub_id == turn_id)
+            },
+            reason,
+        )
+        .await
+    }
+
+    pub(crate) async fn abort_command_approval_turn(
+        self: &Arc<Self>,
+        originating_turn: &Arc<tokio::sync::Mutex<crate::state::TurnState>>,
+        turn_id: &str,
+    ) {
+        self.abort_turn_matching(
+            |active| {
+                Arc::ptr_eq(&active.turn_state, originating_turn)
+                    && active
+                        .task
+                        .as_ref()
+                        .is_some_and(|task| task.turn_context.sub_id == turn_id)
+            },
+            TurnAbortReason::Interrupted,
+        )
+        .await;
+    }
+
+    async fn abort_turn_matching(
+        self: &Arc<Self>,
+        matches_origin: impl FnOnce(&ActiveTurn) -> bool,
+        reason: TurnAbortReason,
+    ) -> bool {
         let active_turn = {
             let mut active = self.active_turn.lock().await;
-            if active
-                .as_ref()
-                .and_then(|active_turn| active_turn.task.as_ref())
-                .is_some_and(|task| task.turn_context.sub_id == turn_id)
-            {
+            if active.as_ref().is_some_and(matches_origin) {
                 if matches!(
                     reason,
                     TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited

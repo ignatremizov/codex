@@ -247,6 +247,11 @@ impl App {
         let thread_label = Some(self.thread_label(thread_id));
         Ok(match request {
             ServerRequest::CommandExecutionRequestApproval { params, .. } => {
+                let received_at = match self.pending_app_server_requests.request_received_at(request) {
+                    Some(received_at) => received_at,
+                    None if params.started_at_ms.is_some() && params.expires_at_ms.is_some() => return Ok(None),
+                    None => std::time::Instant::now(),
+                };
                 let network_approval_context = params.network_approval_context.clone();
                 let additional_permissions = params.additional_permissions.clone();
                 let proposed_execpolicy_amendment = params.proposed_execpolicy_amendment.clone();
@@ -261,6 +266,9 @@ impl App {
                         .clone()
                         .unwrap_or_else(|| params.item_id.clone()),
                     environment_id: params.environment_id.clone(),
+                    started_at_ms: params.started_at_ms.unwrap_or_default(),
+                    expires_at_ms: params.started_at_ms.and(params.expires_at_ms),
+                    received_at,
                     command: params
                         .command
                         .as_deref()
@@ -2115,8 +2123,14 @@ impl App {
                 {
                     let may_open_protected_view =
                         self.startup_request_may_open_protected_view(request.as_ref());
-                    self.chat_widget
-                        .handle_server_request(*request, /*replay_kind*/ None);
+                    let received_at = self
+                        .pending_app_server_requests
+                        .request_received_at(&request);
+                    self.chat_widget.handle_server_request(
+                        *request,
+                        /*replay_kind*/ None,
+                        received_at,
+                    );
                     if may_open_protected_view
                         && self.startup_protected_input_boundary
                         && !self.chat_widget.has_active_modal()
@@ -2156,8 +2170,11 @@ impl App {
             ThreadBufferedEvent::Request(request) => {
                 let may_open_protected_view =
                     self.startup_request_may_open_protected_view(request.as_ref());
+                let received_at = self
+                    .pending_app_server_requests
+                    .request_received_at(&request);
                 self.chat_widget
-                    .handle_server_request(*request, Some(replay_kind));
+                    .handle_server_request(*request, Some(replay_kind), received_at);
                 if may_open_protected_view
                     && self.startup_protected_input_boundary
                     && !self.chat_widget.has_active_modal()

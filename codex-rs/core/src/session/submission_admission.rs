@@ -13,6 +13,8 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::Submission;
 use tokio::sync::Mutex;
 
+use super::command_approval::QueuedSubmission;
+
 #[derive(Default)]
 pub(crate) struct SubmissionAdmission {
     send_lock: Mutex<()>,
@@ -80,11 +82,12 @@ impl SubmissionAdmission {
     )]
     pub(crate) async fn enqueue(
         self: &Arc<Self>,
-        sender: &Sender<Submission>,
-        submission: Submission,
+        sender: &Sender<QueuedSubmission>,
+        submission: impl Into<QueuedSubmission>,
     ) -> CodexResult<()> {
+        let submission = submission.into();
         let _order = self.send_lock.lock().await;
-        let mut reservation = self.reserve(&submission)?;
+        let mut reservation = self.reserve(&submission.submission)?;
         sender
             .send(submission)
             .await
@@ -99,15 +102,16 @@ impl SubmissionAdmission {
     /// Fails before acceptance when another sender or a full queue would require waiting.
     pub(crate) fn try_enqueue(
         self: &Arc<Self>,
-        sender: &Sender<Submission>,
-        submission: Submission,
+        sender: &Sender<QueuedSubmission>,
+        submission: impl Into<QueuedSubmission>,
     ) -> CodexResult<()> {
+        let submission = submission.into();
         let _order = self.send_lock.try_lock().map_err(|_| {
             CodexErr::InvalidRequest(
                 "thread submission admission is busy; retry when idle".to_string(),
             )
         })?;
-        let mut reservation = self.reserve(&submission)?;
+        let mut reservation = self.reserve(&submission.submission)?;
         sender.try_send(submission).map_err(|error| match error {
             async_channel::TrySendError::Full(_) => CodexErr::InvalidRequest(
                 "thread submission queue is full; retry when idle".to_string(),

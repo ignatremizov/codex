@@ -473,6 +473,9 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        // Receipt precedes startup/subagent buffering and any asynchronous metadata lookup.
+        self.pending_app_server_requests
+            .note_request_receipt(&request, std::time::Instant::now());
         if let ServerRequest::DynamicToolCall { request_id, params } = &request {
             if self.dynamic_tool_tasks.contains_key(request_id)
                 || (params.namespace.as_deref() != Some(crate::dynamic_tools::NAMESPACE)
