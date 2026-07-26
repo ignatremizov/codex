@@ -115,7 +115,7 @@ async fn user_verification_initialize_owns_advertisement_and_eligibility() -> Re
                     },
                 )
                 .await;
-            assert_eq!(response.await?, Ok(proof));
+            assert_eq!(response.await?.result, Ok(proof));
         } else {
             assert!(response.await.is_err());
             assert!(h.messages.try_recv().is_err());

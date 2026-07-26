@@ -951,7 +951,6 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
 #[tokio::test]
 async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> {
     use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
-    use crate::state::ActiveTurn;
     use crate::tools::sandboxing::ToolError;
     use codex_features::Feature;
     use codex_protocol::config_types::ApprovalsReviewer;
@@ -971,7 +970,7 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
         },
     )
     .await;
-    *session.active_turn.lock().await = Some(ActiveTurn::default());
+    crate::session::approval_test_support::start_approval_turn(&session, &turn, &events).await;
     let manager = &session.services.unified_exec_manager;
     let command = "while IFS= read -r line; do printf 'received:%s\\n' \"$line\"; done";
     let opened = exec_command(
@@ -1049,13 +1048,10 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
                     continue;
                 };
                 assert_eq!(
-                    (
-                        approval.call_id.as_str(),
-                        approval.approval_id.as_deref(),
-                        approval.cwd
-                    ),
-                    ("call", Some("write"), cwd.clone().into())
+                    (approval.call_id.as_str(), approval.cwd.clone()),
+                    ("call", cwd.clone().into())
                 );
+                assert!(approval.approval_id.is_some());
                 assert!(
                     original
                         .process
@@ -1073,7 +1069,10 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
                     let mut store = manager.process_store.lock().await;
                     store.processes.get_mut(&process_id).unwrap().process = Arc::new(replacement);
                 }
-                session.notify_approval("write", decision).await;
+                crate::session::approval_test_support::respond_to_approval(
+                    &session, &approval, decision,
+                )
+                .await;
                 return anyhow::Ok(());
             }
         };

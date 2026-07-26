@@ -14,7 +14,7 @@ pub(crate) fn from_client_result(
     result: Result<ClientRequestResult, oneshot::error::RecvError>,
 ) -> McpServerElicitationRequestResponse {
     let mut reason = UserVerificationReason::InvalidResponse;
-    let response = match result {
+    let response = match result.map(|response| response.result) {
         Ok(Ok(value)) => serde_json::from_value::<McpServerElicitationRequestResponse>(value).ok(),
         Ok(Err(error)) => {
             reason = if is_turn_transition_server_request_error(&error) {

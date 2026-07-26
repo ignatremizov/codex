@@ -112,6 +112,31 @@ pub(crate) enum ThreadListenerCommand {
         request_id: RequestId,
         completion_tx: oneshot::Sender<()>,
     },
+    CompleteCommandExecution {
+        turn_id: String,
+        item_id: String,
+        completion_item: crate::bespoke_event_handling::CommandExecutionCompletionItem,
+        source: codex_app_server_protocol::CommandExecutionSource,
+        status: codex_app_server_protocol::CommandExecutionStatus,
+        receipt: CommandExecutionStartReceipt,
+        completion_tx: oneshot::Sender<()>,
+    },
+}
+
+#[derive(Clone)]
+pub(crate) struct CommandExecutionStartReceipt {
+    pub(crate) conversation: Weak<CodexThread>,
+    pub(crate) listener_generation: u64,
+    pub(crate) turn_id: String,
+    pub(crate) token: Arc<()>,
+    /// Retained through output backpressure so reset or canonical completion revokes publication.
+    pub(crate) completion: CommandExecutionCompletionState,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandExecutionCompletionState {
+    Pending,
+    Publishing,
 }
 
 /// Retained until core resolves or withdraws the prompt, even if the client replies first.
@@ -125,6 +150,7 @@ pub(crate) struct PendingNetworkApproval {
 pub(crate) struct TurnSummary {
     pub(crate) started_at: Option<i64>,
     pub(crate) command_start_times: HashMap<String, i64>,
+    pub(crate) command_execution_receipts: HashMap<String, CommandExecutionStartReceipt>,
     pub(crate) last_error: Option<TurnError>,
     pub(crate) last_agent_message: Option<ThreadItem>,
 }
@@ -162,7 +188,7 @@ pub(crate) struct ThreadState {
     current_turn_history: ThreadHistoryBuilder,
     history_mode: ThreadHistoryMode,
     evict_superseded_agent_text: bool,
-    listener_thread: Option<Weak<CodexThread>>,
+    pub(crate) listener_thread: Option<Weak<CodexThread>>,
     watch_registration: WatchRegistration,
 }
 
@@ -226,6 +252,8 @@ impl ThreadState {
         self.shutdown_drain = None;
         self.listener_command_tx = None;
         self.current_turn_history.reset();
+        self.turn_summary.command_start_times.clear();
+        self.turn_summary.command_execution_receipts.clear();
         self.listener_thread = None;
         self.watch_registration = WatchRegistration::default();
     }

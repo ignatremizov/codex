@@ -179,7 +179,9 @@ async fn same_manager_creation_retains_step_executor_and_shares_exec_policy() ->
     let invocation = parent.tool_invocation(&call.turn.sub_id, &call.call_id)?;
     let before = parent.prepare_child(&invocation).await?.exec_policy;
     let amendment = ExecPolicyAmendment::new(vec!["snapshot-tool".into(), "check".into()]);
-    session.persist_execpolicy_amendment(&amendment).await?;
+    session
+        .persist_execpolicy_amendment(&call.turn.config.codex_home, &amendment)
+        .await?;
     let after = parent.prepare_child(&invocation).await?.exec_policy;
     assert!(!before.get_allowed_prefixes().contains(&amendment.command));
     assert!(after.get_allowed_prefixes().contains(&amendment.command));

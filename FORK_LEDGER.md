@@ -38,6 +38,10 @@ Ownership anchor: `fix(rollback): preserve exact durable Legacy thread boundarie
 
 Ownership anchor: `feat(tui): share concise transcript review and canonical target navigation`. The existing `tui/src/transcript_view/review.rs` owns Review/Full mode and chronological targets for both the owned viewport and inline overlay. Canonical message phase and structured patch items supply navigation identity; full source, search, selection, voice ownership, and historical Full previews retain their distinct contracts. Prompt edits require painted content and the existing canonical rollback/revert safeguards. Copy-on-select and primary selection follow the current client settings, and fullscreen session tips are not duplicated into transcript rows. Entrypoints include `tui/src/app/owned_transcript.rs`, `tui/src/app_backtrack.rs`, and `tui/src/pager_overlay/transcript.rs`. Snapshot and executable qualification remain pending.
 
+### Fail-closed human command approval deadlines
+
+Ownership anchor: `feat(approvals): enforce fail-closed human command deadlines`. `core/src/session/command_approval.rs` and `request_command_approval.rs` own the monotonic deadline, exact-turn generation, and one-use response claim. The private queued submission retains upstream residency and trace/turn lineage while preserving rollback quarantine. `app-server/src/command_execution_completion.rs` validates exact actor/listener/lifecycle receipts after output backpressure; callback IDs alone never establish root-command authority. The TUI retains the first receipt through buffering and replay, and expiry cannot approve work or act on a later queued request. Absent timing remains untimed. Guardian, hooks, patch approvals, and permission requests retain their separate policies. Human analytics uses structured trigger fields, not opaque callback-ID presence. Generated contracts and executable qualification are pending.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.

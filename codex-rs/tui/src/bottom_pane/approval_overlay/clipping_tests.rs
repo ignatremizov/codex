@@ -22,6 +22,9 @@ fn clipped_exec_approval_opens_the_complete_command() {
         let mut view = ApprovalOverlay::new(
             ApprovalRequest::Exec(ExecApprovalRequest {
                 kind: Default::default(),
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: Instant::now(),
                 thread_id: ThreadId::new(),
                 thread_label: None,
                 id: "clipped-approval".into(),

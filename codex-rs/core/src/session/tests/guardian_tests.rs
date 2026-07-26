@@ -91,10 +91,13 @@ where
     }
 }
 
-async fn activate_turn_with_new_review_authority(session: &Arc<Session>) -> Arc<TurnContext> {
+async fn activate_turn_with_new_review_authority(
+    session: &Arc<Session>,
+    turn_id: &str,
+) -> Arc<TurnContext> {
     let (current_turn, _) = session
         .new_turn_with_sub_id(
-            "current-authority-turn".to_string(),
+            turn_id.to_string(),
             SessionSettingsUpdate {
                 step_settings: StepSettingsUpdate {
                     approval_policy: Some(AskForApproval::Never),
@@ -852,9 +855,12 @@ async fn network_approval_uses_published_task_authority_within_same_turn(
     .await
     .expect("network approval requested");
     assert_eq!(approval.turn_id, turn.sub_id);
-    session
-        .notify_approval(&approval.call_id, ReviewDecision::Approved)
-        .await;
+    crate::session::approval_test_support::respond_to_approval(
+        &session,
+        &approval,
+        ReviewDecision::Approved,
+    )
+    .await;
     assert_eq!(
         timeout(Duration::from_secs(5), decision)
             .await
@@ -865,7 +871,7 @@ async fn network_approval_uses_published_task_authority_within_same_turn(
 }
 
 #[tokio::test]
-async fn delayed_exec_command_uses_its_captured_authority_after_next_turn_starts() {
+async fn delayed_exec_command_uses_its_captured_authority_within_its_turn() {
     let (mut session, mut action_turn, events) = make_session_and_context_with_rx().await;
     // Windows can allow safe echo commands without prompting when its sandbox is disabled.
     let mut exec_policy = Policy::empty();
@@ -884,8 +890,8 @@ async fn delayed_exec_command_uses_its_captured_authority_after_next_turn_starts
         AskForApproval::Never,
         AskForApproval::OnRequest,
     );
-    let current_turn = activate_turn_with_new_review_authority(&session).await;
-    assert_ne!(action_turn.sub_id, current_turn.sub_id);
+    let current_turn = activate_turn_with_new_review_authority(&session, &action_turn.sub_id).await;
+    assert_eq!(action_turn.sub_id, current_turn.sub_id);
 
     let call_id = "delayed-captured-authority-shell-command";
     let command = "echo captured-action-authority";
@@ -916,9 +922,12 @@ async fn delayed_exec_command_uses_its_captured_authority_after_next_turn_starts
         assert_eq!(approval.call_id, call_id);
         assert_eq!(approval.turn_id, action_turn.sub_id);
         assert!(approval.command.join(" ").contains(command));
-        session
-            .notify_approval(call_id, ReviewDecision::Approved)
-            .await;
+        crate::session::approval_test_support::respond_to_approval(
+            &session,
+            &approval,
+            ReviewDecision::Approved,
+        )
+        .await;
     };
 
     let (output, ()) = tokio::join!(invocation, approve);
@@ -1009,7 +1018,8 @@ async fn sandbox_denied_retry_uses_the_action_policy_and_reviewer() {
         AskForApproval::UnlessTrusted,
     );
 
-    let current_turn = activate_turn_with_new_review_authority(&session).await;
+    let current_turn =
+        activate_turn_with_new_review_authority(&session, "current-authority-turn").await;
     assert_ne!(action_turn.sub_id, current_turn.sub_id);
 
     let call_id = "captured-action-sandbox-retry";
@@ -1046,20 +1056,32 @@ async fn sandbox_denied_retry_uses_the_action_policy_and_reviewer() {
                 protocol: NetworkApprovalProtocol::Https,
             })
         );
-        session
-            .resolve_exec_approval(
-                approval.call_id.clone(),
-                Some(current_turn.sub_id.clone()),
-                ReviewDecision::Abort,
-            )
-            .await;
-        session
-            .resolve_exec_approval(
-                approval.call_id,
-                Some(approval.turn_id),
-                ReviewDecision::Approved,
-            )
-            .await;
+        // The prompt belongs to the captured action, although a different active task
+        // services this network approval. Its current turn ID must not claim the response.
+        let (approval_thread, queued) = make_thread_for_session(
+            Arc::clone(&session),
+            &action_turn,
+            events.clone(),
+            SessionSource::Cli,
+        )
+        .await;
+        assert!(
+            approval_thread
+                .submit(Op::ExecApproval {
+                    id: approval.effective_approval_id(),
+                    turn_id: Some(current_turn.sub_id.clone()),
+                    decision: ReviewDecision::Abort,
+                })
+                .await
+                .is_err()
+        );
+        assert!(queued.try_recv().is_err());
+        crate::session::approval_test_support::respond_to_approval(
+            &session,
+            &approval,
+            ReviewDecision::Approved,
+        )
+        .await;
     };
 
     let (output, ()) = tokio::join!(

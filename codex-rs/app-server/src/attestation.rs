@@ -80,8 +80,12 @@ async fn request_attestation_header_value_with_timeout(
         .await;
 
     let result = match timeout(timeout_duration, rx).await {
-        Ok(Ok(Ok(result))) => result,
-        Ok(Ok(Err(err))) => {
+        Ok(Ok(crate::outgoing_message::ClientRequestResult {
+            result: Ok(result), ..
+        })) => result,
+        Ok(Ok(crate::outgoing_message::ClientRequestResult {
+            result: Err(err), ..
+        })) => {
             // Don't log err.message because it may contain a token.
             warn!(code = err.code, "attestation generation request failed");
             return app_server_attestation_header_value(

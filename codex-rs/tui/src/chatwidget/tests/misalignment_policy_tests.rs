@@ -122,6 +122,7 @@ async fn misalignment_policy_failure_stops_the_thread_and_renders_once() {
             },
         },
         /*replay_kind*/ None,
+        Some(std::time::Instant::now()),
     );
 
     chat.handle_server_notification(

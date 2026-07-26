@@ -267,6 +267,7 @@ async fn new_config(
         custom_permission_profiles: Vec::new(),
         approvals_reviewer: ApprovalsReviewer::User,
         requested_approvals_reviewer: None,
+        approval_timeout_ms: None,
         remote_compaction_handoff_model: None,
         remote_compaction_handoff_fallback_model: None,
         remote_compaction_handoff_enabled: true,

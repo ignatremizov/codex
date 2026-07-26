@@ -13,16 +13,19 @@ export type CommandExecutionRequestApprovalParams = {/**
  */
 kind: CommandExecutionApprovalKind, threadId: string, turnId: string, itemId: string, /**
  * Unix timestamp (in milliseconds) when this approval request started.
+ *
+ * Older servers may omit timing metadata.
  */
-startedAtMs: number, /**
+startedAtMs: number | null, /**
+ * Unix timestamp (in milliseconds) when this approval request expires.
+ *
+ * `None` means that this approval has no deadline.
+ */
+expiresAtMs: number | null, /**
  * Unique identifier for this specific approval callback.
  *
- * For regular shell/unified_exec approvals, this is null.
- *
- * For zsh-exec-bridge subcommand approvals, multiple callbacks can belong to
- * one parent `itemId`, so `approvalId` is a distinct opaque callback id
- * (a UUID) used to disambiguate routing.
- * Stdin approvals also use a distinct callback id; inspect `kind` to distinguish them.
+ * Opaque identifier for this approval callback. It is present for every human command
+ * approval and is distinct from `itemId`, which retains command provenance.
  */
 approvalId?: string | null, /**
  * Environment in which the command will run.

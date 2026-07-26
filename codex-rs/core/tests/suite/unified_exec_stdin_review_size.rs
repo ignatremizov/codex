@@ -93,7 +93,8 @@ async fn unreviewable_stdin_is_rejected_before_approval_or_execution(
         match wait_for_event(&test.codex, |_| true).await {
             EventMsg::ExecApprovalRequest(request) => {
                 let id = request.effective_approval_id();
-                approvals.push((request.kind, id.clone()));
+                approvals.push((request.kind, request.call_id.clone()));
+                assert!(request.approval_id.is_some());
                 test.codex
                     .submit(Op::ExecApproval {
                         id,
@@ -110,7 +111,7 @@ async fn unreviewable_stdin_is_rejected_before_approval_or_execution(
         approvals,
         vec![
             (ExecApprovalKind::Command, "open".to_string()),
-            (ExecApprovalKind::WriteStdin, "allowed".to_string()),
+            (ExecApprovalKind::WriteStdin, "open".to_string()),
         ]
     );
     let requests = responses.requests();
