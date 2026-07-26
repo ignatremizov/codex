@@ -20,6 +20,7 @@ use tokio::sync::oneshot;
 use super::TurnTokenUsage;
 use crate::agent::types::AgentExecutionGuard;
 use crate::session::TurnInputQueue;
+use crate::session::command_approval::PendingCommandApproval;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
@@ -88,6 +89,7 @@ pub(crate) struct RunningTask {
 #[derive(Default)]
 pub(crate) struct TurnState {
     pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
+    pub(crate) command_approvals: HashMap<String, PendingCommandApproval>,
     pending_request_permissions: HashMap<String, PendingRequestPermissions>,
     pending_user_input: HashMap<String, oneshot::Sender<AcceptedUserInputResponse>>,
     pending_elicitations: HashMap<(String, RequestId), oneshot::Sender<ElicitationResponse>>,
@@ -136,6 +138,7 @@ impl TurnState {
 
     pub(crate) fn clear_pending_waiters(&mut self) {
         self.pending_approvals.clear();
+        self.command_approvals.clear();
         self.pending_request_permissions.clear();
         self.pending_user_input.clear();
         self.pending_elicitations.clear();

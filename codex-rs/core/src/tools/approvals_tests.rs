@@ -118,7 +118,7 @@ async fn non_utf8_cwd_preserves_approval_routing(
         .context("session is uniquely owned")?
         .services
         .extensions = Arc::new(extensions.build());
-    *session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
+    crate::session::approval_test_support::start_approval_turn(&session, &turn, &events).await;
     let mut review_context = GuardianReviewContext::from(&turn);
     review_context.approval_policy = AskForApproval::OnRequest;
     review_context.approvals_reviewer = reviewer;
@@ -161,7 +161,9 @@ async fn non_utf8_cwd_preserves_approval_routing(
                 };
                 assert_eq!(request.cwd, codex_utils_path_uri::LegacyAppPathString::from(cwd));
                 assert_eq!(request.command, vec!["npm", "install"]);
-                session.notify_approval(&request.call_id, ReviewDecision::Approved).await;
+                crate::session::approval_test_support::respond_to_approval(
+                    &session, &request, ReviewDecision::Approved,
+                ).await;
             }
         }
         ApprovalResolution {

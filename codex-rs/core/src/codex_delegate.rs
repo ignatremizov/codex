@@ -166,6 +166,7 @@ pub(crate) fn forward_session_io(io: Arc<SessionIo>, cancel_token: CancellationT
         // Acceptance must transfer directly to the session loop. An intermediate
         // cancellable queue could lose a rollback after admission was reserved.
         tx_sub: io.tx_sub.clone(),
+        session: io.session.clone(),
         submission_admission: Arc::clone(&io.submission_admission),
         rx_event: rx_sub,
         agent_status: io.agent_status.clone(),
@@ -245,6 +246,7 @@ pub(crate) async fn run_codex_thread_one_shot(
     let agent_status = io.agent_status.clone();
     let session_loop_termination = io.session_loop_termination.clone();
     let submission_admission = Arc::clone(&io.submission_admission);
+    let submission_session = io.session.clone();
     let io_for_bridge = io;
     tokio::spawn(async move {
         while let Ok(event) = io_for_bridge.next_event().await {
@@ -255,14 +257,17 @@ pub(crate) async fn run_codex_thread_one_shot(
             let _ = tx_bridge.send(event).await;
             if should_shutdown {
                 let _ = ops_tx
-                    .send(Submission {
-                        id: "shutdown".to_string(),
-                        op: Op::Shutdown {},
-                        trace: None,
-                        parent_turn_id: None,
-                        root_turn_id: None,
-                        residency_guard: None,
-                    })
+                    .send(
+                        Submission {
+                            id: "shutdown".to_string(),
+                            op: Op::Shutdown {},
+                            trace: None,
+                            parent_turn_id: None,
+                            root_turn_id: None,
+                            residency_guard: None,
+                        }
+                        .into(),
+                    )
                     .await;
                 child_cancel.cancel();
                 break;
@@ -281,6 +286,7 @@ pub(crate) async fn run_codex_thread_one_shot(
         SessionIo {
             rx_event: rx_bridge,
             tx_sub: tx_closed,
+            session: submission_session,
             submission_admission,
             agent_status,
             session_loop_termination,

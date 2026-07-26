@@ -79,7 +79,8 @@ fn sample_command_approval_request(request_id: i64, approval_id: Option<&str>) -
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             item_id: "item-1".to_string(),
-            started_at_ms: 1_000,
+            started_at_ms: Some(1_000),
+            expires_at_ms: None,
             approval_id: approval_id.map(str::to_string),
             environment_id: None,
             reason: None,
@@ -413,9 +414,9 @@ async fn command_execution_approval_response_publishes_user_review_event() {
         (None, None, "command_execution", "initial"),
         (
             None,
-            Some("execve-approval"),
+            Some("opaque-command-approval"),
             "command_execution",
-            "execve_intercept",
+            "initial",
         ),
         (
             Some("writeStdin"),
@@ -490,6 +491,65 @@ async fn command_execution_approval_response_publishes_user_review_event() {
         assert_eq!(
             item["event_params"]["review_count"],
             u64::from(kind.is_none())
+        );
+    }
+}
+
+#[tokio::test]
+async fn opaque_callback_ids_do_not_override_structured_approval_triggers() {
+    for (network, expected_trigger, expected_subject) in [
+        (true, "network_policy_denial", "network_access"),
+        (false, "sandbox_denial", "command_execution"),
+    ] {
+        let mut reducer = AnalyticsReducer::default();
+        let mut events = Vec::new();
+        ingest_review_prerequisites(&mut reducer, &mut events).await;
+        let mut request = sample_command_approval_request(41, Some("opaque-human-callback"));
+        let ServerRequest::CommandExecutionRequestApproval { params, .. } = &mut request else {
+            unreachable!()
+        };
+        if network {
+            params.network_approval_context =
+                Some(codex_app_server_protocol::NetworkApprovalContext {
+                    host: "review.invalid".into(),
+                    protocol: codex_app_server_protocol::NetworkApprovalProtocol::Http,
+                });
+        } else {
+            params.additional_permissions =
+                Some(codex_app_server_protocol::AdditionalPermissionProfile {
+                    network: None,
+                    file_system: None,
+                });
+        }
+        reducer
+            .ingest(
+                AnalyticsFact::ServerRequest {
+                    connection_id: 7,
+                    request: Box::new(request),
+                },
+                &mut events,
+            )
+            .await;
+        reducer
+            .ingest(
+                AnalyticsFact::ServerResponse {
+                    completed_at_ms: 1_042,
+                    response: Box::new(sample_command_approval_response(
+                        41,
+                        CommandExecutionApprovalDecision::Accept,
+                    )),
+                },
+                &mut events,
+            )
+            .await;
+        assert_eq!(events.len(), 1);
+        let payload = serde_json::to_value(&events[0]).expect("review event");
+        assert_eq!(
+            (
+                &payload["event_params"]["trigger"],
+                &payload["event_params"]["subject_kind"]
+            ),
+            (&json!(expected_trigger), &json!(expected_subject)),
         );
     }
 }
