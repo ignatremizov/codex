@@ -53,6 +53,7 @@ use crate::mcp_tool_call::is_mcp_tool_approval_question_id;
 use crate::mcp_tool_call::mcp_approvals_reviewer;
 use crate::session::ForkPersistence;
 use crate::session::GitEnrichmentPolicy;
+use crate::session::CommandApprovalTiming;
 use crate::session::SUBMISSION_CHANNEL_CAPACITY;
 use crate::session::SessionIo;
 use crate::session::SessionSpawnArgs;
@@ -422,6 +423,7 @@ async fn forward_events(
                         // Initiate approval via parent session; do not surface to consumer.
                         handle_exec_approval(
                             &io,
+                            &session,
                             id,
                             &parent_session,
                             &parent_ctx,
@@ -596,6 +598,7 @@ async fn forward_ops(
 /// Handle an ExecApprovalRequest by consulting the parent session and replying.
 async fn handle_exec_approval(
     io: &SessionIo,
+    child_session: &Arc<Session>,
     turn_id: String,
     parent_session: &Arc<Session>,
     parent_ctx: &Arc<TurnContext>,
@@ -609,6 +612,8 @@ async fn handle_exec_approval(
         script_path,
         approval_id,
         environment_id,
+        started_at_ms,
+        expires_at_ms,
         command,
         cwd,
         reason,
@@ -662,7 +667,7 @@ async fn handle_exec_approval(
         .await
     } else {
         await_approval_with_cancel(
-            parent_session.request_command_approval(
+            parent_session.request_command_approval_with_timing(
                 parent_ctx,
                 call_id,
                 approval_id,
@@ -675,6 +680,12 @@ async fn handle_exec_approval(
                 additional_permissions,
                 available_decisions,
                 plugin_attribution,
+                expires_at_ms.map_or(CommandApprovalTiming::InheritedUntimed, |expires_at_ms| {
+                    CommandApprovalTiming::InheritedTimed {
+                        started_at_ms,
+                        expires_at_ms,
+                    }
+                }),
             ),
             parent_session,
             &approval_id_for_op,
@@ -684,13 +695,23 @@ async fn handle_exec_approval(
         .await
     };
 
-    let _ = io
+    let claimed = child_session
+        .claim_pending_approval(&approval_id_for_op)
+        .await;
+    if io
         .submit(Op::ExecApproval {
-            id: approval_id_for_op,
+            id: approval_id_for_op.clone(),
             turn_id: Some(turn_id),
             decision,
         })
-        .await;
+        .await
+        .is_err()
+        && claimed
+    {
+        child_session
+            .release_pending_approval_claim(&approval_id_for_op)
+            .await;
+    }
 }
 
 /// Handle an ApplyPatchApprovalRequest by consulting the parent session and replying.

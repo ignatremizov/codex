@@ -4,6 +4,7 @@ use crate::exec::ExecExpiration;
 use crate::exec::cancel_when_either;
 use crate::exec::is_likely_sandbox_denied;
 use crate::guardian::GuardianApprovalRequest;
+use crate::guardian::guardian_timeout_message;
 use crate::guardian::new_guardian_review_id;
 use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
@@ -12,6 +13,7 @@ use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::ShellType;
+use crate::tools::approvals::command_approval_timeout_message;
 use crate::tools::runtimes::build_sandbox_command;
 use crate::tools::runtimes::exec_env_for_sandbox_permissions;
 use crate::tools::runtimes::prepend_zsh_fork_bin_to_path;
@@ -566,9 +568,14 @@ impl CoreShellActionProvider {
                         ReviewDecision::Denied { rejection } => {
                             EscalationDecision::deny(Some(rejection))
                         }
-                        ReviewDecision::TimedOut => EscalationDecision::deny(Some(
-                            crate::guardian::guardian_timeout_message(),
-                        )),
+                        ReviewDecision::TimedOut => {
+                            let message = if routes_approval_to_guardian(&self.turn) {
+                                guardian_timeout_message()
+                            } else {
+                                command_approval_timeout_message()
+                            };
+                            EscalationDecision::deny(Some(message))
+                        }
                         ReviewDecision::Abort => {
                             EscalationDecision::deny(Some("User cancelled execution".to_string()))
                         }

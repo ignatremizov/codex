@@ -1282,7 +1282,9 @@ mod thread_processor_behavior_tests {
         let response = client_request_rx
             .await
             .expect("callback should be resolved");
-        let error = response.expect_err("request should be aborted during cleanup");
+        let error = response
+            .result
+            .expect_err("request should be aborted during cleanup");
         assert_eq!(
             error.message,
             "client request resolved because the turn state was changed"

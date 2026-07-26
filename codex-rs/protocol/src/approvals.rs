@@ -257,6 +257,11 @@ pub struct ExecApprovalRequestEvent {
     pub environment_id: Option<String>,
     #[ts(type = "number")]
     pub started_at_ms: i64,
+    /// Unix timestamp (in milliseconds) when this approval request expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "number | null")]
+    pub expires_at_ms: Option<i64>,
     /// The command to be executed.
     pub command: Vec<String>,
     /// The command's working directory.

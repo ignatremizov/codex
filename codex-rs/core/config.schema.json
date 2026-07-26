@@ -408,6 +408,12 @@
         "approval_policy": {
           "$ref": "#/definitions/AskForApproval"
         },
+        "approval_timeout_ms": {
+          "description": "Maximum time to wait for a command approval response, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "approvals_reviewer": {
           "$ref": "#/definitions/ApprovalsReviewer"
         },
@@ -4986,6 +4992,12 @@
         }
       ],
       "description": "Default approval policy for executing commands."
+    },
+    "approval_timeout_ms": {
+      "description": "Maximum time to wait for a command approval response, in milliseconds.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
     },
     "approvals_reviewer": {
       "allOf": [

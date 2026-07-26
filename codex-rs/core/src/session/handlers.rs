@@ -366,6 +366,9 @@ pub async fn exec_approval(
     decision: ReviewDecision,
 ) {
     let event_turn_id = turn_id.unwrap_or_else(|| approval_id.clone());
+    let Some(tx_approve) = sess.take_pending_approval(&approval_id).await else {
+        return;
+    };
     if let ReviewDecision::ApprovedExecpolicyAmendment {
         proposed_execpolicy_amendment,
     } = &decision
@@ -395,9 +398,12 @@ pub async fn exec_approval(
     }
     match decision {
         ReviewDecision::Abort => {
+            tx_approve.send(ReviewDecision::Abort).ok();
             sess.interrupt_task().await;
         }
-        other => sess.notify_approval(&approval_id, other).await,
+        other => {
+            tx_approve.send(other).ok();
+        }
     }
 }
 
@@ -406,7 +412,9 @@ pub async fn patch_approval(sess: &Arc<Session>, id: String, decision: ReviewDec
         ReviewDecision::Abort => {
             sess.interrupt_task().await;
         }
-        other => sess.notify_approval(&id, other).await,
+        other => {
+            sess.notify_approval(&id, other).await;
+        }
     }
 }
 

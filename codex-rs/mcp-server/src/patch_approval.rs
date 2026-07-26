@@ -86,7 +86,7 @@ pub(crate) async fn handle_patch_approval_request(
         }
     };
 
-    let on_response = outgoing
+    let (_request_id, on_response) = outgoing
         .send_request("elicitation/create", Some(params_json))
         .await;
 
@@ -102,10 +102,10 @@ pub(crate) async fn handle_patch_approval_request(
 
 pub(crate) async fn on_patch_approval_response(
     approval_id: String,
-    receiver: tokio::sync::oneshot::Receiver<serde_json::Value>,
+    receiver: tokio::sync::oneshot::Receiver<crate::outgoing_message::ClientResponse>,
     codex: Arc<CodexThread>,
 ) {
-    let response = receiver.await;
+    let response = receiver.await.map(|response| response.result);
     let value = match response {
         Ok(value) => value,
         Err(err) => {

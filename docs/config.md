@@ -158,6 +158,28 @@ exec_command_timeout_ms = 30000
 
 If unset, Codex uses the built-in default (10,000 ms).
 
+## Approval timeout
+
+Set the maximum time (in milliseconds) to wait for a command approval response:
+
+```toml
+approval_timeout_ms = 120000
+```
+
+Any non-negative millisecond value is accepted. Positive values set the human response deadline. A
+value of `0` rejects command approval requests that would be routed to a user immediately without
+showing a prompt, making `approval_policy = "on-request"` behave like `never` for human command
+approvals. Guardian reviews and permission hooks are unaffected. If a positive deadline expires,
+Codex rejects the command without executing it and lets the turn continue with the rejection as the
+tool result. If unset, command approvals continue waiting until the user responds or the turn is
+interrupted.
+
+TOML integer literals are signed 64-bit values, so the largest value representable in
+`config.toml` is `9223372036854775807`.
+
+This setting does not make `approval_policy = "never"` interactive. It applies only when the active
+approval policy would otherwise produce a command approval request.
+
 ## User shell command timeout
 
 Set the maximum runtime (in milliseconds) for commands entered with `!` or `/shell`:

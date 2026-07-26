@@ -1,12 +1,14 @@
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::GuardianNetworkAccessTrigger;
 use crate::guardian::GuardianReviewOptions;
+use crate::guardian::guardian_timeout_message;
 use crate::guardian::new_guardian_review_id;
 use crate::guardian::review_approval_request_with_cancel;
 use crate::guardian::routes_approval_to_guardian;
 use crate::hook_runtime::run_permission_request_hooks;
 use crate::network_policy_decision::denied_network_policy_message;
 use crate::session::session::Session;
+use crate::tools::approvals::command_approval_timeout_message;
 use crate::tools::events::truncate_rejection_message;
 use crate::tools::sandboxing::PermissionRequestPayload;
 use crate::tools::sandboxing::ToolError;
@@ -746,6 +748,8 @@ impl NetworkApprovalService {
         let command = owner_call
             .as_ref()
             .map_or_else(|| prompt_command.join(" "), |call| call.command.clone());
+        let use_guardian = routes_approval_to_guardian(&turn_context);
+        let guardian_review_id = use_guardian.then(new_guardian_review_id);
         let hook_approval_decision = match run_permission_request_hooks(
             &session,
             &turn_context,
@@ -757,21 +761,24 @@ impl NetworkApprovalService {
             Some(PermissionRequestDecision::Allow) => Some(ReviewDecision::Approved),
             Some(PermissionRequestDecision::Deny { message }) => {
                 if let Some(owner_call) = owner_call.as_ref() {
-                    self.record_call_outcome(
-                        &owner_call.registration_id,
-                        NetworkApprovalOutcome::DeniedByPolicy(message),
-                    )
-                    .await;
+                    let outcome = if guardian_review_id.is_some() {
+                        NetworkApprovalOutcome::DeniedByPolicy(message)
+                    } else {
+                        NetworkApprovalOutcome::DeniedByApproval(message)
+                    };
+                    self.record_call_outcome(&owner_call.registration_id, outcome)
+                        .await;
                 }
                 pending_owner.complete(PendingApprovalDecision::Deny);
                 return NetworkDecision::deny(REASON_NOT_ALLOWED);
             }
             None => None,
         };
-        let use_guardian = routes_approval_to_guardian(&turn_context);
-        let guardian_review_id = use_guardian.then(new_guardian_review_id);
+        let immediate_timeout = !use_guardian && turn_context.config.approval_timeout_ms == Some(0);
         let approval_decision = if let Some(hook_approval_decision) = hook_approval_decision {
             hook_approval_decision
+        } else if immediate_timeout {
+            ReviewDecision::TimedOut
         } else if let Some(review_id) = guardian_review_id.clone() {
             let review_cancel = CancellationToken::new();
             let review_cancel_guard = review_cancel.clone().drop_guard();
@@ -1002,11 +1009,14 @@ impl NetworkApprovalService {
             }
             ReviewDecision::TimedOut => {
                 if let Some(owner_call) = owner_call.as_ref() {
+                    let message = if guardian_review_id.is_some() {
+                        guardian_timeout_message()
+                    } else {
+                        command_approval_timeout_message()
+                    };
                     self.record_call_outcome(
                         &owner_call.registration_id,
-                        NetworkApprovalOutcome::DeniedByPolicy(
-                            crate::guardian::guardian_timeout_message(),
-                        ),
+                        NetworkApprovalOutcome::DeniedByPolicy(message),
                     )
                     .await;
                 }

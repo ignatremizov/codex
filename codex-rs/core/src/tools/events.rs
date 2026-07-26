@@ -503,6 +503,10 @@ struct ExecCommandInput<'a> {
 }
 
 impl<'a> ExecCommandInput<'a> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the complete command lifecycle event payload is constructed together"
+    )]
     fn new(
         command: &'a [String],
         cwd: &'a PathUri,

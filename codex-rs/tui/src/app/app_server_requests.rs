@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use super::App;
 use crate::app_command::AppCommand;
@@ -69,7 +70,8 @@ pub(crate) enum ResolvedAppServerRequest {
 
 #[derive(Debug, Default)]
 pub(super) struct PendingAppServerRequests {
-    exec_approvals: HashMap<String, AppServerRequestId>,
+    exec_approvals: HashMap<(String, String), AppServerRequestId>,
+    request_received_at: HashMap<AppServerRequestId, Instant>,
     file_change_approvals: HashMap<String, AppServerRequestId>,
     permissions_approvals: HashMap<String, AppServerRequestId>,
     user_inputs: HashMap<String, VecDeque<PendingUserInputRequest>>,
@@ -79,6 +81,7 @@ pub(super) struct PendingAppServerRequests {
 impl PendingAppServerRequests {
     pub(super) fn clear(&mut self) {
         self.exec_approvals.clear();
+        self.request_received_at.clear();
         self.file_change_approvals.clear();
         self.permissions_approvals.clear();
         self.user_inputs.clear();
@@ -91,11 +94,14 @@ impl PendingAppServerRequests {
     ) -> Option<UnsupportedAppServerRequest> {
         match request {
             ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+                self.request_received_at
+                    .insert(request_id.clone(), Instant::now());
                 let approval_id = params
                     .approval_id
                     .clone()
                     .unwrap_or_else(|| params.item_id.clone());
-                self.exec_approvals.insert(approval_id, request_id.clone());
+                self.exec_approvals
+                    .insert((params.thread_id.clone(), approval_id), request_id.clone());
                 None
             }
             ServerRequest::FileChangeRequestApproval { request_id, params } => {
@@ -176,8 +182,20 @@ impl PendingAppServerRequests {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn take_resolution<T>(
         &mut self,
+        op: T,
+    ) -> Result<Option<AppServerRequestResolution>, String>
+    where
+        T: Into<AppCommand>,
+    {
+        self.take_resolution_for_thread(/*thread_id*/ None, op)
+    }
+
+    pub(super) fn take_resolution_for_thread<T>(
+        &mut self,
+        thread_id: Option<&str>,
         op: T,
     ) -> Result<Option<AppServerRequestResolution>, String>
     where
@@ -186,9 +204,9 @@ impl PendingAppServerRequests {
         let op: AppCommand = op.into();
         let resolution = match &op {
             AppCommand::ExecApproval { id, decision, .. } => self
-                .exec_approvals
-                .remove(id)
+                .remove_exec_approval(thread_id, id)
                 .map(|request_id| {
+                    self.request_received_at.remove(&request_id);
                     Ok::<AppServerRequestResolution, String>(AppServerRequestResolution {
                         request_id,
                         result: serde_json::to_value(CommandExecutionRequestApprovalResponse {
@@ -278,16 +296,34 @@ impl PendingAppServerRequests {
         Ok(resolution)
     }
 
+    fn remove_exec_approval(
+        &mut self,
+        thread_id: Option<&str>,
+        approval_id: &str,
+    ) -> Option<AppServerRequestId> {
+        let key = if let Some(thread_id) = thread_id {
+            (thread_id.to_string(), approval_id.to_string())
+        } else {
+            self.exec_approvals
+                .keys()
+                .find(|(_, id)| id.as_str() == approval_id)
+                .cloned()?
+        };
+        self.exec_approvals.remove(&key)
+    }
+
     pub(super) fn resolve_notification(
         &mut self,
         request_id: &AppServerRequestId,
     ) -> Option<ResolvedAppServerRequest> {
-        if let Some(id) = self
+        self.request_received_at.remove(request_id);
+        if let Some(key) = self
             .exec_approvals
             .iter()
-            .find_map(|(id, value)| (value == request_id).then(|| id.clone()))
+            .find_map(|(key, value)| (value == request_id).then(|| key.clone()))
         {
-            self.exec_approvals.remove(&id);
+            self.exec_approvals.remove(&key);
+            let (_thread_id, id) = key;
             return Some(ResolvedAppServerRequest::ExecApproval { id });
         }
 
@@ -328,6 +364,10 @@ impl PendingAppServerRequests {
         }
 
         None
+    }
+
+    pub(super) fn request_received_at(&self, request: &ServerRequest) -> Option<Instant> {
+        self.request_received_at.get(request.id()).copied()
     }
 
     pub(super) fn contains_server_request(&self, request: &ServerRequest) -> bool {
@@ -457,7 +497,8 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
                 item_id: "call-1".to_string(),
-                started_at_ms: 0,
+                started_at_ms: Some(0),
+                expires_at_ms: None,
                 approval_id: Some("approval-1".to_string()),
                 environment_id: None,
                 reason: None,
@@ -485,6 +526,7 @@ mod tests {
 
         assert_eq!(resolution.request_id, AppServerRequestId::Integer(41));
         assert_eq!(resolution.result, json!({ "decision": "accept" }));
+        assert!(pending.request_received_at.is_empty());
     }
 
     #[test]
@@ -797,7 +839,8 @@ mod tests {
                     thread_id: "thread-1".to_string(),
                     turn_id: "turn-1".to_string(),
                     item_id: "call-1".to_string(),
-                    started_at_ms: 0,
+                    started_at_ms: Some(0),
+                    expires_at_ms: None,
                     approval_id: Some("approval-1".to_string()),
                     environment_id: None,
                     reason: None,

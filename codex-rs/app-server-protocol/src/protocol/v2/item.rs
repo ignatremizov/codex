@@ -1507,8 +1507,13 @@ pub struct CommandExecutionRequestApprovalParams {
     pub turn_id: String,
     pub item_id: String,
     /// Unix timestamp (in milliseconds) when this approval request started.
-    #[ts(type = "number")]
-    pub started_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable, type = "number")]
+    pub started_at_ms: Option<i64>,
+    /// Unix timestamp (in milliseconds) when this approval request expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable, type = "number")]
+    pub expires_at_ms: Option<i64>,
     /// Unique identifier for this specific approval callback.
     ///
     /// For regular shell/unified_exec approvals, this is null.

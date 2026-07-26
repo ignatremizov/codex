@@ -37,7 +37,13 @@ pub(crate) use codex_app_server_transport::QueuedOutgoingMessage;
 #[cfg(test)]
 use codex_protocol::account::PlanType;
 
-pub(crate) type ClientRequestResult = std::result::Result<Result, JSONRPCErrorError>;
+#[derive(Debug)]
+pub(crate) struct ClientRequestResult {
+    pub(crate) received_at: tokio::time::Instant,
+    pub(crate) result: ClientResponseResult,
+}
+
+pub(crate) type ClientResponseResult = std::result::Result<Result, JSONRPCErrorError>;
 
 /// Stable identifier for a client request scoped to a transport connection.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -189,6 +195,10 @@ impl ThreadScopedOutgoingMessageSender {
                 }),
             )
             .await
+    }
+
+    pub(crate) async fn cancel_request(&self, request_id: &RequestId) -> bool {
+        self.outgoing.cancel_request(request_id).await
     }
 
     pub(crate) async fn send_response<T>(&self, request_id: ConnectionRequestId, response: T)
@@ -373,18 +383,22 @@ impl OutgoingMessageSender {
 
     pub(crate) async fn notify_client_response(&self, id: RequestId, result: Result) {
         let entry = self.take_request_callback(&id).await;
+        let received_at = tokio::time::Instant::now();
 
         match entry {
             Some((id, entry)) => {
                 let completed_at_ms = now_unix_timestamp_ms();
-                if let Ok(response) = entry.request.response_from_result(result.clone())
+                if let Err(err) = entry.callback.send(ClientRequestResult {
+                    received_at,
+                    result: Ok(result.clone()),
+                }) {
+                    warn!("could not notify callback for {id:?} due to: {err:?}");
+                }
+                if let Ok(response) = entry.request.response_from_result(result)
                     && !matches!(response, ServerResponse::PermissionsRequestApproval { .. })
                 {
                     self.analytics_events_client
                         .track_server_response(completed_at_ms, response);
-                }
-                if let Err(err) = entry.callback.send(Ok(result)) {
-                    warn!("could not notify callback for {id:?} due to: {err:?}");
                 }
             }
             None => {
@@ -395,13 +409,17 @@ impl OutgoingMessageSender {
 
     pub(crate) async fn notify_client_error(&self, id: RequestId, error: JSONRPCErrorError) {
         let entry = self.take_request_callback(&id).await;
+        let received_at = tokio::time::Instant::now();
 
         match entry {
             Some((id, entry)) => {
                 warn!("client responded with error for {id:?}: {error:?}");
                 self.analytics_events_client
                     .track_server_request_aborted(now_unix_timestamp_ms(), id.clone());
-                if let Err(err) = entry.callback.send(Err(error)) {
+                if let Err(err) = entry.callback.send(ClientRequestResult {
+                    received_at,
+                    result: Err(error),
+                }) {
                     warn!("could not notify callback for {id:?} due to: {err:?}");
                 }
             }
@@ -435,7 +453,10 @@ impl OutgoingMessageSender {
             self.analytics_events_client
                 .track_server_request_aborted(now_unix_timestamp_ms(), entry.request.id().clone());
             if let Some(error) = error.as_ref()
-                && let Err(err) = entry.callback.send(Err(error.clone()))
+                && let Err(err) = entry.callback.send(ClientRequestResult {
+                    received_at: tokio::time::Instant::now(),
+                    result: Err(error.clone()),
+                })
             {
                 let request_id = entry.request.id();
                 warn!("could not notify callback for {request_id:?} due to: {err:?}");
@@ -493,7 +514,10 @@ impl OutgoingMessageSender {
             self.analytics_events_client
                 .track_server_request_aborted(now_unix_timestamp_ms(), entry.request.id().clone());
             if let Some(error) = error.as_ref()
-                && let Err(err) = entry.callback.send(Err(error.clone()))
+                && let Err(err) = entry.callback.send(ClientRequestResult {
+                    received_at: tokio::time::Instant::now(),
+                    result: Err(error.clone()),
+                })
             {
                 let request_id = entry.request.id();
                 warn!("could not notify callback for {request_id:?} due to: {err:?}",);
@@ -1002,7 +1026,8 @@ mod tests {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
                 item_id: "item-1".to_string(),
-                started_at_ms: 0,
+                started_at_ms: Some(0),
+                expires_at_ms: None,
                 approval_id: None,
                 environment_id: None,
                 reason: None,
@@ -1298,7 +1323,7 @@ mod tests {
             .await
             .expect("wait should not time out")
             .expect("waiter should receive a callback");
-        assert_eq!(result, Err(error));
+        assert_eq!(result.result, Err(error));
     }
 
     #[tokio::test]
@@ -1415,8 +1440,8 @@ mod tests {
             .await
             .expect("user input waiter should resolve")
             .expect("user input waiter should receive a callback");
-        assert_eq!(dynamic_tool_result, Err(error.clone()));
-        assert_eq!(user_input_result, Err(error));
+        assert_eq!(dynamic_tool_result.result, Err(error.clone()));
+        assert_eq!(user_input_result.result, Err(error));
         assert!(
             outgoing
                 .pending_requests_for_thread(thread_id)

@@ -294,10 +294,12 @@ pub(crate) async fn execute_user_shell_command(
             return;
         }
         Ok(Ok(output)) => output,
-        Ok(Err(err)) if matches!(
-            err.details(),
-            CodexErrorDetails::Sandbox(SandboxErr::Timeout { .. })
-        ) => {
+        Ok(Err(err))
+            if matches!(
+                err.details(),
+                CodexErrorDetails::Sandbox(SandboxErr::Timeout { .. })
+            ) =>
+        {
             let CodexErrorDetails::Sandbox(SandboxErr::Timeout { output }) = err.details() else {
                 unreachable!("guard ensures timeout details");
             };
@@ -362,6 +364,8 @@ pub(crate) async fn execute_user_shell_command(
                 cwd: cwd.into(),
                 parsed_cmd,
                 source: ExecCommandSource::UserShell,
+                plugin_id: None,
+                script_path: None,
                 interaction_input: None,
                 status: if output.exit_code == 0 {
                     CommandExecutionStatus::Completed

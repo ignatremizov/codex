@@ -571,6 +571,14 @@
         "null"
       ]
     },
+    "expiresAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this approval request expires.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "itemId": {
       "type": "string"
     },
@@ -615,7 +623,10 @@
     "startedAtMs": {
       "description": "Unix timestamp (in milliseconds) when this approval request started.",
       "format": "int64",
-      "type": "integer"
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "threadId": {
       "type": "string"
@@ -626,7 +637,6 @@
   },
   "required": [
     "itemId",
-    "startedAtMs",
     "threadId",
     "turnId"
   ],

@@ -1,6 +1,7 @@
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
 use crate::outgoing_message::ClientRequestResult;
+use crate::outgoing_message::ClientResponseResult;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
 use crate::request_processors::populate_thread_turns_from_history;
 use crate::request_processors::thread_from_stored_thread;
@@ -590,6 +591,8 @@ pub(crate) async fn apply_bespoke_event_handling(
             });
         }
         EventMsg::ExecApprovalRequest(ev) => {
+            let approval_deadline =
+                command_approval_deadline(Some(ev.started_at_ms), ev.expires_at_ms);
             let permission_guard = thread_watch_manager
                 .note_permission_requested(&conversation_id.to_string())
                 .await;
@@ -606,6 +609,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 turn_id,
                 environment_id,
                 started_at_ms,
+                expires_at_ms,
                 command,
                 cwd,
                 reason,
@@ -683,7 +687,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 thread_id: conversation_id.to_string(),
                 turn_id: turn_id.clone(),
                 item_id: call_id.clone(),
-                started_at_ms,
+                started_at_ms: Some(started_at_ms),
+                expires_at_ms,
                 approval_id: approval_id.clone(),
                 environment_id,
                 reason,
@@ -707,6 +712,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     conversation_id,
                     approval_id,
                     call_id,
+                    approval_deadline,
                     completion_item,
                     pending_request_id,
                     rx,
@@ -1738,7 +1744,7 @@ async fn on_request_user_input_response(
     thread_state: Arc<Mutex<ThreadState>>,
     user_input_guard: ThreadWatchActiveGuard,
 ) {
-    let response = receiver.await;
+    let response = receiver.await.map(|response| response.result);
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
     drop(user_input_guard);
     let value = match response {
@@ -1820,7 +1826,7 @@ async fn on_mcp_server_elicitation_response(
     thread_state: Arc<Mutex<ThreadState>>,
     permission_guard: ThreadWatchActiveGuard,
 ) {
-    let response = receiver.await;
+    let response = receiver.await.map(|response| response.result);
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
     drop(permission_guard);
     let response = mcp_server_elicitation_response_from_client_result(response);
@@ -1840,7 +1846,7 @@ async fn on_mcp_server_elicitation_response(
 }
 
 fn mcp_server_elicitation_response_from_client_result(
-    response: std::result::Result<ClientRequestResult, oneshot::error::RecvError>,
+    response: std::result::Result<ClientResponseResult, oneshot::error::RecvError>,
 ) -> McpServerElicitationRequestResponse {
     match response {
         Ok(Ok(value)) => serde_json::from_value::<McpServerElicitationRequestResponse>(value)
@@ -1894,7 +1900,7 @@ async fn on_request_permissions_response(
         receiver,
         request_permissions_guard,
     } = pending_response;
-    let response = receiver.await;
+    let response = receiver.await.map(|response| response.result);
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id.clone()).await;
     drop(request_permissions_guard);
     let response = match request_permissions_response_from_client_result(
@@ -1953,7 +1959,7 @@ struct PendingRequestPermissionsResponse {
 
 fn request_permissions_response_from_client_result(
     requested_permissions: CoreRequestPermissionProfile,
-    response: std::result::Result<ClientRequestResult, oneshot::error::RecvError>,
+    response: std::result::Result<ClientResponseResult, oneshot::error::RecvError>,
     cwd: &std::path::Path,
 ) -> std::io::Result<Option<CoreRequestPermissionsResponse>> {
     let value = match response {
@@ -2031,7 +2037,7 @@ async fn on_file_change_request_approval_response(
     thread_state: Arc<Mutex<ThreadState>>,
     permission_guard: ThreadWatchActiveGuard,
 ) {
-    let response = receiver.await;
+    let response = receiver.await.map(|response| response.result);
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
     drop(permission_guard);
     let decision = match response {
@@ -2070,6 +2076,7 @@ async fn on_command_execution_request_approval_response(
     conversation_id: ThreadId,
     approval_id: Option<String>,
     item_id: String,
+    approval_deadline: Option<tokio::time::Instant>,
     completion_item: Option<CommandExecutionCompletionItem>,
     pending_request_id: RequestId,
     receiver: oneshot::Receiver<ClientRequestResult>,
@@ -2078,11 +2085,15 @@ async fn on_command_execution_request_approval_response(
     thread_state: Arc<Mutex<ThreadState>>,
     permission_guard: ThreadWatchActiveGuard,
 ) {
-    let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
-    drop(permission_guard);
+    let response = match await_command_approval_response(receiver, approval_deadline).await {
+        CommandApprovalResponse::Client(response) => Some(response),
+        CommandApprovalResponse::TimedOut => {
+            outgoing.cancel_request(&pending_request_id).await;
+            None
+        }
+    };
     let (decision, completion_status) = match response {
-        Ok(Ok(value)) => {
+        Some(Ok(Ok(value))) => {
             match serde_json::from_value::<CommandExecutionRequestApprovalResponse>(value) {
                 Ok(response) => match response.decision {
                     CommandExecutionApprovalDecision::Accept => (ReviewDecision::Approved, None),
@@ -2131,22 +2142,43 @@ async fn on_command_execution_request_approval_response(
                 }
             }
         }
-        Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return,
-        Ok(Err(err)) => {
+        Some(Ok(Err(err))) if is_turn_transition_server_request_error(&err) => {
+            resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+            drop(permission_guard);
+            return;
+        }
+        Some(Ok(Err(err))) => {
             error!("request failed with client error: {err:?}");
             (
                 ReviewDecision::denied("approval request failed"),
                 Some(CommandExecutionStatus::Failed),
             )
         }
-        Err(err) => {
+        Some(Err(err)) => {
             error!("request failed: {err:?}");
             (
                 ReviewDecision::denied("approval request failed"),
                 Some(CommandExecutionStatus::Failed),
             )
         }
+        None => (
+            ReviewDecision::TimedOut,
+            Some(CommandExecutionStatus::Declined),
+        ),
     };
+
+    if let Err(err) = conversation
+        .submit(Op::ExecApproval {
+            id: approval_id.clone().unwrap_or_else(|| item_id.clone()),
+            turn_id: Some(event_turn_id.clone()),
+            decision,
+        })
+        .await
+    {
+        error!("failed to submit ExecApproval: {err}");
+    }
+    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    drop(permission_guard);
 
     let suppress_subcommand_completion_item = {
         // For regular shell/unified_exec approvals, approval_id is null.
@@ -2180,17 +2212,65 @@ async fn on_command_execution_request_approval_response(
         )
         .await;
     }
+}
 
-    if let Err(err) = conversation
-        .submit(Op::ExecApproval {
-            id: approval_id.unwrap_or_else(|| item_id.clone()),
-            turn_id: Some(event_turn_id),
-            decision,
-        })
-        .await
-    {
-        error!("failed to submit ExecApproval: {err}");
+enum CommandApprovalResponse {
+    Client(std::result::Result<ClientResponseResult, oneshot::error::RecvError>),
+    TimedOut,
+}
+
+async fn await_command_approval_response(
+    receiver: oneshot::Receiver<ClientRequestResult>,
+    deadline: Option<tokio::time::Instant>,
+) -> CommandApprovalResponse {
+    let Some(deadline) = deadline else {
+        return CommandApprovalResponse::Client(receiver.await.map(|response| response.result));
+    };
+    let timeout = tokio::time::sleep_until(deadline);
+    tokio::pin!(timeout);
+    tokio::select! {
+        biased;
+        response = receiver => match response {
+            Ok(response) if response.received_at < deadline => {
+                CommandApprovalResponse::Client(Ok(response.result))
+            }
+            Ok(_) => CommandApprovalResponse::TimedOut,
+            Err(err) => CommandApprovalResponse::Client(Err(err)),
+        },
+        () = &mut timeout => CommandApprovalResponse::TimedOut,
     }
+}
+
+fn command_approval_deadline(
+    started_at_ms: Option<i64>,
+    expires_at_ms: Option<i64>,
+) -> Option<tokio::time::Instant> {
+    let timeout_ms = expires_at_ms?.saturating_sub(started_at_ms?);
+    Some(saturating_instant_add_ms(
+        tokio::time::Instant::now(),
+        u64::try_from(timeout_ms).unwrap_or(0),
+    ))
+}
+
+fn saturating_instant_add_ms(now: tokio::time::Instant, timeout_ms: u64) -> tokio::time::Instant {
+    if let Some(deadline) = now.checked_add(std::time::Duration::from_millis(timeout_ms)) {
+        return deadline;
+    }
+    let mut lower = 0;
+    let mut upper = timeout_ms;
+    while lower < upper {
+        let midpoint = lower + (upper - lower).div_ceil(2);
+        if now
+            .checked_add(std::time::Duration::from_millis(midpoint))
+            .is_some()
+        {
+            lower = midpoint;
+        } else {
+            upper = midpoint - 1;
+        }
+    }
+    now.checked_add(std::time::Duration::from_millis(lower))
+        .unwrap_or(now)
 }
 
 fn now_unix_timestamp_ms() -> i64 {
@@ -2211,6 +2291,7 @@ mod tests {
     use anyhow::Result;
     use anyhow::anyhow;
     use anyhow::bail;
+
     use chrono::Utc;
     use codex_app_server_protocol::AutoReviewDecisionSource;
     use codex_app_server_protocol::GuardianApprovalReviewStatus;
@@ -2263,6 +2344,80 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::Mutex;
     use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn command_approval_response_expires_at_deadline() {
+        tokio::time::pause();
+        let (_tx, rx) = oneshot::channel();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        let response = tokio::spawn(await_command_approval_response(rx, Some(deadline)));
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(/*secs*/ 60)).await;
+
+        assert!(matches!(
+            response.await.expect("approval response task"),
+            CommandApprovalResponse::TimedOut
+        ));
+        tokio::time::resume();
+    }
+
+    #[test]
+    fn command_approval_deadline_uses_declared_duration() {
+        let before = tokio::time::Instant::now();
+        let deadline =
+            command_approval_deadline(Some(10_000), Some(70_000)).expect("approval deadline");
+        let after = tokio::time::Instant::now();
+
+        assert!(deadline >= before + std::time::Duration::from_secs(/*secs*/ 59));
+        assert!(deadline <= after + std::time::Duration::from_secs(/*secs*/ 61));
+    }
+
+    #[test]
+    fn maximum_command_approval_deadline_remains_active() {
+        let now = tokio::time::Instant::now();
+        let deadline =
+            command_approval_deadline(Some(0), Some(i64::MAX)).expect("approval deadline");
+
+        assert!(deadline > now);
+    }
+
+    #[tokio::test]
+    async fn command_approval_response_received_after_deadline_is_ignored() {
+        tokio::time::pause();
+        let (tx, rx) = oneshot::channel();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        tx.send(ClientRequestResult {
+            received_at: deadline,
+            result: Ok(json!({"decision": "accept"})),
+        })
+        .expect("send approval response");
+
+        assert!(matches!(
+            await_command_approval_response(rx, Some(deadline)).await,
+            CommandApprovalResponse::TimedOut
+        ));
+        tokio::time::resume();
+    }
+
+    #[tokio::test]
+    async fn command_approval_response_received_before_deadline_survives_late_poll() {
+        tokio::time::pause();
+        let (tx, rx) = oneshot::channel();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        tx.send(ClientRequestResult {
+            received_at: deadline - std::time::Duration::from_millis(1),
+            result: Ok(json!({"decision": "accept"})),
+        })
+        .expect("send approval response");
+        tokio::time::advance(std::time::Duration::from_secs(/*secs*/ 60)).await;
+
+        assert!(matches!(
+            await_command_approval_response(rx, Some(deadline)).await,
+            CommandApprovalResponse::Client(Ok(_))
+        ));
+        tokio::time::resume();
+    }
 
     fn new_thread_state() -> Arc<Mutex<ThreadState>> {
         Arc::new(Mutex::new(ThreadState::default()))

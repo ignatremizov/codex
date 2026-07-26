@@ -48,7 +48,7 @@ impl ExternalAuthBridge {
                 let result = result.map_err(|err| {
                     std::io::Error::other(format!("auth refresh request canceled: {err}"))
                 })?;
-                result.map_err(|err| {
+                result.result.map_err(|err| {
                     std::io::Error::other(format!(
                         "auth refresh request failed: code={} message={}",
                         err.code, err.message

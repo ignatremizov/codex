@@ -2170,6 +2170,7 @@ impl CodexClient {
             turn_id,
             item_id,
             started_at_ms: _,
+            expires_at_ms: _,
             approval_id,
             environment_id,
             reason,

@@ -225,7 +225,23 @@ impl CodexThread {
     }
 
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
-        self.io.submit(op).await
+        let approval_id = if let Op::ExecApproval { id, .. } = &op {
+            self.session
+                .claim_pending_approval(id)
+                .await
+                .then(|| id.clone())
+        } else {
+            None
+        };
+        let result = self.io.submit(op).await;
+        if result.is_err()
+            && let Some(approval_id) = approval_id
+        {
+            self.session
+                .release_pending_approval_claim(&approval_id)
+                .await;
+        }
+        result
     }
 
     /// Returns the session telemetry handle for thread-scoped production instrumentation.

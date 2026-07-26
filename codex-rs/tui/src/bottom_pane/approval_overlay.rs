@@ -13,6 +13,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 #[cfg(test)]
@@ -83,6 +85,9 @@ pub(crate) struct ExecApprovalRequest {
     pub thread_label: Option<String>,
     pub id: String,
     pub environment_id: Option<String>,
+    pub started_at_ms: i64,
+    pub expires_at_ms: Option<i64>,
+    pub received_at: Instant,
     pub command: Vec<String>,
     pub reason: Option<String>,
     pub available_decisions: Vec<CommandExecutionApprovalDecision>,
@@ -174,6 +179,7 @@ pub(crate) struct ApprovalOverlay {
     app_event_tx: AppEventSender,
     list: ListSelectionView,
     options: Vec<ApprovalOption>,
+    current_deadline: Option<Instant>,
     current_complete: bool,
     done: bool,
     features: Features,
@@ -195,6 +201,7 @@ impl ApprovalOverlay {
             app_event_tx: app_event_tx.clone(),
             list: ListSelectionView::new(Default::default(), app_event_tx, list_keymap.clone()),
             options: Vec::new(),
+            current_deadline: None,
             current_complete: false,
             done: false,
             features,
@@ -228,6 +235,13 @@ impl ApprovalOverlay {
 
     fn set_current(&mut self, request: ApprovalRequest) {
         self.current_complete = false;
+        let received_at = match &request {
+            ApprovalRequest::Exec(request) => Some(request.received_at),
+            _ => None,
+        };
+        self.current_deadline = received_at
+            .zip(approval_request_timeout(&request))
+            .map(|(received_at, timeout)| saturating_instant_add(received_at, timeout));
         let header = build_header(&request);
         let (options, params) = Self::build_options(
             &request,
@@ -564,6 +578,14 @@ impl ApprovalOverlay {
 
 impl BottomPaneView for ApprovalOverlay {
     fn handle_key_event(&mut self, key_event: KeyEvent) {
+        if self
+            .current_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.current_complete = true;
+            self.advance_queue();
+            return;
+        }
         if self.try_handle_shortcut(&key_event) {
             return;
         }
@@ -595,7 +617,38 @@ impl BottomPaneView for ApprovalOverlay {
     }
 
     fn terminal_title_requires_action(&self) -> bool {
-        true
+        self.current_deadline
+            .is_none_or(|deadline| Instant::now() < deadline)
+    }
+
+    fn pre_draw_tick(&mut self, now: Instant) -> bool {
+        if self
+            .current_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.current_complete = true;
+            self.advance_queue();
+            return true;
+        }
+        let Some(request) = self.current_request.as_ref() else {
+            return false;
+        };
+        self.list
+            .set_footer_hint(Some(approval_footer_hint_with_remaining(
+                request,
+                &self.approval_keymap,
+                &self.list_keymap,
+                self.current_deadline
+                    .map(|deadline| deadline.saturating_duration_since(now)),
+            )));
+        false
+    }
+
+    fn next_frame_delay(&self) -> Option<Duration> {
+        let remaining = self
+            .current_deadline?
+            .saturating_duration_since(Instant::now());
+        approval_expiration_next_frame_delay(remaining)
     }
 }
 
@@ -618,6 +671,23 @@ fn approval_footer_hint(
     approval_keymap: &ApprovalKeymap,
     list_keymap: &ListKeymap,
 ) -> Line<'static> {
+    approval_footer_hint_with_remaining(
+        request,
+        approval_keymap,
+        list_keymap,
+        approval_request_timeout(request),
+    )
+}
+
+fn approval_footer_hint_with_remaining(
+    request: &ApprovalRequest,
+    approval_keymap: &ApprovalKeymap,
+    list_keymap: &ListKeymap,
+    remaining: Option<Duration>,
+) -> Line<'static> {
+    if remaining.is_some_and(|remaining| remaining.is_zero()) {
+        return "Rejecting automatically".red().into();
+    }
     let mut spans = accept_cancel_hint_line(
         primary_binding(&list_keymap.accept),
         "to confirm",
@@ -635,7 +705,65 @@ fn approval_footer_hint(
         }
         spans.extend([open_thread.into(), " to open thread".into()]);
     }
+    if let Some(remaining) = remaining {
+        spans.push(" · ".dim());
+        let countdown = if remaining.is_zero() {
+            "Rejecting automatically".to_string()
+        } else {
+            format!(
+                "Rejects automatically in {}",
+                format_approval_expiration_remaining(remaining)
+            )
+        };
+        spans.push(countdown.red());
+    }
     Line::from(spans)
+}
+
+fn approval_request_timeout(request: &ApprovalRequest) -> Option<Duration> {
+    let ApprovalRequest::Exec(request) = request else {
+        return None;
+    };
+    let started_at_ms = request.started_at_ms;
+    let expires_at_ms = request.expires_at_ms?;
+    Some(Duration::from_millis(
+        u64::try_from(expires_at_ms.saturating_sub(started_at_ms)).unwrap_or(0),
+    ))
+}
+
+fn saturating_instant_add(now: Instant, timeout: Duration) -> Instant {
+    if let Some(deadline) = now.checked_add(timeout) {
+        return deadline;
+    }
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let mut lower = 0;
+    let mut upper = timeout_ms;
+    while lower < upper {
+        let midpoint = lower + (upper - lower).div_ceil(2);
+        if now.checked_add(Duration::from_millis(midpoint)).is_some() {
+            lower = midpoint;
+        } else {
+            upper = midpoint - 1;
+        }
+    }
+    now.checked_add(Duration::from_millis(lower)).unwrap_or(now)
+}
+
+fn approval_expiration_next_frame_delay(remaining: Duration) -> Option<Duration> {
+    (!remaining.is_zero()).then_some(remaining.min(Duration::from_secs(/*secs*/ 1)))
+}
+
+fn format_approval_expiration_remaining(remaining: Duration) -> String {
+    let mut seconds = remaining.as_secs();
+    if remaining.subsec_nanos() > 0 {
+        seconds = seconds.saturating_add(1);
+    }
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    format!("{minutes}m {seconds:02}s")
 }
 
 fn network_approval_target(
@@ -1202,6 +1330,9 @@ mod tests {
             thread_label: None,
             id: "test".to_string(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command: vec!["echo".to_string(), "hi".to_string()],
             reason: Some("reason".to_string()),
             available_decisions: vec![
@@ -1343,6 +1474,9 @@ mod tests {
                 thread_label: None,
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1387,6 +1521,9 @@ mod tests {
                 thread_label: None,
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["curl".to_string(), "https://example.com".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1462,6 +1599,9 @@ mod tests {
                 thread_label: Some("Robie [explorer]".to_string()),
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1497,6 +1637,9 @@ mod tests {
                 thread_label: Some("Robie [explorer]".to_string()),
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1536,6 +1679,9 @@ mod tests {
                 thread_label: Some("Robie [explorer]".to_string()),
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["echo".to_string(), "hi".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1556,6 +1702,121 @@ mod tests {
     }
 
     #[test]
+    fn expired_command_approval_snapshot() {
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+        let mut request = make_exec_request();
+        {
+            let ApprovalRequest::Exec(request) = &mut request else {
+                panic!("expected exec approval request");
+            };
+            request.expires_at_ms = Some(0);
+        }
+        let mut view = make_overlay(request, tx, Features::with_defaults());
+
+        assert_snapshot!(
+            "approval_overlay_expired_command",
+            render_overlay_lines(&view, /*width*/ 80)
+        );
+        assert!(view.pre_draw_tick(Instant::now()));
+        assert!(rx.try_recv().is_err());
+        assert!(view.is_complete());
+        assert!(!view.terminal_title_requires_action());
+    }
+
+    #[test]
+    fn approval_expiration_formats_remaining_time() {
+        assert_eq!(
+            format_approval_expiration_remaining(Duration::from_millis(60_001)),
+            "1m 01s"
+        );
+        assert_eq!(
+            format_approval_expiration_remaining(Duration::from_secs(/*secs*/ 60)),
+            "1m 00s"
+        );
+        assert_eq!(
+            format_approval_expiration_remaining(Duration::from_millis(999)),
+            "1s"
+        );
+        assert_eq!(
+            approval_expiration_next_frame_delay(Duration::from_secs(/*secs*/ 60)),
+            Some(Duration::from_secs(/*secs*/ 1))
+        );
+        assert_eq!(approval_expiration_next_frame_delay(Duration::ZERO), None);
+    }
+
+    #[test]
+    fn active_command_approval_countdown_snapshot() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+        let mut request = make_exec_request();
+        let received_at = std::time::Instant::now();
+        {
+            let ApprovalRequest::Exec(request) = &mut request else {
+                panic!("expected exec approval request");
+            };
+            request.received_at = received_at;
+            request.started_at_ms = 0;
+            request.expires_at_ms = Some(120_000);
+        }
+        let mut view = make_overlay(request, tx, Features::with_defaults());
+        assert!(!view.pre_draw_tick(received_at + Duration::from_secs(/*secs*/ 60)));
+
+        assert_snapshot!(
+            "approval_overlay_active_countdown",
+            render_overlay_lines(&view, /*width*/ 80)
+        );
+    }
+
+    #[test]
+    fn expired_command_approval_advances_to_queued_request() {
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+        let mut expired = make_exec_request();
+        let mut queued = make_exec_request();
+        {
+            let ApprovalRequest::Exec(request) = &mut expired else {
+                panic!("expected exec approval request");
+            };
+            request.id = "expired".to_string();
+            request.expires_at_ms = Some(0);
+        }
+        {
+            let ApprovalRequest::Exec(request) = &mut queued else {
+                panic!("expected exec approval request");
+            };
+            request.id = "queued".to_string();
+            request.received_at = Instant::now() - Duration::from_secs(/*secs*/ 30);
+            request.started_at_ms = 0;
+            request.expires_at_ms = Some(120_000);
+        }
+        let mut view = make_overlay(expired, tx, Features::with_defaults());
+        view.enqueue_request(queued);
+
+        assert!(view.pre_draw_tick(Instant::now()));
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            view.current_request.as_ref(),
+            Some(ApprovalRequest::Exec(request)) if request.id == "queued"
+        ));
+        let remaining = view
+            .current_deadline
+            .expect("queued deadline")
+            .saturating_duration_since(Instant::now());
+        assert!(remaining >= Duration::from_secs(/*secs*/ 89));
+        assert!(remaining <= Duration::from_secs(/*secs*/ 90));
+        assert!(!view.is_complete());
+    }
+
+    #[test]
+    fn saturating_deadline_for_maximum_duration_remains_active() {
+        let now = Instant::now();
+        let deadline = saturating_instant_add(now, Duration::MAX);
+
+        assert!(deadline > now);
+    }
+
+    #[test]
     fn exec_prefix_option_emits_execpolicy_amendment() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
@@ -1565,6 +1826,9 @@ mod tests {
                 thread_label: None,
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["echo".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1618,6 +1882,9 @@ mod tests {
                 thread_label: None,
                 id: "test".to_string(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec!["curl".to_string(), "https://example.com".to_string()],
                 reason: None,
                 available_decisions: vec![
@@ -1658,6 +1925,9 @@ mod tests {
             thread_label: None,
             id: "test".into(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command,
             reason: None,
             available_decisions: vec![
@@ -1959,6 +2229,9 @@ mod tests {
             thread_label: None,
             id: "test".into(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command: vec!["cat".into(), "/tmp/readme.txt".into()],
             reason: None,
             available_decisions: vec![
@@ -2016,6 +2289,9 @@ mod tests {
             thread_label: None,
             id: "test".into(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command: vec!["cat".into(), "/tmp/readme.txt".into()],
             reason: Some("need filesystem access".into()),
             available_decisions: vec![
@@ -2097,6 +2373,9 @@ mod tests {
             thread_label: None,
             id: "test".into(),
             environment_id: None,
+            started_at_ms: 0,
+            expires_at_ms: None,
+            received_at: std::time::Instant::now(),
             command: vec!["curl".into(), "https://example.com".into()],
             reason: Some("network request blocked".into()),
             available_decisions: vec![
@@ -2234,6 +2513,9 @@ mod tests {
                 thread_label: None,
                 id: "test".into(),
                 environment_id: None,
+                started_at_ms: 0,
+                expires_at_ms: None,
+                received_at: std::time::Instant::now(),
                 command: vec![
                     "network-access".to_string(),
                     "https://example.com:8443".to_string(),

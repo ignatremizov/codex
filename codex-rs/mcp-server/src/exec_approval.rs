@@ -56,6 +56,7 @@ pub(crate) async fn handle_exec_approval_request(
     request_id: RequestId,
     tool_call_id: String,
     event_id: String,
+    approval_deadline: Option<tokio::time::Instant>,
     call_id: String,
     approval_id: String,
     codex_parsed_cmd: Vec<ParsedCommand>,
@@ -94,7 +95,7 @@ pub(crate) async fn handle_exec_approval_request(
         }
     };
 
-    let on_response = outgoing
+    let (elicitation_request_id, on_response) = outgoing
         .send_request("elicitation/create", Some(params_json))
         .await;
 
@@ -103,8 +104,18 @@ pub(crate) async fn handle_exec_approval_request(
         let codex = codex.clone();
         let approval_id = approval_id.clone();
         let event_id = event_id.clone();
+        let outgoing = Arc::clone(&outgoing);
         tokio::spawn(async move {
-            on_exec_approval_response(approval_id, event_id, on_response, codex).await;
+            on_exec_approval_response(
+                approval_id,
+                event_id,
+                elicitation_request_id,
+                approval_deadline,
+                on_response,
+                outgoing,
+                codex,
+            )
+            .await;
         });
     }
 }
@@ -112,10 +123,54 @@ pub(crate) async fn handle_exec_approval_request(
 async fn on_exec_approval_response(
     approval_id: String,
     event_id: String,
-    receiver: tokio::sync::oneshot::Receiver<serde_json::Value>,
+    elicitation_request_id: RequestId,
+    approval_deadline: Option<tokio::time::Instant>,
+    receiver: tokio::sync::oneshot::Receiver<crate::outgoing_message::ClientResponse>,
+    outgoing: Arc<crate::outgoing_message::OutgoingMessageSender>,
     codex: Arc<CodexThread>,
 ) {
-    let response = receiver.await;
+    let response = match approval_deadline {
+        Some(deadline) => {
+            tokio::select! {
+                biased;
+                response = receiver => match classify_approval_response(response, deadline) {
+                    ApprovalResponse::OnTime(response) => response,
+                    ApprovalResponse::TimedOut => {
+                        outgoing.cancel_request(&elicitation_request_id).await;
+                        let _ = codex
+                            .submit(Op::ExecApproval {
+                                id: approval_id,
+                                turn_id: Some(event_id),
+                                decision: ReviewDecision::TimedOut,
+                            })
+                            .await;
+                        return;
+                    }
+                },
+                () = tokio::time::sleep_until(deadline) => {
+                    outgoing.cancel_request(&elicitation_request_id).await;
+                    outgoing
+                        .send_notification(crate::outgoing_message::OutgoingNotification {
+                            method: "notifications/cancelled".to_string(),
+                            params: Some(json!({
+                                "requestId": elicitation_request_id,
+                                "reason": "command approval expired",
+                            })),
+                        })
+                        .await;
+                    let _ = codex
+                        .submit(Op::ExecApproval {
+                            id: approval_id,
+                            turn_id: Some(event_id),
+                            decision: ReviewDecision::TimedOut,
+                        })
+                        .await;
+                    return;
+                }
+            }
+        }
+        None => receiver.await.map(|response| response.result),
+    };
     let value = match response {
         Ok(value) => value,
         Err(err) => {
@@ -145,3 +200,28 @@ async fn on_exec_approval_response(
         error!("failed to submit ExecApproval: {err}");
     }
 }
+
+enum ApprovalResponse {
+    OnTime(Result<Value, tokio::sync::oneshot::error::RecvError>),
+    TimedOut,
+}
+
+fn classify_approval_response(
+    response: Result<
+        crate::outgoing_message::ClientResponse,
+        tokio::sync::oneshot::error::RecvError,
+    >,
+    deadline: tokio::time::Instant,
+) -> ApprovalResponse {
+    match response {
+        Ok(response) if response.received_at < deadline => {
+            ApprovalResponse::OnTime(Ok(response.result))
+        }
+        Ok(_) => ApprovalResponse::TimedOut,
+        Err(err) => ApprovalResponse::OnTime(Err(err)),
+    }
+}
+
+#[cfg(test)]
+#[path = "exec_approval_tests.rs"]
+mod tests;

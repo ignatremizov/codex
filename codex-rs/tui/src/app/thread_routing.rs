@@ -236,6 +236,12 @@ impl App {
                         .clone()
                         .unwrap_or_else(|| params.item_id.clone()),
                     environment_id: params.environment_id.clone(),
+                    started_at_ms: params.started_at_ms.unwrap_or_default(),
+                    expires_at_ms: params.started_at_ms.and(params.expires_at_ms),
+                    received_at: self
+                        .pending_app_server_requests
+                        .request_received_at(request)
+                        .unwrap_or_else(std::time::Instant::now),
                     command: params
                         .command
                         .as_deref()
@@ -938,9 +944,10 @@ impl App {
         thread_id: ThreadId,
         op: &AppCommand,
     ) -> Result<bool> {
+        let thread_id_string = thread_id.to_string();
         let Some(resolution) = self
             .pending_app_server_requests
-            .take_resolution(op)
+            .take_resolution_for_thread(Some(&thread_id_string), op)
             .map_err(|err| color_eyre::eyre::eyre!(err))?
         else {
             return Ok(false);
@@ -1698,8 +1705,15 @@ impl App {
                     .pending_app_server_requests
                     .contains_server_request(request.as_ref())
                 {
-                    self.chat_widget
-                        .handle_server_request(*request, /*replay_kind*/ None);
+                    let received_at = self
+                        .pending_app_server_requests
+                        .request_received_at(request.as_ref())
+                        .unwrap_or_else(std::time::Instant::now);
+                    self.chat_widget.handle_server_request(
+                        *request,
+                        /*replay_kind*/ None,
+                        received_at,
+                    );
                 }
             }
             ThreadBufferedEvent::HistoryEntryResponse(event) => {
@@ -1754,9 +1768,17 @@ impl App {
             ThreadBufferedEvent::Notification(notification) => self
                 .chat_widget
                 .handle_server_notification(*notification, Some(ReplayKind::ThreadSnapshot)),
-            ThreadBufferedEvent::Request(request) => self
-                .chat_widget
-                .handle_server_request(*request, Some(ReplayKind::ThreadSnapshot)),
+            ThreadBufferedEvent::Request(request) => {
+                let received_at = self
+                    .pending_app_server_requests
+                    .request_received_at(request.as_ref())
+                    .unwrap_or_else(std::time::Instant::now);
+                self.chat_widget.handle_server_request(
+                    *request,
+                    Some(ReplayKind::ThreadSnapshot),
+                    received_at,
+                )
+            }
             ThreadBufferedEvent::HistoryEntryResponse(event) => {
                 self.chat_widget.handle_history_entry_response(event)
             }

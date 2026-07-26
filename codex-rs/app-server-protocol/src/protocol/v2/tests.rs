@@ -754,12 +754,26 @@ fn external_agent_config_import_params_accept_legacy_plugin_details() {
 }
 
 #[test]
+fn command_execution_request_approval_accepts_missing_timing_metadata() {
+    let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
+        "threadId": "thr_123",
+        "turnId": "turn_123",
+        "itemId": "call_123"
+    }))
+    .expect("legacy approval payload should deserialize");
+
+    assert_eq!(params.started_at_ms, None);
+    assert_eq!(params.expires_at_ms, None);
+}
+
+#[test]
 fn command_execution_request_approval_localization_rejects_relative_additional_permission_paths() {
     let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
         "threadId": "thr_123",
         "turnId": "turn_123",
         "itemId": "call_123",
         "startedAtMs": 1,
+        "expiresAtMs": 120001,
         "command": "cat file",
         "cwd": absolute_path_string("tmp"),
         "commandActions": null,
@@ -777,6 +791,7 @@ fn command_execution_request_approval_localization_rejects_relative_additional_p
         "availableDecisions": null
     }))
     .expect("API paths should deserialize before localization");
+    assert_eq!(params.expires_at_ms, Some(120_001));
     let additional_permissions = params
         .additional_permissions
         .expect("additional permissions should be present");

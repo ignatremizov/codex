@@ -23,11 +23,16 @@ use tracing::warn;
 
 pub(crate) type OutgoingJsonRpcMessage = JsonRpcMessage<CustomRequest, Value, CustomNotification>;
 
+pub(crate) struct ClientResponse {
+    pub(crate) received_at: tokio::time::Instant,
+    pub(crate) result: Value,
+}
+
 /// Sends messages to the client and manages request callbacks.
 pub(crate) struct OutgoingMessageSender {
     next_request_id: AtomicI64,
     sender: mpsc::UnboundedSender<OutgoingMessage>,
-    request_id_to_callback: Mutex<HashMap<RequestId, oneshot::Sender<Value>>>,
+    request_id_to_callback: Mutex<HashMap<RequestId, oneshot::Sender<ClientResponse>>>,
 }
 
 impl OutgoingMessageSender {
@@ -43,7 +48,7 @@ impl OutgoingMessageSender {
         &self,
         method: &str,
         params: Option<serde_json::Value>,
-    ) -> oneshot::Receiver<Value> {
+    ) -> (RequestId, oneshot::Receiver<ClientResponse>) {
         let id = RequestId::Number(self.next_request_id.fetch_add(1, Ordering::Relaxed));
         let outgoing_message_id = id.clone();
         let (tx_approve, rx_approve) = oneshot::channel();
@@ -53,12 +58,20 @@ impl OutgoingMessageSender {
         }
 
         let outgoing_message = OutgoingMessage::Request(OutgoingRequest {
-            id: outgoing_message_id,
+            id: outgoing_message_id.clone(),
             method: method.to_string(),
             params,
         });
         let _ = self.sender.send(outgoing_message);
-        rx_approve
+        (outgoing_message_id, rx_approve)
+    }
+
+    pub(crate) async fn cancel_request(&self, id: &RequestId) -> bool {
+        self.request_id_to_callback
+            .lock()
+            .await
+            .remove(id)
+            .is_some()
     }
 
     pub(crate) async fn notify_client_response(&self, id: RequestId, result: Value) {
@@ -66,11 +79,18 @@ impl OutgoingMessageSender {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             request_id_to_callback.remove_entry(&id)
         };
+        let received_at = tokio::time::Instant::now();
 
         match entry {
             Some((id, sender)) => {
-                if let Err(err) = sender.send(result) {
-                    warn!("could not notify callback for {id:?} due to: {err:?}");
+                if sender
+                    .send(ClientResponse {
+                        received_at,
+                        result,
+                    })
+                    .is_err()
+                {
+                    warn!("could not notify callback for {id:?}");
                 }
             }
             None => {

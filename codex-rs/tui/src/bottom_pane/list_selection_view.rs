@@ -466,6 +466,10 @@ impl ListSelectionView {
             .or(self.footer_hint.as_ref())
     }
 
+    pub(crate) fn set_footer_hint(&mut self, footer_hint: Option<Line<'static>>) {
+        self.footer_hint = footer_hint;
+    }
+
     fn active_tab_id(&self) -> Option<&str> {
         self.active_tab_idx
             .and_then(|idx| self.tabs.get(idx))
