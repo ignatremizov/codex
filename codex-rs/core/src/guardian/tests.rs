@@ -2133,6 +2133,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
             /*rejected_audio_file_ids*/ Default::default(),
             crate::compact::CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
+                completion_source_items: Vec::new(),
                 message: String::new(),
                 compaction_summary_tokens: None,
                 window_number,

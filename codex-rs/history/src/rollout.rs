@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 
 use crate::RolloutItem;
 
@@ -10,6 +11,8 @@ use crate::RolloutItem;
 /// unioned: a later rollback never resurrects records removed by an earlier one. Callers that
 /// need exact semantics must retain a decoded canonical vector and its source-position mapping;
 /// normalized or concatenated history is not a valid coordinate space.
+/// Trusted completion artifacts are out-of-band deliveries, retained independently of the
+/// enclosing user turn. Wait items qualify only with explicit terminal presentation ownership.
 pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
     let mut starts = vec![0usize; items.len().saturating_add(1)];
     let mut ends = vec![0usize; items.len().saturating_add(1)];
@@ -79,7 +82,54 @@ pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
             _ => {}
         }
     }
+
+    // Subagent completion context and presentation are out-of-band arrivals, not output owned by
+    // the user turn whose raw range happens to contain them. Once accepted and durably appended,
+    // later exact rollback must not erase them. Preserve the v2 delivery metadata immediately
+    // preceding a completion context item as part of the same durable pair.
+    for index in 0..items.len() {
+        if !removed[index] || !is_sub_agent_completion_artifact(items, index) {
+            continue;
+        }
+        removed[index] = false;
+        if matches!(&items[index], RolloutItem::ResponseItem(_))
+            && matches!(
+                index.checked_sub(1).and_then(|index| items.get(index)),
+                Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+            )
+        {
+            removed[index - 1] = false;
+        }
+    }
     removed
+}
+
+fn is_sub_agent_completion_artifact(items: &[RolloutItem], index: usize) -> bool {
+    match &items[index] {
+        RolloutItem::ResponseItem(item) => {
+            item.id()
+                .is_some_and(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
+                && matches!(
+                    index.checked_sub(1).and_then(|index| items.get(index)),
+                    Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+                )
+        }
+        RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
+            event.item.is_sub_agent_completion_presentation()
+        }
+        RolloutItem::SessionMeta(_)
+        | RolloutItem::InterAgentCommunication(_)
+        | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::DynamicToolsUpdated { .. }
+        | RolloutItem::Compacted(_)
+        | RolloutItem::TurnContext(_)
+        | RolloutItem::TokenUsageRecord(_)
+        | RolloutItem::WorldState(_)
+        | RolloutItem::SecurityRiskScore(_)
+        | RolloutItem::RetainedContext(_)
+        | RolloutItem::RealtimeItem(_)
+        | RolloutItem::EventMsg(_) => false,
+    }
 }
 
 /// Projects one item after its removal decision was made in the original rollout coordinates.
@@ -101,7 +151,10 @@ pub fn exact_rollback_retained_item(item: RolloutItem, removed: bool) -> Option<
     })
 }
 
-/// Returns a canonical rollout with exact rollback ranges and marker records removed.
+/// Returns the effective rollout with exact rollback ranges and marker records removed.
+///
+/// Compute masks and cutoffs in original coordinates before this projection preserves removed
+/// checkpoint catalogs as thread metadata without restoring their model-visible context.
 pub fn rollout_without_exact_rollback_ranges(items: &[RolloutItem]) -> Vec<RolloutItem> {
     items
         .iter()

@@ -73,6 +73,7 @@ async fn turn_timing_state_records_ttfm_independently_of_ttft() {
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                sub_agent_completion: None,
             }))
             .await
             .is_some()
@@ -87,6 +88,7 @@ async fn turn_timing_state_records_ttfm_independently_of_ttft() {
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                sub_agent_completion: None,
             }))
             .await,
         None

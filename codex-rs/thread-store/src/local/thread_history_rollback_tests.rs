@@ -428,3 +428,75 @@ async fn incremental_exact_rollback_rebuild_keeps_the_captured_ancestor_prefix()
         }
     }
 }
+
+#[test]
+fn exact_projection_preserves_deliveries_without_manufacturing_metadata_adjacency() {
+    let completion_context = || {
+        let id = codex_protocol::protocol::new_sub_agent_completion_context_response_item_id();
+        let item = serde_json::from_value(serde_json::json!({
+            "type": "message",
+            "id": id,
+            "role": "user",
+            "content": [{"type": "input_text", "text": "completion context"}],
+        }))
+        .expect("completion context fixture");
+        RolloutItem::ResponseItem(codex_history::ResponseItemEnvelope::new(item))
+    };
+    let thread_id = ThreadId::new();
+    let completion = codex_protocol::protocol::sub_agent_completion_item(
+        "/root/worker",
+        &codex_protocol::protocol::AgentStatus::Shutdown,
+    )
+    .expect("terminal completion");
+    let items = vec![
+        turn_started("retained"),
+        // This ordinary event must not turn into a delivery-metadata placeholder.
+        completed_item(
+            thread_id,
+            "retained",
+            agent_message("ordinary", MessagePhase::FinalAnswer),
+        ),
+        completion_context(),
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        completion_context(),
+        completed_item(thread_id, "retained", TurnItem::AgentMessage(completion)),
+        turn_completed("retained"),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: Some(1),
+        })),
+    ];
+    let mut bytes = Vec::new();
+    let mut offsets = Vec::new();
+    for item in &items {
+        offsets.push(u64::try_from(bytes.len()).expect("source offset"));
+        serde_json::to_writer(
+            &mut bytes,
+            &RolloutLine {
+                timestamp: "2026-10-25T00:00:00Z".to_string(),
+                ordinal: None,
+                item: item.clone(),
+            },
+        )
+        .expect("encode source record");
+        bytes.push(b'\n');
+    }
+    let projection = super::super::rollback::ExactRollbackProjection::read(
+        &mut std::io::Cursor::new(bytes),
+        /*start_offset*/ 0,
+        || false,
+    )
+    .expect("exact source projection");
+    let expected = offsets
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, offset)| matches!(index, 1 | 2 | 7).then_some(offset))
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        (projection.contains_exact_marker, projection.removed_offsets),
+        (true, expected),
+    );
+}

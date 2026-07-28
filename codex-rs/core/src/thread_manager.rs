@@ -1692,9 +1692,12 @@ impl ThreadManager {
                 "live internal threads can only be removed by their owner".to_owned(),
             ));
         }
-        Ok(threads.remove(thread_id).inspect(|thread| {
+        let removed = threads.remove(thread_id);
+        if let Some(thread) = &removed {
             thread.session.services.mcp_runtime.revoke_ema();
-        }))
+            thread.session.prepare_for_thread_removal();
+        }
+        Ok(removed)
     }
 
     /// Removes a thread only if `thread_id` still maps to `expected`.
@@ -2166,13 +2169,13 @@ impl ThreadManagerState {
 
     /// Remove a thread from the manager by ID, returning it when present.
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
-        self.threads
-            .write()
-            .await
-            .remove(thread_id)
-            .inspect(|thread| {
-                thread.session.services.mcp_runtime.revoke_ema();
-            })
+        let mut threads = self.threads.write().await;
+        let removed = threads.remove(thread_id);
+        if let Some(thread) = &removed {
+            thread.session.services.mcp_runtime.revoke_ema();
+            thread.session.prepare_for_thread_removal();
+        }
+        removed
     }
 
     async fn thread_for_fork_source(
@@ -2222,9 +2225,12 @@ impl ThreadManagerState {
             .get(thread_id)
             .is_some_and(|thread| Arc::ptr_eq(thread, expected))
         {
-            threads.remove(thread_id).inspect(|thread| {
+            let removed = threads.remove(thread_id);
+            if let Some(thread) = &removed {
                 thread.session.services.mcp_runtime.revoke_ema();
-            })
+                thread.session.prepare_for_thread_removal();
+            }
+            removed
         } else {
             None
         }
@@ -2756,8 +2762,10 @@ impl ThreadManagerState {
                         thread,
                     });
                 }
-                threads.remove(&resumed.conversation_id);
-                thread.session.services.mcp_runtime.revoke_ema();
+                if let Some(removed) = threads.remove(&resumed.conversation_id) {
+                    removed.session.services.mcp_runtime.revoke_ema();
+                    removed.session.prepare_for_thread_removal();
+                }
             }
         }
         let supplied_thread_instructions =

@@ -29,6 +29,7 @@ async fn direct_checkpoint_publication_sanitizes_media_before_certification_and_
             Default::default(),
             CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
+                completion_source_items: Vec::new(),
                 message: String::new(),
                 compaction_summary_tokens: None,
                 window_number,
@@ -159,6 +160,7 @@ async fn checkpoint_and_cold_reconstruction_preserve_full_mcp_union_and_latest_e
             std::collections::BTreeSet::from(["rejected-before-cold-resume".to_string()]),
             CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
+                completion_source_items: Vec::new(),
                 message: "summary".to_string(),
                 compaction_summary_tokens: None,
                 window_number,

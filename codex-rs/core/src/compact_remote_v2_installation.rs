@@ -179,6 +179,7 @@ async fn build_and_install_compaction(
     let RemoteCompactV2Attempt {
         rejected_audio_file_ids,
         input_goal_ids,
+        completion_source_items,
         trace_input_history,
         replacement_history_input,
         compacted_prefix_len,
@@ -228,6 +229,7 @@ async fn build_and_install_compaction(
                     .chain(cutoff_world_state.full_context_excluded_section_ids())
                     .collect(),
                 model_info: &model_info,
+                completion_source_items,
                 compaction_response_id,
                 compaction_summary_tokens,
                 reviewer_compaction_hash,
@@ -247,6 +249,7 @@ async fn build_and_install_compaction(
         let (window_number, window_ids) = sess.advance_auto_compact_window().await;
         let installation = CompactedHistoryMetadata {
             input_goal_ids,
+            completion_source_items,
             message: String::new(),
             compaction_summary_tokens,
             window_number,

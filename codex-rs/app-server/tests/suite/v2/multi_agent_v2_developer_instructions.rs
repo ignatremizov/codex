@@ -190,20 +190,20 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     }
     if configured_roles {
         feature_config.push_str(
-                "\n\n[agents.custom]\ndescription = \"configured role\"\nconfig_file = \"./config.toml\"\n\n[agents.default]\ndescription = \"configured default role\"\nconfig_file = \"./config.toml\"",
+                "\n\n[agents.custom]\ndescription = \"configured role\"\nconfig_file = \"./role.toml\"\n\n[agents.default]\ndescription = \"configured default role\"\nconfig_file = \"./role.toml\"",
             );
     }
     let codex_home = TempDir::new()?;
-    let configured_model = if case == "full history configured role" {
-        "gpt-5.5"
+    let config = MockResponsesConfig::new(&server.uri()).with_model("gpt-5.4");
+    let mut role_config = if case == "full history configured role" {
+        "model = \"gpt-5.5\"\n".to_string()
     } else {
-        "gpt-5.4"
+        String::new()
     };
-    let mut config = MockResponsesConfig::new(&server.uri()).with_model(configured_model);
     if role_has_instructions {
-        config =
-            config.with_root_config(&format!("developer_instructions = {ROLE_INSTRUCTIONS:?}"));
+        role_config.push_str(&format!("developer_instructions = {ROLE_INSTRUCTIONS:?}\n"));
     }
+    std::fs::write(codex_home.path().join("role.toml"), role_config)?;
     config
         .with_extra_config(&feature_config)
         .write(codex_home.path())?;

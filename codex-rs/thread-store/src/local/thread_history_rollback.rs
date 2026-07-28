@@ -6,6 +6,7 @@ use std::io::BufRead;
 
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_rollout::RolloutItem;
 
 pub(super) struct ExactRollbackProjection {
@@ -43,9 +44,9 @@ impl ExactRollbackProjection {
                         if event.rollback_start_index.is_some()
                 );
                 offsets.push(offset);
-                // Keep the lifecycle and thread-catalog variants inspected by the canonical
-                // exact mask. Other records need only their decoded position, without retaining
-                // large message/media bodies or inventing inter-agent delivery metadata.
+                // Keep lifecycle, catalog, and typed completion evidence inspected by the exact
+                // mask. Ordinary decoded records keep their position without becoming a forged
+                // delivery-metadata neighbor for a reserved-looking context item.
                 items.push(match line.item {
                     item @ RolloutItem::EventMsg(
                         EventMsg::ThreadRolledBack(_)
@@ -53,6 +54,19 @@ impl ExactRollbackProjection {
                         | EventMsg::TurnComplete(_)
                         | EventMsg::TurnAborted(_),
                     ) => item,
+                    RolloutItem::EventMsg(EventMsg::ItemCompleted(completed))
+                        if completed.item.is_sub_agent_completion_presentation() =>
+                    {
+                        RolloutItem::EventMsg(EventMsg::ItemCompleted(completed))
+                    }
+                    item @ RolloutItem::InterAgentCommunicationMetadata { .. } => item,
+                    RolloutItem::ResponseItem(envelope)
+                        if envelope.id().is_some_and(|id| {
+                            is_sub_agent_completion_context_response_item_id(id.as_str())
+                        }) =>
+                    {
+                        RolloutItem::ResponseItem(envelope)
+                    }
                     // Catalog selection belongs to the thread rather than the removed
                     // instruction range. Its payload is irrelevant to the exact mask; actual
                     // projection still reads the original canonical line below.

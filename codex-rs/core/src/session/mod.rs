@@ -274,7 +274,16 @@ mod submission;
 mod world_state_publication;
 pub(crate) use reasoning_effort::RequestEffortUsage;
 pub(crate) use submission::Submission;
+mod completion_admission;
+mod completion_provenance;
+mod completion_replay;
 mod input_queue;
+mod item_completion;
+mod sub_agent_completion;
+mod terminal_capture;
+pub(crate) use completion_admission::AcceptedCompletionDelivery;
+pub(crate) use sub_agent_completion::CompletionContextDelivery;
+pub(crate) use sub_agent_completion::CompletionContextPublication;
 mod mcp;
 mod mcp_prewarm;
 mod mcp_prompt;
@@ -506,6 +515,7 @@ pub(crate) enum CompactedHistoryInstallation<'a> {
         initial_context: Vec<ResponseItemEnvelope>,
         reset_world_state_sections: Vec<&'static str>,
         model_info: &'a ModelInfo,
+        completion_source_items: Vec<ResponseItem>,
         compaction_response_id: String,
         compaction_summary_tokens: Option<i64>,
         reviewer_compaction_hash: Option<String>,
@@ -2690,6 +2700,9 @@ impl Session {
             }
             terminal_error.replace(error.clone());
         }
+        let terminal = self
+            .prepare_sub_agent_terminal_presentation(turn_context, &msg)
+            .await;
         let legacy_source = msg.clone();
         self.services
             .rollout_thread_trace
@@ -2720,7 +2733,7 @@ impl Session {
                 .track_guardian_session_event(self.thread_id, &event);
         }
         self.send_event_raw(event).await;
-        self.maybe_publish_terminal_agent_result(turn_context, &legacy_source)
+        self.maybe_publish_terminal_agent_result(turn_context, &legacy_source, terminal)
             .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
@@ -2745,6 +2758,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         msg: &EventMsg,
+        terminal: Option<crate::agent::control::AgentTerminalPresentation>,
     ) {
         if !matches!(msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
             return;
@@ -2766,18 +2780,19 @@ impl Session {
             return;
         }
 
-        let terminal_error_message = {
+        let terminal_error = {
             let mut terminal_error = turn_context.terminal_error.lock().await;
             if notify_native_parent {
-                terminal_error.take().map(|error| error.message)
+                terminal_error.take()
             } else {
-                terminal_error.as_ref().map(|error| error.message.clone())
+                terminal_error.clone()
             }
         };
         let mut error_info = None;
-        let status = match terminal_error_message {
-            Some(message) => {
-                let status = AgentStatus::Errored(message);
+        let status = match terminal_error {
+            Some(error) => {
+                error_info = error.codex_error_info;
+                let status = AgentStatus::Errored(error.message);
                 if notify_native_parent {
                     self.agent_status.send_replace(status.clone());
                 }
@@ -2817,6 +2832,26 @@ impl Session {
             status,
             error_info,
         };
+        // The shared controller API carries outcomes, not local publication authority.
+        // Start exact-parent delivery independently so a slow or failed host callback cannot
+        // lose an accepted lease or hold the child's terminal event behind parent backpressure.
+        if let Some(terminal) = terminal {
+            let child_path = outcome.source.get_agent_path();
+            let reference = child_path
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| self.thread_id.to_string());
+            self.services
+                .local_agent_runtime
+                .control(self.session_id())
+                .deliver_terminal_completion(
+                    outcome.clone(),
+                    terminal,
+                    &reference,
+                    child_path,
+                    &self.services.rollout_thread_trace,
+                );
+        }
         let host_outcome = if notify_native_parent {
             let host_outcome = reporter.is_some().then(|| outcome.clone());
             self.services
@@ -2967,9 +3002,8 @@ impl Session {
             private_session_event::forward_to_parent(parent_tx, self.thread_id, &event).await;
         }
         // Record the last known agent status.
-        if let Some(status) = agent_status_from_event(&event.msg) {
-            self.agent_status.send_replace(status);
-        }
+        self.prepare_raw_sub_agent_terminal_presentation(&event);
+        self.publish_agent_status_from_event(&event.msg);
         if let Err(e) = self.tx_event.send(event).await {
             debug!("dropping event because channel is closed: {e}");
         }
@@ -3048,44 +3082,16 @@ impl Session {
         content_token_count: Option<u64>,
         user_input_extension_data: Option<&BTreeMap<String, Value>>,
     ) {
-        record_turn_ttfm_metric(turn_context, &item).await;
-        for contributor in self.services.extensions.turn_lifecycle_contributors() {
-            contributor
-                .on_item_completed_with_metadata(
-                    &self.services.thread_extension_data,
-                    turn_context.extension_data.as_ref(),
-                    &item,
-                    user_input_extension_data,
-                )
-                .await;
-        }
-        let completed_at_ms = now_unix_timestamp_ms();
-        let item_id = item.id();
-        let started_at_ms = turn_context
-            .turn_timing_state
-            .take_item_started(&item_id)
-            .await
-            .unwrap_or_else(|| {
-                warn!(
-                    thread_id = %self.thread_id,
-                    turn_id = %turn_context.sub_id,
-                    item_id = %item_id,
-                    "item completed without a recorded start timestamp"
-                );
-                completed_at_ms
-            });
-        self.send_event(
-            turn_context,
-            EventMsg::ItemCompleted(ItemCompletedEvent {
-                thread_id: self.thread_id,
-                turn_id: turn_context.sub_id.clone(),
+        let completed = self
+            .prepare_turn_item_completed_event(
+                turn_context,
                 item,
                 content_token_count,
-                started_at_ms: Some(started_at_ms),
-                completed_at_ms,
-            }),
-        )
-        .await;
+                user_input_extension_data,
+            )
+            .await;
+        self.send_event(turn_context, EventMsg::ItemCompleted(completed))
+            .await;
     }
 
     /// Adds an execpolicy amendment to both the in-memory and on-disk policies so future
@@ -3765,6 +3771,14 @@ impl Session {
         prepare_audio_response_items(&mut items);
         // Most response items get their passthrough turn ID at the durable history boundary.
         for item in &mut items {
+            // Only the dedicated acknowledged-completion path may retain this namespace.
+            if item.id().is_some_and(|id| {
+                codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
+                    id.as_str(),
+                )
+            }) {
+                item.set_id(None);
+            }
             Self::stamp_response_item_for_history(item, &turn_context.sub_id);
             self.assign_missing_response_item_id(item);
         }
@@ -4353,12 +4367,39 @@ impl Session {
     }
 
     pub(crate) async fn record_inter_agent_communication(
-        &self,
+        self: &Arc<Self>,
         turn_context: &TurnContext,
         model_info: &ModelInfo,
         communication: impl Into<crate::PendingAgentMessage>,
     ) {
-        let communication = communication.into();
+        let mut communication = communication.into();
+        if communication.id.as_ref().is_some_and(|id| {
+            codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(id.as_str())
+        }) {
+            let response = communication.to_model_input_item();
+            let acknowledged = self
+                .state
+                .lock()
+                .await
+                .acknowledged_completion_contexts
+                .iter()
+                .any(|completion| completion.item.item == response);
+            if acknowledged {
+                if let Err(error) = self
+                    .consume_completion_context(&communication, model_info)
+                    .await
+                {
+                    self.quarantine_history(format!(
+                        "completion context consumption failed: {error}"
+                    ));
+                }
+                return;
+            }
+            let mut ordinary = (*communication).clone();
+            ordinary.id = None;
+            communication =
+                crate::PendingAgentMessage::new(ordinary, communication.delivery.take());
+        }
         let mut response_item = communication.to_model_input_item();
         if let ResponseItem::AgentMessage {
             content,
@@ -5032,6 +5073,7 @@ impl Session {
                 /*rejected_audio_file_ids*/ Default::default(),
                 CompactedHistoryMetadata {
                     input_goal_ids,
+                    completion_source_items: Vec::new(),
                     message: String::new(),
                     compaction_summary_tokens: None,
                     window_number,

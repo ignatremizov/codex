@@ -4,6 +4,8 @@
 //! helpers, Phase 1 and Phase 2 prompt rendering, extension pruning, and
 //! workspace diffing.
 
+#![recursion_limit = "256"]
+
 mod control;
 mod extensions;
 mod guard;

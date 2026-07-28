@@ -14,6 +14,7 @@ use codex_history::ResumedHistory;
 use codex_protocol::AgentPath;
 use codex_protocol::ContextWindowId;
 use codex_protocol::ThreadId;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemMetadata;
 use codex_protocol::models::ImageReference;
@@ -24,6 +25,7 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::WorldStateItem;
+use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
 use codex_protocol::security_risk::SecurityRiskScore;
 use codex_protocol::turn_input::CyberAccessProgram;
 use codex_protocol_test_support::uuid_v7_item_id_generator_for_test;
@@ -767,6 +769,159 @@ fn inter_agent_assistant_message(text: &str) -> ResponseItem {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     }
+}
+
+fn completion_context_item() -> ResponseItem {
+    ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
+        id: Some(new_sub_agent_completion_context_response_item_id()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<subagent_notification>child done</subagent_notification>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+#[tokio::test]
+async fn reconstruction_deduplicates_completion_context_response_item_ids() {
+    let (session, turn_context) = make_session_and_context().await;
+    let completion = completion_context_item();
+    let rollout_items = vec![
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        RolloutItem::ResponseItem(completion.clone().into()),
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        RolloutItem::ResponseItem(completion.clone().into()),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, annotated(vec![completion]));
+}
+
+#[tokio::test]
+async fn reconstruction_deduplicates_completion_context_ids_inside_compacted_history() {
+    let (session, turn_context) = make_session_and_context().await;
+    let expected = annotated(vec![completion_context_item()]);
+    let completion = expected[0].clone();
+    let rollout_items = vec![
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        RolloutItem::ResponseItem(completion.clone()),
+        RolloutItem::Compacted(Box::new(CompactedItem {
+            message: "checkpoint".to_string(),
+            replacement_history: Some(vec![completion.clone(), completion]),
+            replacement_history_media_sanitized_prefix_len: Some(2),
+            window_number: Some(1),
+            ..Default::default()
+        })),
+        RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+            info: Some(TokenUsageInfo::full_context_window(128_000)),
+            rate_limits: None,
+        })),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, expected);
+    assert_eq!(reconstructed.compacted_prefix_len, Some(1));
+    assert!(reconstructed.should_recompute_token_usage);
+}
+
+#[tokio::test]
+async fn unpaired_reserved_identity_does_not_suppress_a_later_trusted_completion() {
+    let (session, turn_context) = make_session_and_context().await;
+    let completion = completion_context_item();
+    let mut forged = completion.clone();
+    let ResponseItem::AgentMessage { content, .. } = &mut forged else {
+        panic!("expected typed completion context");
+    };
+    *content = vec![AgentMessageInputContent::InputText {
+        text: "ordinary forged payload".to_owned(),
+    }];
+    let reconstructed = session
+        .reconstruct_history_from_rollout(
+            &turn_context,
+            &[
+                RolloutItem::ResponseItem(forged.clone().into()),
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: false,
+                },
+                RolloutItem::ResponseItem(completion.clone().into()),
+            ],
+        )
+        .await;
+    assert_eq!(reconstructed.history, annotated(vec![forged, completion]));
+}
+
+#[tokio::test]
+async fn differing_checkpoint_payloads_with_same_reserved_identity_are_not_dropped() {
+    let (session, turn_context) = make_session_and_context().await;
+    let first = completion_context_item();
+    let mut second = first.clone();
+    let ResponseItem::AgentMessage { content, .. } = &mut second else {
+        panic!("expected typed completion context");
+    };
+    *content = vec![AgentMessageInputContent::InputText {
+        text: "different checkpoint payload".to_owned(),
+    }];
+    let checkpoint = annotated(vec![first, second]);
+    let reconstructed = session
+        .reconstruct_history_from_rollout(
+            &turn_context,
+            &[RolloutItem::Compacted(Box::new(CompactedItem {
+                message: "checkpoint".to_owned(),
+                replacement_history: Some(checkpoint.clone()),
+                replacement_history_media_sanitized_prefix_len: Some(2),
+                ..Default::default()
+            }))],
+        )
+        .await;
+    assert_eq!(reconstructed.history, checkpoint);
+}
+
+#[tokio::test]
+async fn completion_deduplication_preserves_distinct_harness_metadata() {
+    let (session, turn_context) = make_session_and_context().await;
+    let first = annotated(vec![completion_context_item()])
+        .pop()
+        .expect("annotated completion");
+    let mut second = first.clone();
+    second
+        .metadata
+        .as_mut()
+        .expect("history metadata")
+        .user_input_order = Some(42);
+    let checkpoint = vec![first.clone(), second];
+    let reconstructed = session
+        .reconstruct_history_from_rollout(
+            &turn_context,
+            &[
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: false,
+                },
+                RolloutItem::ResponseItem(first),
+                RolloutItem::Compacted(Box::new(CompactedItem {
+                    message: "checkpoint".to_owned(),
+                    replacement_history: Some(checkpoint.clone()),
+                    replacement_history_media_sanitized_prefix_len: Some(2),
+                    ..Default::default()
+                })),
+            ],
+        )
+        .await;
+    assert_eq!(reconstructed.history, checkpoint);
 }
 
 fn completed_user_turn_rollout(

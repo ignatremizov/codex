@@ -878,6 +878,12 @@ impl ContextManager {
         self.sampling.last_sequence
     }
 
+    /// Reserve identities already accepted into canonical history but not yet installed as input.
+    /// This advances allocation only; it never acknowledges model consumption.
+    pub(crate) fn reserve_input_sequence_through(&mut self, sequence: u64) {
+        self.sampling.last_sequence = self.sampling.last_sequence.max(sequence);
+    }
+
     pub(crate) fn checkpoint_sampling(&mut self, items: &mut [ResponseItemEnvelope]) {
         self.sampling.checkpoint(items);
     }

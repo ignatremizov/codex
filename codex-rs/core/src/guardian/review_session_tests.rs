@@ -109,6 +109,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
             /*rejected_audio_file_ids*/ Default::default(),
             crate::compact::CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
+                completion_source_items: Vec::new(),
                 message: String::new(),
                 compaction_summary_tokens: None,
                 window_number,

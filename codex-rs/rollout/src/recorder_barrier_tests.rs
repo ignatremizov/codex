@@ -131,12 +131,15 @@ async fn accepted_marker_finishes_after_its_waiter_is_dropped() -> std::io::Resu
     writer.await.expect("writer task")?;
     let lines = read_rollout_lines(&rollout_path)?;
     assert_eq!(
-        lines
-            .into_iter()
-            .skip(1)
-            .map(|line| (line.ordinal, line.item))
-            .collect::<Vec<_>>(),
-        vec![(Some(1), marker)],
+        serde_json::to_value(
+            lines
+                .into_iter()
+                .skip(1)
+                .map(|line| (line.ordinal, line.item))
+                .collect::<Vec<_>>()
+        )
+        .expect("actual"),
+        serde_json::to_value(vec![(Some(1), marker)]).expect("expected"),
     );
     Ok(())
 }
@@ -164,7 +167,10 @@ async fn partial_marker_is_not_completed_by_a_later_flush() -> std::io::Result<(
     state.flush().await?;
     let (items, _, errors) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
     assert_eq!(errors, 1);
-    assert_eq!(items.last(), Some(&following));
+    assert_eq!(
+        serde_json::to_value(items.last()).expect("actual"),
+        serde_json::to_value(Some(&following)).expect("expected"),
+    );
     assert_eq!(
         crate::last_rollout_ordinal_before_offset(
             &rollout_path,

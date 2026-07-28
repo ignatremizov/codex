@@ -46,6 +46,7 @@ impl Session {
                     initial_context,
                     reset_world_state_sections,
                     model_info,
+                    completion_source_items,
                     compaction_response_id,
                     compaction_summary_tokens,
                     reviewer_compaction_hash,
@@ -87,6 +88,7 @@ impl Session {
                     (
                         CompactedHistoryMetadata {
                             input_goal_ids: Default::default(),
+                            completion_source_items,
                             message: String::new(),
                             compaction_summary_tokens,
                             window_number,
@@ -195,9 +197,32 @@ impl Session {
                     ResponseItemEnvelope::new(item)
                 }));
             }
+            // Completion registration shares this publication permit with its canonical receipt.
+            // Only exact acknowledged payloads may be withheld from live queue-only history.
+            for completion in &state.acknowledged_completion_contexts {
+                if !completion.pending
+                    && metadata
+                        .completion_source_items
+                        .contains(&completion.item.item)
+                {
+                    // The successful request saw this exact acknowledged payload. Its replacement
+                    // may summarize it; a stale request without the payload cannot make this cut.
+                    continue;
+                }
+                items.retain(|item| item != &completion.item);
+                if !completion.pending && !unsummarized_suffix.contains(&completion.item) {
+                    retained.push(completion.item.clone());
+                }
+            }
             let retained_from_source = retained
                 .iter()
-                .map(|envelope| source.contains(envelope))
+                .map(|envelope| {
+                    source.contains(envelope)
+                        || state
+                            .acknowledged_completion_contexts
+                            .iter()
+                            .any(|completion| &completion.item == envelope)
+                })
                 .collect::<Vec<_>>();
             let boundary = items
                 .iter()
@@ -253,13 +278,30 @@ impl Session {
                     .get_or_insert_default()
                     .compaction_model_hash = metadata.compaction_model_hash.clone();
             }
+            let mut canonical_items = items.clone();
+            canonical_items.splice(
+                prefix_len..prefix_len,
+                state
+                    .acknowledged_completion_contexts
+                    .iter()
+                    .filter(|completion| completion.pending)
+                    .map(|completion| completion.item.clone()),
+            );
+            let canonical_has_pending = canonical_items.len() != items.len();
+            let canonical_prefix_len = prefix_len + canonical_items.len() - items.len();
+            crate::context::sanitize_compacted_media_envelopes(
+                &mut canonical_items,
+                canonical_prefix_len,
+            );
             let mut projected = state.history.clone();
-            projected
-                .replace_compacted(items.clone(), metadata.reviewer_compaction_hash.as_deref());
+            projected.replace_compacted(
+                canonical_items.clone(),
+                metadata.reviewer_compaction_hash.as_deref(),
+            );
             projected.extend_rejected_audio_file_ids(rejected_audio_file_ids.clone());
             let compacted_item = CompactedItem {
                 message: metadata.message.clone(),
-                replacement_history: Some(items.clone()),
+                replacement_history: Some(canonical_items.clone()),
                 retained_context: Some(projected.retained_context().clone()),
                 guardian_history: projected
                     .compacted_guardian_history_checkpoint(&unsummarized_suffix),
@@ -270,7 +312,11 @@ impl Session {
                 previous_window_id: metadata.window_ids.previous_window_id.clone(),
                 window_id: Some(metadata.window_ids.window_id.clone()),
                 compaction_response_id: metadata.compaction_response_id.clone(),
-                latest_token_usage_record: state.latest_token_usage_record.clone().map(Box::new),
+                latest_token_usage_record: if canonical_has_pending {
+                    None
+                } else {
+                    state.latest_token_usage_record.clone().map(Box::new)
+                },
                 resume_metadata: Some(CompactionResumeMetadata {
                     rejected_audio_file_ids: projected.rejected_audio_file_ids(),
                     dynamic_tools: Some(Box::new(DynamicToolsSnapshot {
@@ -283,7 +329,7 @@ impl Session {
                     previous_turn_settings: state.previous_turn_settings(),
                 }),
                 replacement_history_media_sanitized_prefix_len: Some(
-                    u64::try_from(prefix_len).unwrap_or(u64::MAX),
+                    u64::try_from(canonical_prefix_len).unwrap_or(u64::MAX),
                 ),
                 replacement_history_media_repair: false,
             };
@@ -315,6 +361,12 @@ impl Session {
             contributions,
             /*acknowledgement*/ None,
             move |state| {
+                state.acknowledged_completion_contexts.retain(|completion| {
+                    completion.pending
+                        || !metadata
+                            .completion_source_items
+                            .contains(&completion.item.item)
+                });
                 let installed = items.clone();
                 if advance_window {
                     state.install_prepared_auto_compact_window(
@@ -332,6 +384,14 @@ impl Session {
                         reviewer_compaction_hash: metadata.reviewer_compaction_hash,
                     },
                 );
+                if let Some(sequence) = state
+                    .acknowledged_completion_contexts
+                    .iter()
+                    .filter_map(|completion| completion.item.metadata.as_ref()?.history_sequence)
+                    .max()
+                {
+                    state.history.reserve_input_sequence_through(sequence);
+                }
                 state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
                 state.history.set_world_state_baseline(world_state_baseline);
                 state

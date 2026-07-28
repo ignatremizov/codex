@@ -30,7 +30,6 @@ use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
 use crate::thread_manager::AgentTreeShutdownFailure;
 use crate::thread_manager::thread_store_error_kind;
-use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -344,6 +343,12 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
         reporting.handoffs.wait().await;
     }
     super::async_compaction::shutdown(sess).await;
+    sess.submission_admission.drain_accepted_completions().await;
+    if !sess.submission_admission.requires_reload()
+        && let Err(error) = sess.drain_completion_mailbox().await
+    {
+        sess.quarantine_history(format!("completion shutdown drain failed: {error}"));
+    }
     let shell_snapshot_prewarm = sess.state.lock().await.shell_snapshot_prewarm.take();
     if let Some(shell_snapshot_prewarm) = shell_snapshot_prewarm {
         shell_snapshot_prewarm.abort();

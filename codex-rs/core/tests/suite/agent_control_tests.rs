@@ -50,6 +50,7 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
@@ -732,7 +733,7 @@ async fn hosted_child_reports_terminal_turn_outcomes() -> anyhow::Result<()> {
         ],
     )
     .await;
-    let mut expect_report = async |expected_status| {
+    let mut expect_report = async |expected_status, expected_error_info| {
         let turn_id = wait_for_event_match(thread, |event| match event {
             EventMsg::TurnComplete(event) => Some(event.turn_id.clone()),
             _ => None,
@@ -748,16 +749,21 @@ async fn hosted_child_reports_terminal_turn_outcomes() -> anyhow::Result<()> {
         );
         assert_eq!(
             (&report.status, report.error_info.as_ref()),
-            (&expected_status, None)
+            (&expected_status, expected_error_info)
         );
         report
     };
-    for (prompt, expected_status) in [
+    for (prompt, expected_status, expected_error_info) in [
         (
             "Review the patch.",
             AgentStatus::Completed(Some(ANSWER.into())),
+            None,
         ),
-        ("Fail this request.", AgentStatus::Errored(FAILURE.into())),
+        (
+            "Fail this request.",
+            AgentStatus::Errored(FAILURE.into()),
+            Some(&CodexErrorInfo::InvalidPrompt),
+        ),
     ] {
         thread
             .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -765,7 +771,7 @@ async fn hosted_child_reports_terminal_turn_outcomes() -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }]))
             .await?;
-        let report = expect_report(expected_status).await;
+        let report = expect_report(expected_status, expected_error_info).await;
         if !matches!(report.status, AgentStatus::Errored(_)) {
             ThreadIdle::wait(thread).await;
         }
@@ -792,7 +798,11 @@ async fn hosted_child_reports_terminal_turn_outcomes() -> anyhow::Result<()> {
     );
     release_report.send(()).expect("release failure report");
 
-    let report = expect_report(AgentStatus::Completed(None)).await;
+    let report = expect_report(
+        AgentStatus::Completed(None),
+        /*expected_error_info*/ None,
+    )
+    .await;
     ThreadIdle::wait(thread).await;
     assert_eq!(
         (

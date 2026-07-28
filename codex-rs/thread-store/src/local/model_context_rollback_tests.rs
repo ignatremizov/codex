@@ -111,7 +111,10 @@ async fn exact_model_context_is_masked_before_segment_headers_are_removed() {
             expected.push(child_retained.clone());
             expected.push(child_catalog.clone());
             expected.push(parent_catalog.clone());
-            assert_eq!(actual, expected);
+            assert_eq!(
+                serde_json::to_value(&actual).expect("actual"),
+                serde_json::to_value(&expected).expect("expected"),
+            );
             // Full-history consumers add the selected leaf header, while the context scanner
             // leaves header ownership to its caller. Neither path retains ancestor headers.
             expected.insert(0, RolloutItem::SessionMeta(Box::new(metadata.clone())));
