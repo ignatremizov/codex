@@ -60,6 +60,7 @@ async fn handle_close_agent(
                 model: None,
                 reasoning_effort: None,
                 agents_states: Default::default(),
+                completion_presentation_agent_ids: None,
             }),
         )
         .await;
@@ -96,6 +97,7 @@ async fn handle_close_agent(
                         model: None,
                         reasoning_effort: None,
                         agents_states: [(agent_id, status)].into_iter().collect(),
+                        completion_presentation_agent_ids: None,
                     }),
                 )
                 .await;
@@ -125,6 +127,7 @@ async fn handle_close_agent(
                 model: None,
                 reasoning_effort: None,
                 agents_states: [(agent_id, status.clone())].into_iter().collect(),
+                completion_presentation_agent_ids: None,
             }),
         )
         .await;

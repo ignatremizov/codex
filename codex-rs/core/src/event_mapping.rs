@@ -28,6 +28,7 @@ use codex_protocol::protocol::PLUGINS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::REALTIME_CONVERSATION_OPEN_TAG;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::TOOLS_OPEN_TAG;
+use codex_protocol::protocol::ordinary_agent_message_response_item_id;
 use codex_protocol::user_input::UserInput;
 use tracing::warn;
 use uuid::Uuid;
@@ -166,7 +167,7 @@ fn parse_agent_message(
         }
     }
     let id = id
-        .map(str::to_string)
+        .map(ordinary_agent_message_response_item_id)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     AgentMessageItem {
         id,

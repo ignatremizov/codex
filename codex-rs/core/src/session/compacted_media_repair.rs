@@ -1,4 +1,4 @@
-use codex_protocol::protocol::RolloutItem;
+use codex_history::RolloutItem;
 use tracing::info;
 use tracing::warn;
 

@@ -6,13 +6,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::PoisonError;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
+use crate::agent::control::AgentTerminalPresentation;
 use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
@@ -152,6 +155,7 @@ use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::protocol::WorldStateItem;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsArgs;
@@ -186,6 +190,7 @@ use futures::prelude::*;
 use rmcp::model::RequestId;
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -233,6 +238,7 @@ pub(crate) mod extension_metrics;
 mod handlers;
 mod inject;
 mod input_queue;
+mod inter_agent_communication;
 mod mcp;
 mod mcp_prewarm;
 mod mcp_refresh;
@@ -247,6 +253,7 @@ pub(crate) mod session;
 mod step_activation;
 pub(crate) mod step_context;
 pub(crate) mod step_settings;
+mod sub_agent_completion;
 mod thread_settings;
 pub(crate) mod time_reminder;
 mod token_budget;
@@ -278,6 +285,12 @@ use self::turn_context::TurnContext;
 #[cfg(test)]
 mod rollout_reconstruction_tests;
 
+#[derive(Clone, Copy)]
+enum EventPersistence {
+    Skip,
+    Queued,
+    Flushed,
+}
 /// Notes from the previous real user turn.
 ///
 /// Conceptually this is the same role that `previous_model` used to fill, but
@@ -411,7 +424,13 @@ pub(crate) struct SessionIo {
 #[derive(Default)]
 pub(crate) struct SubmissionAdmission {
     send_lock: Mutex<()>,
+    shutdown_sequence_lock: Mutex<()>,
     state: StdMutex<SubmissionAdmissionState>,
+    shutdown_pending: AtomicBool,
+    completion_delivery_admission_closed: AtomicBool,
+    accepted_completion_deliveries: AtomicUsize,
+    changed: Notify,
+    completion_delivery_changed: Notify,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -419,22 +438,160 @@ enum SubmissionAdmissionState {
     #[default]
     Ready,
     RollbackPending,
+    RollbackEventPending,
     ReloadRequired,
 }
 
 impl SubmissionAdmission {
+    pub(crate) fn rollback_ready_to_publish(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if matches!(*state, SubmissionAdmissionState::RollbackPending) {
+            *state = SubmissionAdmissionState::RollbackEventPending;
+        }
+    }
+
     pub(crate) fn rollback_completed(&self) {
         *self.state.lock().unwrap_or_else(PoisonError::into_inner) =
             SubmissionAdmissionState::Ready;
+        self.changed.notify_waiters();
     }
 
     pub(crate) fn rollback_requires_reload(&self) {
         *self.state.lock().unwrap_or_else(PoisonError::into_inner) =
             SubmissionAdmissionState::ReloadRequired;
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) async fn wait_for_completion_submission(&self) -> bool {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self
+                .shutdown_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+                || self
+                    .completion_delivery_admission_closed
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return false;
+            }
+            let state = *self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            match state {
+                SubmissionAdmissionState::Ready => return true,
+                SubmissionAdmissionState::ReloadRequired => return false,
+                SubmissionAdmissionState::RollbackPending
+                | SubmissionAdmissionState::RollbackEventPending => {}
+            }
+            changed.as_mut().await;
+        }
+    }
+
+    pub(crate) async fn wait_for_accepted_completion_submission(&self) -> bool {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let state = *self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            match state {
+                SubmissionAdmissionState::Ready => return true,
+                SubmissionAdmissionState::ReloadRequired => return false,
+                SubmissionAdmissionState::RollbackPending
+                | SubmissionAdmissionState::RollbackEventPending => {}
+            }
+            changed.as_mut().await;
+        }
+    }
+
+    pub(crate) fn try_accept_completion_delivery(
+        self: &Arc<Self>,
+    ) -> Option<AcceptedCompletionDelivery> {
+        if self
+            .completion_delivery_admission_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .shutdown_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return None;
+        }
+        self.accepted_completion_deliveries
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if self
+            .completion_delivery_admission_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .shutdown_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            self.finish_accepted_completion_delivery();
+            return None;
+        }
+        Some(AcceptedCompletionDelivery {
+            admission: Arc::clone(self),
+        })
+    }
+
+    async fn wait_for_accepted_completion_deliveries(&self) {
+        loop {
+            let changed = self.completion_delivery_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self
+                .accepted_completion_deliveries
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            {
+                return;
+            }
+            changed.as_mut().await;
+        }
+    }
+
+    fn finish_accepted_completion_delivery(&self) {
+        let previous = self
+            .accepted_completion_deliveries
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        debug_assert!(previous > 0);
+        if previous == 1 {
+            self.completion_delivery_changed.notify_waiters();
+        }
+    }
+}
+
+pub(crate) struct AcceptedCompletionDelivery {
+    admission: Arc<SubmissionAdmission>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CompletionSubmissionAdmission {
+    Ordinary,
+    Accepted,
+}
+
+#[derive(Clone, Copy)]
+enum SubmissionAdmissionKind {
+    Ordinary,
+    AcceptedCompletion,
+}
+
+impl Drop for AcceptedCompletionDelivery {
+    fn drop(&mut self) {
+        self.admission.finish_accepted_completion_delivery();
     }
 }
 
 struct RollbackAdmissionGuard {
+    admission: Arc<SubmissionAdmission>,
+    armed: bool,
+}
+
+struct CompletionShutdownAdmissionGuard {
+    admission: Arc<SubmissionAdmission>,
+    armed: bool,
+}
+
+struct ShutdownAdmissionGuard {
     admission: Arc<SubmissionAdmission>,
     armed: bool,
 }
@@ -460,9 +617,63 @@ impl Drop for RollbackAdmissionGuard {
                 .state
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if matches!(*state, SubmissionAdmissionState::RollbackPending) {
+            if matches!(
+                *state,
+                SubmissionAdmissionState::RollbackPending
+                    | SubmissionAdmissionState::RollbackEventPending
+            ) {
                 *state = SubmissionAdmissionState::Ready;
+                self.admission.changed.notify_waiters();
             }
+        }
+    }
+}
+
+impl CompletionShutdownAdmissionGuard {
+    fn new(admission: Arc<SubmissionAdmission>) -> Self {
+        let armed = !admission
+            .completion_delivery_admission_closed
+            .swap(true, std::sync::atomic::Ordering::AcqRel);
+        admission.changed.notify_waiters();
+        Self { admission, armed }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CompletionShutdownAdmissionGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.admission
+                .completion_delivery_admission_closed
+                .store(false, std::sync::atomic::Ordering::Release);
+            self.admission.changed.notify_waiters();
+        }
+    }
+}
+
+impl ShutdownAdmissionGuard {
+    fn new(admission: Arc<SubmissionAdmission>) -> Self {
+        Self {
+            admission,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ShutdownAdmissionGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.admission
+                .shutdown_pending
+                .store(false, std::sync::atomic::Ordering::Release);
+            self.admission.changed.notify_waiters();
         }
     }
 }
@@ -984,21 +1195,95 @@ impl SessionIo {
         Ok(id)
     }
 
+    pub(crate) async fn submit_accepted_completion(&self, op: Op) -> CodexResult<String> {
+        debug_assert!(matches!(op, Op::InterAgentCommunication { .. }));
+        let id = new_submission_id();
+        let sub = Submission {
+            id: id.clone(),
+            op,
+            trace: None,
+            parent_turn_id: None,
+            root_turn_id: None,
+        };
+        self.submit_with_id_and_admission(sub, SubmissionAdmissionKind::AcceptedCompletion)
+            .await?;
+        Ok(id)
+    }
+
     /// Use sparingly: prefer `submit()` so submission IDs are generated consistently.
+    pub(crate) async fn submit_with_id(&self, sub: Submission) -> CodexResult<()> {
+        self.submit_with_id_and_admission(sub, SubmissionAdmissionKind::Ordinary)
+            .await
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "the send lock must preserve admission checks and bounded-channel queue ordering"
     )]
-    pub(crate) async fn submit_with_id(&self, mut sub: Submission) -> CodexResult<()> {
+    async fn submit_with_id_and_admission(
+        &self,
+        mut sub: Submission,
+        submission_admission: SubmissionAdmissionKind,
+    ) -> CodexResult<()> {
         let is_shutdown = matches!(&sub.op, Op::Shutdown);
         let is_rollback = matches!(
             &sub.op,
             Op::ThreadRollback { .. } | Op::ThreadRollbackMaterialized { .. }
         );
+        let is_completion_submission = matches!(
+            submission_admission,
+            SubmissionAdmissionKind::AcceptedCompletion
+        ) || matches!(
+            &sub.op,
+            Op::InterAgentCommunication { communication, .. }
+                if communication.id.as_ref().is_some_and(|id| {
+                    is_sub_agent_completion_context_response_item_id(id.as_str())
+                })
+        );
+        let _shutdown_sequence_guard = if is_shutdown {
+            Some(
+                self.submission_admission
+                    .shutdown_sequence_lock
+                    .lock()
+                    .await,
+            )
+        } else {
+            None
+        };
+        let shutdown_was_pending = self
+            .submission_admission
+            .shutdown_pending
+            .load(std::sync::atomic::Ordering::Acquire);
+        let armed_shutdown = is_shutdown && !shutdown_was_pending;
+        let mut completion_shutdown_guard = armed_shutdown
+            .then(|| CompletionShutdownAdmissionGuard::new(Arc::clone(&self.submission_admission)));
+        let mut shutdown_guard = armed_shutdown
+            .then(|| ShutdownAdmissionGuard::new(Arc::clone(&self.submission_admission)));
+        if armed_shutdown {
+            self.submission_admission
+                .shutdown_pending
+                .store(true, std::sync::atomic::Ordering::Release);
+            self.submission_admission.changed.notify_waiters();
+            self.submission_admission
+                .wait_for_accepted_completion_deliveries()
+                .await;
+        }
         // Serialize channel sends so their queue order cannot cross a rollback reservation. The
         // state lock is released before awaiting bounded-channel capacity, allowing the rollback
         // handler to complete or quarantine the session without deadlocking on a blocked sender.
         let _send_guard = self.submission_admission.send_lock.lock().await;
+        let shutdown_is_pending = self
+            .submission_admission
+            .shutdown_pending
+            .load(std::sync::atomic::Ordering::Acquire);
+        if shutdown_is_pending
+            && !is_shutdown
+            && matches!(submission_admission, SubmissionAdmissionKind::Ordinary)
+        {
+            return Err(CodexErr::InvalidRequest(
+                "thread shutdown is already in progress".to_string(),
+            ));
+        }
         let mut rollback_guard = {
             let mut state = self
                 .submission_admission
@@ -1007,7 +1292,12 @@ impl SessionIo {
                 .unwrap_or_else(PoisonError::into_inner);
             match *state {
                 SubmissionAdmissionState::Ready => {}
-                SubmissionAdmissionState::RollbackPending if !is_shutdown => {
+                SubmissionAdmissionState::RollbackEventPending
+                    if !is_shutdown && !is_rollback && !is_completion_submission => {}
+                SubmissionAdmissionState::RollbackPending
+                | SubmissionAdmissionState::RollbackEventPending
+                    if !is_shutdown =>
+                {
                     return Err(CodexErr::InvalidRequest(
                         "thread rollback is already in progress".to_string(),
                     ));
@@ -1018,6 +1308,7 @@ impl SessionIo {
                     ));
                 }
                 SubmissionAdmissionState::RollbackPending
+                | SubmissionAdmissionState::RollbackEventPending
                 | SubmissionAdmissionState::ReloadRequired => {}
             }
             if is_rollback {
@@ -1036,6 +1327,12 @@ impl SessionIo {
             Ok(()) => {
                 if let Some(rollback_guard) = rollback_guard.as_mut() {
                     rollback_guard.disarm();
+                }
+                if let Some(shutdown_guard) = shutdown_guard.as_mut() {
+                    shutdown_guard.disarm();
+                }
+                if let Some(completion_shutdown_guard) = completion_shutdown_guard.as_mut() {
+                    completion_shutdown_guard.disarm();
                 }
                 Ok(())
             }
@@ -2801,12 +3098,31 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        // Keep the subagent completion delivery state machine out of every caller's future.
+        Box::pin(self.send_event_with_primary_delivery(
+            turn_context,
+            msg,
+            EventPersistence::Queued,
+            || {},
+        ))
+        .await;
+    }
+
+    async fn send_event_with_primary_delivery<F>(
+        &self,
+        turn_context: &TurnContext,
+        msg: EventMsg,
+        persistence: EventPersistence,
+        on_primary_delivery: F,
+    ) where
+        F: FnOnce() + Send,
+    {
         let legacy_source = msg.clone();
+        let terminal_presentation = self
+            .prepare_sub_agent_terminal_presentation(turn_context, &legacy_source)
+            .await;
         if let EventMsg::Error(error) = &legacy_source
-            && error
-                .codex_error_info
-                .as_ref()
-                .is_some_and(CodexErrorInfo::affects_turn_status)
+            && error.affects_turn_status()
         {
             turn_context
                 .terminal_error
@@ -2842,9 +3158,41 @@ impl Session {
                 .analytics_events_client
                 .track_guardian_session_event(self.thread_id, &event);
         }
-        self.send_event_raw(event).await;
-        self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
-            .await;
+        let primary_delivered = self.send_event_raw_prepared(event, persistence).await;
+        let primary_committed = if primary_delivered {
+            true
+        } else if let EventMsg::ItemCompleted(event) = &legacy_source
+            && event.item.is_sub_agent_completion_presentation()
+        {
+            let item_id = event.item.id();
+            match self
+                .persisted_sub_agent_completion_presentation(&item_id, &event.turn_id)
+                .await
+            {
+                Ok(presentation) => presentation
+                    .item_completed
+                    .is_some_and(|persisted| persisted.turn_id == event.turn_id),
+                Err(err) => {
+                    warn!(
+                        item_id = %item_id,
+                        turn_id = %event.turn_id,
+                        "failed to reconcile subagent completion presentation: {err}"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if primary_committed {
+            on_primary_delivery();
+        }
+        self.maybe_notify_parent_of_terminal_turn(
+            turn_context,
+            &legacy_source,
+            terminal_presentation,
+        )
+        .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
         self.maybe_clear_realtime_handoff_for_event(&legacy_source)
@@ -2868,6 +3216,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         msg: &EventMsg,
+        terminal_presentation: Option<AgentTerminalPresentation>,
     ) {
         if turn_context.multi_agent_version != MultiAgentVersion::V2 {
             return;
@@ -2887,11 +3236,7 @@ impl Session {
         };
 
         let status = match turn_context.terminal_error.lock().await.take() {
-            Some(error) => {
-                let status = AgentStatus::Errored(error.message);
-                self.agent_status.send_replace(status.clone());
-                status
-            }
+            Some(error) => AgentStatus::Errored(error.message),
             None => {
                 let Some(status) = agent_status_from_event(msg) else {
                     return;
@@ -2902,12 +3247,16 @@ impl Session {
         if !is_final(&status) {
             return;
         }
+        let Some(terminal_presentation) = terminal_presentation else {
+            return;
+        };
 
         self.forward_child_completion_to_parent(
             turn_context,
             *parent_thread_id,
             child_agent_path,
             status,
+            terminal_presentation,
         )
         .await;
     }
@@ -2919,7 +3268,15 @@ impl Session {
         parent_thread_id: ThreadId,
         child_agent_path: &codex_protocol::AgentPath,
         status: AgentStatus,
+        terminal_presentation: AgentTerminalPresentation,
     ) {
+        let accepted_completion_delivery =
+            terminal_presentation.take_accepted_completion_delivery();
+        let admission = if accepted_completion_delivery.is_some() {
+            CompletionSubmissionAdmission::Accepted
+        } else {
+            CompletionSubmissionAdmission::Ordinary
+        };
         let Some(parent_agent_path) = child_agent_path
             .as_str()
             .rsplit_once('/')
@@ -2988,28 +3345,59 @@ impl Session {
             .rollout_thread_trace
             .is_enabled()
             .then(|| message.clone());
-        let communication = InterAgentCommunication::new(
+        let mut communication = InterAgentCommunication::new(
             child_agent_path.clone(),
             parent_agent_path,
             Vec::new(),
             message,
             /*trigger_turn*/ false,
         );
+        communication.id = Some(terminal_presentation.completion_context_response_item_id());
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, self.thread_id);
-        if let Err(err) = self
+        let completion_communication = communication.clone();
+        let parent_thread = match self
             .services
             .agent_control
-            .send_inter_agent_communication(
+            .send_inter_agent_completion_communication(
                 parent_thread_id,
                 communication,
                 context,
-                TurnStartOptions::default(),
+                &terminal_presentation,
+                admission,
             )
             .await
         {
-            debug!("failed to notify parent thread {parent_thread_id}: {err}");
+            Ok((_submission_id, parent_thread)) => parent_thread,
+            Err(err) => {
+                debug!("failed to notify parent thread {parent_thread_id}: {err}");
+                return;
+            }
+        };
+        if !parent_thread
+            .persist_inter_agent_completion_context_without_turn(completion_communication)
+            .await
+        {
             return;
+        }
+        let wait_owns_presentation = terminal_presentation.wait_owns_presentation().await;
+        if !wait_owns_presentation {
+            match accepted_completion_delivery {
+                Some(completion_delivery) => {
+                    parent_thread
+                        .emit_accepted_sub_agent_completion_without_turn(
+                            child_agent_path.as_str(),
+                            &status,
+                            completion_delivery,
+                        )
+                        .await;
+                }
+                None => {
+                    parent_thread
+                        .emit_sub_agent_completion_without_turn(child_agent_path.as_str(), &status)
+                        .await;
+                }
+            }
         }
         if let Some(message) = trace_message {
             self.services
@@ -3099,6 +3487,16 @@ impl Session {
     }
 
     async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
+        self.prepare_raw_sub_agent_terminal_presentation(&event);
+        let persistence = if persist {
+            EventPersistence::Queued
+        } else {
+            EventPersistence::Skip
+        };
+        self.send_event_raw_prepared(event, persistence).await;
+    }
+
+    async fn send_event_raw_prepared(&self, event: Event, persistence: EventPersistence) -> bool {
         // Keep realtime reduction, canonical append, and delivery in the same order.
         // This lock must not acquire SessionState or ActiveTurn: event producers can
         // already hold those locks. Host presentation policies are synchronous.
@@ -3126,10 +3524,31 @@ impl Session {
             warn!("failed to persist realtime history: {error}");
         }
         // Persist the event into rollout storage; the store applies its persistence policy.
-        if persist {
-            let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
-            self.persist_rollout_items(&rollout_items).await;
-        }
+        let persistence_result = match persistence {
+            EventPersistence::Skip => Ok(()),
+            EventPersistence::Queued => {
+                self.try_persist_rollout_items(&[RolloutItem::EventMsg(event.msg.clone())])
+                    .await
+            }
+            EventPersistence::Flushed => {
+                let rollout_items = [RolloutItem::EventMsg(event.msg.clone())];
+                match self.live_thread() {
+                    Some(live_thread) => {
+                        live_thread
+                            .append_items_and_flush_canonical(&rollout_items)
+                            .await
+                    }
+                    None => Ok(()),
+                }
+            }
+        };
+        let persisted = match persistence_result {
+            Ok(()) => true,
+            Err(err) => {
+                error!("failed to record rollout items: {err:#}");
+                false
+            }
+        };
         self.services
             .rollout_thread_trace
             .record_protocol_event(&event.msg);
@@ -3138,17 +3557,21 @@ impl Session {
         {
             warn!("failed to persist realtime history: {error}");
         }
-        self.deliver_event_raw(event).await;
+        self.deliver_event_raw_prepared(event).await && persisted
     }
 
     async fn deliver_event_raw(&self, event: Event) {
-        // Record the last known agent status.
-        if let Some(status) = agent_status_from_event(&event.msg) {
-            self.agent_status.send_replace(status);
-        }
+        self.prepare_raw_sub_agent_terminal_presentation(&event);
+        let _ = self.deliver_event_raw_prepared(event).await;
+    }
+
+    async fn deliver_event_raw_prepared(&self, event: Event) -> bool {
+        self.publish_agent_status_from_event(&event.msg);
         if let Err(e) = self.tx_event.send(event).await {
             debug!("dropping event because channel is closed: {e}");
+            return false;
         }
+        true
     }
 
     pub(crate) async fn emit_turn_item_started(&self, turn_context: &TurnContext, item: &TurnItem) {
@@ -3218,6 +3641,30 @@ impl Session {
                 started_at_ms: Some(started_at_ms),
                 completed_at_ms,
             }),
+        )
+        .await;
+    }
+
+    pub(crate) async fn emit_turn_item_completed_with_primary_delivery<F>(
+        &self,
+        turn_context: &TurnContext,
+        item: TurnItem,
+        on_primary_delivery: F,
+    ) where
+        F: FnOnce() + Send,
+    {
+        record_turn_ttfm_metric(turn_context, &item).await;
+        self.send_event_with_primary_delivery(
+            turn_context,
+            EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: self.thread_id,
+                turn_id: turn_context.sub_id.clone(),
+                item,
+                started_at_ms: None,
+                completed_at_ms: now_unix_timestamp_ms(),
+            }),
+            EventPersistence::Flushed,
+            on_primary_delivery,
         )
         .await;
     }
@@ -4176,6 +4623,7 @@ impl Session {
         // Most response items get their passthrough turn ID at the durable history boundary.
         for item in &mut items {
             if let ResponseItem::AgentMessage {
+                id,
                 internal_chat_message_metadata_passthrough,
                 ..
             } = item
@@ -4183,6 +4631,12 @@ impl Session {
                 internal_chat_message_metadata_passthrough
                     .get_or_insert_default()
                     .turn_id = Some(turn_context.sub_id.clone());
+                if !id.as_ref().is_some_and(|id| {
+                    is_sub_agent_completion_context_response_item_id(id.as_str())
+                        || !id.is_empty()
+                }) {
+                    *id = Some(ResponseItemId::new("amsg"));
+                }
             }
             Self::stamp_response_item_for_history(item, &turn_context.sub_id);
         }
@@ -4408,6 +4862,7 @@ impl Session {
             .into_iter()
             .map(ResponseItemEnvelope::new)
             .collect::<Vec<_>>();
+        let mut items = items;
         let sess = Arc::clone(self);
         tokio::spawn(async move {
             let _permit = sess.durable_context_lock.acquire().await.map_err(|err| {
@@ -4415,12 +4870,37 @@ impl Session {
                     message: format!("failed to lock durable context recording: {err}"),
                 }
             })?;
-            let rollout_items = items
-                .iter()
-                .cloned()
-                .map(RolloutItem::ResponseItem)
-                .collect::<Vec<_>>();
-            sess.try_persist_rollout_items(&rollout_items).await?;
+            let mut rollout_items = Vec::with_capacity(items.len().saturating_add(1));
+            for item in &items {
+                if item
+                    .id()
+                    .is_some_and(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
+                {
+                    rollout_items.push(RolloutItem::InterAgentCommunicationMetadata {
+                        trigger_turn: false,
+                    });
+                }
+                rollout_items.push(RolloutItem::ResponseItem(item.clone()));
+            }
+            let persisted_completion_item = match items.as_slice() {
+                [item] => match item.id() {
+                    Some(response_item_id)
+                        if is_sub_agent_completion_context_response_item_id(
+                            response_item_id.as_str(),
+                        ) =>
+                    {
+                        sess.persisted_sub_agent_completion_context_item(response_item_id)
+                            .await?
+                    }
+                    Some(_) | None => None,
+                },
+                _ => None,
+            };
+            if let Some(persisted_completion_item) = persisted_completion_item {
+                items = vec![persisted_completion_item];
+            } else {
+                sess.try_persist_rollout_items(&rollout_items).await?;
+            }
             {
                 let mut state = sess.state.lock().await;
                 let response_items = items
@@ -4702,39 +5182,6 @@ impl Session {
             tool_router,
             loaded_agents_md,
         }))
-    }
-
-    pub(crate) async fn record_inter_agent_communication(
-        &self,
-        turn_context: &TurnContext,
-        communication: InterAgentCommunication,
-    ) {
-        let Ok(_permit) = self.durable_context_lock.acquire().await else {
-            return;
-        };
-        let response_item = communication.to_model_input_item();
-        let (items, _) = self.prepare_conversation_items_for_history(
-            turn_context,
-            std::slice::from_ref(&response_item),
-        );
-        let items = items.as_ref();
-        let response_item = items[0].clone();
-        {
-            let mut state = self.state.lock().await;
-            state.current_time_reminder.note_recorded_items(items);
-            state.record_items(
-                items.iter(),
-                turn_context.model_info().truncation_policy.into(),
-            );
-        }
-        self.persist_rollout_items(&[
-            RolloutItem::InterAgentCommunicationMetadata {
-                trigger_turn: communication.trigger_turn,
-            },
-            RolloutItem::ResponseItem(response_item.into()),
-        ])
-        .await;
-        self.send_raw_response_items(turn_context, items).await;
     }
 
     pub(crate) async fn record_conversation_items_silently(
@@ -5792,7 +6239,7 @@ impl Session {
         if !accepts_mailbox_delivery || deferred_mcp_boundary {
             return pending_input;
         }
-        let mailbox_items = self.input_queue.drain_mailbox_input_items().await;
+        let (mailbox_items, _) = self.input_queue.drain_mailbox_input_items().await;
         if pending_input.is_empty() {
             mailbox_items
         } else if mailbox_items.is_empty() {

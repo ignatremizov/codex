@@ -1299,6 +1299,8 @@ async fn unified_exec_initial_status_renders_countdown() {
                 aggregated_output: None,
                 exit_code: None,
                 duration_ms: None,
+                plugin_id: None,
+                script_path: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1369,6 +1371,7 @@ async fn unrelated_unified_exec_completion_preserves_collab_wait_countdown() {
                 status: AppServerCollabAgentToolCallStatus::InProgress,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                receiver_agents: Vec::new(),
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -1392,6 +1395,8 @@ async fn unrelated_unified_exec_completion_preserves_collab_wait_countdown() {
             aggregated_output: None,
             exit_code: Some(0),
             duration_ms: Some(5),
+            plugin_id: None,
+            script_path: None,
         },
     );
 

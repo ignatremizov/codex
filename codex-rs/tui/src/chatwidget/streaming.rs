@@ -20,10 +20,7 @@ impl ChatWidget {
     }
 
     pub(super) fn flush_answer_stream_with_separator(&mut self) {
-        self.flush_answer_stream(
-            /*completed_message*/ None,
-            /*phase*/ None,
-        );
+        self.flush_answer_stream(/*completed_message*/ None, /*phase*/ None);
     }
 
     fn flush_answer_stream(

@@ -5,6 +5,7 @@ use codex_app_server_protocol::ThreadQueueChangedNotification;
 use codex_extension_api::ThreadIdleCause;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::protocol::Event;
+use codex_protocol::protocol::ThreadHistoryMode;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
 
@@ -20,6 +21,15 @@ pub(super) struct ListenerTaskContext {
     pub(super) codex_home: PathBuf,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
     pub(super) turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
+}
+
+struct ThreadUnloadContext {
+    thread_manager: Arc<ThreadManager>,
+    outgoing: Arc<OutgoingMessageSender>,
+    pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
+    thread_state_manager: ThreadStateManager,
+    thread_watch_manager: ThreadWatchManager,
+    thread_list_state_permit: Arc<Semaphore>,
 }
 
 struct UnloadingState {
@@ -406,11 +416,14 @@ pub(super) async fn ensure_listener_task_running(
                         pending_thread_unloads.insert(conversation_id);
                     }
                     unload_thread_without_subscribers(
-                        thread_manager.clone(),
-                        outgoing_for_task.clone(),
-                        pending_thread_unloads.clone(),
-                        thread_state_manager.clone(),
-                        thread_watch_manager.clone(),
+                        ThreadUnloadContext {
+                            thread_manager: thread_manager.clone(),
+                            outgoing: outgoing_for_task.clone(),
+                            pending_thread_unloads: pending_thread_unloads.clone(),
+                            thread_state_manager: thread_state_manager.clone(),
+                            thread_watch_manager: thread_watch_manager.clone(),
+                            thread_list_state_permit: thread_list_state_permit.clone(),
+                        },
                         conversation_id,
                         conversation.clone(),
                     )
@@ -526,15 +539,19 @@ pub(super) async fn wait_for_thread_shutdown(thread: &Arc<CodexThread>) -> Threa
     }
 }
 
-pub(super) async fn unload_thread_without_subscribers(
-    thread_manager: Arc<ThreadManager>,
-    outgoing: Arc<OutgoingMessageSender>,
-    pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
-    thread_state_manager: ThreadStateManager,
-    thread_watch_manager: ThreadWatchManager,
+async fn unload_thread_without_subscribers(
+    context: ThreadUnloadContext,
     thread_id: ThreadId,
     thread: Arc<CodexThread>,
 ) {
+    let ThreadUnloadContext {
+        thread_manager,
+        outgoing,
+        pending_thread_unloads,
+        thread_state_manager,
+        thread_watch_manager,
+        thread_list_state_permit,
+    } = context;
     info!("thread {thread_id} has no subscribers and is idle; shutting down");
 
     // Any pending app-server -> client requests for this thread can no longer be
@@ -542,9 +559,16 @@ pub(super) async fn unload_thread_without_subscribers(
     outgoing
         .cancel_requests_for_thread(thread_id, /*error*/ None)
         .await;
-    thread_state_manager.remove_thread_state(thread_id).await;
 
     tokio::spawn(async move {
+        let _thread_list_state_permit = match thread_list_state_permit.acquire().await {
+            Ok(permit) => permit,
+            Err(err) => {
+                pending_thread_unloads.lock().await.remove(&thread_id);
+                warn!("failed to serialize teardown for thread {thread_id}: {err}");
+                return;
+            }
+        };
         match wait_for_thread_shutdown(&thread).await {
             ThreadShutdownResult::Complete => {
                 // A delayed unload can finish after thread/revert replaces this runtime under
@@ -558,6 +582,7 @@ pub(super) async fn unload_thread_without_subscribers(
                     pending_thread_unloads.lock().await.remove(&thread_id);
                     return;
                 }
+                thread_state_manager.remove_thread_state(thread_id).await;
                 thread_watch_manager
                     .remove_thread(&thread_id.to_string())
                     .await;

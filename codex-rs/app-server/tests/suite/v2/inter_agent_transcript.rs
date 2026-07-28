@@ -35,7 +35,7 @@ use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_protocol::protocol::RolloutItem;
+use codex_rollout::RolloutItem;
 use codex_rollout::append_rollout_item_to_path;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;

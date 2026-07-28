@@ -137,6 +137,8 @@ impl V2Residency {
                 continue;
             }
             candidate_thread.ensure_rollout_materialized().await;
+            let terminal_presentation_disarm =
+                candidate_thread.session.disarm_terminal_presentation();
             if let Err(err) = candidate_thread.shutdown_and_wait().await {
                 warn!(
                     "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
@@ -151,8 +153,21 @@ impl V2Residency {
                 .agent_control
                 .state
                 .save_evicted_environments(candidate_thread_id, environments);
-            let _ = manager.remove_thread(&candidate_thread_id).await;
-            return true;
+            terminal_presentation_disarm.commit();
+            if manager
+                .remove_thread_if_current(&candidate_thread, || {})
+                .await
+                .is_some()
+            {
+                return true;
+            }
+            candidate_thread
+                .session
+                .services
+                .agent_control
+                .state
+                .clear_evicted_environments(candidate_thread_id);
+            self.touch(candidate_thread_id);
         }
         false
     }

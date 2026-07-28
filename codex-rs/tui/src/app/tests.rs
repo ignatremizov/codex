@@ -141,7 +141,7 @@ use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MAX_THREAD_GOAL_OBJECTIVE_CHARS;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::RolloutItem;
+use codex_history::RolloutItem;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionSource as RolloutSessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -1911,6 +1911,11 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
+                    thread_id: receiver_thread_id.to_string(),
+                    agent_nickname: Some("Parfit".to_string()),
+                    agent_role: Some("reviewer".to_string()),
+                }],
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -1922,8 +1927,8 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
     assert_eq!(
         app.agent_navigation.get(&receiver_thread_id),
         Some(&AgentPickerThreadEntry {
-            agent_nickname: None,
-            agent_role: None,
+            agent_nickname: Some("Parfit".to_string()),
+            agent_role: Some("reviewer".to_string()),
             agent_path: None,
             is_running: false,
             is_closed: false,
@@ -1948,6 +1953,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                receiver_agents: Vec::new(),
                 prompt: Some("hello".to_string()),
                 model: None,
                 reasoning_effort: None,
@@ -6274,6 +6280,7 @@ async fn directive_only_completion_removes_streamed_directive() -> Result<()> {
         String::new(),
         PathBuf::from("/tmp"),
         /*inline_visualization_context*/ None,
+        /*phase*/ None,
         ConsolidationScrollbackReflow::Required,
         /*deferred_history_cell*/ None,
     )?;
@@ -6904,6 +6911,8 @@ async fn backtrack_selection_rolls_back_in_place_by_default() {
         thread_id,
         source: None,
         nth_user_message: 1,
+        prompt_occurrences: 1,
+        prompt_occurrence: 0,
         prompt: crate::chatwidget::UserMessage::from("second prompt"),
     });
 
@@ -6913,6 +6922,7 @@ async fn backtrack_selection_rolls_back_in_place_by_default() {
             thread_id: event_thread_id,
             nth_user_message: 1,
             prompt,
+            ..
         }) if event_thread_id == thread_id
             && prompt == crate::chatwidget::UserMessage::from("second prompt")
     );
@@ -7061,6 +7071,8 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch_when_
         thread_id: base_id,
         source: None,
         nth_user_message: 1,
+        prompt_occurrences: 1,
+        prompt_occurrence: 0,
         prompt: crate::chatwidget::UserMessage {
             text: edited_text,
             local_images: vec![crate::bottom_pane::LocalImageAttachment {
@@ -7085,6 +7097,7 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch_when_
             thread_id,
             nth_user_message,
             prompt,
+            ..
         } if thread_id == expected.thread_id
             && nth_user_message == expected.nth_user_message
             && prompt == expected.prompt
@@ -7117,7 +7130,7 @@ async fn backtrack_rollback_response_rebases_store_and_replaces_event_transport(
         ),
     );
     app.activate_thread_channel(thread_id).await;
-    let history_response = HistoryLookupResponse {
+    let history_response = HistoryLookupResponse::Entry {
         offset: 3,
         log_id: 7,
         entry: Some("retained history".to_string()),
@@ -7143,7 +7156,7 @@ async fn backtrack_rollback_response_rebases_store_and_replaces_event_transport(
         .expect("active receiver should remain attached");
     assert_matches!(
         rx.try_recv(),
-        Ok(ThreadBufferedEvent::HistoryEntryResponse(HistoryLookupResponse {
+        Ok(ThreadBufferedEvent::HistoryEntryResponse(HistoryLookupResponse::Entry {
             offset: 3,
             log_id: 7,
             entry: Some(entry),
@@ -7162,7 +7175,7 @@ async fn backtrack_rollback_response_rebases_store_and_replaces_event_transport(
     assert_eq!(snapshot.turns, vec![retained_turn]);
     assert_matches!(
         snapshot.events.as_slice(),
-        [ThreadBufferedEvent::HistoryEntryResponse(HistoryLookupResponse {
+        [ThreadBufferedEvent::HistoryEntryResponse(HistoryLookupResponse::Entry {
             offset: 3,
             log_id: 7,
             entry: Some(entry),
@@ -7267,6 +7280,7 @@ async fn remote_resume_current_cwd_rejection_snapshot() -> Result<()> {
             &mut app_server,
             crate::resume_picker::SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 history_mode: None,
             },
@@ -7310,6 +7324,7 @@ async fn remote_exec_resume_current_cwd_is_rejected() -> Result<()> {
             &mut app_server,
             crate::resume_picker::SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 history_mode: None,
             },
@@ -7348,6 +7363,7 @@ async fn in_app_resume_session_cwd_without_metadata_is_non_fatal() -> Result<()>
             &mut app_server,
             crate::resume_picker::SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
                 history_mode: None,
             },
@@ -7411,6 +7427,7 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
             &mut app_server,
             crate::resume_picker::SessionTarget {
                 path: Some(rollout_path),
+                source_rollout_path: None,
                 thread_id: ThreadId::from_string(&thread_id)?,
                 history_mode: None,
             },
@@ -7550,6 +7567,7 @@ async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
                 app_server,
                 crate::resume_picker::SessionTarget {
                     path: Some(rollout_path),
+                    source_rollout_path: None,
                     thread_id,
                     history_mode: None,
                 },
@@ -7655,6 +7673,7 @@ async fn remembered_current_cwd_stays_at_launch_across_in_app_resumes() -> Resul
         )?;
         targets.push(crate::resume_picker::SessionTarget {
             path: Some(rollout_path),
+            source_rollout_path: None,
             thread_id: ThreadId::from_string(&thread_id)?,
             history_mode: None,
         });
@@ -7777,6 +7796,8 @@ async fn prompt_edit_rolls_back_selected_prompt_in_place_by_default() -> Result<
         thread_id: source_thread_id,
         source: None,
         nth_user_message: 1,
+        prompt_occurrences: 1,
+        prompt_occurrence: 0,
         prompt: crate::chatwidget::UserMessage::from("second prompt"),
     });
     let rollback_event = std::iter::from_fn(|| app_event_rx.try_recv().ok())
@@ -7923,6 +7944,8 @@ async fn prompt_edit_forks_before_selected_prompt_and_preserves_source() -> Resu
             thread_id: source_thread_id,
             source: None,
             nth_user_message: 1,
+            prompt_occurrences: 1,
+            prompt_occurrence: 0,
             prompt: prompt.clone(),
         },
     ))
@@ -8022,6 +8045,8 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
             thread_id: source_thread_id,
             source: None,
             nth_user_message: 0,
+            prompt_occurrences: 1,
+            prompt_occurrence: 0,
             prompt: crate::chatwidget::UserMessage::from("first prompt"),
         },
     ))
@@ -8197,6 +8222,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                                 codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
                             sender_thread_id: ThreadId::new().to_string(),
                             receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                            receiver_agents: Vec::new(),
                             prompt: None,
                             model: None,
                             reasoning_effort: None,

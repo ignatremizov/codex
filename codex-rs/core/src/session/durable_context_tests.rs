@@ -10,8 +10,8 @@ use codex_extension_api::ContextualUserFragment;
 use codex_extension_api::TurnInputContribution;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::InitialHistory;
-use codex_protocol::protocol::RolloutItem;
+use codex_history::InitialHistory;
+use codex_history::RolloutItem;
 use codex_rollout::RolloutRecorder;
 use pretty_assertions::assert_eq;
 use tokio::sync::oneshot;
@@ -228,7 +228,7 @@ async fn persisted_marker_presence(rollout_path: &Path) -> MarkerPresence {
         panic!("durable context rollout should have resumed history");
     };
     let response_items = resumed.history.iter().filter_map(|item| match item {
-        RolloutItem::ResponseItem(item) => Some(item),
+        RolloutItem::ResponseItem(item) => Some(&item.item),
         _ => None,
     });
     marker_presence(&response_item_text(response_items))

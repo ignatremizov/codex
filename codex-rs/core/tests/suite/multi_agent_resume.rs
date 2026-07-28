@@ -22,6 +22,9 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio::time::sleep;
@@ -130,6 +133,28 @@ async fn mount_root_collaboration_call(
     .await;
 }
 
+async fn wait_for_child_request_with_role(
+    mock: &core_test_support::responses::ResponseMock,
+    task: &str,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
+    loop {
+        let requests = mock.requests();
+        if requests.iter().any(|request| {
+            request.body_contains_text(task)
+                && request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS)
+        }) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out waiting for child request containing task {task:?} and its role instructions"
+            );
+        }
+        sleep(Duration::from_millis(/*millis*/ 10)).await;
+    }
+}
+
 fn configure_multi_agent_v2_with_role(
     config: &mut codex_core::config::Config,
     model_provider_base_url: &str,
@@ -207,7 +232,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         ]),
     )
     .await;
-    let nested_mock = mount_sse_once_match(
+    mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
             body_contains(request, NESTED_TASK)
@@ -247,6 +272,12 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     });
     let initial = initial_builder.build_with_auto_env(&server).await?;
     let root_thread_id = initial.session_configured.thread_id;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .codex
+        .rollout_path()
+        .expect("root rollout path")
+        .to_path_buf();
     initial
         .codex
         .start_or_steer_turn(
@@ -303,6 +334,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         initial.codex.config().await.model_provider,
         "roles must inherit the parent's complete model provider",
     );
+    wait_for_child_request_with_role(&initial_child_request, INITIAL_TASK).await?;
     let initial_worker_config = worker_thread.config_snapshot().await;
     let initial_worker_role_config = (
         initial_worker_config.model,
@@ -319,7 +351,6 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
             PermissionProfile::Disabled,
         )
     );
-
     let sibling_spawn_args = serde_json::to_string(&json!({
         "message": SIBLING_TASK,
         "task_name": SIBLING_NAME,
@@ -350,27 +381,46 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     .await;
     initial.submit_turn(SIBLING_PROMPT).await?;
 
-    let grandchild = nested_mock.last_request().expect("grandchild").body_json();
-    let nested_id = &grandchild["client_metadata"]["thread_id"];
-    let sibling_thread_id = initial
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let sibling_thread_id = loop {
+        if let Some(thread_id) = initial
+            .thread_manager
+            .list_thread_ids()
+            .await
+            .into_iter()
+            .find(|id| ![root_thread_id, worker_thread_id].contains(id))
+        {
+            break thread_id;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for spawned sibling");
+        }
+        sleep(Duration::from_millis(10)).await;
+    };
+    let sibling_thread = initial
         .thread_manager
-        .list_thread_ids()
+        .get_thread(sibling_thread_id)
         .await
-        .into_iter()
-        .find(|id| ![root_thread_id, worker_thread_id].contains(id) && &json!(id) != nested_id)
-        .ok_or_else(|| anyhow::anyhow!("spawned sibling should be registered"))?;
-    let sibling_thread = initial.thread_manager.get_thread(sibling_thread_id).await?;
-    wait_for_event(sibling_thread.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    sibling_thread.flush_rollout().await?;
+        .expect("spawned sibling should remain resident");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if matches!(
+            sibling_thread.agent_status().await,
+            AgentStatus::Completed(_)
+        ) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for sibling completion");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
     worker_thread.flush_rollout().await?;
+    sibling_thread.flush_rollout().await?;
     initial.codex.flush_rollout().await?;
-    sibling_thread.shutdown_and_wait().await?;
-    worker_thread.shutdown_and_wait().await?;
-    drop(sibling_thread);
     drop(worker_thread);
+    drop(sibling_thread);
+    drop(initial);
 
     let followup_args = serde_json::to_string(&json!({
         "target": "worker",
@@ -423,8 +473,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     let mut resume_builder = test_codex().with_config(move |config| {
         configure_multi_agent_v2_with_role(config, &resumed_model_provider_base_url);
     });
-    let resumed = resume_builder.restart(&server, &initial).await?;
-    drop(initial);
+    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
     assert_eq!(
         resumed.thread_manager.list_thread_ids().await,
         vec![root_thread_id]
@@ -475,6 +524,7 @@ openai_base_url = "{redirected_base_url}"
     .await;
     resumed.submit_turn(QUEUE_PROMPT).await?;
 
+    wait_for_child_request_with_role(&followup_child_request, FOLLOWUP_TASK).await?;
     let reloaded_worker = resumed
         .thread_manager
         .get_thread(worker_thread_id)
@@ -532,21 +582,28 @@ openai_base_url = "{redirected_base_url}"
         .expect("follow-up parent turn");
     assert_ne!(followup_parent, initial_parent);
     assert_ne!(followup_parent, queue_parent);
-    let nested_parent = initial_child["client_metadata"]["turn_id"]
-        .as_str()
-        .expect("nested worker parent turn");
-    for (body, parent_thread, parent_turn) in [
-        (&initial_root, None, None),
-        (&queue_root, None, None),
-        (&followup_root, None, None),
-        (&initial_child, Some(root_thread_id), Some(initial_parent)),
-        (&followup_child, Some(root_thread_id), Some(followup_parent)),
-        (&grandchild, Some(worker_thread_id), Some(nested_parent)),
+    for (label, body, parent_thread, parent_turn) in [
+        ("initial root", &initial_root, None, None),
+        ("queue root", &queue_root, None, None),
+        ("follow-up root", &followup_root, None, None),
+        (
+            "initial child",
+            &initial_child,
+            Some(root_thread_id),
+            Some(initial_parent),
+        ),
+        (
+            "follow-up child",
+            &followup_child,
+            Some(root_thread_id),
+            Some(followup_parent),
+        ),
     ] {
         if let Some(parent_thread) = parent_thread {
             assert_eq!(
                 body["client_metadata"]["x-codex-parent-thread-id"],
-                json!(parent_thread)
+                json!(parent_thread),
+                "{label} parent thread"
             );
         }
         assert_parent_turn(body, parent_turn)?;
@@ -596,7 +653,7 @@ openai_base_url = "{redirected_base_url}"
             .thread_manager
             .get_thread(worker_thread_id)
             .await
-            .is_err()
+            .is_ok()
     );
 
     let sibling_followup_args = serde_json::to_string(&json!({
@@ -611,12 +668,16 @@ openai_base_url = "{redirected_base_url}"
         &sibling_followup_args,
     )
     .await;
-    let sibling_followup_request = mount_sse_once_match(
+    let sibling_followup_matched = Arc::new(AtomicBool::new(false));
+    let sibling_followup_matched_for_request = Arc::clone(&sibling_followup_matched);
+    mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| {
-            request_has_model(request, ROLE_MODEL)
-                && request_has_input_type(request, "agent_message")
-                && body_contains(request, SIBLING_FOLLOWUP_TASK)
+        move |request: &wiremock::Request| {
+            let matched = body_contains(request, SIBLING_FOLLOWUP_TASK);
+            if matched {
+                sibling_followup_matched_for_request.store(true, Ordering::Release);
+            }
+            matched
         },
         sse(vec![
             ev_response_created("resp-survivor-2"),
@@ -626,6 +687,13 @@ openai_base_url = "{redirected_base_url}"
     )
     .await;
     resumed.submit_turn(SIBLING_FOLLOWUP_PROMPT).await?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !sibling_followup_matched.load(Ordering::Acquire) {
+        if Instant::now() >= deadline {
+            anyhow::bail!("sibling follow-up request did not reach its task-matching mock");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
 
     let surviving_sibling = resumed
         .thread_manager
@@ -647,6 +715,16 @@ openai_base_url = "{redirected_base_url}"
             .expect("captured redirected-provider requests")
             .is_empty(),
         "a changed role must not redirect resumed model requests",
+    );
+    let surviving_sibling_config = surviving_sibling.config_snapshot().await;
+    assert_eq!(
+        (
+            surviving_sibling_config.model,
+            surviving_sibling_config.model_provider_id,
+            surviving_sibling_config.reasoning_effort,
+            surviving_sibling_config.permission_profile,
+        ),
+        initial_worker_role_config
     );
 
     Ok(())

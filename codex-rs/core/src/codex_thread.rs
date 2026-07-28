@@ -36,6 +36,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::Event;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
@@ -78,6 +79,8 @@ use tokio_util::sync::CancellationToken;
 use codex_rollout::state_db::StateDbHandle;
 
 static LIVE_THREADS: Gauge = Gauge::new("core.threads.live");
+
+mod sub_agent_completion;
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
@@ -246,6 +249,18 @@ impl CodexThread {
                 .await;
         }
         result
+    }
+
+    pub(crate) async fn submit_accepted_completion(
+        &self,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<String> {
+        self.io
+            .submit_accepted_completion(Op::InterAgentCommunication {
+                communication,
+                start_options: TurnStartOptions::default(),
+            })
+            .await
     }
 
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
@@ -672,14 +687,6 @@ impl CodexThread {
         self.session.token_usage_info().await
     }
 
-    /// Records a context fragment without creating a new user turn boundary.
-    pub(crate) async fn inject_fragment_without_turn(&self, fragment: impl ContextualUserFragment) {
-        let item = ContextualUserFragment::into(fragment);
-        self.session
-            .inject_no_new_turn(vec![item], /*current_turn_context*/ None)
-            .await;
-    }
-
     /// Record raw Responses API items without starting a new turn.
     pub async fn inject_response_items(&self, items: Vec<ResponseItem>) -> CodexResult<()> {
         self.inject_response_items_for_turn(items).await?;
@@ -976,31 +983,6 @@ impl CodexThread {
 
     pub async fn has_reference_context(&self) -> bool {
         self.session.reference_context_item().await.is_some()
-    }
-
-    pub async fn refresh_mcp_servers_now(
-        &self,
-        refresh_config: codex_protocol::protocol::McpServerRefreshConfig,
-    ) -> anyhow::Result<()> {
-        let turn_context = self.session.new_default_turn().await;
-        self.session
-            .refresh_mcp_servers_from_refresh_config(turn_context.as_ref(), refresh_config, None)
-            .await
-    }
-
-    pub async fn refresh_mcp_servers_now_with_mcp_config(
-        &self,
-        mcp_config: McpConfig,
-        tool_plugin_provenance: ToolPluginProvenance,
-    ) {
-        let turn_context = self.session.new_default_turn().await;
-        self.session
-            .refresh_mcp_servers_now_with_mcp_config(
-                turn_context.as_ref(),
-                mcp_config,
-                tool_plugin_provenance,
-            )
-            .await;
     }
 
     pub async fn latest_mcp_server_use_context_text(&self, server_name: &str) -> Option<String> {

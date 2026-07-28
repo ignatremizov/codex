@@ -582,6 +582,7 @@ pub(crate) fn inter_agent_message_thread_item_with_id(
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         });
     }
     Some(ThreadItem::AgentMessage {
@@ -590,6 +591,7 @@ pub(crate) fn inter_agent_message_thread_item_with_id(
         phase: Some(MessagePhase::Commentary),
         memory_citation: None,
         delivery: None,
+        questions: None,
     })
 }
 
