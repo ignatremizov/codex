@@ -17,6 +17,14 @@ pub(super) fn read_segment(
     segment: &RolloutLineageSegment,
     is_cancelled: impl Fn() -> bool,
 ) -> io::Result<Vec<RolloutItem>> {
+    let items = read_canonical_segment(segment, is_cancelled)?;
+    Ok(codex_rollout::rollout_without_exact_rollback_ranges(&items))
+}
+
+pub(in crate::local) fn read_canonical_segment(
+    segment: &RolloutLineageSegment,
+    is_cancelled: impl Fn() -> bool,
+) -> io::Result<Vec<RolloutItem>> {
     let mut file =
         codex_rollout::open_rollout_seekable_reader(&segment.rollout_path, is_cancelled)?;
     let length = match segment.end {
@@ -36,7 +44,7 @@ pub(super) fn read_segment(
             items.push(line.item);
         }
     }
-    Ok(codex_rollout::rollout_without_exact_rollback_ranges(&items))
+    Ok(items)
 }
 
 pub(super) fn load_full_lineage(

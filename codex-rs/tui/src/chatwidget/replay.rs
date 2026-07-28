@@ -324,6 +324,17 @@ impl ChatWidget {
                 questions,
                 ..
             } => {
+                if let Some(cell) =
+                    multi_agents::background_completion_history_cell_from_agent_message(
+                        &id,
+                        &text,
+                        phase.as_ref(),
+                        self.local_settings.tui.agent_response_preview_lines,
+                    )
+                {
+                    self.on_collab_event(cell);
+                    return;
+                }
                 if self.complete_realtime_delegated_agent_item(
                     &turn_id,
                     &ThreadItem::AgentMessage {
@@ -363,6 +374,7 @@ impl ChatWidget {
                         }),
                         delivery,
                         questions,
+                        sub_agent_completion: None,
                     },
                     &turn_id,
                     from_replay,
@@ -539,6 +551,7 @@ impl ChatWidget {
                 status,
                 sender_thread_id,
                 receiver_thread_ids,
+                receiver_agents,
                 prompt,
                 model,
                 reasoning_effort,
@@ -550,6 +563,7 @@ impl ChatWidget {
                     status,
                     sender_thread_id,
                     receiver_thread_ids,
+                    receiver_agents,
                     prompt,
                     model,
                     reasoning_effort,

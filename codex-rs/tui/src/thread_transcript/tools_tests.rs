@@ -206,6 +206,7 @@ fn split_exploration_replay_join_preserves_preview_rendering() {
         })
         .collect::<Vec<_>>();
     let turn = codex_app_server_protocol::Turn {
+        root_turn_id: None,
         id: "turn".to_owned(),
         items: items.clone(),
         items_view: TurnItemsView::Full,
@@ -468,6 +469,7 @@ fn agent_tool_fallbacks_preserve_status_without_duplicating_v2_activity() {
             status,
             sender_thread_id: "00000000-0000-0000-0000-000000000001".to_string(),
             receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".to_string()],
+            receiver_agents: Vec::new(),
             prompt: Some("Inspect the parser".to_string()),
             model: None,
             reasoning_effort: None,

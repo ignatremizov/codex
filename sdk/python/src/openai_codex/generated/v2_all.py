@@ -606,6 +606,25 @@ class CodexResponseHandoffMode(Enum):
     bem_tags = "bemTags"
 
 
+class CollabAgentRef(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agent_nickname: Annotated[
+        str | None,
+        Field(
+            alias="agentNickname", description="Optional nickname assigned to the receiving agent."
+        ),
+    ] = None
+    agent_role: Annotated[
+        str | None,
+        Field(alias="agentRole", description="Optional role assigned to the receiving agent."),
+    ] = None
+    thread_id: Annotated[
+        str, Field(alias="threadId", description="Thread ID of the receiving agent.")
+    ]
+
+
 class CollabAgentStatus(Enum):
     pending_init = "pendingInit"
     running = "running"
@@ -10200,6 +10219,13 @@ class CollabAgentToolCallThreadItem(BaseModel):
             description="Reasoning effort requested for the spawned agent, when applicable.",
         ),
     ] = None
+    receiver_agents: Annotated[
+        list[CollabAgentRef] | None,
+        Field(
+            alias="receiverAgents",
+            description="Receiver metadata, when available. Absent in older history and populated for new collab tool calls.",
+        ),
+    ] = []
     receiver_thread_ids: Annotated[
         list[str],
         Field(

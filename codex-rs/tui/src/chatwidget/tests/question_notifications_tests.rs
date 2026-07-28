@@ -23,9 +23,11 @@ async fn live_async_question_notifies_once_and_takes_priority_over_turn_completi
     for kind in [
         ReplayKind::ResumeInitialMessages,
         ReplayKind::ThreadSnapshot,
+        ReplayKind::ReplayOnlyThreadSnapshot,
     ] {
         chat.replay_thread_item(item.clone(), "turn".into(), kind);
         assert!(chat.pending_notification.is_none());
+        assert!(chat.bottom_pane.questions.is_none());
     }
 
     let notification = ServerNotification::ItemCompleted(ItemCompletedNotification {

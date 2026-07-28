@@ -660,6 +660,7 @@ fn open_questions(chat: &mut ChatWidget, options: Option<Vec<String>>) {
                 },
                 question("Second?", Some(vec!["Next".into()])),
             ]),
+            sub_agent_completion: None,
         },
         "turn",
         /*from_replay*/ false,
