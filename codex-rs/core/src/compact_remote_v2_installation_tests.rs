@@ -79,6 +79,7 @@ async fn prepared_prefix_rejection_respects_caller_intent(
         cutoff_world_state: Arc::new(WorldState::default()),
         attempt: RemoteCompactV2Attempt {
             input_goal_ids: Default::default(),
+            completion_source_items: Vec::new(),
             trace_input_history: None,
             replacement_history_input: vec![ResponseItemEnvelope::new(original.clone())],
             compacted_prefix_len: 0,

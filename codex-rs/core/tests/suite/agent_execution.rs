@@ -370,7 +370,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         }
         args
     };
-    mount_root_collaboration_call(
+    let first_admission = mount_root_collaboration_call(
         &server,
         FIRST_PROMPT,
         "first-call",
@@ -380,7 +380,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     .await;
     mount_completed_worker(&server, FIRST_TASK, "first-call").await;
 
-    mount_root_collaboration_call(
+    let replacement_admission = mount_root_collaboration_call(
         &server,
         EVICT_PROMPT,
         "replacement-call",
@@ -569,7 +569,14 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     )
     .await?;
     test.submit_text_turn(FIRST_PROMPT).await?;
-    let first_thread_id = created_threads.recv().await?;
+    let first_output = first_admission
+        .function_call_output_text("first-call")
+        .context("initial spawn should return an admission result")?;
+    let first_result: serde_json::Value = serde_json::from_str(&first_output)
+        .with_context(|| format!("initial spawn was rejected: {first_output}"))?;
+    assert_eq!(first_result["task_name"], json!("/root/first"));
+    let first_thread_id =
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 10), created_threads.recv()).await??;
     let first_thread = test.thread_manager.get_thread(first_thread_id).await?;
     wait_for_event(first_thread.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -614,7 +621,14 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         .await?;
     }
     test.submit_text_turn(EVICT_PROMPT).await?;
-    let replacement_thread_id = created_threads.recv().await?;
+    let replacement_output = replacement_admission
+        .function_call_output_text("replacement-call")
+        .context("replacement spawn should return an admission result")?;
+    let replacement_result: serde_json::Value = serde_json::from_str(&replacement_output)
+        .with_context(|| format!("replacement spawn was rejected: {replacement_output}"))?;
+    assert_eq!(replacement_result["task_name"], json!("/root/replacement"));
+    let replacement_thread_id =
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 10), created_threads.recv()).await??;
     let replacement_thread = test
         .thread_manager
         .get_thread(replacement_thread_id)
