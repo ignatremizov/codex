@@ -1,6 +1,7 @@
 use crate::RolloutItem;
 use crate::protocol::EventMsg;
 use codex_extension_items::ExtensionItem;
+use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SubAgentActivityKind;
@@ -96,7 +97,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
             // equivalent.
             matches!(history_mode, ThreadHistoryMode::Paginated)
                 || matches!(
-                    event.item,
+                    &event.item,
                     TurnItem::FunctionCallOutput(_)
                         | TurnItem::Plan(_)
                         | TurnItem::Extension(ExtensionItem::Sleep(_))
@@ -105,6 +106,15 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
                     &event.item,
                     TurnItem::SubAgentActivity(item)
                         if item.kind == SubAgentActivityKind::Completed
+                )
+                || matches!(
+                    &event.item,
+                    TurnItem::AgentMessage(item) if item.has_sub_agent_completion_identity()
+                )
+                || matches!(
+                    &event.item,
+                    TurnItem::CollabAgentToolCall(item)
+                        if item.tool == CollabAgentTool::Wait && !item.agents_states.is_empty()
                 )
         }
         EventMsg::TokenCount(_)

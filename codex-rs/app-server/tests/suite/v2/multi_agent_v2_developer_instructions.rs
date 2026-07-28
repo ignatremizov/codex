@@ -69,6 +69,9 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
 ) -> Result<()> {
     let fork_turns = match case {
         "bounded history" | "bounded implicit configured default" => Some("1"),
+        "full history" | "full history configured role" | "full fork skips default role" => {
+            Some("all")
+        }
         "no history" | "explicit configured role" | "implicit configured default" => Some("none"),
         _ => None,
     };
@@ -123,7 +126,8 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     const SPAWN_CALL_ID: &str = "spawn-instruction-override-worker";
 
     let server = responses::start_mock_server().await;
-    let mut spawn_args = json!({"message": CHILD_PROMPT, "task_name": "worker"});
+    let mut spawn_args =
+        json!({"message": CHILD_PROMPT, "task_message": CHILD_PROMPT, "task_name": "worker"});
     if let Some(fork_turns) = fork_turns {
         spawn_args["fork_turns"] = json!(fork_turns);
     }
@@ -181,20 +185,20 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     }
     if configured_roles {
         feature_config.push_str(
-                "\n\n[agents.custom]\ndescription = \"configured role\"\nconfig_file = \"./config.toml\"\n\n[agents.default]\ndescription = \"configured default role\"\nconfig_file = \"./config.toml\"",
+                "\n\n[agents.custom]\ndescription = \"configured role\"\nconfig_file = \"./role.toml\"\n\n[agents.default]\ndescription = \"configured default role\"\nconfig_file = \"./role.toml\"",
             );
     }
     let codex_home = TempDir::new()?;
-    let configured_model = if case == "full history configured role" {
-        "gpt-5.5"
+    let config = MockResponsesConfig::new(&server.uri()).with_model("gpt-5.4");
+    let mut role_config = if case == "full history configured role" {
+        "model = \"gpt-5.5\"\n".to_string()
     } else {
-        "gpt-5.4"
+        String::new()
     };
-    let mut config = MockResponsesConfig::new(&server.uri()).with_model(configured_model);
     if role_has_instructions {
-        config =
-            config.with_root_config(&format!("developer_instructions = {ROLE_INSTRUCTIONS:?}"));
+        role_config.push_str(&format!("developer_instructions = {ROLE_INSTRUCTIONS:?}\n"));
     }
+    std::fs::write(codex_home.path().join("role.toml"), role_config)?;
     config
         .with_extra_config(&feature_config)
         .write(codex_home.path())?;
@@ -336,7 +340,9 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
                 "spawn_agent",
                 &serde_json::to_string(&json!({
                     "message": CHILD_PROMPT,
+                    "task_message": CHILD_PROMPT,
                     "task_name": "compacted_worker",
+                    "fork_turns": "all",
                 }))?,
             ),
             responses::ev_completed("parent-spawn-after-compaction"),
@@ -776,6 +782,7 @@ features.shell_tool = false
                 &serde_json::to_string(&json!({
                     "target": "worker",
                     "message": FOLLOWUP_TASK,
+                    "task_message": FOLLOWUP_TASK,
                 }))?,
             ),
             responses::ev_completed("resumed-parent-followup"),

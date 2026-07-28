@@ -19,6 +19,7 @@ use crate::environment_selection::TurnEnvironmentState;
 use crate::function_tool::FunctionCallError;
 use crate::hook_mcp_executor::CoreHookMcpExecutor;
 use crate::plugins::plugins_manager_for_config;
+use crate::session::inter_agent_communication::InterAgentCommunicationRecord;
 use crate::session::step_context::StepContext;
 use crate::shell::default_user_shell;
 use crate::shell_snapshot::ShellSnapshot;
@@ -171,6 +172,8 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
 use codex_rmcp_client::ElicitationAction;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
@@ -387,6 +390,32 @@ async fn agent_messages_get_local_ids_without_item_ids_feature() {
             .is_some_and(|item_id| item_id.starts_with("amsg_"))
     );
     assert_eq!(items[0].turn_id(), Some(turn_context.sub_id.as_str()));
+}
+
+#[tokio::test]
+async fn untrusted_agent_messages_cannot_preserve_completion_context_ids() {
+    let (session, turn_context) = make_session_and_context().await;
+    let reserved_id = new_sub_agent_completion_context_response_item_id();
+    let response_item = ResponseItem::AgentMessage {
+        id: Some(reserved_id.clone()),
+        author: "/root/worker".to_string(),
+        recipient: "/root".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "done".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let (items, _) = session.prepare_conversation_items_for_history(
+        &turn_context,
+        std::slice::from_ref(&response_item),
+    );
+
+    let normalized_id = items[0].id().expect("normalized item id");
+    assert_ne!(normalized_id, &reserved_id);
+    assert!(!is_sub_agent_completion_context_response_item_id(
+        normalized_id
+    ));
 }
 
 fn assistant_message(text: &str) -> ResponseItem {
@@ -2385,6 +2414,7 @@ async fn subagent_activity_emits_matching_start_and_completion() {
         kind: codex_protocol::protocol::SubAgentActivityKind::Started,
         agent_thread_id: ThreadId::new(),
         agent_path: AgentPath::root(),
+        prompt: None,
     };
 
     crate::tools::handlers::multi_agents_v2::emit_sub_agent_activity(&session, &turn_context, item)
@@ -2430,12 +2460,14 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     for mut communication in [plaintext, encrypted, encrypted_with_audit] {
         let (mut session, turn_context) = make_session_and_context().await;
         let rollout_path = attach_thread_persistence(&mut session).await;
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
         communication.id = Some(ResponseItemId::with_suffix("amsg", "turn-id-test"));
         let mut expected_item = communication.to_model_input_item();
         expected_item.set_turn_id_if_missing(&turn_context.sub_id);
 
         session
-            .record_inter_agent_communication(&turn_context, communication)
+            .record_inter_agent_communication(Arc::clone(&turn_context), communication)
             .await;
 
         let recorded_history = session.clone_history().await;
@@ -2517,7 +2549,7 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     );
 
     session
-        .record_inter_agent_communication(&turn_context, communication)
+        .record_inter_agent_communication(Arc::clone(&turn_context), communication)
         .await;
 
     let live_history = session.clone_history().await;
@@ -2570,6 +2602,251 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     assert_eq!(
         resumed_item.id().map(ResponseItemId::as_str),
         Some(live_item_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn record_inter_agent_communication_preserves_trusted_completion_context_id() {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let presentation = session
+        .services
+        .agent_control
+        .record_agent_terminal_presentation(
+            session.presentation_id(),
+            crate::agent::control::SessionPresentationId::new(ThreadId::new(), Uuid::now_v7()),
+            "child-turn",
+            AgentStatus::Completed(Some("child done".to_string())),
+            crate::agent::control::TerminalPresentationDelivery::Direct,
+            || {},
+        )
+        .expect("direct terminal presentation");
+    let response_item_id = presentation.completion_context_response_item_id();
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(response_item_id.clone());
+    session
+        .services
+        .agent_control
+        .authorize_pending_completion_context(session.presentation_id(), &presentation);
+    session.prepare_for_thread_removal();
+
+    session
+        .record_inter_agent_communication(Arc::clone(&turn_context), communication)
+        .await;
+
+    let history = session.clone_history().await;
+    let [item] = history.raw_items() else {
+        panic!("expected exactly one history item");
+    };
+    assert_eq!(item.id(), Some(&response_item_id));
+}
+
+#[tokio::test]
+async fn completion_communication_reuses_a_previously_committed_response_item() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    attach_thread_persistence(&mut session).await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let presentation = session
+        .services
+        .agent_control
+        .record_agent_terminal_presentation(
+            session.presentation_id(),
+            crate::agent::control::SessionPresentationId::new(ThreadId::new(), Uuid::now_v7()),
+            "child-turn",
+            AgentStatus::Completed(Some("child done".to_string())),
+            crate::agent::control::TerminalPresentationDelivery::Direct,
+            || {},
+        )
+        .expect("direct terminal presentation");
+    let response_item_id = presentation.completion_context_response_item_id();
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(response_item_id.clone());
+    session
+        .services
+        .agent_control
+        .authorize_pending_completion_context(session.presentation_id(), &presentation);
+    communication.set_turn_id_if_missing(&turn_context.sub_id);
+    let response_item = communication.to_model_input_item();
+    let (persisted_items, _) = session.prepare_conversation_items_for_history(
+        turn_context.as_ref(),
+        std::slice::from_ref(&response_item),
+    );
+    let mut persisted_items = persisted_items.into_owned();
+    let Some(ResponseItem::AgentMessage { id, .. }) = persisted_items.first_mut() else {
+        panic!("expected an agent message");
+    };
+    *id = Some(response_item_id.clone());
+    session
+        .live_thread()
+        .expect("live thread")
+        .append_items_and_flush_canonical(&[
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: false,
+            },
+            RolloutItem::ResponseItem(persisted_items[0].clone().into()),
+        ])
+        .await
+        .expect("persist completion context before reported failure");
+
+    assert!(matches!(
+        session
+            .record_inter_agent_communication(Arc::clone(&turn_context), communication)
+            .await,
+        InterAgentCommunicationRecord::CompletionRecorded
+    ));
+
+    let history = session
+        .live_thread()
+        .expect("live thread")
+        .load_history(/*include_archived*/ false)
+        .await
+        .expect("load history");
+    assert_eq!(
+        history
+            .items
+            .iter()
+            .filter(|rollout_item| matches!(
+                rollout_item,
+                RolloutItem::ResponseItem(response_item)
+                    if response_item.id() == Some(&response_item_id)
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        session.clone_history().await.raw_items(),
+        persisted_items.as_slice()
+    );
+}
+
+#[tokio::test]
+async fn completion_communication_commit_survives_caller_cancellation() {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let presentation = session
+        .services
+        .agent_control
+        .record_agent_terminal_presentation(
+            session.presentation_id(),
+            crate::agent::control::SessionPresentationId::new(ThreadId::new(), Uuid::now_v7()),
+            "child-turn",
+            AgentStatus::Completed(Some("child done".to_string())),
+            crate::agent::control::TerminalPresentationDelivery::Direct,
+            || {},
+        )
+        .expect("direct terminal presentation");
+    let response_item_id = presentation.completion_context_response_item_id();
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(response_item_id.clone());
+    session
+        .services
+        .agent_control
+        .authorize_pending_completion_context(session.presentation_id(), &presentation);
+    session
+        .input_queue
+        .enqueue_mailbox_communication(communication, TurnStartOptions::default())
+        .await;
+    let mut pending_input = session.get_pending_input().await;
+    let communication = match pending_input.pop() {
+        Some(TurnInput::InterAgentCommunication(communication)) if pending_input.is_empty() => {
+            communication
+        }
+        _ => panic!("expected queued completion communication"),
+    };
+    let durable_context_permit = session
+        .acquire_durable_context_permit()
+        .await
+        .expect("durable context permit");
+    let session_ref_count = Arc::strong_count(&session);
+    let recording_session = Arc::clone(&session);
+    let recording_turn_context = Arc::clone(&turn_context);
+    let recording = tokio::spawn(async move {
+        recording_session
+            .record_inter_agent_communication(recording_turn_context, communication)
+            .await;
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while Arc::strong_count(&session) < session_ref_count.saturating_add(2) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completion recording should start");
+
+    recording.abort();
+    assert!(
+        recording
+            .await
+            .expect_err("caller should be cancelled")
+            .is_cancelled()
+    );
+    drop(durable_context_permit);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let history = session.clone_history().await;
+            if history.raw_items().len() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached completion recording should finish");
+    let history = session.clone_history().await;
+    let [item] = history.raw_items() else {
+        panic!("expected exactly one history item");
+    };
+    assert_eq!(item.id(), Some(&response_item_id));
+}
+
+#[tokio::test]
+async fn record_inter_agent_communication_normalizes_untrusted_completion_context_id() {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let response_item_id = new_sub_agent_completion_context_response_item_id();
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(response_item_id);
+
+    session
+        .record_inter_agent_communication(Arc::clone(&turn_context), communication)
+        .await;
+
+    let history = session.clone_history().await;
+    let [item] = history.raw_items() else {
+        panic!("expected exactly one history item");
+    };
+    assert!(
+        item.id()
+            .is_some_and(|id| !is_sub_agent_completion_context_response_item_id(id))
     );
 }
 
@@ -3019,13 +3296,13 @@ async fn marked_compacted_history_preserves_subsequent_server_token_usage() {
     let rollout_items = vec![
         RolloutItem::Compacted(CompactedItem {
             message: "media-free checkpoint".to_string(),
-            replacement_history: Some(vec![assistant_message("summary")]),
+            replacement_history: Some(vec![assistant_message("summary").into()]),
             window_number: Some(1),
             replacement_history_media_sanitized_prefix_len: Some(1),
             ..Default::default()
         }),
-        RolloutItem::ResponseItem(user_message("new turn")),
-        RolloutItem::ResponseItem(assistant_message("new response")),
+        RolloutItem::ResponseItem(user_message("new turn").into()),
+        RolloutItem::ResponseItem(assistant_message("new response").into()),
         RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
             info: Some(server_usage.clone()),
             rate_limits: None,
@@ -3058,7 +3335,7 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_rollback() {
     let rollout_items = vec![
         RolloutItem::Compacted(CompactedItem {
             message: "media-free checkpoint".to_string(),
-            replacement_history: Some(vec![assistant_message("summary")]),
+            replacement_history: Some(vec![assistant_message("summary").into()]),
             window_number: Some(1),
             replacement_history_media_sanitized_prefix_len: Some(1),
             ..Default::default()
@@ -3078,8 +3355,8 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_rollback() {
             text_elements: Vec::new(),
             ..Default::default()
         })),
-        RolloutItem::ResponseItem(user_message("roll this back")),
-        RolloutItem::ResponseItem(assistant_message("rolled-back response")),
+        RolloutItem::ResponseItem(user_message("roll this back").into()),
+        RolloutItem::ResponseItem(assistant_message("rolled-back response").into()),
         RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
             info: Some(stale_usage),
             rate_limits: None,
@@ -3135,7 +3412,7 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_later_model_ou
     let rollout_items = vec![
         RolloutItem::Compacted(CompactedItem {
             message: "media-free checkpoint".to_string(),
-            replacement_history: Some(vec![assistant_message("summary")]),
+            replacement_history: Some(vec![assistant_message("summary").into()]),
             window_number: Some(1),
             replacement_history_media_sanitized_prefix_len: Some(1),
             ..Default::default()
@@ -3144,7 +3421,7 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_later_model_ou
             info: Some(stale_usage),
             rate_limits: None,
         })),
-        RolloutItem::ResponseItem(assistant_message("response after stale usage")),
+        RolloutItem::ResponseItem(assistant_message("response after stale usage").into()),
     ];
 
     session
@@ -3209,11 +3486,11 @@ async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
     let rollout_items = vec![
         RolloutItem::Compacted(CompactedItem {
             message: "legacy image-heavy checkpoint".to_string(),
-            replacement_history: Some(replacement_history),
+            replacement_history: Some(replacement_history.into_iter().map(Into::into).collect()),
             window_number: Some(1),
             ..Default::default()
         }),
-        RolloutItem::ResponseItem(user_message("incomplete follow-up")),
+        RolloutItem::ResponseItem(user_message("incomplete follow-up").into()),
         RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
             info: Some(stale_usage),
             rate_limits: None,
@@ -3257,7 +3534,13 @@ async fn resume_persists_media_policy_certification_for_a_media_free_legacy_chec
     let media_free_history = vec![assistant_message("legacy summary")];
     let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
         message: "media-free legacy checkpoint".to_string(),
-        replacement_history: Some(media_free_history.clone()),
+        replacement_history: Some(
+            media_free_history
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect(),
+        ),
         window_number: Some(1),
         ..Default::default()
     })];
@@ -3289,7 +3572,7 @@ async fn resume_persists_media_policy_certification_for_a_media_free_legacy_chec
                     replacement_history_media_sanitized_prefix_len: Some(1),
                     replacement_history_media_repair: true,
                     ..
-                }) if history == &media_free_history
+                }) if raw_envelopes(history) == media_free_history
             )
         })
         .expect("persisted media-policy certification");
@@ -3317,7 +3600,13 @@ async fn media_free_certification_persistence_failures_do_not_block_resume() {
         let media_free_history = vec![assistant_message("legacy summary")];
         let source_history = Arc::new(vec![RolloutItem::Compacted(CompactedItem {
             message: "media-free legacy checkpoint".to_string(),
-            replacement_history: Some(media_free_history.clone()),
+            replacement_history: Some(
+                media_free_history
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect(),
+            ),
             window_number: Some(1),
             ..Default::default()
         })]);
@@ -3360,7 +3649,7 @@ async fn media_free_certification_persistence_failures_do_not_block_resume() {
         let recovered = recovery_session
             .reconstruct_history_from_rollout(&recovery_turn_context, persisted.items.as_slice())
             .await;
-        assert_eq!(recovered.history, media_free_history);
+        assert_eq!(raw_envelopes(&recovered.history), media_free_history);
         assert!(matches!(
             recovered.repair,
             Some(rollout_reconstruction::RolloutReconstructionRepair {
@@ -3424,16 +3713,19 @@ async fn session_initialization_discards_live_thread_when_media_repair_is_not_du
         let thread_id = ThreadId::default();
         let source_history = Arc::new(vec![RolloutItem::Compacted(CompactedItem {
             message: "legacy image checkpoint".to_string(),
-            replacement_history: Some(vec![ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputImage {
-                    image_url: "data:image/png;base64,source".to_string(),
-                    detail: None,
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            }]),
+            replacement_history: Some(vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputImage {
+                        image_url: "data:image/png;base64,source".to_string(),
+                        detail: None,
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ]),
             window_number: Some(1),
             ..Default::default()
         })]);
@@ -3475,7 +3767,10 @@ async fn session_initialization_discards_live_thread_when_media_repair_is_not_du
                 ..
             }) if matches!(
                 history.first(),
-                Some(ResponseItem::Message { content, .. })
+                Some(ResponseItemEnvelope {
+                    item: ResponseItem::Message { content, .. },
+                    ..
+                })
                     if matches!(content.first(), Some(ContentItem::InputImage { .. }))
             )
         ));
@@ -4044,17 +4339,18 @@ async fn fork_persists_media_repair_and_recomputed_usage_in_child_history() {
         RolloutItem::Compacted(CompactedItem {
             message: "legacy parent checkpoint".to_string(),
             replacement_history: Some(vec![
-                raw_image,
+                raw_image.into(),
                 ResponseItem::Compaction {
                     id: None,
                     encrypted_content: "summary".to_string(),
                     internal_chat_message_metadata_passthrough: None,
-                },
+                }
+                .into(),
             ]),
             window_number: Some(1),
             ..Default::default()
         }),
-        RolloutItem::ResponseItem(user_message("incomplete child tail")),
+        RolloutItem::ResponseItem(user_message("incomplete child tail").into()),
         RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
             info: Some(TokenUsageInfo {
                 total_token_usage: TokenUsage::default(),
@@ -4108,7 +4404,10 @@ async fn fork_persists_media_repair_and_recomputed_usage_in_child_history() {
                 ..
             }) if matches!(
                 history.first(),
-                Some(ResponseItem::Message { content, .. })
+                Some(ResponseItemEnvelope {
+                    item: ResponseItem::Message { content, .. },
+                    ..
+                })
                     if matches!(content.first(), Some(ContentItem::InputImage { .. }))
             )
         )
@@ -5110,7 +5409,7 @@ async fn thread_rollback_persists_required_repair_after_the_rollback_marker() {
     sess.persist_rollout_items(&[
         RolloutItem::Compacted(CompactedItem {
             message: "legacy checkpoint".to_string(),
-            replacement_history: Some(vec![legacy_image]),
+            replacement_history: Some(vec![legacy_image.into()]),
             window_number: Some(1),
             ..Default::default()
         }),
@@ -5132,8 +5431,8 @@ async fn thread_rollback_persists_required_repair_after_the_rollback_marker() {
             ..Default::default()
         })),
         RolloutItem::TurnContext(tc.to_turn_context_item()),
-        RolloutItem::ResponseItem(user_message("roll this turn back")),
-        RolloutItem::ResponseItem(assistant_message("rolled-back reply")),
+        RolloutItem::ResponseItem(user_message("roll this turn back").into()),
+        RolloutItem::ResponseItem(assistant_message("rolled-back reply").into()),
         RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-after-checkpoint".to_string(),
             started_at: None,
@@ -5296,7 +5595,9 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
         let source_rollout = vec![
             RolloutItem::Compacted(CompactedItem {
                 message: "legacy checkpoint".to_string(),
-                replacement_history: Some(replacement_history),
+                replacement_history: Some(
+                    replacement_history.into_iter().map(Into::into).collect(),
+                ),
                 window_number: Some(1),
                 ..Default::default()
             }),
@@ -5316,8 +5617,8 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
                 ..Default::default()
             })),
             RolloutItem::TurnContext(tc.to_turn_context_item()),
-            RolloutItem::ResponseItem(user_message("roll this turn back")),
-            RolloutItem::ResponseItem(assistant_message("rolled-back reply")),
+            RolloutItem::ResponseItem(user_message("roll this turn back").into()),
+            RolloutItem::ResponseItem(assistant_message("rolled-back reply").into()),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-after-checkpoint".to_string(),
                 started_at: None,
@@ -5435,9 +5736,15 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             .await;
         let live_history = sess.clone_history().await;
         if commit_unknown {
-            assert_ne!(recovered.history, live_history.raw_items());
+            assert_ne!(
+                raw_envelopes(&recovered.history),
+                live_history.raw_items().cloned().collect::<Vec<_>>()
+            );
         } else {
-            assert_eq!(recovered.history, live_history.raw_items());
+            assert_eq!(
+                raw_envelopes(&recovered.history),
+                live_history.raw_items().cloned().collect::<Vec<_>>()
+            );
         }
         assert_eq!(
             recovered.repair.as_ref().map(|repair| repair.persistence),
@@ -7674,6 +7981,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
 
     let session = Session {
         thread_id,
+        instance_id: Uuid::now_v7(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
@@ -7691,15 +7999,18 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         mcp_prewarm_tx: async_channel::bounded(1).0,
         mcp_prewarm_shutdown: CancellationToken::new(),
         mcp_prewarm_task: std::sync::Mutex::new(None),
+        spawn_parent_thread_id: None,
+        terminal_publication_lock: std::sync::Mutex::new(()),
+        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
         session_start_mcp_servers: HashMap::new(),
         session_start_mcp_tools: Mutex::new(HashMap::new()),
         session_start_direct_mcp_servers: std::sync::Mutex::new(None),
         session_start_direct_mcp_tools: Mutex::new(None),
-        pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
         active_turn: Mutex::new(None),
         async_hook_results,
+        active_turn_transition: Notify::new(),
         input_queue: super::input_queue::InputQueue::new(),
         idle_pending_mcp_server_use: Mutex::new(Vec::new()),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
@@ -8862,7 +9173,7 @@ async fn submission_admission_rejects_work_queued_behind_rollback() {
         .await
         .expect_err("work behind a pending rollback should be rejected");
     assert!(
-        matches!(err, CodexErr::InvalidRequest(message) if message == "thread rollback is already in progress")
+        matches!(err.details(), CodexErrorDetails::InvalidRequest(message) if message == "thread rollback is already in progress")
     );
 
     let queued = rx_sub.recv().await.expect("rollback should be queued");
@@ -8871,6 +9182,216 @@ async fn submission_admission_rejects_work_queued_behind_rollback() {
         rx_sub.try_recv(),
         Err(async_channel::TryRecvError::Empty)
     ));
+}
+
+#[tokio::test]
+async fn completion_submission_waits_for_rollback_admission_to_reopen() {
+    let admission = SubmissionAdmission::default();
+    *admission
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        SubmissionAdmissionState::RollbackPending;
+    let wait = admission.wait_for_completion_submission();
+    tokio::pin!(wait);
+
+    assert!(
+        tokio::time::timeout(StdDuration::from_millis(50), wait.as_mut())
+            .await
+            .is_err()
+    );
+    admission.rollback_completed();
+
+    assert!(wait.await);
+}
+
+#[tokio::test]
+async fn completion_submission_stops_waiting_when_rollback_requires_reload() {
+    let admission = SubmissionAdmission::default();
+    *admission
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        SubmissionAdmissionState::RollbackPending;
+    let wait = admission.wait_for_completion_submission();
+    tokio::pin!(wait);
+
+    assert!(
+        tokio::time::timeout(StdDuration::from_millis(50), wait.as_mut())
+            .await
+            .is_err()
+    );
+    admission.rollback_requires_reload();
+
+    assert!(!wait.await);
+}
+
+#[tokio::test]
+async fn shutdown_queues_after_a_preaccepted_completion_delivery() {
+    let (tx_sub, rx_sub) = async_channel::bounded(2);
+    let (_tx_event, rx_event) = async_channel::unbounded();
+    let admission = Arc::new(SubmissionAdmission::default());
+    let io = Arc::new(SessionIo {
+        tx_sub,
+        rx_event,
+        submission_admission: Arc::clone(&admission),
+        agent_status: watch::channel(AgentStatus::PendingInit).1,
+        session_loop_termination: completed_session_loop_termination(),
+    });
+    let completion_delivery = admission
+        .try_accept_completion_delivery()
+        .expect("completion should be accepted before shutdown");
+    let shutdown = {
+        let io = Arc::clone(&io);
+        tokio::spawn(async move { io.submit(Op::Shutdown).await })
+    };
+    tokio::time::timeout(StdDuration::from_secs(1), async {
+        while !admission
+            .completion_delivery_admission_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("shutdown should close new completion admission");
+
+    assert!(!admission.wait_for_completion_submission().await);
+    assert!(admission.try_accept_completion_delivery().is_none());
+    assert!(admission.wait_for_accepted_completion_submission().await);
+    let completion_communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    io.submit_accepted_completion(Op::InterAgentCommunication {
+        communication: completion_communication,
+        start_options: TurnStartOptions::default(),
+    })
+    .await
+    .expect("preaccepted completion should queue before shutdown");
+    drop(completion_delivery);
+    shutdown
+        .await
+        .expect("shutdown task")
+        .expect("shutdown submission");
+
+    let completion = rx_sub.recv().await.expect("completion submission");
+    let shutdown = rx_sub.recv().await.expect("shutdown submission");
+    assert!(matches!(completion.op, Op::InterAgentCommunication { .. }));
+    assert!(matches!(shutdown.op, Op::Shutdown));
+}
+
+#[tokio::test]
+async fn submission_admission_rejects_work_queued_behind_shutdown() {
+    let (tx_sub, rx_sub) = async_channel::bounded(2);
+    let (_tx_event, rx_event) = async_channel::unbounded();
+    let io = SessionIo {
+        tx_sub,
+        rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
+        agent_status: watch::channel(AgentStatus::PendingInit).1,
+        session_loop_termination: completed_session_loop_termination(),
+    };
+
+    io.submit(Op::Shutdown)
+        .await
+        .expect("shutdown should reserve submission admission");
+    let err = io
+        .submit(Op::Compact)
+        .await
+        .expect_err("work behind shutdown should be rejected");
+    assert!(
+        matches!(err.details(), CodexErrorDetails::InvalidRequest(message) if message == "thread shutdown is already in progress")
+    );
+
+    let queued = rx_sub.recv().await.expect("shutdown should be queued");
+    assert!(matches!(queued.op, Op::Shutdown));
+    assert!(matches!(
+        rx_sub.try_recv(),
+        Err(async_channel::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn failed_shutdown_submission_releases_admission() {
+    let (tx_sub, rx_sub) = async_channel::bounded(1);
+    drop(rx_sub);
+    let (_tx_event, rx_event) = async_channel::unbounded();
+    let admission = Arc::new(SubmissionAdmission::default());
+    let io = SessionIo {
+        tx_sub,
+        rx_event,
+        submission_admission: Arc::clone(&admission),
+        agent_status: watch::channel(AgentStatus::PendingInit).1,
+        session_loop_termination: completed_session_loop_termination(),
+    };
+
+    assert!(matches!(
+        io.submit(Op::Shutdown).await,
+        Err(err) if matches!(err.details(), CodexErrorDetails::InternalAgentDied)
+    ));
+    assert!(
+        !admission
+            .shutdown_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+    assert!(
+        !admission
+            .completion_delivery_admission_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+}
+
+#[tokio::test]
+async fn cancelling_blocked_shutdown_submission_releases_admission() {
+    let (tx_sub, rx_sub) = async_channel::bounded(1);
+    let (_tx_event, rx_event) = async_channel::unbounded();
+    let io = Arc::new(SessionIo {
+        tx_sub,
+        rx_event,
+        submission_admission: Arc::new(SubmissionAdmission::default()),
+        agent_status: watch::channel(AgentStatus::PendingInit).1,
+        session_loop_termination: completed_session_loop_termination(),
+    });
+    io.submit(Op::Interrupt)
+        .await
+        .expect("interrupt should fill the submission channel");
+    let shutdown = {
+        let io = Arc::clone(&io);
+        tokio::spawn(async move { io.submit(Op::Shutdown).await })
+    };
+    tokio::time::timeout(StdDuration::from_millis(100), async {
+        loop {
+            if io.submission_admission.send_lock.try_lock().is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("shutdown should block while holding the send-order lock");
+
+    shutdown.abort();
+    let _ = shutdown.await;
+    assert!(
+        !io.submission_admission
+            .shutdown_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+    assert!(
+        !io.submission_admission
+            .completion_delivery_admission_closed
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+
+    let queued = rx_sub.recv().await.expect("interrupt should be queued");
+    assert!(matches!(queued.op, Op::Interrupt));
+    io.submit(Op::Compact)
+        .await
+        .expect("admission should accept work after shutdown cancellation");
 }
 
 #[tokio::test]
@@ -9478,6 +9999,158 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
             ..Default::default()
         },
         store.calls().await
+    );
+}
+
+#[tokio::test]
+async fn shutdown_persists_an_accepted_completion_mailbox_item() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    let store = attach_in_memory_thread_store(&mut session).await;
+    let session = Arc::new(session);
+    let presentation = session
+        .services
+        .agent_control
+        .record_agent_terminal_presentation(
+            session.presentation_id(),
+            crate::agent::control::SessionPresentationId::new(ThreadId::new(), Uuid::now_v7()),
+            "child-turn",
+            AgentStatus::Completed(Some("child done".to_string())),
+            crate::agent::control::TerminalPresentationDelivery::Direct,
+            || {},
+        )
+        .expect("direct terminal presentation");
+    let response_item_id = presentation.completion_context_response_item_id();
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(response_item_id.clone());
+    session
+        .services
+        .agent_control
+        .authorize_pending_completion_context(session.presentation_id(), &presentation);
+    session
+        .input_queue
+        .enqueue_mailbox_communication(communication, TurnStartOptions::default())
+        .await;
+
+    assert!(handlers::shutdown(&session, "sub-1".to_string()).await);
+
+    let history = session.clone_history().await;
+    let [item] = history.raw_items() else {
+        panic!("expected the accepted completion context");
+    };
+    assert_eq!(item.id(), Some(&response_item_id));
+    assert_eq!(
+        store.calls().await,
+        codex_thread_store::InMemoryThreadStoreCalls {
+            create_thread: 1,
+            append_items: 1,
+            load_sub_agent_completion_context_item: 1,
+            shutdown_thread: 1,
+            update_thread_metadata: 1,
+            ..Default::default()
+        }
+    );
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_an_in_flight_completion_commit() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let store = attach_in_memory_thread_store(&mut session).await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let presentation = session
+        .services
+        .agent_control
+        .record_agent_terminal_presentation(
+            session.presentation_id(),
+            crate::agent::control::SessionPresentationId::new(ThreadId::new(), Uuid::now_v7()),
+            "child-turn",
+            AgentStatus::Completed(Some("child done".to_string())),
+            crate::agent::control::TerminalPresentationDelivery::Direct,
+            || {},
+        )
+        .expect("direct terminal presentation");
+    let response_item_id = presentation.completion_context_response_item_id();
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(response_item_id.clone());
+    session
+        .services
+        .agent_control
+        .authorize_pending_completion_context(session.presentation_id(), &presentation);
+    session
+        .input_queue
+        .enqueue_mailbox_communication(communication, TurnStartOptions::default())
+        .await;
+    let mut pending_input = session.get_pending_input().await;
+    let communication = match pending_input.pop() {
+        Some(TurnInput::InterAgentCommunication(communication)) if pending_input.is_empty() => {
+            communication
+        }
+        _ => panic!("expected queued completion communication"),
+    };
+    let durable_context_permit = session
+        .acquire_durable_context_permit()
+        .await
+        .expect("durable context permit");
+    let session_ref_count = Arc::strong_count(&session);
+    let recording_session = Arc::clone(&session);
+    let recording = tokio::spawn(async move {
+        recording_session
+            .record_inter_agent_communication(turn_context, communication)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while Arc::strong_count(&session) < session_ref_count.saturating_add(2) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completion recording should start");
+    let shutdown_session = Arc::clone(&session);
+    let mut shutdown =
+        tokio::spawn(
+            async move { handlers::shutdown(&shutdown_session, "sub-1".to_string()).await },
+        );
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
+            .await
+            .is_err(),
+        "shutdown should wait for completion persistence"
+    );
+    drop(durable_context_permit);
+    assert!(matches!(
+        recording.await.expect("completion recording task"),
+        InterAgentCommunicationRecord::CompletionRecorded
+    ));
+    assert!(shutdown.await.expect("shutdown task"));
+
+    let history = session.clone_history().await;
+    let [item] = history.raw_items() else {
+        panic!("expected the accepted completion context");
+    };
+    assert_eq!(item.id(), Some(&response_item_id));
+    assert_eq!(
+        store.calls().await,
+        codex_thread_store::InMemoryThreadStoreCalls {
+            create_thread: 1,
+            append_items: 1,
+            load_sub_agent_completion_context_item: 1,
+            shutdown_thread: 1,
+            update_thread_metadata: 1,
+            ..Default::default()
+        }
     );
 }
 
@@ -10121,6 +10794,7 @@ where
 
     let session = Arc::new(Session {
         thread_id,
+        instance_id: Uuid::now_v7(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
@@ -10138,15 +10812,18 @@ where
         mcp_prewarm_tx: async_channel::bounded(1).0,
         mcp_prewarm_shutdown: CancellationToken::new(),
         mcp_prewarm_task: std::sync::Mutex::new(None),
+        spawn_parent_thread_id: None,
+        terminal_publication_lock: std::sync::Mutex::new(()),
+        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
         session_start_mcp_servers: HashMap::new(),
         session_start_mcp_tools: Mutex::new(HashMap::new()),
         session_start_direct_mcp_servers: std::sync::Mutex::new(None),
         session_start_direct_mcp_tools: Mutex::new(None),
-        pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
         active_turn: Mutex::new(None),
         async_hook_results,
+        active_turn_transition: Notify::new(),
         input_queue: super::input_queue::InputQueue::new(),
         idle_pending_mcp_server_use: Mutex::new(Vec::new()),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
@@ -12182,7 +12859,7 @@ enum TerminalEventKind {
     TurnAborted,
 }
 
-async fn attach_in_memory_thread_store(
+pub(crate) async fn attach_in_memory_thread_store(
     session: &mut Session,
 ) -> Arc<codex_thread_store::InMemoryThreadStore> {
     let store = Arc::new(codex_thread_store::InMemoryThreadStore::default());
@@ -13219,15 +13896,15 @@ async fn active_turn_mcp_use_defers_itself_and_later_pending_input_to_completion
         .await
         .expect("inject pending input into active turn");
     sess.input_queue
-        .enqueue_mailbox_communication(InterAgentCommunication::new(
-            AgentPath::try_from("/root/worker").expect("worker path should parse"),
-            AgentPath::root(),
-            Vec::new(),
-            "mailbox behind mcp".to_string(),
-            /*trigger_turn*/ true,
-        ),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
+        .enqueue_mailbox_communication(
+            InterAgentCommunication::new(
+                AgentPath::try_from("/root/worker").expect("worker path should parse"),
+                AgentPath::root(),
+                Vec::new(),
+                "mailbox behind mcp".to_string(),
+                /*trigger_turn*/ true,
+            ),
+            TurnStartOptions::default(),
         )
         .await;
 
@@ -13294,7 +13971,10 @@ async fn interrupt_records_active_turn_mcp_use_before_clearing_pending_input() {
 #[tokio::test]
 async fn mcp_use_after_reference_context_persists_for_post_start_server() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
-    let step_context = sess.capture_step_context(Arc::clone(&tc)).await;
+    let step_context = sess
+        .capture_step_context(Arc::clone(&tc), &CancellationToken::new())
+        .await
+        .expect("capture step context");
     sess.record_context_updates_and_set_reference_context_item(&step_context)
         .await
         .expect("world state should build");

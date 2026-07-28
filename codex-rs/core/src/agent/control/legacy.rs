@@ -7,39 +7,43 @@ impl AgentControl {
     /// persisted spawn-edge state.
     pub(crate) async fn shutdown_live_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
-        let result = if let Ok(thread) = state.get_thread(agent_id).await {
-            thread
-                .session
-                .ensure_rollout_materialized(PersistContext::Standard)
-                .await;
-            thread.session.flush_rollout().await?;
-            let result = if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
-                Ok(String::new())
-            } else {
-                state
-                    .send_op(
-                        agent_id,
-                        Op::Shutdown {},
-                        /*parent_turn_id*/ None,
-                        /*root_turn_id*/ None,
-                    )
-                    .await
-            };
-            thread.wait_until_terminated().await;
-            result
+        let thread = match state.get_thread(agent_id).await {
+            Ok(thread) => thread,
+            Err(err) => {
+                let _ = state
+                    .run_if_thread_absent(agent_id, || {
+                        self.forget_v2_residency(agent_id);
+                        self.release_spawned_thread(SpawnedThreadRelease::AbsentThread(agent_id));
+                    })
+                    .await;
+                return Err(err);
+            }
+        };
+        thread
+            .session
+            .ensure_rollout_materialized(PersistContext::Standard)
+            .await;
+        thread.session.flush_rollout().await?;
+        let result = if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
+            Ok(String::new())
         } else {
             state
-                .send_op(
-                    agent_id,
+                .send_op_to_thread(
+                    &thread,
                     Op::Shutdown {},
                     /*parent_turn_id*/ None,
                     /*root_turn_id*/ None,
                 )
                 .await
         };
-        let _ = state.remove_thread(&agent_id).await;
-        self.forget_v2_residency(agent_id);
-        self.state.release_spawned_thread(agent_id);
+        thread.wait_until_terminated().await;
+        let child = thread.session.presentation_id();
+        let _ = state
+            .remove_thread_if_current(&thread, || {
+                self.forget_v2_residency(agent_id);
+                self.release_spawned_thread(SpawnedThreadRelease::Session(child));
+            })
+            .await;
         result
     }
 

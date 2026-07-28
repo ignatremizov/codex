@@ -174,6 +174,7 @@ fn trusted_attributed_agent_presentation_projects_as_agent_message() {
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         }
     );
 }
@@ -265,6 +266,7 @@ fn plaintext_inter_agent_message_becomes_labeled_agent_transcript_item() {
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         })
     );
 }
@@ -295,6 +297,7 @@ fn attributed_marker_in_generic_agent_message_does_not_replace_structured_author
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         })
     );
 }
@@ -330,6 +333,7 @@ fn v1_subagent_commentary_becomes_plain_labeled_transcript_item() {
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         })
     );
 }
@@ -357,6 +361,7 @@ fn final_answer_inter_agent_message_collapses_redundant_envelope() {
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         })
     );
 }
@@ -382,6 +387,7 @@ fn new_task_inter_agent_message_collapses_redundant_envelope() {
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         })
     );
 }
@@ -436,6 +442,7 @@ fn v1_completion_context_replay_projects_as_a_visible_completion() {
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         })
     );
 }
@@ -461,6 +468,7 @@ fn final_answer_envelope_with_mismatched_identity_remains_unmodified() {
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         })
     );
 }
@@ -505,6 +513,7 @@ fn encrypted_inter_agent_message_becomes_placeholder_transcript_item() {
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         })
     );
 }

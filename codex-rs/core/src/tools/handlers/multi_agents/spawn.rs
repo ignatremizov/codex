@@ -87,6 +87,7 @@ async fn handle_spawn_agent(
                 model: Some(args.model.clone().unwrap_or_default()),
                 reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
                 agents_states: Default::default(),
+                completion_presentation_agent_ids: None,
             }),
         )
         .await;
@@ -198,6 +199,7 @@ async fn handle_spawn_agent(
                 model: Some(effective_model),
                 reasoning_effort: Some(effective_reasoning_effort),
                 agents_states,
+                completion_presentation_agent_ids: None,
             }),
         )
         .await;

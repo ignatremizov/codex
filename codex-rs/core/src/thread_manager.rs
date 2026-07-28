@@ -57,6 +57,7 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InternalSessionSource;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionConfiguredEvent;
@@ -68,6 +69,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_history::rollout::rollout_without_exact_rollback_ranges;
 use codex_rollout::state_db::StateDbHandle;
 use codex_skills_extension::HostSkillsService;
@@ -1165,7 +1167,18 @@ impl ThreadManager {
     /// as `Arc<CodexThread>`, it is possible that other references to it exist elsewhere.
     /// Returns the thread if the thread was found and removed.
     pub async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
-        self.state.threads.write().await.remove(thread_id)
+        self.state.remove_thread(thread_id).await
+    }
+
+    /// Removes `thread` only if it remains the manager's current instance for its thread ID.
+    ///
+    /// This is intended for delayed teardown work that retains a concrete thread across an await.
+    /// A resumed session may reuse the same thread ID while that work is pending.
+    pub async fn remove_thread_if_current(
+        &self,
+        thread: &Arc<CodexThread>,
+    ) -> Option<Arc<CodexThread>> {
+        self.state.remove_thread_if_current(thread, || {}).await
     }
 
     /// Removes a thread only if `thread_id` still maps to `expected`.
@@ -1209,22 +1222,25 @@ impl ThreadManager {
                     Ok(Err(_)) => ShutdownOutcome::SubmitFailed,
                     Err(_) => ShutdownOutcome::TimedOut,
                 };
-                (thread_id, outcome)
+                (thread_id, thread, outcome)
             })
             .collect::<FuturesUnordered<_>>();
         let mut report = ThreadShutdownReport::default();
+        let mut completed_threads = Vec::new();
 
-        while let Some((thread_id, outcome)) = shutdowns.next().await {
+        while let Some((thread_id, thread, outcome)) = shutdowns.next().await {
             match outcome {
-                ShutdownOutcome::Complete => report.completed.push(thread_id),
+                ShutdownOutcome::Complete => {
+                    report.completed.push(thread_id);
+                    completed_threads.push(thread);
+                }
                 ShutdownOutcome::SubmitFailed => report.submit_failed.push(thread_id),
                 ShutdownOutcome::TimedOut => report.timed_out.push(thread_id),
             }
         }
 
-        let mut tracked_threads = self.state.threads.write().await;
-        for thread_id in &report.completed {
-            tracked_threads.remove(thread_id);
+        for thread in completed_threads {
+            let _ = self.state.remove_thread_if_current(&thread, || {}).await;
         }
 
         report
@@ -1273,6 +1289,33 @@ impl ThreadManager {
         rollout_path: PathBuf,
     ) -> CodexResult<InitialHistory> {
         let requested_rollout_path = rollout_path.clone();
+        let stored_thread_metadata = self
+            .state
+            .thread_store
+            .read_thread_by_rollout_path(ReadThreadByRolloutPathParams {
+                rollout_path: rollout_path.clone(),
+                include_archived: true,
+                include_history: false,
+            })
+            .await
+            .map_err(thread_store_rollout_read_error)?;
+        if matches!(
+            stored_thread_metadata.history_mode,
+            ThreadHistoryMode::Paginated
+        ) {
+            let model_context = self
+                .state
+                .load_latest_model_context(LoadThreadHistoryParams {
+                    thread_id: stored_thread_metadata.thread_id,
+                    include_archived: true,
+                })
+                .await?;
+            return Ok(InitialHistory::Resumed(ResumedHistory {
+                conversation_id: model_context.thread_id,
+                history: Arc::new(model_context.items),
+                rollout_path: Some(requested_rollout_path),
+            }));
+        }
         let stored_thread = self
             .state
             .thread_store
@@ -1526,15 +1569,15 @@ impl ThreadManagerState {
             })
     }
 
-    /// Send an operation to a thread by ID.
-    pub(crate) async fn send_op(
+    /// Send an operation to an already retained thread instance.
+    pub(crate) async fn send_op_to_thread(
         &self,
-        thread_id: ThreadId,
+        thread: &Arc<CodexThread>,
         op: Op,
         parent_turn_id: Option<String>,
         root_turn_id: Option<String>,
     ) -> CodexResult<String> {
-        let thread = self.get_thread(thread_id).await?;
+        let thread_id = thread.session.thread_id();
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
             && let Some(captured_op) = capture_test_op(&op)
@@ -1547,9 +1590,69 @@ impl ThreadManagerState {
             .await
     }
 
+    pub(crate) async fn send_accepted_completion_to_thread(
+        &self,
+        thread: &Arc<CodexThread>,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<String> {
+        let thread_id = thread.session.thread_id();
+        if let Some(ops_log) = &self.ops_log
+            && let Ok(mut log) = ops_log.lock()
+        {
+            log.push((
+                thread_id,
+                Op::InterAgentCommunication {
+                    communication: communication.clone(),
+                    start_options: TurnStartOptions::default(),
+                },
+            ));
+        }
+        thread.submit_accepted_completion(communication).await
+    }
+
     /// Remove a thread from the manager by ID, returning it when present.
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
-        self.threads.write().await.remove(thread_id)
+        let thread = self.threads.write().await.remove(thread_id);
+        if let Some(thread) = thread.as_ref() {
+            thread.session.prepare_for_thread_removal();
+        }
+        thread
+    }
+
+    /// Remove `thread` only while it remains the manager's current instance for its thread ID.
+    pub(crate) async fn remove_thread_if_current(
+        &self,
+        thread: &Arc<CodexThread>,
+        on_removed: impl FnOnce(),
+    ) -> Option<Arc<CodexThread>> {
+        let thread_id = thread.session.thread_id();
+        let mut threads = self.threads.write().await;
+        let is_current = threads
+            .get(&thread_id)
+            .is_some_and(|current| Arc::ptr_eq(current, thread));
+        if !is_current {
+            return None;
+        }
+        let removed = threads.remove(&thread_id);
+        if let Some(removed) = removed.as_ref() {
+            removed.session.prepare_for_thread_removal();
+            on_removed();
+        }
+        removed
+    }
+
+    /// Run cleanup only while no thread instance is registered for `thread_id`.
+    pub(crate) async fn run_if_thread_absent(
+        &self,
+        thread_id: ThreadId,
+        on_absent: impl FnOnce(),
+    ) -> bool {
+        let threads = self.threads.write().await;
+        if threads.contains_key(&thread_id) {
+            return false;
+        }
+        on_absent();
+        true
     }
 
     pub(crate) async fn effective_multi_agent_version_for_spawn(
@@ -1930,7 +2033,7 @@ impl ThreadManagerState {
                 "reserved thread ID cannot be used when resuming a thread".to_string(),
             ));
         }
-        if let InitialHistory::Resumed(resumed) = &initial_history {
+        let replaced_thread = if let InitialHistory::Resumed(resumed) = &initial_history {
             let mut threads = self.threads.write().await;
             if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
                 if thread.is_running() {
@@ -1948,8 +2051,15 @@ impl ThreadManagerState {
                         thread,
                     });
                 }
-                threads.remove(&resumed.conversation_id);
+                threads.remove(&resumed.conversation_id)
+            } else {
+                None
             }
+        } else {
+            None
+        };
+        if let Some(thread) = replaced_thread {
+            thread.session.prepare_for_thread_removal();
         }
         if matches!(
             &initial_history,

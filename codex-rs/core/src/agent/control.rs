@@ -6,15 +6,15 @@ use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
-use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
-use crate::context::SubagentNotification;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::rollout_budget::RolloutBudget;
+use crate::session::CompletionSubmissionAdmission;
 use crate::session::emit_subagent_session_started;
 use crate::session::multi_agents::ResolvedMultiAgentV2UsageHints;
 use crate::session_prefix::format_inter_agent_completion_message;
@@ -30,6 +30,7 @@ use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -53,8 +54,10 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::turn_input::CyberAccessProgram;
 use codex_protocol::user_input::UserInput;
+use codex_rollout_trace::AgentResultTracePayload;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::ReadThreadParams;
 use serde::Serialize;
@@ -68,12 +71,18 @@ use uuid::Uuid;
 
 pub(crate) use self::execution::AgentExecutionGuard;
 use self::execution::AgentExecutionLimiter;
+pub(crate) use self::presentation::AgentTerminalPresentation;
+pub(crate) use self::presentation::SessionPresentationId;
+use self::presentation::SpawnedThreadRelease;
+pub(crate) use self::presentation::TerminalPresentationDelivery;
+use self::presentation::WaitAgentPresentations;
 use self::residency::V2Residency;
 
 const ROOT_LAST_TASK_MESSAGE: &str = "Main thread";
 
 mod execution;
 mod legacy;
+mod presentation;
 mod residency;
 mod service_tier;
 mod spawn;
@@ -95,6 +104,35 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
     pub(crate) multi_agent_v2_usage_hints: Option<ResolvedMultiAgentV2UsageHints>,
     pub(crate) cyber_access_program: Option<CyberAccessProgram>,
+}
+
+enum InterAgentSubmission<'a> {
+    Ordinary {
+        start_options: TurnStartOptions,
+    },
+    Completion {
+        presentation: &'a AgentTerminalPresentation,
+        admission: CompletionSubmissionAdmission,
+    },
+}
+
+struct CompletionContextAuthorizationGuard {
+    control: AgentControl,
+    response_item_id: Option<ResponseItemId>,
+    authorized: bool,
+    committed: bool,
+}
+
+impl Drop for CompletionContextAuthorizationGuard {
+    fn drop(&mut self) {
+        if self.authorized
+            && !self.committed
+            && let Some(response_item_id) = self.response_item_id.as_ref()
+        {
+            self.control
+                .discard_completion_context_response_item_id(response_item_id);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -130,6 +168,7 @@ pub(crate) struct AgentControl {
     state: Arc<AgentRegistry>,
     v2_residency: Arc<V2Residency>,
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
+    wait_agent_presentations: Arc<WaitAgentPresentations>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
     /// The user-selected root routing tier, shared by the entire agent tree.
@@ -160,6 +199,7 @@ impl AgentControl {
             state: Arc::default(),
             v2_residency: Arc::default(),
             agent_execution_limiter: Arc::default(),
+            wait_agent_presentations: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
         };
@@ -219,7 +259,7 @@ impl AgentControl {
             Err(err) => Err(err),
         };
         let result = self
-            .handle_thread_request_result(agent_id, &state, result)
+            .handle_thread_request_result(&state, &thread, result)
             .await;
         if result.is_ok() {
             match last_task_message {
@@ -304,6 +344,110 @@ impl AgentControl {
         Ok(())
     }
 
+    pub(crate) async fn send_inter_agent_completion_communication(
+        &self,
+        parent_thread_id: ThreadId,
+        communication: InterAgentCommunication,
+        context: AgentCommunicationContext,
+        presentation: &AgentTerminalPresentation,
+        admission: CompletionSubmissionAdmission,
+    ) -> CodexResult<(String, Arc<CodexThread>)> {
+        if presentation.parent().thread_id != parent_thread_id {
+            return Err(CodexErr::InvalidRequest(
+                "completion destination does not match its presentation parent".to_string(),
+            ));
+        }
+        let state = self.upgrade()?;
+        if communication.trigger_turn {
+            let parent_thread = state.get_thread(parent_thread_id).await?;
+            self.ensure_execution_capacity_for_turn_start(&parent_thread)
+                .await?;
+        }
+        let Some(completion_context_response_item_id) = communication
+            .id
+            .as_ref()
+            .filter(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
+        else {
+            return Err(CodexErr::InvalidRequest(
+                "completion communication requires a reserved response item ID".to_string(),
+            ));
+        };
+        if completion_context_response_item_id.as_str()
+            != presentation.completion_context_response_item_id().as_str()
+        {
+            return Err(CodexErr::InvalidRequest(
+                "completion communication response item ID does not match its presentation"
+                    .to_string(),
+            ));
+        }
+        loop {
+            let parent_thread = state.get_thread(parent_thread_id).await?;
+            if parent_thread.session.presentation_id() != presentation.parent() {
+                return Err(CodexErr::ThreadNotFound(parent_thread_id));
+            }
+            let admitted = match admission {
+                CompletionSubmissionAdmission::Ordinary => {
+                    parent_thread
+                        .session
+                        .submission_admission
+                        .wait_for_completion_submission()
+                        .await
+                }
+                CompletionSubmissionAdmission::Accepted => {
+                    parent_thread
+                        .session
+                        .submission_admission
+                        .wait_for_accepted_completion_submission()
+                        .await
+                }
+            };
+            if !admitted {
+                return Err(CodexErr::InvalidRequest(
+                    "completion destination is no longer accepting work".to_string(),
+                ));
+            }
+            let result = self
+                .submit_inter_agent_communication_retaining_thread(
+                    parent_thread_id,
+                    &state,
+                    communication.clone(),
+                    context.clone(),
+                    InterAgentSubmission::Completion {
+                        presentation,
+                        admission,
+                    },
+                )
+                .await;
+            let retry =
+                if result.as_ref().err().is_some_and(|err| {
+                    matches!(err.details(), CodexErrorDetails::InvalidRequest(_))
+                }) {
+                    match admission {
+                        CompletionSubmissionAdmission::Ordinary => {
+                            parent_thread
+                                .session
+                                .submission_admission
+                                .wait_for_completion_submission()
+                                .await
+                        }
+                        CompletionSubmissionAdmission::Accepted => {
+                            parent_thread
+                                .session
+                                .submission_admission
+                                .wait_for_accepted_completion_submission()
+                                .await
+                        }
+                    }
+                } else {
+                    false
+                };
+            if retry {
+                continue;
+            }
+            return result;
+        }
+    }
+
     async fn send_inter_agent_communication_after_capacity_check(
         &self,
         agent_id: ThreadId,
@@ -330,6 +474,25 @@ impl AgentControl {
         context: AgentCommunicationContext,
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
+        self.submit_inter_agent_communication_retaining_thread(
+            agent_id,
+            state,
+            communication,
+            context,
+            InterAgentSubmission::Ordinary { start_options },
+        )
+        .await
+        .map(|(submission_id, _thread)| submission_id)
+    }
+
+    async fn submit_inter_agent_communication_retaining_thread(
+        &self,
+        agent_id: ThreadId,
+        state: &Arc<ThreadManagerState>,
+        communication: InterAgentCommunication,
+        context: AgentCommunicationContext,
+        submission: InterAgentSubmission<'_>,
+    ) -> CodexResult<(String, Arc<CodexThread>)> {
         let submission_semaphore = self.state.mailbox_submission_semaphore(agent_id);
         let _submission_permit = submission_semaphore.acquire_owned().await.map_err(|err| {
             CodexErr::Fatal(format!("mailbox submission semaphore closed: {err}"))
@@ -339,21 +502,43 @@ impl AgentControl {
             .then(|| non_empty_task_message(communication.content.clone()));
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
-        let (parent_turn_id, root_turn_id) = if communication.trigger_turn {
-            (
-                start_options.parent_turn_id.clone(),
-                start_options.root_turn_id.clone(),
-            )
-        } else {
-            (None, None)
+        let thread = state.get_thread(agent_id).await?;
+        if let InterAgentSubmission::Completion { presentation, .. } = &submission
+            && thread.session.presentation_id() != presentation.parent()
+        {
+            return Err(CodexErr::ThreadNotFound(agent_id));
+        }
+        let mut authorization_guard = CompletionContextAuthorizationGuard {
+            control: self.clone(),
+            response_item_id: match &submission {
+                InterAgentSubmission::Ordinary { .. } => None,
+                InterAgentSubmission::Completion { presentation, .. } => {
+                    Some(presentation.completion_context_response_item_id())
+                }
+            },
+            authorized: false,
+            committed: false,
         };
-        let result = self
-            .handle_thread_request_result(
-                agent_id,
-                state,
+        if let InterAgentSubmission::Completion { presentation, .. } = &submission {
+            authorization_guard
+                .control
+                .authorize_pending_completion_context(
+                    thread.session.presentation_id(),
+                    presentation,
+                );
+            authorization_guard.authorized = true;
+        }
+        let send_result = match submission {
+            InterAgentSubmission::Ordinary { mut start_options } => {
+                if !communication.trigger_turn {
+                    start_options.parent_turn_id = None;
+                    start_options.root_turn_id = None;
+                }
+                let parent_turn_id = start_options.parent_turn_id.clone();
+                let root_turn_id = start_options.root_turn_id.clone();
                 state
-                    .send_op(
-                        agent_id,
+                    .send_op_to_thread(
+                        &thread,
                         Op::InterAgentCommunication {
                             communication,
                             start_options,
@@ -361,8 +546,38 @@ impl AgentControl {
                         parent_turn_id,
                         root_turn_id,
                     )
-                    .await,
-            )
+                    .await
+            }
+            InterAgentSubmission::Completion {
+                admission: CompletionSubmissionAdmission::Ordinary,
+                ..
+            } => {
+                state
+                    .send_op_to_thread(
+                        &thread,
+                        Op::InterAgentCommunication {
+                            communication,
+                            start_options: TurnStartOptions::default(),
+                        },
+                        /*parent_turn_id*/ None,
+                        /*root_turn_id*/ None,
+                    )
+                    .await
+            }
+            InterAgentSubmission::Completion {
+                admission: CompletionSubmissionAdmission::Accepted,
+                ..
+            } => {
+                state
+                    .send_accepted_completion_to_thread(&thread, communication)
+                    .await
+            }
+        };
+        if send_result.is_ok() {
+            authorization_guard.committed = true;
+        }
+        let result = self
+            .handle_thread_request_result(state, &thread, send_result)
             .await;
         if let (Some(communication), Ok(communication_id)) =
             (communication_for_log, result.as_ref())
@@ -384,40 +599,42 @@ impl AgentControl {
                 None => self.state.clear_last_task_message(agent_id),
             }
         }
-        result
+        result.map(|submission_id| (submission_id, thread))
     }
 
     /// Interrupt the current task for an existing agent thread.
     pub(crate) async fn interrupt_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
-        self.handle_thread_request_result(
-            agent_id,
-            &state,
-            state
-                .send_op(
-                    agent_id,
-                    Op::Interrupt,
-                    /*parent_turn_id*/ None,
-                    /*root_turn_id*/ None,
-                )
-                .await,
-        )
-        .await
+        let thread = state.get_thread(agent_id).await?;
+        let send_result = state
+            .send_op_to_thread(
+                &thread,
+                Op::Interrupt,
+                /*parent_turn_id*/ None,
+                /*root_turn_id*/ None,
+            )
+            .await;
+        self.handle_thread_request_result(&state, &thread, send_result)
+            .await
     }
 
-    async fn handle_thread_request_result(
+    async fn handle_thread_request_result<T>(
         &self,
-        agent_id: ThreadId,
         state: &Arc<ThreadManagerState>,
-        result: CodexResult<String>,
-    ) -> CodexResult<String> {
+        thread: &Arc<CodexThread>,
+        result: CodexResult<T>,
+    ) -> CodexResult<T> {
         if result
             .as_ref()
             .is_err_and(|err| matches!(err.details(), CodexErrorDetails::InternalAgentDied))
         {
-            let _ = state.remove_thread(&agent_id).await;
-            self.forget_v2_residency(agent_id);
-            self.state.release_spawned_thread(agent_id);
+            let child = thread.session.presentation_id();
+            let _ = state
+                .remove_thread_if_current(thread, || {
+                    self.forget_v2_residency(child.thread_id);
+                    self.release_spawned_thread(SpawnedThreadRelease::Session(child));
+                })
+                .await;
         }
         result
     }
@@ -608,12 +825,13 @@ impl AgentControl {
     ///
     /// This is only enabled for `SubAgentSource::ThreadSpawn`, where a parent thread exists and
     /// can receive completion notifications.
-    fn maybe_start_completion_watcher(
+    async fn maybe_start_completion_watcher(
         &self,
-        child_thread_id: ThreadId,
+        child_thread: &Arc<CodexThread>,
         session_source: Option<SessionSource>,
         child_reference: String,
         child_agent_path: Option<AgentPath>,
+        child_multi_agent_version: MultiAgentVersion,
     ) {
         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
@@ -621,82 +839,187 @@ impl AgentControl {
         else {
             return;
         };
+        let Ok(state) = self.upgrade() else {
+            return;
+        };
+        let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
+            return;
+        };
+        let parent = parent_thread.session.presentation_id();
+        let child = child_thread.session.presentation_id();
+        let child_thread_id = child.thread_id;
+        let Some(watcher_registration) = self.register_completion_watcher_with_admission(
+            child,
+            parent,
+            &parent_thread.session.submission_admission,
+        ) else {
+            return;
+        };
+        let mut status_rx = child_thread.subscribe_status();
+        let child_rollout_thread_trace = child_thread.session.services.rollout_thread_trace.clone();
         let control = self.clone();
         tokio::spawn(async move {
-            let status = match control.subscribe_status(child_thread_id).await {
-                Ok(mut status_rx) => {
-                    let mut status = status_rx.borrow().clone();
-                    while !is_final(&status) {
-                        if status_rx.changed().await.is_err() {
-                            status = control.get_status(child_thread_id).await;
-                            break;
+            let _watcher_registration = watcher_registration;
+            loop {
+                let terminal = match control.take_watcher_terminal_presentation(child) {
+                    Some(terminal) => terminal,
+                    None => {
+                        if status_rx.changed().await.is_ok() {
+                            continue;
                         }
-                        status = status_rx.borrow().clone();
+                        if let Some(terminal) = control.take_watcher_terminal_presentation(child) {
+                            terminal
+                        } else {
+                            return;
+                        }
                     }
-                    status
+                };
+                let status = terminal.status;
+                if child_multi_agent_version == MultiAgentVersion::V2
+                    && let Some(child_agent_path) = child_agent_path.clone()
+                {
+                    let accepted_completion_delivery =
+                        terminal.presentation.take_accepted_completion_delivery();
+                    let admission = if accepted_completion_delivery.is_some() {
+                        CompletionSubmissionAdmission::Accepted
+                    } else {
+                        CompletionSubmissionAdmission::Ordinary
+                    };
+                    let Some(parent_agent_path) = child_agent_path
+                        .as_str()
+                        .rsplit_once('/')
+                        .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
+                    else {
+                        return;
+                    };
+                    let Some(message) = format_inter_agent_completion_message(
+                        parent_agent_path.clone(),
+                        child_agent_path.clone(),
+                        &status,
+                    ) else {
+                        return;
+                    };
+                    let trace_message = child_rollout_thread_trace
+                        .is_enabled()
+                        .then(|| message.clone());
+                    let mut communication = InterAgentCommunication::new(
+                        child_agent_path,
+                        parent_agent_path,
+                        Vec::new(),
+                        message,
+                        /*trigger_turn*/ false,
+                    );
+                    communication.id =
+                        Some(terminal.presentation.completion_context_response_item_id());
+                    let context = AgentCommunicationContext::new(
+                        AgentCommunicationKind::Result,
+                        child_thread_id,
+                    );
+                    let completion_communication = communication.clone();
+                    let Ok((_submission_id, parent_thread)) = control
+                        .send_inter_agent_completion_communication(
+                            parent_thread_id,
+                            communication,
+                            context,
+                            &terminal.presentation,
+                            admission,
+                        )
+                        .await
+                    else {
+                        return;
+                    };
+                    if !parent_thread
+                        .persist_inter_agent_completion_context_without_turn(
+                            completion_communication,
+                        )
+                        .await
+                    {
+                        return;
+                    }
+                    if !terminal.presentation.wait_owns_presentation().await {
+                        match accepted_completion_delivery {
+                            Some(completion_delivery) => {
+                                parent_thread
+                                    .emit_accepted_sub_agent_completion_without_turn(
+                                        &child_reference,
+                                        &status,
+                                        completion_delivery,
+                                    )
+                                    .await;
+                            }
+                            None => {
+                                parent_thread
+                                    .emit_sub_agent_completion_without_turn(
+                                        &child_reference,
+                                        &status,
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                    if let Some(message) = trace_message {
+                        child_rollout_thread_trace.record_agent_result_interaction(
+                            &terminal.turn_id,
+                            parent_thread_id,
+                            &AgentResultTracePayload {
+                                child_agent_path: child_reference.as_str(),
+                                message: &message,
+                                status: &status,
+                            },
+                        );
+                    }
+                } else {
+                    let accepted_completion_delivery =
+                        terminal.presentation.take_accepted_completion_delivery();
+                    let admission = if accepted_completion_delivery.is_some() {
+                        CompletionSubmissionAdmission::Accepted
+                    } else {
+                        CompletionSubmissionAdmission::Ordinary
+                    };
+                    let Ok(state) = control.upgrade() else {
+                        return;
+                    };
+                    let message =
+                        format_subagent_notification_message(child_reference.as_str(), &status);
+                    let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
+                        return;
+                    };
+                    if parent_thread.session.presentation_id() != terminal.presentation.parent() {
+                        return;
+                    }
+                    if !parent_thread
+                        .persist_sub_agent_notification_without_turn(message, admission)
+                        .await
+                    {
+                        return;
+                    }
+                    if !terminal.presentation.wait_owns_presentation().await {
+                        match accepted_completion_delivery {
+                            Some(completion_delivery) => {
+                                parent_thread
+                                    .emit_accepted_sub_agent_completion_without_turn(
+                                        &child_reference,
+                                        &status,
+                                        completion_delivery,
+                                    )
+                                    .await;
+                            }
+                            None => {
+                                parent_thread
+                                    .emit_sub_agent_completion_without_turn(
+                                        &child_reference,
+                                        &status,
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
                 }
-                Err(_) => control.get_status(child_thread_id).await,
-            };
-            if !is_final(&status) {
-                return;
-            }
-
-            let Ok(state) = control.upgrade() else {
-                return;
-            };
-            let child_thread = state.get_thread(child_thread_id).await.ok();
-            let child_uses_multi_agent_v2 = match child_thread.as_ref() {
-                Some(child_thread) => {
-                    child_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
+                if matches!(status, AgentStatus::Shutdown | AgentStatus::NotFound) {
+                    control.finish_watcher_terminal_presentation(child, &terminal.turn_id);
+                    return;
                 }
-                None => true,
-            };
-            if child_agent_path.is_some() && child_uses_multi_agent_v2 {
-                let Some(child_agent_path) = child_agent_path.clone() else {
-                    return;
-                };
-                let Some(parent_agent_path) = child_agent_path
-                    .as_str()
-                    .rsplit_once('/')
-                    .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
-                else {
-                    return;
-                };
-                let Some(message) = format_inter_agent_completion_message(
-                    parent_agent_path.clone(),
-                    child_agent_path.clone(),
-                    &status,
-                ) else {
-                    return;
-                };
-                let communication = InterAgentCommunication::new(
-                    child_agent_path,
-                    parent_agent_path,
-                    Vec::new(),
-                    message,
-                    /*trigger_turn*/ false,
-                );
-                let context =
-                    AgentCommunicationContext::new(AgentCommunicationKind::Result, child_thread_id);
-                let _ = control
-                    .send_inter_agent_communication(
-                        parent_thread_id,
-                        communication,
-                        context,
-                        TurnStartOptions::default(),
-                    )
-                    .await;
-                return;
             }
-            let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
-                return;
-            };
-            parent_thread
-                .inject_fragment_without_turn(SubagentNotification::new(
-                    child_reference.as_str(),
-                    status,
-                ))
-                .await;
         });
     }
 

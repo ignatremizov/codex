@@ -1,4 +1,5 @@
 mod archive_thread;
+mod completion_artifacts;
 mod create_thread;
 mod delete_thread;
 mod helpers;
@@ -64,6 +65,8 @@ use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
 use crate::ListTimelineParams;
 use crate::ListTurnsParams;
+use crate::LoadSubAgentCompletionContextItemParams;
+use crate::LoadSubAgentCompletionPresentationParams;
 use crate::LoadThreadHistoryParams;
 use crate::MoveProjectParams;
 use crate::MoveThreadToSectionParams;
@@ -81,6 +84,7 @@ use crate::SearchThreadsParams;
 use crate::StoredModelContext;
 use crate::StoredProject;
 use crate::StoredProjectsPage;
+use crate::StoredSubAgentCompletionPresentation;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::StoredThreadSection;
@@ -260,7 +264,11 @@ impl LocalThreadStore {
         }
         self.thread_history_db
             .get_or_try_init(|| async {
-                codex_state::open_thread_history_db(&self.config.sqlite).await
+                codex_state::open_thread_history_db(&self.config.sqlite)
+                    .await
+                    .map_err(|err| ThreadStoreError::Internal {
+                        message: format!("failed to open thread history database: {err}"),
+                    })
             })
             .await
     }
@@ -379,6 +387,21 @@ impl LocalThreadStore {
         })
     }
 
+    async fn load_rollback_history(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> ThreadStoreResult<StoredThreadHistory> {
+        let thread_id = params.thread_id;
+        let resolved = if params.include_archived {
+            thread_rollout_resolver::resolve_current_including_archived(self, thread_id).await?
+        } else {
+            thread_rollout_resolver::resolve_current(self, thread_id).await?
+        }
+        .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
+        let items = read_thread::load_history_items(resolved.path.as_path()).await?;
+        Ok(StoredThreadHistory { thread_id, items })
+    }
+
     async fn read_thread_by_rollout_path_params(
         &self,
         params: ReadThreadByRolloutPathParams,
@@ -493,6 +516,27 @@ impl ThreadStore for LocalThreadStore {
         params: LoadThreadHistoryParams,
     ) -> ThreadStoreFuture<'_, StoredThreadHistory> {
         Box::pin(LocalThreadStore::load_history(self, params))
+    }
+
+    fn load_rollback_history(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> ThreadStoreFuture<'_, StoredThreadHistory> {
+        Box::pin(LocalThreadStore::load_rollback_history(self, params))
+    }
+
+    fn load_sub_agent_completion_context_item(
+        &self,
+        params: LoadSubAgentCompletionContextItemParams,
+    ) -> ThreadStoreFuture<'_, Option<codex_protocol::models::ResponseItem>> {
+        Box::pin(async move { completion_artifacts::load_context_item(self, params).await })
+    }
+
+    fn load_sub_agent_completion_presentation(
+        &self,
+        params: LoadSubAgentCompletionPresentationParams,
+    ) -> ThreadStoreFuture<'_, StoredSubAgentCompletionPresentation> {
+        Box::pin(async move { completion_artifacts::load_presentation(self, params).await })
     }
 
     fn load_latest_model_context(
@@ -702,6 +746,7 @@ mod tests {
     use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::UserMessageEvent;
+    use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
     use codex_rollout::RolloutItem;
     use tempfile::TempDir;
 
@@ -759,6 +804,42 @@ mod tests {
             .expect_err("shutdown should remove the live thread writer");
         assert!(
             matches!(err, ThreadStoreError::ThreadNotFound { thread_id: missing } if missing == thread_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn lazy_live_thread_completion_lookups_report_artifact_absent() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let thread_id = ThreadId::default();
+        store
+            .create_thread(create_thread_params(thread_id))
+            .await
+            .expect("create lazy live thread");
+
+        let context_item = store
+            .load_sub_agent_completion_context_item(LoadSubAgentCompletionContextItemParams {
+                thread_id,
+                include_archived: false,
+                response_item_id: new_sub_agent_completion_context_response_item_id(),
+            })
+            .await
+            .expect("query unmaterialized context");
+        let presentation = store
+            .load_sub_agent_completion_presentation(LoadSubAgentCompletionPresentationParams {
+                thread_id,
+                include_archived: false,
+                item_id: "completion-item".to_string(),
+                turn_id: "completion-turn".to_string(),
+            })
+            .await
+            .expect("query unmaterialized presentation");
+
+        assert!(context_item.is_none());
+        assert!(presentation.item_completed.is_none());
+        assert_eq!(
+            (presentation.turn_started, presentation.turn_completed),
+            (false, false)
         );
     }
 
@@ -1814,7 +1895,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn paginated_threads_allow_metadata_reads_and_resume_but_reject_legacy_history_paths() {
+    async fn paginated_threads_allow_rollback_history_but_reject_non_paginated_history_paths() {
         let home = TempDir::new().expect("temp dir");
         let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
         let uuid = uuid::Uuid::from_u128(408);
@@ -1877,6 +1958,23 @@ mod tests {
                 })
                 .await
                 .expect_err("history load should fail"),
+        );
+        let expected_rollback_history = StoredThreadHistory {
+            thread_id,
+            items: read_thread::load_history_items(rollout_path.as_path())
+                .await
+                .expect("canonical history"),
+        };
+        let rollback_history = store
+            .load_rollback_history(LoadThreadHistoryParams {
+                thread_id,
+                include_archived: false,
+            })
+            .await
+            .expect("rollback history load");
+        assert_eq!(
+            serde_json::to_value(rollback_history).expect("serialize rollback history"),
+            serde_json::to_value(expected_rollback_history).expect("serialize expected history")
         );
         store
             .resume_thread(ResumeThreadParams {

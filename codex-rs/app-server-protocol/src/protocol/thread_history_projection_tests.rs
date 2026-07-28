@@ -218,6 +218,7 @@ fn projects_inter_agent_response_items_into_paginated_history() {
                     phase: Some(MessagePhase::Commentary),
                     memory_citation: None,
                     delivery: None,
+                    questions: None,
                 },
                 started_at_ms: None,
                 completed_at_ms: None,

@@ -125,35 +125,46 @@ impl ChatWidget {
                 questions,
                 ..
             } => {
-                self.on_agent_message_item_completed(
-                    AgentMessageItem {
-                        id,
-                        content: vec![AgentMessageContent::Text { text }],
-                        phase,
-                        memory_citation: memory_citation.map(|citation| {
-                            codex_protocol::memory_citation::MemoryCitation {
-                                entries: citation
-                                    .entries
-                                    .into_iter()
-                                    .map(|entry| {
-                                        codex_protocol::memory_citation::MemoryCitationEntry {
-                                            path: entry.path,
-                                            line_start: entry.line_start,
-                                            line_end: entry.line_end,
-                                            note: entry.note,
-                                        }
-                                    })
-                                    .collect(),
-                                rollout_ids: citation.thread_ids,
-                            }
-                        }),
-                        delivery,
-                        questions,
-                        sub_agent_completion: None,
-                    },
-                    &turn_id,
-                    from_replay,
-                );
+                if let Some(cell) =
+                    multi_agents::background_completion_history_cell_from_agent_message(
+                        &id,
+                        &text,
+                        phase.as_ref(),
+                        self.config.tui_agent_response_preview_lines,
+                    )
+                {
+                    self.on_collab_event(cell);
+                } else {
+                    self.on_agent_message_item_completed(
+                        AgentMessageItem {
+                            id,
+                            content: vec![AgentMessageContent::Text { text }],
+                            phase,
+                            memory_citation: memory_citation.map(|citation| {
+                                codex_protocol::memory_citation::MemoryCitation {
+                                    entries: citation
+                                        .entries
+                                        .into_iter()
+                                        .map(|entry| {
+                                            codex_protocol::memory_citation::MemoryCitationEntry {
+                                                path: entry.path,
+                                                line_start: entry.line_start,
+                                                line_end: entry.line_end,
+                                                note: entry.note,
+                                            }
+                                        })
+                                        .collect(),
+                                    rollout_ids: citation.thread_ids,
+                                }
+                            }),
+                            delivery,
+                            questions,
+                            sub_agent_completion: None,
+                        },
+                        &turn_id,
+                        from_replay,
+                    );
+                }
             }
             ThreadItem::Plan { text, .. } => self.on_plan_item_completed(text),
             ThreadItem::Reasoning {
@@ -291,6 +302,7 @@ impl ChatWidget {
                 status,
                 sender_thread_id,
                 receiver_thread_ids,
+                receiver_agents,
                 prompt,
                 model,
                 reasoning_effort,
@@ -302,6 +314,7 @@ impl ChatWidget {
                     status,
                     sender_thread_id,
                     receiver_thread_ids,
+                    receiver_agents,
                     prompt,
                     model,
                     reasoning_effort,

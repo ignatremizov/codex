@@ -10,6 +10,7 @@ use tracing::Instrument;
 use tracing::debug_span;
 use tracing::info_span;
 
+use crate::session::inter_agent_communication::InterAgentCommunicationRecord;
 use crate::session::rollout_reconstruction::RolloutReconstructionRepairPersistence;
 use crate::session::session::Session;
 use crate::session::thread_settings;
@@ -56,8 +57,10 @@ use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::mcp::RequestId as ProtocolRequestId;
 use codex_rmcp_client::ElicitationAction;
 use codex_rmcp_client::ElicitationResponse;
+use codex_thread_store::ThreadStoreError;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::debug;
 use tracing::info;
 use tracing::warn;
@@ -357,7 +360,7 @@ async fn send_thread_rollback_error(
     message: String,
     delivery: ThreadRollbackErrorDelivery,
 ) {
-    sess.submission_admission.rollback_completed();
+    sess.submission_admission.rollback_ready_to_publish();
     send_thread_rollback_error_with_info(
         sess,
         sub_id,
@@ -366,6 +369,7 @@ async fn send_thread_rollback_error(
         delivery,
     )
     .await;
+    sess.submission_admission.rollback_completed();
 }
 
 async fn send_thread_rollback_error_with_info(
@@ -475,7 +479,10 @@ async fn thread_rollback_target(
         return ThreadRollbackDisposition::Continue;
     }
 
-    let stored_history = match live_thread.load_history(/*include_archived*/ false).await {
+    let stored_history = match live_thread
+        .load_rollback_history(/*include_archived*/ false)
+        .await
+    {
         Ok(history) => history,
         Err(err) => {
             send_thread_rollback_error(
@@ -603,7 +610,10 @@ async fn thread_rollback_target(
         .append_items_and_flush_canonical(&[RolloutItem::EventMsg(rollback_msg.clone())])
         .await;
     if let Err(err) = marker_append_result {
-        match live_thread.load_history(/*include_archived*/ false).await {
+        match live_thread
+            .load_rollback_history(/*include_archived*/ false)
+            .await
+        {
             Ok(history)
                 if history
                     .items
@@ -669,7 +679,7 @@ async fn thread_rollback_target(
                 let repair_start = rollback_marker_index.saturating_add(1);
                 let repair_end = repair_start.saturating_add(repair_items.len());
                 live_thread
-                    .load_history(/*include_archived*/ false)
+                    .load_rollback_history(/*include_archived*/ false)
                     .await
                     .ok()
                     .is_some_and(|history| {
@@ -736,12 +746,15 @@ async fn thread_rollback_target(
         warn!(%err, "failed to persist compacted-media repair after rollback");
     }
 
-    sess.submission_admission.rollback_completed();
+    // Admit ordinary follow-up submissions while keeping completion delivery behind the rollback
+    // event. The submission loop and active-turn reservation still serialize actual turn startup.
+    sess.submission_admission.rollback_ready_to_publish();
     sess.deliver_event_raw(Event {
         id: turn_context.sub_id.clone(),
         msg: rollback_msg,
     })
     .await;
+    sess.submission_admission.rollback_completed();
     drop(active_turn_guard);
     ThreadRollbackDisposition::Continue
 }
@@ -822,8 +835,77 @@ pub(super) async fn emit_thread_stop_lifecycle(sess: &Session) {
     }
 }
 
+async fn persist_completion_mailbox_before_shutdown(
+    sess: &Arc<Session>,
+) -> Result<(), ThreadStoreError> {
+    loop {
+        let transition = sess.active_turn_transition.notified();
+        tokio::pin!(transition);
+        transition.as_mut().enable();
+        let active_task = sess
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .map(|active_turn| active_turn.task.is_some());
+        match active_task {
+            None => break,
+            Some(true) => {
+                sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+            }
+            Some(false) => transition.as_mut().await,
+        }
+    }
+    let persistence_barrier =
+        sess.durable_context_lock
+            .acquire()
+            .await
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to wait for completion context recording: {err}"),
+            })?;
+    drop(persistence_barrier);
+    let turn_context = sess.new_default_turn().await;
+    let mut attempt = 1;
+    loop {
+        let completion_drain = sess
+            .input_queue
+            .drain_completion_communications_for_shutdown()
+            .await;
+        if completion_drain.communications.is_empty() && !completion_drain.has_committing {
+            return Ok(());
+        }
+        let mut deferred = completion_drain.has_committing;
+        for communication in completion_drain.communications {
+            match sess
+                .record_inter_agent_communication(Arc::clone(&turn_context), communication)
+                .await
+            {
+                InterAgentCommunicationRecord::CompletionRecorded => {}
+                InterAgentCommunicationRecord::CompletionDeferred => {
+                    deferred = true;
+                    break;
+                }
+                InterAgentCommunicationRecord::Ordinary => {
+                    return Err(ThreadStoreError::Internal {
+                        message: "shutdown completion drain returned ordinary communication"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        if deferred {
+            let delay = crate::util::backoff(attempt).min(Duration::from_secs(5));
+            attempt = attempt.saturating_add(1);
+            tokio::time::sleep(delay).await;
+        }
+    }
+}
+
 pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
     shutdown_session_runtime(sess).await;
+    if let Err(err) = persist_completion_mailbox_before_shutdown(sess).await {
+        warn!("failed to persist accepted completion context before shutdown: {err}");
+    }
     info!("Shutting down Codex instance");
     let history = sess.clone_history().await;
     let turn_count = history

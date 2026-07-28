@@ -26,6 +26,8 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ReviewTarget;
+use codex_protocol::protocol::SessionSource as RolloutSessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput as CoreUserInput;
 use codex_state::SqliteConfig;
 use futures::SinkExt;
@@ -3274,6 +3276,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         &mut app_server,
                         crate::resume_picker::SessionTarget {
                             path: Some(root_rollout_path),
+                            source_rollout_path: None,
                             thread_id: root_thread_id,
                             history_mode: None,
                         },

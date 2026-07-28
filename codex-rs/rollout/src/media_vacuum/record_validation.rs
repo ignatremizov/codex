@@ -1,4 +1,4 @@
-use codex_protocol::protocol::RolloutLine;
+use codex_history::RolloutLine;
 
 use super::json_spans::JsonSpan;
 use super::json_spans::JsonSpanKind;

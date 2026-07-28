@@ -125,21 +125,13 @@ async fn ignores_unrelated_turn_completion_before_backfilling_primary_turn() -> 
         .collect::<Vec<_>>();
     assert_eq!(
         turn_completions.len(),
-        2,
-        "expected the child completion before the primary completion: {stderr}"
+        1,
+        "the unrelated child completion should not reach the primary subscription: {stderr}"
     );
 
-    let [child_completion, primary_completion] = turn_completions.as_slice() else {
+    let [primary_completion] = turn_completions.as_slice() else {
         unreachable!("checked turn/completed count")
     };
-    assert_eq!(
-        lines[*child_completion + 1..*primary_completion]
-            .iter()
-            .filter(|line| line.contains("app-server typed request"))
-            .count(),
-        0,
-        "the unrelated completion must not issue thread/read: {stderr}"
-    );
     assert_eq!(
         lines[*primary_completion + 1..]
             .iter()

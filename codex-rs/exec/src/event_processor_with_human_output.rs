@@ -12,6 +12,7 @@ use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
@@ -103,6 +104,8 @@ impl EventProcessorWithHumanOutput {
 
     fn render_item_completed(&mut self, item: ThreadItem) {
         match item {
+            ThreadItem::AgentMessage { id, .. }
+                if sub_agent_completion_status_from_response_item_id(&id).is_some() => {}
             ThreadItem::AgentMessage { text, .. } => {
                 eprintln!(
                     "{}\n{}",
@@ -558,7 +561,11 @@ fn final_message_from_turn_items(items: &[ThreadItem]) -> Option<String> {
         .iter()
         .rev()
         .find_map(|item| match item {
-            ThreadItem::AgentMessage { text, .. } => Some(text.clone()),
+            ThreadItem::AgentMessage { id, text, .. }
+                if sub_agent_completion_status_from_response_item_id(id).is_none() =>
+            {
+                Some(text.clone())
+            }
             _ => None,
         })
         .or_else(|| {
@@ -692,6 +699,8 @@ mod tests {
                 text: "first".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
+                questions: None,
             },
             ThreadItem::Plan {
                 id: "plan-1".to_string(),
@@ -702,6 +711,8 @@ mod tests {
                 text: "second".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
+                questions: None,
             },
         ]);
 
@@ -760,6 +771,8 @@ mod tests {
                         text: "final answer".to_string(),
                         phase: None,
                         memory_citation: None,
+                        delivery: None,
+                        questions: None,
                     }],
                     items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Completed,
@@ -809,6 +822,8 @@ mod tests {
                         text: "final answer".to_string(),
                         phase: None,
                         memory_citation: None,
+                        delivery: None,
+                        questions: None,
                     }],
                     items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Completed,

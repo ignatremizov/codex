@@ -4,7 +4,7 @@ mod legacy_exact_rollback_tests {
     use codex_app_server_protocol::TurnStatus;
     use codex_protocol::protocol::AgentMessageEvent;
     use codex_protocol::protocol::EventMsg;
-    use codex_protocol::protocol::RolloutItem;
+    use codex_rollout::RolloutItem;
     use codex_protocol::protocol::ThreadRolledBackEvent;
     use codex_protocol::protocol::TurnCompleteEvent;
     use codex_protocol::protocol::TurnStartedEvent;

@@ -20,6 +20,7 @@ use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::WorldStateItem;
+use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
 use codex_protocol::security_risk::SecurityRiskScore;
 use codex_rollout::ModelContextScan;
 use codex_rollout::ModelContextScanProgress;
@@ -92,6 +93,59 @@ fn inter_agent_assistant_message(text: &str) -> ResponseItem {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     }
+}
+
+fn completion_context_item() -> ResponseItem {
+    ResponseItem::Message {
+        id: Some(new_sub_agent_completion_context_response_item_id()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<subagent_notification>child done</subagent_notification>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+#[tokio::test]
+async fn reconstruction_deduplicates_completion_context_response_item_ids() {
+    let (session, turn_context) = make_session_and_context().await;
+    let completion = completion_context_item();
+    let rollout_items = vec![
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        RolloutItem::ResponseItem(completion.clone().into()),
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        RolloutItem::ResponseItem(completion.clone().into()),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, annotated(vec![completion]));
+}
+
+#[tokio::test]
+async fn reconstruction_deduplicates_completion_context_ids_inside_compacted_history() {
+    let (session, turn_context) = make_session_and_context().await;
+    let completion = completion_context_item();
+    let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
+        message: "checkpoint".to_string(),
+        replacement_history: Some(annotated(vec![completion.clone(), completion.clone()])),
+        window_number: Some(1),
+        ..Default::default()
+    })];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, annotated(vec![completion]));
+    assert_eq!(reconstructed.compacted_prefix_len, Some(1));
 }
 
 fn completed_user_turn_rollout(
@@ -1060,18 +1114,18 @@ async fn reconstruction_preserves_checkpoint_before_partial_segment_rollback() {
     let mut rollout_items = completed_user_turn_rollout(
         surviving_context,
         vec![
-            RolloutItem::ResponseItem(surviving_user.clone()),
-            RolloutItem::ResponseItem(surviving_assistant.clone()),
+            RolloutItem::ResponseItem(surviving_user.clone().into()),
+            RolloutItem::ResponseItem(surviving_assistant.clone().into()),
             RolloutItem::Compacted(CompactedItem {
                 message: "checkpoint before steer".to_string(),
-                replacement_history: Some(vec![
+                replacement_history: Some(annotated(vec![
                     surviving_user.clone(),
                     surviving_assistant.clone(),
-                ]),
+                ])),
                 ..Default::default()
             }),
-            RolloutItem::ResponseItem(user_message("rolled back steer")),
-            RolloutItem::ResponseItem(assistant_message("reply after steer")),
+            RolloutItem::ResponseItem(user_message("rolled back steer").into()),
+            RolloutItem::ResponseItem(assistant_message("reply after steer").into()),
         ],
     );
     rollout_items.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
@@ -1088,7 +1142,7 @@ async fn reconstruction_preserves_checkpoint_before_partial_segment_rollback() {
 
     assert_eq!(
         reconstructed.history,
-        vec![surviving_user, surviving_assistant]
+        annotated(vec![surviving_user, surviving_assistant])
     );
     assert_eq!(reconstructed.compacted_prefix_len, Some(2));
 }
@@ -1099,20 +1153,20 @@ async fn newer_exact_rollback_removes_legacy_marker_in_its_raw_range() {
     let surviving_user = user_message("surviving user");
     let surviving_assistant = assistant_message("surviving assistant");
     let mut rollout_items = vec![
-        RolloutItem::ResponseItem(surviving_user.clone()),
-        RolloutItem::ResponseItem(surviving_assistant.clone()),
-        RolloutItem::ResponseItem(user_message("removed user one")),
-        RolloutItem::ResponseItem(assistant_message("removed assistant one")),
-        RolloutItem::ResponseItem(user_message("removed user two")),
-        RolloutItem::ResponseItem(assistant_message("removed assistant two")),
+        RolloutItem::ResponseItem(surviving_user.clone().into()),
+        RolloutItem::ResponseItem(surviving_assistant.clone().into()),
+        RolloutItem::ResponseItem(user_message("removed user one").into()),
+        RolloutItem::ResponseItem(assistant_message("removed assistant one").into()),
+        RolloutItem::ResponseItem(user_message("removed user two").into()),
+        RolloutItem::ResponseItem(assistant_message("removed assistant two").into()),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
             codex_protocol::protocol::ThreadRolledBackEvent {
                 num_turns: 1,
                 ..Default::default()
             },
         )),
-        RolloutItem::ResponseItem(user_message("removed user three")),
-        RolloutItem::ResponseItem(assistant_message("removed assistant three")),
+        RolloutItem::ResponseItem(user_message("removed user three").into()),
+        RolloutItem::ResponseItem(assistant_message("removed assistant three").into()),
     ];
     rollout_items.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
         codex_protocol::protocol::ThreadRolledBackEvent {

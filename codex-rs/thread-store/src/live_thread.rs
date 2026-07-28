@@ -364,6 +364,18 @@ impl LiveThread {
             .await
     }
 
+    pub async fn load_rollback_history(
+        &self,
+        include_archived: bool,
+    ) -> ThreadStoreResult<StoredThreadHistory> {
+        self.thread_store
+            .load_rollback_history(LoadThreadHistoryParams {
+                thread_id: self.thread_id,
+                include_archived,
+            })
+            .await
+    }
+
     pub async fn read_thread(
         &self,
         include_archived: bool,

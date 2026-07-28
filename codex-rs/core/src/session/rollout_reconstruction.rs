@@ -2,9 +2,12 @@ use super::*;
 use crate::context::world_state::WorldStateSnapshot;
 use crate::context_manager::is_model_generated_item;
 use crate::context_manager::is_user_turn_boundary;
-use codex_history::ResponseItemEnvelope;
-use codex_protocol::protocol::SessionContextWindow;
 use codex_history::rollout::exact_rollback_removed_items;
+use codex_history::ResponseItemEnvelope;
+use codex_protocol::ResponseItemId;
+use codex_protocol::protocol::SessionContextWindow;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 // Return value of `Session::reconstruct_history_from_rollout`, bundling the rebuilt history with
@@ -194,6 +197,38 @@ fn establishes_world_state_boundary(item: &RolloutItem) -> bool {
         item,
         RolloutItem::Compacted(_) | RolloutItem::WorldState(WorldStateItem { full: true, .. })
     )
+}
+
+fn sub_agent_completion_context_response_item_ids(
+    items: &[ResponseItemEnvelope],
+) -> HashSet<ResponseItemId> {
+    items
+        .iter()
+        .filter_map(|item| item.item.id())
+        .filter(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn deduplicate_sub_agent_completion_context_items(
+    items: &mut Vec<ResponseItemEnvelope>,
+    prefix_len: usize,
+) -> usize {
+    let mut seen = HashSet::new();
+    let mut index = 0usize;
+    let mut retained_prefix_len = 0usize;
+    items.retain(|item| {
+        let retain = item
+            .id()
+            .filter(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
+            .is_none_or(|id| seen.insert(id.clone()));
+        if retain && index < prefix_len {
+            retained_prefix_len = retained_prefix_len.saturating_add(1);
+        }
+        index = index.saturating_add(1);
+        retain
+    });
+    retained_prefix_len
 }
 
 impl Session {
@@ -526,15 +561,20 @@ impl Session {
                 base_replacement_history.len()
             };
             repair_checkpoint_source = Some(base_compacted_item.clone());
-            repaired_prefix_len = prefix_len;
+            repaired_prefix_len = deduplicate_sub_agent_completion_context_items(
+                &mut base_replacement_history,
+                prefix_len,
+            );
             let sanitization = sanitize_annotated_compacted_media_prefix(
                 base_replacement_history.as_mut_slice(),
-                prefix_len,
+                repaired_prefix_len,
             );
             repair_sanitization.accumulate(sanitization);
             history.replace_annotated(base_replacement_history);
             history.restore_guardian_history(base_compacted_item.guardian_history.as_ref());
         }
+        let mut completion_context_response_item_ids =
+            sub_agent_completion_context_response_item_ids(history.annotated_items());
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
         // design should keep this same replay shape, but drive it from a resumable reverse source
         // instead of an eagerly loaded `&[RolloutItem]`.
@@ -545,6 +585,12 @@ impl Session {
             }
             match item {
                 RolloutItem::ResponseItem(response_item) => {
+                    if response_item.id().is_some_and(|id| {
+                        is_sub_agent_completion_context_response_item_id(id.as_str())
+                            && !completion_context_response_item_ids.insert(id.clone())
+                    }) {
+                        continue;
+                    }
                     history.record_annotated_items(
                         std::slice::from_ref(response_item),
                         turn_context.model_info().truncation_policy.into(),
@@ -552,6 +598,12 @@ impl Session {
                 }
                 RolloutItem::InterAgentCommunication(communication) => {
                     let response_item = communication.to_model_input_item();
+                    if response_item.id().is_some_and(|id| {
+                        is_sub_agent_completion_context_response_item_id(id.as_str())
+                            && !completion_context_response_item_ids.insert(id.clone())
+                    }) {
+                        continue;
+                    }
                     history.record_items(
                         std::iter::once(&response_item),
                         turn_context.model_info().truncation_policy.into(),
@@ -568,13 +620,22 @@ impl Session {
                     if let Some(replacement_history) = &compacted.replacement_history {
                         // This should actually never happen, because the reverse loop above (to build rollout_suffix)
                         // should stop before any compaction that has Some replacement_history
-                        repaired_prefix_len = compacted
+                        let prefix_len = compacted
                             .replacement_history_media_sanitized_prefix_len
                             .map(|prefix_len| usize::try_from(prefix_len).unwrap_or(usize::MAX))
                             .unwrap_or(replacement_history.len())
                             .min(replacement_history.len());
-                        history.replace_annotated(replacement_history.clone());
+                        let mut replacement_history = replacement_history.clone();
+                        repaired_prefix_len = deduplicate_sub_agent_completion_context_items(
+                            &mut replacement_history,
+                            prefix_len,
+                        );
+                        history.replace_annotated(replacement_history);
                         history.restore_guardian_history(compacted.guardian_history.as_ref());
+                        completion_context_response_item_ids =
+                            sub_agent_completion_context_response_item_ids(
+                                history.annotated_items(),
+                            );
                     } else {
                         saw_legacy_compaction_without_replacement_history = true;
                         // Legacy rollouts without `replacement_history` should rebuild the
@@ -594,6 +655,10 @@ impl Session {
                         );
                         history.replace_annotated(rebuilt);
                         repaired_prefix_len = rebuilt.len();
+                        completion_context_response_item_ids =
+                            sub_agent_completion_context_response_item_ids(
+                                history.annotated_items(),
+                            );
                     }
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
@@ -601,6 +666,10 @@ impl Session {
                         history.drop_last_n_user_turns(rollback.num_turns);
                         repaired_prefix_len =
                             repaired_prefix_len.min(history.annotated_items().len());
+                        completion_context_response_item_ids =
+                            sub_agent_completion_context_response_item_ids(
+                                history.annotated_items(),
+                            );
                     }
                 }
                 RolloutItem::EventMsg(_)
