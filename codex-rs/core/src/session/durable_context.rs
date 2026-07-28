@@ -60,10 +60,14 @@ struct PublicationOutcome {
     failure: Arc<Mutex<Option<String>>>,
     stage: &'static str,
     finished: bool,
+    reload: Option<Arc<super::SubmissionAdmission>>,
 }
 
 impl PublicationOutcome {
     fn fail(&mut self, error: impl std::fmt::Display) -> CodexErr {
+        if let Some(admission) = &self.reload {
+            admission.rollback_requires_reload();
+        }
         let message = format!(
             "history publication failed during {}: {error}; canonical reload required",
             self.stage
@@ -83,6 +87,66 @@ impl Drop for PublicationOutcome {
 }
 
 impl Session {
+    /// Completion records use single-attempt writer barriers, never the ordinary retry queue.
+    pub(super) fn dispatch_completion_publication(
+        &self,
+        permit: OwnedSemaphorePermit,
+        items: Vec<RolloutItem>,
+        events: Vec<codex_protocol::protocol::Event>,
+        install: impl FnOnce(&mut SessionState) + Send + 'static,
+        on_primary_delivery: impl FnOnce() + Send + 'static,
+    ) -> CodexResult<
+        oneshot::Receiver<CodexResult<super::sub_agent_completion::CanonicalCompletionReceipt>>,
+    > {
+        self.history_publication.check()?;
+        let live = self.live_thread().cloned().ok_or_else(|| {
+            CodexErr::InvalidRequest(
+                "completion publication requires canonical persistence".to_string(),
+            )
+        })?;
+        let state = Arc::clone(&self.state);
+        let failure = Arc::clone(&self.history_publication.failure);
+        let admission = Arc::clone(&self.submission_admission);
+        let tx_event = self.tx_event.clone();
+        let (sender, receiver) = oneshot::channel();
+        self.history_publication.tasks.spawn(async move {
+            let _permit = permit;
+            let mut outcome = PublicationOutcome {
+                failure,
+                stage: "completion append",
+                finished: false,
+                reload: Some(Arc::clone(&admission)),
+            };
+            let result = live
+                .append_completion_items_and_flush_canonical(&items)
+                .await;
+            if let Err(error) = result {
+                admission.rollback_requires_reload();
+                let _ = sender.send(Err(outcome.fail(error)));
+                return;
+            }
+            outcome.stage = "completion live installation";
+            {
+                let mut state = state.lock().await;
+                install(&mut state);
+            }
+            let mut primary_event = super::sub_agent_completion::PrimaryEventEnqueue::Enqueued;
+            for event in events {
+                if tx_event.send(event).await.is_err() {
+                    primary_event = super::sub_agent_completion::PrimaryEventEnqueue::Closed;
+                }
+            }
+            if primary_event == super::sub_agent_completion::PrimaryEventEnqueue::Enqueued {
+                on_primary_delivery();
+            }
+            outcome.finished = true;
+            let _ = sender.send(Ok(
+                super::sub_agent_completion::CanonicalCompletionReceipt { primary_event },
+            ));
+        });
+        Ok(receiver)
+    }
+
     pub(crate) fn quarantine_history(&self, reason: String) {
         self.submission_admission.rollback_requires_reload();
         self.history_publication
@@ -182,6 +246,7 @@ impl Session {
                 failure,
                 stage: "append",
                 finished: false,
+                reload: None,
             };
             if !items.is_empty()
                 && let Some(live_thread) = live_thread

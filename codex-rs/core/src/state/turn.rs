@@ -32,6 +32,8 @@ use codex_protocol::protocol::TokenUsage;
 /// Metadata about the currently running turn.
 pub(crate) struct ActiveTurn {
     pub(crate) task: Option<RunningTask>,
+    /// A removed task still owns terminal publication and active-state cleanup.
+    pub(crate) terminal_pending: bool,
     pub(crate) turn_state: Arc<Mutex<TurnState>>,
 }
 
@@ -60,6 +62,7 @@ impl Default for ActiveTurn {
     fn default() -> Self {
         Self {
             task: None,
+            terminal_pending: false,
             turn_state: Arc::new(Mutex::new(TurnState::default())),
         }
     }

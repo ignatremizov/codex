@@ -2455,6 +2455,7 @@ async fn emit_agent_message_in_plan_mode(
                     memory_citation: None,
                     delivery: None,
                     questions: None,
+                    sub_agent_completion: None,
                 })
             });
         sess.emit_turn_item_started(turn_context, &start_item).await;

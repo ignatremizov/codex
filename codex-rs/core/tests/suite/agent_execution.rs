@@ -289,7 +289,12 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         FIRST_PROMPT,
         "first-call",
         "spawn_agent",
-        json!({ "message": FIRST_TASK, "task_name": "first", "fork_turns": "none" }),
+        json!({
+            "message": FIRST_TASK,
+            "task_message": FIRST_TASK,
+            "task_name": "first",
+            "fork_turns": "none",
+        }),
     )
     .await;
     mount_completed_worker(&server, FIRST_TASK, "first-call").await;
@@ -299,7 +304,12 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         EVICT_PROMPT,
         "replacement-call",
         "spawn_agent",
-        json!({ "message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }),
+        json!({
+            "message": SECOND_TASK,
+            "task_message": SECOND_TASK,
+            "task_name": "replacement",
+            "fork_turns": "none",
+        }),
     )
     .await;
     mount_completed_worker(&server, SECOND_TASK, "replacement-call").await;
@@ -309,7 +319,11 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         FOLLOWUP_PROMPT,
         "followup-call",
         "followup_task",
-        json!({ "target": "first", "message": FOLLOWUP_TASK }),
+        json!({
+            "target": "first",
+            "message": FOLLOWUP_TASK,
+            "task_message": FOLLOWUP_TASK,
+        }),
     )
     .await;
     let reloaded_worker_request =

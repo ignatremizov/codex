@@ -1423,6 +1423,7 @@ async fn unrelated_unified_exec_completion_preserves_collab_wait_countdown() {
                 status: AppServerCollabAgentToolCallStatus::InProgress,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                receiver_agents: Vec::new(),
                 prompt: None,
                 model: None,
                 reasoning_effort: None,

@@ -15,6 +15,9 @@ use super::step_settings::StepSettingsUpdate;
 pub(crate) use super::step_settings::tests::update_selected_settings_for_test;
 use super::turn_context::TurnEnvironment;
 use super::*;
+
+#[path = "queued_completion_boundary_tests.rs"]
+mod queued_completion_boundaries;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::agents_md_manager::SessionInstructions;
 use crate::compact::InitialContextInjection;
@@ -185,6 +188,8 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
 use codex_rmcp_client::ElicitationAction;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
@@ -435,6 +440,35 @@ async fn agent_messages_get_local_ids_without_item_ids_feature() {
             .is_some_and(|item_id| item_id.starts_with("amsg_"))
     );
     assert_eq!(items[0].turn_id(), Some(turn_context.sub_id.as_str()));
+}
+
+#[tokio::test]
+async fn untrusted_agent_messages_cannot_preserve_completion_context_ids() {
+    let (session, turn_context) = make_session_and_context().await;
+    let reserved_id = new_sub_agent_completion_context_response_item_id();
+    let response_item = ResponseItem::AgentMessage {
+        id: Some(reserved_id.clone()),
+        author: "/root/worker".to_string(),
+        recipient: "/root".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "done".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let (items, _) = session
+        .prepare_conversation_items_for_history(
+            &turn_context,
+            turn_context.model_info(),
+            std::slice::from_ref(&response_item),
+        )
+        .await;
+
+    let normalized_id = items[0].id().expect("normalized item id");
+    assert_ne!(normalized_id, &reserved_id);
+    assert!(!is_sub_agent_completion_context_response_item_id(
+        normalized_id
+    ));
 }
 
 fn assistant_message(text: &str) -> ResponseItem {
@@ -2538,6 +2572,8 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     for mut communication in [plaintext, encrypted, encrypted_with_audit] {
         let (mut session, turn_context) = make_session_and_context().await;
         let rollout_path = attach_thread_persistence(&mut session).await;
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
         communication.id = Some(ResponseItemId::with_suffix("amsg", "turn-id-test"));
         let mut expected_item = communication.to_model_input_item();
         expected_item.set_turn_id_if_missing(&turn_context.sub_id);
@@ -3487,7 +3523,7 @@ async fn resume_persists_media_policy_certification_for_a_media_free_legacy_chec
     ))];
     let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
         message: "media-free legacy checkpoint".to_string(),
-        replacement_history: Some(media_free_history.clone()),
+        replacement_history: Some(media_free_history.iter().cloned().map(Into::into).collect()),
         window_number: Some(1),
         ..Default::default()
     })];
@@ -3519,7 +3555,7 @@ async fn resume_persists_media_policy_certification_for_a_media_free_legacy_chec
                     replacement_history_media_sanitized_prefix_len: Some(1),
                     replacement_history_media_repair: true,
                     ..
-                }) if history == &media_free_history
+                }) if raw_envelopes(history) == media_free_history
             )
         })
         .expect("persisted media-policy certification");
@@ -3549,7 +3585,7 @@ async fn media_free_certification_failure_preserves_resume_but_fences_new_writes
         ))];
         let source_history = Arc::new(vec![RolloutItem::Compacted(CompactedItem {
             message: "media-free legacy checkpoint".to_string(),
-            replacement_history: Some(media_free_history.clone()),
+            replacement_history: Some(media_free_history.iter().cloned().map(Into::into).collect()),
             window_number: Some(1),
             ..Default::default()
         })]);
@@ -3597,7 +3633,7 @@ async fn media_free_certification_failure_preserves_resume_but_fences_new_writes
         let recovered = recovery_session
             .reconstruct_history_from_rollout(&recovery_turn_context, persisted.items.as_slice())
             .await;
-        assert_eq!(recovered.history, media_free_history);
+        assert_eq!(raw_envelopes(&recovered.history), media_free_history);
         assert!(matches!(
             recovered.repair,
             Some(rollout_reconstruction::RolloutReconstructionRepair {
@@ -6305,6 +6341,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
             /*reference_context_item*/ None,
             /*world_state_baseline*/ None,
             CompactedHistoryMetadata {
+                completion_source_items: Vec::new(),
                 message: "summary".to_string(),
                 compaction_summary_tokens: None,
                 window_number,
@@ -7016,6 +7053,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
 
     let session = Session {
         thread_id,
+        instance_id: Uuid::now_v7(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
@@ -7038,10 +7076,14 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         mcp_prewarm_tx: async_channel::bounded(1).0,
         mcp_prewarm_shutdown: CancellationToken::new(),
         mcp_prewarm_task: std::sync::Mutex::new(None),
+        spawn_parent_thread_id: None,
+        terminal_publication_lock: std::sync::Mutex::new(()),
+        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
         active_turn: Mutex::new(None),
         async_hook_results,
+        active_turn_transition: Notify::new(),
         input_queue: super::input_queue::InputQueue::new(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
@@ -9294,6 +9336,7 @@ where
 
     let session = Arc::new(Session {
         thread_id,
+        instance_id: Uuid::now_v7(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
@@ -9316,10 +9359,14 @@ where
         mcp_prewarm_tx: async_channel::bounded(1).0,
         mcp_prewarm_shutdown: CancellationToken::new(),
         mcp_prewarm_task: std::sync::Mutex::new(None),
+        spawn_parent_thread_id: None,
+        terminal_publication_lock: std::sync::Mutex::new(()),
+        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
         active_turn: Mutex::new(None),
         async_hook_results,
+        active_turn_transition: Notify::new(),
         input_queue: super::input_queue::InputQueue::new(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
@@ -11482,7 +11529,7 @@ enum TerminalEventKind {
     TurnAborted,
 }
 
-async fn attach_in_memory_thread_store(
+pub(crate) async fn attach_in_memory_thread_store(
     session: &mut Session,
 ) -> Arc<codex_thread_store::InMemoryThreadStore> {
     let store = Arc::new(codex_thread_store::InMemoryThreadStore::default());

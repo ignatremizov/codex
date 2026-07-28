@@ -1319,7 +1319,7 @@ impl ThreadManager {
     /// as `Arc<CodexThread>`, it is possible that other references to it exist elsewhere.
     /// Returns the thread if the thread was found and removed.
     pub async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
-        self.state.threads.write().await.remove(thread_id)
+        self.state.remove_thread(thread_id).await
     }
 
     /// Removes a runtime for a client request, leaving internal workers with their owner.
@@ -1337,7 +1337,11 @@ impl ThreadManager {
                 "live internal threads can only be removed by their owner".to_owned(),
             ));
         }
-        Ok(threads.remove(thread_id))
+        let removed = threads.remove(thread_id);
+        if let Some(thread) = &removed {
+            thread.session.prepare_for_thread_removal();
+        }
+        Ok(removed)
     }
 
     /// Removes a thread only if `thread_id` still maps to `expected`.
@@ -1716,7 +1720,11 @@ impl ThreadManagerState {
 
     /// Remove a thread from the manager by ID, returning it when present.
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
-        self.threads.write().await.remove(thread_id)
+        let removed = self.threads.write().await.remove(thread_id);
+        if let Some(thread) = &removed {
+            thread.session.prepare_for_thread_removal();
+        }
+        removed
     }
 
     pub(crate) async fn remove_thread_if_matches(
@@ -1729,7 +1737,11 @@ impl ThreadManagerState {
             .get(thread_id)
             .is_some_and(|thread| Arc::ptr_eq(thread, expected))
         {
-            threads.remove(thread_id)
+            let removed = threads.remove(thread_id);
+            if let Some(thread) = &removed {
+                thread.session.prepare_for_thread_removal();
+            }
+            removed
         } else {
             None
         }
@@ -2161,7 +2173,9 @@ impl ThreadManagerState {
                         thread,
                     });
                 }
-                threads.remove(&resumed.conversation_id);
+                if let Some(removed) = threads.remove(&resumed.conversation_id) {
+                    removed.session.prepare_for_thread_removal();
+                }
             }
         }
         // Both resume entry points must restore identities before children can be loaded lazily.

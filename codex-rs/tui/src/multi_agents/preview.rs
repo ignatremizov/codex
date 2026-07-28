@@ -243,7 +243,18 @@ pub(super) fn wait_complete_agent_lines(
     status: &CollabAgentState,
     agent_response_preview_lines: usize,
 ) -> Vec<CollabDetail> {
-    let mut spans = agent_label_spans(agent_label(thread_id, metadata));
+    completion_agent_lines(
+        agent_label_spans(agent_label(thread_id, metadata)),
+        status,
+        agent_response_preview_lines,
+    )
+}
+
+pub(super) fn completion_agent_lines(
+    mut spans: Vec<Span<'static>>,
+    status: &CollabAgentState,
+    agent_response_preview_lines: usize,
+) -> Vec<CollabDetail> {
     spans.push(Span::from(": ").dim());
     spans.extend(status_label_spans(&status.status));
 

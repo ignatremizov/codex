@@ -4,6 +4,7 @@ use codex_extension_api::PostCompactionContextContribution;
 use codex_extension_api::TurnInputContribution;
 use codex_utils_output_truncation::TruncationPolicy;
 use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 
 #[tokio::test]
 async fn accepted_transcript_publication_enqueues_after_flush_even_without_receipt_waiter() {

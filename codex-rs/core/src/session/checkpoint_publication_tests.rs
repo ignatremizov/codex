@@ -61,6 +61,7 @@ async fn checkpoint_and_cold_reconstruction_preserve_full_mcp_union_and_latest_e
             /*reference_context_item*/ None,
             /*world_state_baseline*/ None,
             CompactedHistoryMetadata {
+                completion_source_items: Vec::new(),
                 message: "summary".to_string(),
                 compaction_summary_tokens: None,
                 window_number,

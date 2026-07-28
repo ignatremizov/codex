@@ -7,9 +7,11 @@ use crate::config::test_config;
 use crate::thread_manager::ThreadManagerState;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
@@ -131,6 +133,87 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
         },
         Ok(_) => panic!("expected evicted thread to be missing"),
     }
+}
+
+#[tokio::test]
+async fn interrupted_v2_residency_eviction_does_not_notify_parent() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root thread");
+    let control = manager.agent_control();
+    let state = control.upgrade().expect("thread manager should be live");
+    let child_path = AgentPath::root().join("worker_1").expect("child path");
+    let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(child_path.clone()),
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let first_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("first resident slot");
+    let first = state
+        .spawn_new_thread_with_source(
+            config.clone(),
+            control.clone(),
+            child_source.clone(),
+            /*history_mode*/ None,
+            Some(root.thread_id),
+            /*forked_from_thread_id*/ None,
+            Some(ThreadSource::Subagent),
+            /*metrics_service_name*/ None,
+            /*inherited_environments*/ None,
+            /*inherited_exec_policy*/ None,
+            /*environments*/ None,
+        )
+        .await
+        .expect("spawn v2 child");
+    control
+        .maybe_start_completion_watcher(
+            &first.thread,
+            Some(child_source),
+            child_path.to_string(),
+            Some(child_path),
+            MultiAgentVersion::V2,
+        )
+        .await;
+    first_slot.commit(first.thread_id);
+    mark_thread_interrupted(first.thread.as_ref()).await;
+
+    let _second_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("second resident slot should evict interrupted child");
+
+    let unexpected_notification =
+        tokio::time::timeout(std::time::Duration::from_millis(200), async {
+            loop {
+                let event = root.thread.next_event().await.expect("root event");
+                if let EventMsg::ItemCompleted(event) = event.msg
+                    && let codex_protocol::items::TurnItem::AgentMessage(item) = event.item
+                    && item.has_sub_agent_completion_identity()
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+    assert!(unexpected_notification.is_err());
 }
 
 async fn spawn_v2_subagent(

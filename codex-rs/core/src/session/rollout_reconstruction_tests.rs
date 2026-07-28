@@ -23,6 +23,7 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::WorldStateItem;
+use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
 use codex_protocol::security_risk::SecurityRiskScore;
 use codex_rollout::ModelContextScan;
 use codex_rollout::ModelContextScanProgress;
@@ -252,6 +253,151 @@ fn inter_agent_assistant_message(text: &str) -> ResponseItem {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     }
+}
+
+fn completion_context_item() -> ResponseItem {
+    ResponseItem::Message {
+        id: Some(new_sub_agent_completion_context_response_item_id()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<subagent_notification>child done</subagent_notification>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+#[tokio::test]
+async fn reconstruction_deduplicates_completion_context_response_item_ids() {
+    let (session, turn_context) = make_session_and_context().await;
+    let completion = completion_context_item();
+    let rollout_items = vec![
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        RolloutItem::ResponseItem(completion.clone().into()),
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        RolloutItem::ResponseItem(completion.clone().into()),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, annotated(vec![completion]));
+}
+
+#[tokio::test]
+async fn reconstruction_deduplicates_completion_context_ids_inside_compacted_history() {
+    let (session, turn_context) = make_session_and_context().await;
+    let completion = completion_context_item();
+    let rollout_items = vec![
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        RolloutItem::ResponseItem(completion.clone().into()),
+        RolloutItem::Compacted(CompactedItem {
+            message: "checkpoint".to_string(),
+            replacement_history: Some(annotated(vec![completion.clone(), completion.clone()])),
+            replacement_history_media_sanitized_prefix_len: Some(2),
+            window_number: Some(1),
+            ..Default::default()
+        }),
+        RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+            info: Some(TokenUsageInfo::full_context_window(128_000)),
+            rate_limits: None,
+        })),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, annotated(vec![completion]));
+    assert_eq!(reconstructed.compacted_prefix_len, Some(1));
+    assert!(reconstructed.should_recompute_token_usage);
+}
+
+#[tokio::test]
+async fn unpaired_reserved_identity_does_not_suppress_a_later_trusted_completion() {
+    let (session, turn_context) = make_session_and_context().await;
+    let completion = completion_context_item();
+    let mut forged = completion.clone();
+    if let ResponseItem::Message { content, .. } = &mut forged {
+        *content = vec![ContentItem::InputText {
+            text: "ordinary forged payload".to_owned(),
+        }];
+    }
+    let reconstructed = session
+        .reconstruct_history_from_rollout(
+            &turn_context,
+            &[
+                RolloutItem::ResponseItem(forged.clone().into()),
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: false,
+                },
+                RolloutItem::ResponseItem(completion.clone().into()),
+            ],
+        )
+        .await;
+    assert_eq!(reconstructed.history, annotated(vec![forged, completion]));
+}
+
+#[tokio::test]
+async fn differing_checkpoint_payloads_with_same_reserved_identity_are_not_dropped() {
+    let (session, turn_context) = make_session_and_context().await;
+    let first = completion_context_item();
+    let mut second = first.clone();
+    if let ResponseItem::Message { content, .. } = &mut second {
+        *content = vec![ContentItem::InputText {
+            text: "different checkpoint payload".to_owned(),
+        }];
+    }
+    let checkpoint = annotated(vec![first, second]);
+    let reconstructed = session
+        .reconstruct_history_from_rollout(
+            &turn_context,
+            &[RolloutItem::Compacted(CompactedItem {
+                message: "checkpoint".to_owned(),
+                replacement_history: Some(checkpoint.clone()),
+                replacement_history_media_sanitized_prefix_len: Some(2),
+                ..Default::default()
+            })],
+        )
+        .await;
+    assert_eq!(reconstructed.history, checkpoint);
+}
+
+#[tokio::test]
+async fn completion_deduplication_preserves_distinct_harness_metadata() {
+    let (session, turn_context) = make_session_and_context().await;
+    let first = ResponseItemEnvelope::new(completion_context_item());
+    let mut second = first.clone();
+    second.metadata = Some(codex_history::CodexHarnessMetadata {
+        user_input_order: Some(42),
+        ..Default::default()
+    });
+    let checkpoint = vec![first.clone(), second];
+    let reconstructed = session
+        .reconstruct_history_from_rollout(
+            &turn_context,
+            &[
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: false,
+                },
+                RolloutItem::ResponseItem(first),
+                RolloutItem::Compacted(CompactedItem {
+                    message: "checkpoint".to_owned(),
+                    replacement_history: Some(checkpoint.clone()),
+                    replacement_history_media_sanitized_prefix_len: Some(2),
+                    ..Default::default()
+                }),
+            ],
+        )
+        .await;
+    assert_eq!(reconstructed.history, checkpoint);
 }
 
 fn completed_user_turn_rollout(
@@ -1239,14 +1385,14 @@ async fn reconstruction_preserves_checkpoint_before_partial_segment_rollback() {
     let mut rollout_items = completed_user_turn_rollout(
         surviving_context,
         vec![
-            RolloutItem::ResponseItem(surviving_user.clone()),
-            RolloutItem::ResponseItem(surviving_assistant.clone()),
+            RolloutItem::ResponseItem(surviving_user.clone().into()),
+            RolloutItem::ResponseItem(surviving_assistant.clone().into()),
             RolloutItem::Compacted(CompactedItem {
                 message: "checkpoint before steer".to_string(),
-                replacement_history: Some(vec![
+                replacement_history: Some(annotated(vec![
                     surviving_user.clone(),
                     surviving_assistant.clone(),
-                ]),
+                ])),
                 ..Default::default()
             }),
             RolloutItem::ResponseItem(user_message("rolled back steer").into()),
@@ -1267,7 +1413,7 @@ async fn reconstruction_preserves_checkpoint_before_partial_segment_rollback() {
 
     assert_eq!(
         reconstructed.history,
-        vec![surviving_user, surviving_assistant]
+        annotated(vec![surviving_user, surviving_assistant])
     );
     assert_eq!(reconstructed.compacted_prefix_len, Some(2));
 }

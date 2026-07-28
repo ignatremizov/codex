@@ -311,7 +311,20 @@ fn item_to_cells(
                 ),
             ));
         }
-        ThreadItem::AgentMessage { text, phase, .. } => {
+        ThreadItem::AgentMessage {
+            id, text, phase, ..
+        } => {
+            if let Some(cell) =
+                crate::multi_agents::background_completion_history_cell_from_agent_message(
+                    &id,
+                    &text,
+                    phase.as_ref(),
+                    agent_preview_line_limits.response,
+                )
+            {
+                cells.push(Arc::new(cell));
+                return cells;
+            }
             let parsed = parse_assistant_markdown(&text, cwd.as_path());
             if !parsed.visible_markdown.trim().is_empty() {
                 cells.push(Arc::new(

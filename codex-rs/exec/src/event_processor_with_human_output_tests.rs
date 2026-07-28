@@ -407,6 +407,32 @@ fn final_message_from_turn_items_ignores_inter_agent_messages() {
 }
 
 #[test]
+fn final_message_from_turn_items_ignores_canonical_completion() {
+    let message = final_message_from_turn_items(&[
+        ThreadItem::AgentMessage {
+            id: "msg-parent".to_string(),
+            text: "parent answer".to_string(),
+            inter_agent_source: None,
+            phase: None,
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+        },
+        ThreadItem::AgentMessage {
+            id: "msg_c_01900000-0000-7000-8000-000000000001".to_string(),
+            text: "Agent final answer from `/root/reviewer`:\n\nDone.".to_string(),
+            inter_agent_source: None,
+            phase: Some(codex_protocol::models::MessagePhase::Commentary),
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+        },
+    ]);
+
+    assert_eq!(message.as_deref(), Some("parent answer"));
+}
+
+#[test]
 fn inter_agent_item_does_not_overwrite_rendered_final_message() {
     let mut processor = EventProcessorWithHumanOutput {
         bold: Style::new(),

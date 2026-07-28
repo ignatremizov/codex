@@ -1398,6 +1398,17 @@ impl App {
             return;
         };
 
+        let receiver_agents = match notification {
+            ServerNotification::ItemStarted(notification) => &notification.item,
+            ServerNotification::ItemCompleted(notification) => &notification.item,
+            _ => return,
+        };
+        let ThreadItem::CollabAgentToolCall {
+            receiver_agents, ..
+        } = receiver_agents
+        else {
+            return;
+        };
         for receiver_thread_id in receiver_thread_ids {
             if collab_receiver_is_not_found(notification, receiver_thread_id) {
                 continue;
@@ -1415,8 +1426,13 @@ impl App {
                 continue;
             }
 
+            let metadata = receiver_agents
+                .iter()
+                .find(|agent| agent.thread_id == *receiver_thread_id);
             self.upsert_agent_picker_thread(
-                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                thread_id,
+                metadata.and_then(|agent| agent.agent_nickname.clone()),
+                metadata.and_then(|agent| agent.agent_role.clone()),
                 /*is_closed*/ false,
             );
         }

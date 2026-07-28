@@ -1,5 +1,7 @@
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::ordinary_agent_message_response_item_id;
 
 use super::InterAgentMessageSource;
 use super::ThreadItem;
@@ -29,9 +31,10 @@ pub(crate) fn inter_agent_message_thread_item_with_id(
     else {
         return None;
     };
-    if id.is_empty() {
+    if id.is_empty() || is_sub_agent_completion_context_response_item_id(&id) {
         return None;
     }
+    let id = ordinary_agent_message_response_item_id(&id);
     let text = if content
         .iter()
         .any(|part| matches!(part, AgentMessageInputContent::EncryptedContent { .. }))

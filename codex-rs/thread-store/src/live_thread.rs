@@ -47,6 +47,7 @@ pub struct LiveThread {
 enum AppendedItemsDurability {
     Queued,
     Flushed,
+    Completion,
 }
 
 /// Owns persistence acquisition and its live thread while initialization is still fallible.
@@ -277,6 +278,20 @@ impl LiveThread {
         Ok(())
     }
 
+    /// Acknowledges a one-shot completion batch without conflating derived metadata with commit.
+    pub async fn append_completion_items_and_flush_canonical(
+        &self,
+        raw_items: &[RolloutItem],
+    ) -> ThreadStoreResult<()> {
+        let items = self
+            .persist_appended_items(raw_items, AppendedItemsDurability::Completion)
+            .await?;
+        if let Err(err) = self.update_metadata_for_appended_items(&items).await {
+            warn!("failed to update derived metadata after canonical completion commit: {err}");
+        }
+        Ok(())
+    }
+
     async fn update_metadata_for_appended_items(
         &self,
         items: &[RolloutItem],
@@ -310,8 +325,8 @@ impl LiveThread {
         raw_items: &[RolloutItem],
         durability: AppendedItemsDurability,
     ) -> ThreadStoreResult<Vec<RolloutItem>> {
-        // Empty appends are intentionally ignored rather than represented as zero-sized batches.
-        if raw_items.is_empty() {
+        // Completion reconciliation uses an empty batch as an explicit canonical barrier.
+        if raw_items.is_empty() && !matches!(durability, AppendedItemsDurability::Completion) {
             return Ok(Vec::new());
         }
         let (items, measurement) = if self.persistence_telemetry.is_enabled() {
@@ -329,6 +344,11 @@ impl LiveThread {
             AppendedItemsDurability::Queued => self.thread_store.append_items(params).await?,
             AppendedItemsDurability::Flushed => {
                 self.thread_store.append_items_and_flush(params).await?
+            }
+            AppendedItemsDurability::Completion => {
+                self.thread_store
+                    .append_completion_items_and_flush(params)
+                    .await?
             }
         }
         if let Some(measurement) = measurement.as_ref() {

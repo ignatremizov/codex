@@ -243,7 +243,13 @@ mod inject;
 mod reasoning_effort;
 mod world_state_publication;
 pub(crate) use reasoning_effort::RequestEffortUsage;
+mod completion_admission;
+mod completion_replay;
 mod input_queue;
+mod sub_agent_completion;
+mod terminal_capture;
+pub(crate) use completion_admission::AcceptedCompletionDelivery;
+pub(crate) use sub_agent_completion::CompletionContextDelivery;
 mod mcp;
 mod mcp_prewarm;
 mod mcp_prompt;
@@ -2321,6 +2327,11 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        let terminal = self
+            .prepare_sub_agent_terminal_presentation(turn_context, &msg)
+            .await;
+        self.maybe_notify_parent_of_terminal_turn(turn_context, &msg, terminal)
+            .await;
         let legacy_source = msg.clone();
         if let EventMsg::Error(error) = &legacy_source
             && error
@@ -2363,8 +2374,6 @@ impl Session {
                 .track_guardian_session_event(self.thread_id, &event);
         }
         self.send_event_raw(event).await;
-        self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
-            .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
         self.maybe_clear_realtime_handoff_for_event(&legacy_source)
@@ -2388,6 +2397,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         msg: &EventMsg,
+        terminal: Option<crate::agent::control::AgentTerminalPresentation>,
     ) {
         if turn_context.multi_agent_version != MultiAgentVersion::V2 {
             return;
@@ -2421,6 +2431,9 @@ impl Session {
         if !is_final(&status) {
             return;
         }
+        let Some(terminal) = terminal else {
+            return;
+        };
 
         self.services
             .agent_control
@@ -2436,6 +2449,7 @@ impl Session {
                         .cloned(),
                     status,
                 },
+                terminal,
                 &self.services.rollout_thread_trace,
             )
             .await;
@@ -2567,9 +2581,8 @@ impl Session {
 
     async fn deliver_event_raw(&self, event: Event) {
         // Record the last known agent status.
-        if let Some(status) = agent_status_from_event(&event.msg) {
-            self.agent_status.send_replace(status);
-        }
+        self.prepare_raw_sub_agent_terminal_presentation(&event);
+        self.publish_agent_status_from_event(&event.msg);
         if let Err(e) = self.tx_event.send(event).await {
             debug!("dropping event because channel is closed: {e}");
         }
@@ -3320,6 +3333,14 @@ impl Session {
         prepare_audio_response_items(&mut items);
         // Most response items get their passthrough turn ID at the durable history boundary.
         for item in &mut items {
+            // Only the dedicated acknowledged-completion path may retain this namespace.
+            if item.id().is_some_and(|id| {
+                codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
+                    id.as_str(),
+                )
+            }) {
+                item.set_id(None);
+            }
             Self::stamp_response_item_for_history(item, &turn_context.sub_id);
         }
         let items = Cow::Owned(items);
@@ -3719,11 +3740,35 @@ impl Session {
     }
 
     pub(crate) async fn record_inter_agent_communication(
-        &self,
+        self: &Arc<Self>,
         turn_context: &TurnContext,
         model_info: &ModelInfo,
-        communication: InterAgentCommunication,
+        mut communication: InterAgentCommunication,
     ) {
+        if communication.id.as_ref().is_some_and(|id| {
+            codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(id.as_str())
+        }) {
+            let response = communication.to_model_input_item();
+            let acknowledged = self
+                .state
+                .lock()
+                .await
+                .acknowledged_completion_contexts
+                .iter()
+                .any(|completion| completion.item.item == response);
+            if acknowledged {
+                if let Err(error) = self
+                    .consume_completion_context(&communication, model_info)
+                    .await
+                {
+                    self.quarantine_history(format!(
+                        "completion context consumption failed: {error}"
+                    ));
+                }
+                return;
+            }
+            communication.id = None;
+        }
         let response_item = communication.to_model_input_item();
         let (items, _) = self
             .prepare_conversation_items_for_history(
@@ -4269,6 +4314,7 @@ impl Session {
             Some(turn_context_item),
             Some(world_state),
             CompactedHistoryMetadata {
+                completion_source_items: Vec::new(),
                 message: String::new(),
                 compaction_summary_tokens: None,
                 window_number,

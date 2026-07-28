@@ -418,6 +418,9 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        turn.terminal_pending = false;
+        drop(active);
+        self.active_turn_transition.notify_waiters();
     }
 
     /// Returns whether an extension has marked this thread as durably asleep.
@@ -536,35 +539,7 @@ impl Session {
     }
 
     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {
-        let mut aborted_turn = false;
-        let mut active_turn_to_clear = None;
-        let mut turn_context = None;
-        if let Some(mut active_turn) = self.take_active_turn(&reason).await {
-            let task = active_turn.task.take();
-            aborted_turn = task.is_some();
-            turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
-            if let Some(task) = task {
-                self.handle_task_abort(task, reason.clone(), &active_turn.turn_state)
-                    .await;
-            }
-            if aborted_turn {
-                active_turn_to_clear = Some(active_turn);
-            }
-        }
-
-        if let Some(turn_context) = turn_context.as_deref() {
-            self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
-                .await;
-        }
-        if let Some(active_turn) = active_turn_to_clear {
-            // Let interrupted tasks observe cancellation before dropping pending approvals, or an
-            // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
-            self.record_active_mcp_use_before_abort(&active_turn).await;
-            self.input_queue.clear_pending(&active_turn).await;
-        }
-        if reason == TurnAbortReason::Interrupted && aborted_turn {
-            self.maybe_start_turn_for_pending_work().await;
-        }
+        self.abort_turn_matching(|_| true, reason).await;
     }
 
     pub(crate) async fn abort_turn_if_active(
@@ -607,40 +582,70 @@ impl Session {
         matches_origin: impl FnOnce(&ActiveTurn) -> bool,
         reason: TurnAbortReason,
     ) -> bool {
-        let active_turn = {
+        let aborted = {
             let mut active = self.active_turn.lock().await;
             if active.as_ref().is_some_and(matches_origin) {
+                if active
+                    .as_ref()
+                    .is_some_and(|active| active.task.is_none() && !active.terminal_pending)
+                {
+                    // A taskless placeholder has no terminal publication to finish. Preserve
+                    // its staged input, as before, while releasing the active-state sentinel.
+                    *active = None;
+                    self.active_turn_transition.notify_waiters();
+                    return false;
+                }
                 if matches!(
                     reason,
                     TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited
                 ) {
                     self.mark_interrupted();
                 }
-                active.take()
+                active.as_mut().and_then(|active| {
+                    let task = active.task.take()?;
+                    active.terminal_pending = true;
+                    Some((
+                        ActiveTurn {
+                            task: None,
+                            terminal_pending: true,
+                            turn_state: Arc::clone(&active.turn_state),
+                        },
+                        task,
+                    ))
+                })
             } else {
                 None
             }
         };
-        let Some(mut active_turn) = active_turn else {
+        let Some((active_turn, task)) = aborted else {
             return false;
         };
 
-        let task = active_turn.task.take();
-        let turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
-        if let Some(task) = task {
-            self.handle_task_abort(task, reason.clone(), &active_turn.turn_state)
-                .await;
-        }
-        if let Some(turn_context) = turn_context.as_deref() {
-            self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
-                .await;
-        }
+        let turn_context = Arc::clone(&task.turn_context);
+        self.handle_task_abort(task, reason.clone(), &active_turn.turn_state)
+            .await;
+        self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
+            .await;
         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
         // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
         self.record_active_mcp_use_before_abort(&active_turn).await;
         self.input_queue.clear_pending(&active_turn).await;
+        let cleared = {
+            let mut active = self.active_turn.lock().await;
+            if active.as_ref().is_some_and(|current| {
+                current.task.is_none() && Arc::ptr_eq(&current.turn_state, &active_turn.turn_state)
+            }) {
+                *active = None;
+                true
+            } else {
+                false
+            }
+        };
+        if cleared {
+            self.active_turn_transition.notify_waiters();
+        }
 
-        if reason == TurnAbortReason::Interrupted {
+        if reason == TurnAbortReason::Interrupted && cleared {
             self.maybe_start_turn_for_pending_work().await;
         }
 
@@ -681,6 +686,7 @@ impl Session {
             let mut active = self.active_turn.lock().await;
             active.as_mut().and_then(|active_turn| {
                 let task = active_turn.task.take()?;
+                active_turn.terminal_pending = true;
                 task.handle.detach();
                 Some(Arc::clone(&active_turn.turn_state))
             })
@@ -918,6 +924,9 @@ impl Session {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
         }
         drop(terminal_permit);
+        if cleared_active_turn {
+            self.active_turn_transition.notify_waiters();
+        }
         if !cleared_active_turn {
             return;
         }
@@ -927,20 +936,6 @@ impl Session {
         if !self.submission_admission.requires_reload() {
             self.maybe_start_turn_for_pending_work().await;
         }
-    }
-
-    async fn take_active_turn(&self, reason: &TurnAbortReason) -> Option<ActiveTurn> {
-        let mut active = self.active_turn.lock().await;
-        if matches!(
-            reason,
-            TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited
-        ) && active
-            .as_ref()
-            .is_some_and(|active_turn| active_turn.task.is_some())
-        {
-            self.mark_interrupted();
-        }
-        active.take()
     }
 
     pub(crate) async fn close_unified_exec_processes(&self) {

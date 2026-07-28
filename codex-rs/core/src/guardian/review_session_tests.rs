@@ -89,6 +89,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
             /*reference_context_item*/ None,
             /*world_state_baseline*/ None,
             crate::compact::CompactedHistoryMetadata {
+                completion_source_items: Vec::new(),
                 message: String::new(),
                 compaction_summary_tokens: None,
                 window_number,

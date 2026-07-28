@@ -73,6 +73,23 @@ impl Session {
                     .map(ResponseItemEnvelope::new),
             );
         }
+        // Completion registration shares this publication permit with its canonical receipt.
+        // Only exact acknowledged payloads may be withheld from live queue-only history.
+        for completion in &state.acknowledged_completion_contexts {
+            if !completion.pending
+                && metadata
+                    .completion_source_items
+                    .contains(&completion.item.item)
+            {
+                // The successful request saw this exact acknowledged payload. Its replacement
+                // may summarize it; a stale request without the payload cannot make this cut.
+                continue;
+            }
+            items.retain(|item| item != &completion.item);
+            if !completion.pending {
+                retained.push(completion.item.clone());
+            }
+        }
         let boundary = items
             .iter()
             .position(|envelope| {
@@ -94,11 +111,23 @@ impl Session {
                 .get_or_insert_default()
                 .compaction_model_hash = metadata.compaction_model_hash;
         }
+        let mut canonical_items = items.clone();
+        canonical_items.extend(
+            state
+                .acknowledged_completion_contexts
+                .iter()
+                .filter(|completion| completion.pending)
+                .map(|completion| completion.item.clone()),
+        );
+        let canonical_has_pending = canonical_items.len() != items.len();
         let mut projected = state.history.clone();
-        projected.replace_compacted(items.clone(), metadata.reviewer_compaction_hash.as_deref());
+        projected.replace_compacted(
+            canonical_items.clone(),
+            metadata.reviewer_compaction_hash.as_deref(),
+        );
         let compacted_item = CompactedItem {
             message: metadata.message,
-            replacement_history: Some(items.clone()),
+            replacement_history: Some(canonical_items.clone()),
             retained_context: Some(projected.retained_context().clone()),
             guardian_history: projected.guardian_history_checkpoint(),
             mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
@@ -111,9 +140,13 @@ impl Session {
                 .map(|id| id.to_string()),
             window_id: Some(metadata.window_ids.window_id.to_string()),
             compaction_response_id: metadata.compaction_response_id,
-            latest_token_usage_record: state.latest_token_usage_record.clone(),
+            latest_token_usage_record: if canonical_has_pending {
+                None
+            } else {
+                state.latest_token_usage_record.clone()
+            },
             replacement_history_media_sanitized_prefix_len: Some(
-                u64::try_from(items.len()).unwrap_or(u64::MAX),
+                u64::try_from(canonical_items.len()).unwrap_or(u64::MAX),
             ),
             replacement_history_media_repair: false,
         };
@@ -137,6 +170,12 @@ impl Session {
             contributions,
             /*acknowledgement*/ None,
             move |state| {
+                state.acknowledged_completion_contexts.retain(|completion| {
+                    completion.pending
+                        || !metadata
+                            .completion_source_items
+                            .contains(&completion.item.item)
+                });
                 let installed = items.clone();
                 let compacted_prefix_len = items.len();
                 state.replace_annotated_history(

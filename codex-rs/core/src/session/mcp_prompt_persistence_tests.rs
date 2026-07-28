@@ -18,11 +18,14 @@ use codex_thread_store::DeleteThreadParams;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::ListThreadsParams;
 use codex_thread_store::LiveThread;
+use codex_thread_store::LoadSubAgentCompletionContextItemParams;
+use codex_thread_store::LoadSubAgentCompletionPresentationParams;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::PersistContext;
 use codex_thread_store::ReadThreadByRolloutPathParams;
 use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
+use codex_thread_store::StoredSubAgentCompletionPresentation;
 use codex_thread_store::StoredThread;
 use codex_thread_store::StoredThreadHistory;
 use codex_thread_store::ThreadPage;
@@ -121,6 +124,12 @@ impl ThreadStore for GatedAppendStore {
         fn resume_thread(params: ResumeThreadParams) -> ();
         fn discard_thread(thread_id: ThreadId) -> ();
         fn load_history(params: LoadThreadHistoryParams) -> StoredThreadHistory;
+        fn load_sub_agent_completion_context_item(
+            params: LoadSubAgentCompletionContextItemParams
+        ) -> Option<codex_protocol::models::ResponseItem>;
+        fn load_sub_agent_completion_presentation(
+            params: LoadSubAgentCompletionPresentationParams
+        ) -> StoredSubAgentCompletionPresentation;
         fn read_thread(params: ReadThreadParams) -> StoredThread;
         fn read_thread_by_rollout_path(params: ReadThreadByRolloutPathParams) -> StoredThread;
         fn list_threads(params: ListThreadsParams) -> ThreadPage;
@@ -129,6 +138,13 @@ impl ThreadStore for GatedAppendStore {
         fn unarchive_thread(params: ArchiveThreadParams) -> StoredThread;
         fn delete_thread(params: DeleteThreadParams) -> ();
         fn shutdown_thread(thread_id: ThreadId) -> ();
+    }
+
+    fn append_completion_items_and_flush(
+        &self,
+        params: AppendThreadItemsParams,
+    ) -> ThreadStoreFuture<'_, ()> {
+        self.inner.append_completion_items_and_flush(params)
     }
 
     fn persist_thread(

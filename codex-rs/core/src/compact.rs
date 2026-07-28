@@ -93,8 +93,11 @@ pub(crate) enum InitialContextInjection {
 /// Metadata for a new compaction checkpoint, kept separate from its replacement history.
 ///
 /// `Session::replace_compacted_history` assigns missing item IDs before constructing the persisted
-/// `CompactedItem`, ensuring the live and persisted histories remain identical.
+/// `CompactedItem`. Canonical checkpoints additionally retain acknowledged mailbox completion
+/// context that is deliberately absent from the live history until its lease is consumed.
 pub(crate) struct CompactedHistoryMetadata {
+    /// Exact completion payloads included in the successful compaction request.
+    pub(crate) completion_source_items: Vec<ResponseItem>,
     pub(crate) message: String,
     pub(crate) compaction_summary_tokens: Option<i64>,
     pub(crate) window_number: u64,
@@ -102,6 +105,20 @@ pub(crate) struct CompactedHistoryMetadata {
     pub(crate) compaction_response_id: Option<String>,
     pub(crate) compaction_model_hash: Option<String>,
     pub(crate) reviewer_compaction_hash: Option<String>,
+}
+
+pub(crate) fn completion_source_items(items: &[ResponseItem]) -> Vec<ResponseItem> {
+    items
+        .iter()
+        .filter(|item| {
+            item.id().is_some_and(|id| {
+                codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
+                    id.as_str(),
+                )
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 pub(crate) async fn build_compaction_initial_context(
@@ -303,7 +320,7 @@ async fn run_compact_task_inner_impl(
         .compaction_responses_metadata(turn_context.as_ref(), compaction_metadata)
         .await;
 
-    let compaction_response = loop {
+    let (compaction_response, completion_source_items) = loop {
         sess.await_history_publication().await;
         sess.check_history_publication()?;
         // Clone is required because of the loop
@@ -333,7 +350,10 @@ async fn run_compact_task_inner_impl(
 
         match attempt_result {
             Ok(response) => {
-                break response;
+                break (
+                    response,
+                    crate::compact::completion_source_items(&prompt.input),
+                );
             }
             Err(err)
                 if matches!(
@@ -471,6 +491,7 @@ async fn run_compact_task_inner_impl(
             reference_context_item,
             world_state_baseline,
             CompactedHistoryMetadata {
+                completion_source_items,
                 message: summary_text.clone(),
                 compaction_summary_tokens: None,
                 window_number,

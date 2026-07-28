@@ -815,6 +815,20 @@ impl ThreadHistoryBuilder {
         turn_id: &str,
         item: &codex_protocol::items::TurnItem,
     ) {
+        let is_completion_presentation = item.is_sub_agent_completion_presentation();
+        let turn_exists = self
+            .current_turn
+            .as_ref()
+            .is_some_and(|turn| turn.id == turn_id)
+            || self.turns.iter().any(|turn| turn.id == turn_id);
+        let is_orphaned_standalone_item = is_completion_presentation && !turn_exists;
+        if is_orphaned_standalone_item {
+            self.upsert_inter_agent_item_in_turn_id(
+                turn_id,
+                ThreadItem::from(orphaned_sub_agent_completion_presentation(item)),
+            );
+            return;
+        }
         if let codex_protocol::items::TurnItem::CommandExecution(command) = item {
             self.non_paginated_exec_history
                 .mark_authoritative(&command.id, turn_id);
@@ -826,6 +840,14 @@ impl ThreadHistoryBuilder {
         );
         let should_upsert = match item {
             codex_protocol::items::TurnItem::Plan(plan) => !plan.text.is_empty(),
+            codex_protocol::items::TurnItem::AgentMessage(_) => {
+                is_completion_presentation
+                    && (self
+                        .current_turn
+                        .as_ref()
+                        .is_some_and(|turn| turn.id == turn_id)
+                        || self.turns.iter().any(|turn| turn.id == turn_id))
+            }
             codex_protocol::items::TurnItem::HookPrompt(_)
             | codex_protocol::items::TurnItem::FunctionCallOutput(_)
             | codex_protocol::items::TurnItem::CommandExecution(_)
@@ -836,7 +858,6 @@ impl ThreadHistoryBuilder {
             | codex_protocol::items::TurnItem::EnteredReviewMode(_)
             | codex_protocol::items::TurnItem::ExitedReviewMode(_) => true,
             codex_protocol::items::TurnItem::UserMessage(_)
-            | codex_protocol::items::TurnItem::AgentMessage(_)
             | codex_protocol::items::TurnItem::Reasoning(_)
             | codex_protocol::items::TurnItem::WebSearch(_)
             | codex_protocol::items::TurnItem::ImageView(_)
@@ -1129,6 +1150,7 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: Vec::new(),
             prompt: Some(payload.prompt.clone()),
+            receiver_agents: Vec::new(),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
             agents_states: HashMap::new(),
@@ -1164,6 +1186,7 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
             prompt: Some(payload.prompt.clone()),
+            receiver_agents: Vec::new(),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
             agents_states,
@@ -1181,6 +1204,7 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
             prompt: Some(payload.prompt.clone()),
+            receiver_agents: Vec::new(),
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
@@ -1205,6 +1229,7 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id.clone()],
             prompt: Some(payload.prompt.clone()),
+            receiver_agents: Vec::new(),
             model: None,
             reasoning_effort: None,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
@@ -1239,6 +1264,7 @@ impl ThreadHistoryBuilder {
                 .map(ToString::to_string)
                 .collect(),
             prompt: None,
+            receiver_agents: Vec::new(),
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
@@ -1274,6 +1300,7 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
             prompt: None,
+            receiver_agents: Vec::new(),
             model: None,
             reasoning_effort: None,
             agents_states,
@@ -1291,6 +1318,7 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
             prompt: None,
+            receiver_agents: Vec::new(),
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
@@ -1317,6 +1345,7 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id],
             prompt: None,
+            receiver_agents: Vec::new(),
             model: None,
             reasoning_effort: None,
             agents_states,
@@ -1334,6 +1363,7 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
             prompt: None,
+            receiver_agents: Vec::new(),
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
@@ -1363,6 +1393,7 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id],
             prompt: None,
+            receiver_agents: Vec::new(),
             model: None,
             reasoning_effort: None,
             agents_states,
@@ -1856,6 +1887,25 @@ impl ThreadHistoryBuilder {
         );
         content
     }
+}
+
+fn orphaned_sub_agent_completion_presentation(
+    item: &codex_protocol::items::TurnItem,
+) -> codex_protocol::items::TurnItem {
+    let mut item = item.clone();
+    if let codex_protocol::items::TurnItem::CollabAgentToolCall(wait) = &mut item {
+        let owned_agent_ids = wait
+            .completion_presentation_agent_ids
+            .clone()
+            .unwrap_or_default();
+        wait.receiver_thread_ids
+            .retain(|id| owned_agent_ids.contains(id));
+        wait.receiver_agents
+            .retain(|agent| owned_agent_ids.contains(&agent.thread_id));
+        wait.agents_states
+            .retain(|id, _| owned_agent_ids.contains(id));
+    }
+    item
 }
 
 fn convert_dynamic_tool_content_items(
@@ -4900,6 +4950,7 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                receiver_agents: Vec::new(),
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -4960,6 +5011,7 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                receiver_agents: Vec::new(),
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
                 reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
@@ -5032,6 +5084,7 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender.to_string(),
                 receiver_thread_ids: vec![receiver.to_string()],
+                receiver_agents: Vec::new(),
                 prompt: Some("new task".into()),
                 model: None,
                 reasoning_effort: None,
@@ -5328,6 +5381,120 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn orphan_completion_preserves_an_unrelated_active_turn_and_its_following_items() {
+        let owner = ThreadId::new();
+        let other = ThreadId::new();
+        let parent = ThreadId::new();
+        let completion = CoreTurnItem::AgentMessage(
+            codex_protocol::protocol::sub_agent_completion_item(
+                "/root/worker",
+                &AgentStatus::Completed(Some("done".into())),
+            )
+            .expect("terminal completion"),
+        );
+        let wait = codex_protocol::items::CollabAgentToolCallItem {
+            id: "wait-completion".into(),
+            deadline_at_ms: None,
+            tool: codex_protocol::items::CollabAgentTool::Wait,
+            status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+            sender_thread_id: parent,
+            receiver_thread_ids: vec![owner, other],
+            receiver_agents: vec![
+                codex_protocol::protocol::CollabAgentRef {
+                    thread_id: owner,
+                    agent_nickname: Some("Worker".into()),
+                    agent_role: None,
+                },
+                codex_protocol::protocol::CollabAgentRef {
+                    thread_id: other,
+                    agent_nickname: Some("Other".into()),
+                    agent_role: None,
+                },
+            ],
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::from([
+                (owner, AgentStatus::Completed(Some("owned result".into()))),
+                (other, AgentStatus::Completed(Some("unowned result".into()))),
+            ]),
+            completion_presentation_agent_ids: Some(vec![owner]),
+        };
+        let mut expected_wait = wait.clone();
+        expected_wait.receiver_thread_ids = vec![owner];
+        expected_wait.receiver_agents.truncate(/*len*/ 1);
+        expected_wait.agents_states =
+            HashMap::from([(owner, AgentStatus::Completed(Some("owned result".into())))]);
+
+        for (item, expected_item) in [
+            (completion.clone(), ThreadItem::from(completion)),
+            (
+                CoreTurnItem::CollabAgentToolCall(wait),
+                ThreadItem::from(CoreTurnItem::CollabAgentToolCall(expected_wait)),
+            ),
+        ] {
+            let mut builder = ThreadHistoryBuilder::new();
+            builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                root_turn_id: None,
+                trace_id: None,
+                started_at: Some(10),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }));
+            let mut expected_active = builder.active_turn_snapshot().expect("active turn");
+            builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: parent,
+                turn_id: "orphan-b".into(),
+                item,
+                started_at_ms: None,
+                completed_at_ms: 11_000,
+            }));
+            assert_eq!(
+                builder.active_turn_snapshot(),
+                Some(expected_active.clone())
+            );
+
+            builder.handle_event(&EventMsg::AgentMessage(AgentMessageEvent {
+                message: "Parent continues".into(),
+                phase: Some(CoreMessagePhase::Commentary),
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            }));
+            expected_active.items.push(ThreadItem::AgentMessage {
+                id: "item-1".into(),
+                text: "Parent continues".into(),
+                inter_agent_source: None,
+                phase: Some(CoreMessagePhase::Commentary),
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            });
+            assert_eq!(
+                builder.active_turn_snapshot(),
+                Some(expected_active.clone())
+            );
+            assert_eq!(
+                builder.finish(),
+                vec![
+                    Turn {
+                        id: "orphan-b".into(),
+                        items: vec![expected_item],
+                        items_view: TurnItemsView::Full,
+                        status: TurnStatus::Completed,
+                        error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
+                    },
+                    expected_active,
+                ],
+            );
+        }
     }
 
     #[test]
