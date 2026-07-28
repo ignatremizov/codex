@@ -15,11 +15,17 @@ use codex_extension_api::TurnInputContributionAcknowledgement;
 use codex_history::RolloutItem;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::Event;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::HasLegacyEvent;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::oneshot;
 use tokio_util::task::TaskTracker;
 
 use super::Session;
+use super::completion_provenance::CompletionPublicationReceipt;
 use super::thread_settings;
 use crate::state::SessionState;
 
@@ -42,6 +48,7 @@ pub(super) struct HistoryPublication {
 /// Storage, state, and notification owners needed by accepted work, without Session.
 pub(super) struct HistoryPublicationHandle {
     publication: HistoryPublication,
+    submission_admission: Arc<super::SubmissionAdmission>,
     live_thread: Option<codex_thread_store::LiveThread>,
     state: Arc<tokio::sync::Mutex<SessionState>>,
     event_sender: async_channel::Sender<codex_protocol::protocol::Event>,
@@ -75,10 +82,14 @@ struct PublicationOutcome {
     reply: Option<oneshot::Sender<CodexResult<()>>>,
     stage: &'static str,
     finished: bool,
+    reload: Option<Arc<super::SubmissionAdmission>>,
 }
 
 impl PublicationOutcome {
     fn fail(&mut self, error: impl std::fmt::Display) -> CodexErr {
+        if let Some(admission) = &self.reload {
+            admission.rollback_requires_reload();
+        }
         let message = format!(
             "history publication failed during {}: {error}; canonical reload required",
             self.stage
@@ -101,6 +112,105 @@ impl Drop for PublicationOutcome {
 }
 
 impl Session {
+    /// Persistent completions use single-attempt writer barriers, never the retry queue.
+    /// Ephemeral completions share the owned installation/event boundary without a disk receipt.
+    pub(super) fn dispatch_completion_publication(
+        &self,
+        permit: OwnedSemaphorePermit,
+        items: Vec<RolloutItem>,
+        events: Vec<codex_protocol::protocol::Event>,
+        install: impl FnOnce(&mut SessionState) + Send + 'static,
+        on_primary_delivery: impl FnOnce() + Send + 'static,
+    ) -> CodexResult<oneshot::Receiver<CodexResult<CompletionPublicationReceipt>>> {
+        self.history_publication.check()?;
+        let live = self.live_thread().cloned();
+        let state = Arc::clone(&self.state);
+        let failure = Arc::clone(&self.history_publication.failure);
+        let admission = Arc::clone(&self.submission_admission);
+        let tx_event = self.tx_event.clone();
+        let trace = self.services.rollout_thread_trace.clone();
+        let mcp_runtime = Arc::clone(&self.services.mcp_runtime);
+        let analytics = self.services.analytics_events_client.clone();
+        let thread_id = self.thread_id;
+        let show_raw_agent_reasoning = self.show_raw_agent_reasoning();
+        let (sender, receiver) = oneshot::channel();
+        // Retain abandonment evidence even when the owned worker is never polled.
+        let outcome = PublicationOutcome {
+            failure,
+            reply: None,
+            stage: "completion append",
+            finished: false,
+            reload: Some(Arc::clone(&admission)),
+        };
+        self.history_publication.tasks.spawn(async move {
+            let _permit = permit;
+            let mut outcome = outcome;
+            if let Some(live) = &live
+                && let Err(error) = live
+                    .append_completion_items_and_flush_canonical(&items)
+                    .await
+            {
+                admission.rollback_requires_reload();
+                let _ = sender.send(Err(outcome.fail(error)));
+                return;
+            }
+            outcome.stage = "completion live installation";
+            {
+                let mut state = state.lock().await;
+                install(&mut state);
+            }
+            let mut primary_event = super::sub_agent_completion::PrimaryEventEnqueue::Enqueued;
+            let trusted_guardian = {
+                let state = state.lock().await;
+                let configuration = &state.session_configuration;
+                configuration.trusted_guardian_reviewer
+                    && configuration.parent_thread_id.is_some()
+                    && analytics.is_enabled()
+                    && matches!(&configuration.session_source,
+                        SessionSource::SubAgent(SubAgentSource::Other(name))
+                            if name == crate::guardian::GUARDIAN_REVIEWER_NAME)
+            };
+            let mut legacy_events = Vec::new();
+            for event in events {
+                // These are item receipts, not new parent turns or final answers. Keep
+                // observers and legacy wait notifications without a second canonical append.
+                trace.record_codex_turn_event(&event.id, &event.msg);
+                trace.record_tool_call_event(event.id.clone(), &event.msg);
+                trace.record_protocol_event(&event.msg);
+                mcp_runtime.observe_event(&event.msg);
+                if trusted_guardian {
+                    analytics.track_guardian_session_event(thread_id, &event);
+                }
+                if matches!(&event.msg, EventMsg::ItemCompleted(completed)
+                    if matches!(&completed.item, codex_protocol::items::TurnItem::CollabAgentToolCall(_)))
+                {
+                    legacy_events.extend(event.msg.as_legacy_events(show_raw_agent_reasoning)
+                        .into_iter().map(|msg| Event { id: event.id.clone(), msg }));
+                }
+                if tx_event.send(event).await.is_err() {
+                    primary_event = super::sub_agent_completion::PrimaryEventEnqueue::Closed;
+                }
+            }
+            if primary_event == super::sub_agent_completion::PrimaryEventEnqueue::Enqueued {
+                on_primary_delivery();
+            }
+            for event in legacy_events {
+                trace.record_tool_call_event(event.id.clone(), &event.msg);
+                trace.record_protocol_event(&event.msg);
+                mcp_runtime.observe_event(&event.msg);
+                let _ = tx_event.send(event).await;
+            }
+            outcome.finished = true;
+            let receipt = if live.is_some() {
+                CompletionPublicationReceipt::Canonical { primary_event }
+            } else {
+                CompletionPublicationReceipt::RuntimeOnly { primary_event }
+            };
+            let _ = sender.send(Ok(receipt));
+        });
+        Ok(receiver)
+    }
+
     pub(crate) fn quarantine_history(&self, reason: String) {
         self.submission_admission.rollback_requires_reload();
         self.history_publication
@@ -170,6 +280,7 @@ impl Session {
     pub(super) fn history_publication_handle(&self) -> HistoryPublicationHandle {
         HistoryPublicationHandle {
             publication: self.history_publication.clone(),
+            submission_admission: Arc::clone(&self.submission_admission),
             live_thread: self.live_thread().cloned(),
             state: Arc::clone(&self.state),
             event_sender: self.tx_event.clone(),
@@ -251,6 +362,8 @@ impl HistoryPublicationHandle {
             reply: batch.reply.take(),
             stage: "append",
             finished: false,
+            // The accepted worker owns quarantine even if its caller drops the receipt.
+            reload: Some(Arc::clone(&self.submission_admission)),
         };
         self.publication.tasks.spawn(async move {
             let PublicationBatch {

@@ -260,6 +260,14 @@ Incoming inter-agent communication is projected as typed `agentMessage` items in
 
 Canonical item and turn IDs are retained through live and historical projection. Public `thread/inject_items` agent messages receive host-owned IDs. Idle injection creates a completed history-only turn without starting inference; active injection belongs to the receiving turn. A running `thread/resume` response establishes the history boundary for that connection before subsequent live delivery, without suppressing other subscribers. A cancelled or failed resume releases suppression but requires another canonical resume to recover notifications suppressed during the unsuccessful snapshot; clients must not assume that delta stream is complete. Accepted publication waits for the canonical writer flush before live installation and event enqueue; this is not an fsync or client-observation guarantee. See [multi-agent message delivery](../../docs/multi-agent-message-delivery.md) for plaintext wrapper and audit behavior.
 
+## Background child completion
+
+Terminal child results can appear as canonical `agentMessage` commentary items without an active wait. They are child results, not the parent's final answer. The core-to-public conversion validates private completion provenance; context-only completion records are not duplicated into the public transcript. Private wait-ownership and completion metadata are not added to the app-server wire types.
+
+`collabAgentToolCall` items include `receiverAgents`, an array of receiver metadata with `threadId`, nullable `agentNickname`, and nullable `agentRole`. Older records that omit the array decode as empty. A terminal wait remains a separate visible event from an earlier background row; clients must not deduplicate by matching result text.
+
+Persistent completion delivery is bound to the exact parent runtime and follows the canonical writer-flush barrier. Ephemeral runtimes use explicitly runtime-only receipts and do not promise cold replay. Primary event enqueue is not a client-observation receipt, and an uncertain write does not permit an automatic retry or rebinding to a replacement runtime. See [background completion behavior](../../docs/tui-background-subagent-completion.md).
+
 ## Completed context compaction
 
 Completed `contextCompaction` items include nullable `summary`, `message`, and

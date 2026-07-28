@@ -113,6 +113,26 @@ or act on a later queued request. Absent timing remains untimed. Guardian, hooks
 and permission requests retain their separate policies. Human analytics uses structured trigger
 fields, not opaque callback-ID presence. Generated contracts and executable qualification are pending.
 
+### Exact-instance background child completion
+
+Ownership anchor: `feat(multi-agent): persist and surface exact-instance background completions`.
+`core/src/agent/control/presentation.rs` binds terminal results, accepted delivery, and wait claims
+to the exact child and parent runtime generations. The shared controller API remains separate from
+these local capabilities. `core/src/session/sub_agent_completion.rs` and `durable_context.rs` own
+single-attempt canonical publication, distinct volatile receipts for ephemeral runtimes, and
+primary enqueue; neither a readable record nor a closed channel proves writer closure or client
+observation. Accepted workers survive caller cancellation, and uncertain publication quarantines
+the original runtime rather than retrying or rebinding it.
+Prepared envelopes retain canonical source metadata across mailbox consumption, stale compaction,
+and replay. Pending context stays out of live history until consumption. The existing shutdown
+path drains accepted work before closing publication, while removal seals the exact old actor.
+`thread-store/src/completion_artifacts.rs` preserves original rollback coordinates and frozen
+lineage boundaries; private typed provenance governs public projection. Shared TUI previews keep
+full raw text without marking the parent's answer complete. The catalog-gated root async message
+tool complements, rather than replaces, upstream asynchronous questions. Later response-observation
+and user-spawn policy integrations must reconcile these owners, not duplicate their state.
+Protocol generation, snapshots, cross-platform tests, and executable qualification remain pending.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.

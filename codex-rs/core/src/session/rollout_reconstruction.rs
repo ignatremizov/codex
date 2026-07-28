@@ -294,6 +294,9 @@ impl Session {
         // Reverse replay accumulates rollout items into the newest in-progress turn segment until
         // we hit its matching `TurnStarted`, at which point the segment can be finalized.
         let mut active_segment: Option<ActiveReplaySegment<'_>> = None;
+        let trusted_completions =
+            completion_replay::trusted_contexts(rollout_items, &exact_rollback_removals);
+        let mut deduplicated_completion_context = false;
         for (index, item) in replay_items.iter().enumerate().rev() {
             if exact_rollback_removals[replay_start + index] {
                 if let RolloutItem::Compacted(compacted) = item {
@@ -650,10 +653,16 @@ impl Session {
                 base_replacement_history.len()
             };
             repair_checkpoint_source = Some(base_compacted_item.clone());
+            let (prefix_len, deduplicated) = completion_replay::deduplicate(
+                &mut base_replacement_history,
+                prefix_len,
+                &trusted_completions,
+            );
             repaired_prefix_len = prefix_len;
+            deduplicated_completion_context |= deduplicated;
             let sanitization = crate::context::sanitize_compacted_media_envelopes(
                 base_replacement_history.as_mut_slice(),
-                prefix_len,
+                repaired_prefix_len,
             );
             repair_sanitization.accumulate(sanitization);
             let mut guardian_checkpoint = base_compacted_item.guardian_history.clone();
@@ -680,6 +689,8 @@ impl Session {
                 /*reviewer_compaction_hash*/ None,
             );
         }
+        let mut completion_context_ids =
+            completion_replay::context_ids(history.annotated_items(), &trusted_completions);
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
         // design should keep this same replay shape, but drive it from a resumable reverse source
         // instead of an eagerly loaded `&[RolloutItem]`.
@@ -693,6 +704,19 @@ impl Session {
                     history.record_retained_context(event);
                 }
                 RolloutItem::ResponseItem(response_item) => {
+                    if matches!(
+                        index
+                            .checked_sub(1)
+                            .filter(|previous| !exact_rollback_removals[*previous])
+                            .and_then(|index| rollout_items.get(index)),
+                        Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+                    ) && response_item.id().is_some_and(|id| {
+                        trusted_completions.get(id) == Some(response_item)
+                            && !completion_context_ids.insert(id.clone())
+                    }) {
+                        deduplicated_completion_context = true;
+                        continue;
+                    }
                     history.replay_annotated_item(
                         response_item,
                         turn_context.model_info().truncation_policy.into(),
@@ -716,12 +740,24 @@ impl Session {
                     if let Some(replacement_history) = &compacted.replacement_history {
                         // This should actually never happen, because the reverse loop above (to build rollout_suffix)
                         // should stop before any compaction that has Some replacement_history
-                        repaired_prefix_len = compacted
+                        let prefix_len = compacted
                             .replacement_history_media_sanitized_prefix_len
                             .map(|prefix_len| usize::try_from(prefix_len).unwrap_or(usize::MAX))
                             .unwrap_or(replacement_history.len())
                             .min(replacement_history.len());
-                        history.replace_annotated(replacement_history.clone());
+                        let mut replacement_history = replacement_history.clone();
+                        let (prefix_len, deduplicated) = completion_replay::deduplicate(
+                            &mut replacement_history,
+                            prefix_len,
+                            &trusted_completions,
+                        );
+                        repaired_prefix_len = prefix_len;
+                        deduplicated_completion_context |= deduplicated;
+                        history.replace_annotated(replacement_history);
+                        completion_context_ids = completion_replay::context_ids(
+                            history.annotated_items(),
+                            &trusted_completions,
+                        );
                         history.restore_review_context(
                             compacted.retained_context.as_ref(),
                             compacted.guardian_history.as_ref(),
@@ -747,6 +783,10 @@ impl Session {
                         let retained_context = history.retained_context().clone();
                         repaired_prefix_len = rebuilt.len();
                         history.replace_annotated(rebuilt);
+                        completion_context_ids = completion_replay::context_ids(
+                            history.annotated_items(),
+                            &trusted_completions,
+                        );
                         history.restore_retained_context(Some(&retained_context));
                     }
                 }
@@ -755,6 +795,10 @@ impl Session {
                         history.drop_last_n_user_turns(rollback.num_turns);
                         repaired_prefix_len =
                             repaired_prefix_len.min(history.annotated_items().len());
+                        completion_context_ids = completion_replay::context_ids(
+                            history.annotated_items(),
+                            &trusted_completions,
+                        );
                     }
                 }
                 RolloutItem::EventMsg(_)
@@ -906,6 +950,17 @@ impl Session {
                     })
             });
         let should_recompute_token_usage = repair_sanitization.changed()
+            || deduplicated_completion_context
+            // A canonical checkpoint may retain acknowledged mailbox context that was still
+            // absent from the live model request associated with a later server TokenCount.
+            // Recompute conservatively without treating a reserved ID as trusted provenance.
+            || base_compacted_item.is_some_and(|checkpoint| {
+                checkpoint.replacement_history.as_ref().is_some_and(|items| {
+                    items.iter().filter_map(|item| item.id()).any(|id| {
+                        codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(id.as_str())
+                    })
+                })
+            })
             || needs_media_policy_certification
             || selected_checkpoint_needs_token_recompute
             || restored_token_info_invalidated_by_rollback;

@@ -1,4 +1,5 @@
 use codex_protocol::ThreadId;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadHistoryMode;
 use std::any::Any;
 use std::future::Future;
@@ -24,6 +25,8 @@ use crate::ListThreadAttachmentsParams;
 use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
 use crate::ListTurnsParams;
+use crate::LoadSubAgentCompletionContextItemParams;
+use crate::LoadSubAgentCompletionPresentationParams;
 use crate::LoadThreadHistoryParams;
 use crate::MoveProjectParams;
 use crate::MoveThreadToSectionParams;
@@ -42,6 +45,7 @@ use crate::SearchThreadsParams;
 use crate::StoredModelContext;
 use crate::StoredProject;
 use crate::StoredProjectsPage;
+use crate::StoredSubAgentCompletionPresentation;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::StoredThreadSection;
@@ -158,6 +162,18 @@ pub trait ThreadStore: Any + Send + Sync {
     ) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move { self.update_thread_metadata(params).await.map(|_| ()) })
     }
+    /// Appends a completion batch once and acknowledges its canonical write barrier.
+    ///
+    /// Persist session metadata first and serialize the entire batch against other writes.
+    /// The batch is prefix-committable, not atomic. An error or lost acknowledgement after
+    /// dispatch means commit unknown; implementations must not queue failed items for retry.
+    /// Rebuildable projection failures after acknowledgement must not become append failures.
+    /// An empty batch still acknowledges a barrier over existing canonical history; it is not
+    /// a no-op and must not be used to clear an unknown commit on the same live writer.
+    fn append_completion_items_and_flush(
+        &self,
+        params: AppendThreadItemsParams,
+    ) -> ThreadStoreFuture<'_, ()>;
 
     /// Appends canonical history and completes its durability barrier.
     ///
@@ -207,6 +223,26 @@ pub trait ThreadStore: Any + Send + Sync {
         &self,
         params: LoadThreadHistoryParams,
     ) -> ThreadStoreFuture<'_, StoredThreadHistory>;
+
+    /// Locates a trusted completion-context item by its stable reserved identity.
+    ///
+    /// This lookup spans canonical history even when paginated model-context reads use a bounded
+    /// suffix, and returns only the matching artifact. Preserve each source's exact rollback
+    /// coordinates and original metadata adjacency. Visibility is not a durability receipt.
+    fn load_sub_agent_completion_context_item(
+        &self,
+        params: LoadSubAgentCompletionContextItemParams,
+    ) -> ThreadStoreFuture<'_, Option<ResponseItem>>;
+
+    /// Locates a canonical completion presentation and the queried turn's lifecycle.
+    ///
+    /// This lookup spans canonical history, including frozen inherited prefixes. A matching
+    /// identity in a different turn is a conflict. Visibility does not acknowledge durability
+    /// and must never clear a live writer's commit-unknown quarantine.
+    fn load_sub_agent_completion_presentation(
+        &self,
+        params: LoadSubAgentCompletionPresentationParams,
+    ) -> ThreadStoreFuture<'_, StoredSubAgentCompletionPresentation>;
 
     /// Loads the persisted rollout items needed to reconstruct the latest model-visible context.
     ///

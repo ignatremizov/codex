@@ -92,6 +92,7 @@ async fn collaboration_live_and_replay_use_local_limits_and_keep_full_raw_source
             status: AppServerCollabAgentToolCallStatus::Completed,
             sender_thread_id: sender.to_string(),
             receiver_thread_ids: vec![receiver.to_string()],
+            receiver_agents: Vec::new(),
             prompt: Some("first\nsecond\nlast".into()),
             model: None,
             reasoning_effort: None,

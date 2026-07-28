@@ -101,6 +101,8 @@ async fn standalone_settings_reply_follows_publication_but_precedes_blocked_live
         session.await_history_publication().await;
         assert!(event_receiver.try_recv().is_err());
         assert_eq!(session.check_history_publication().is_ok(), succeeds);
+        assert_eq!(session.submission_admission.requires_reload(), !succeeds);
+        assert_eq!(session.submission_admission.check_ready().is_ok(), succeeds);
         assert_eq!(store.appends.load(Ordering::SeqCst), 1);
     }
 }

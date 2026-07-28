@@ -33,6 +33,7 @@ impl ToolCallAnalytics {
                 model: None,
                 reasoning_effort: None,
                 agents_states: Default::default(),
+                completion_presentation_agent_ids: None,
             },
             started_at_ms: now_unix_timestamp_ms(),
         }

@@ -51,6 +51,13 @@ use crate::error::reject_paginated_history_mode;
 static IN_MEMORY_THREAD_STORES: OnceLock<Mutex<HashMap<String, Arc<InMemoryThreadStore>>>> =
     OnceLock::new();
 
+#[path = "in_memory_completion.rs"]
+mod completion;
+
+#[cfg(test)]
+#[path = "in_memory_completion_tests.rs"]
+mod completion_tests;
+
 fn stores() -> &'static Mutex<HashMap<String, Arc<InMemoryThreadStore>>> {
     IN_MEMORY_THREAD_STORES.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -435,7 +442,7 @@ mod tests {
         assert_eq!(updated.name.as_deref(), Some("renamed"));
     }
 
-    fn create_thread_params(
+    pub(super) fn create_thread_params(
         thread_id: ThreadId,
         history_mode: ThreadHistoryMode,
     ) -> CreateThreadParams {
@@ -494,6 +501,9 @@ pub struct InMemoryThreadStoreCalls {
     pub create_thread: usize,
     pub resume_thread: usize,
     pub append_items: usize,
+    pub append_completion_items_and_flush: usize,
+    pub load_sub_agent_completion_context_item: usize,
+    pub load_sub_agent_completion_presentation: usize,
     pub persist_thread: usize,
     pub flush_thread: usize,
     pub shutdown_thread: usize,
@@ -513,6 +523,10 @@ pub struct InMemoryThreadStoreCalls {
 /// Operation that the in-memory store should fail once for recovery-path tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InMemoryThreadStoreFailure {
+    SubAgentCompletionAppend,
+    SubAgentCompletionPrefix,
+    SubAgentCompletionPresentationFlush,
+    ThreadMetadataUpdate,
     CompactedMediaRepairAppend,
     CompactedMediaRepairFlush,
     ThreadRollbackAppend,
@@ -524,6 +538,10 @@ pub enum InMemoryThreadStoreFailure {
 impl InMemoryThreadStoreFailure {
     fn operation(self) -> &'static str {
         match self {
+            Self::SubAgentCompletionAppend => "subagent completion append",
+            Self::SubAgentCompletionPrefix => "subagent completion prefix",
+            Self::SubAgentCompletionPresentationFlush => "subagent completion presentation flush",
+            Self::ThreadMetadataUpdate => "thread metadata update",
             Self::CompactedMediaRepairAppend => "compacted-media repair append",
             Self::CompactedMediaRepairFlush => "compacted-media repair flush",
             Self::ThreadRollbackAppend => "thread rollback append",
@@ -765,7 +783,11 @@ impl InMemoryThreadStore {
                 None
             }
             Some(
-                InMemoryThreadStoreFailure::CompactedMediaRepairAppend
+                InMemoryThreadStoreFailure::SubAgentCompletionAppend
+                | InMemoryThreadStoreFailure::SubAgentCompletionPrefix
+                | InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush
+                | InMemoryThreadStoreFailure::ThreadMetadataUpdate
+                | InMemoryThreadStoreFailure::CompactedMediaRepairAppend
                 | InMemoryThreadStoreFailure::CompactedMediaRepairFlush
                 | InMemoryThreadStoreFailure::ThreadRollbackAppend
                 | InMemoryThreadStoreFailure::ThreadRollbackFlush
@@ -911,6 +933,13 @@ impl InMemoryThreadStore {
         }
         let mut state = self.state.lock().await;
         state.calls.update_thread_metadata += 1;
+        if state.fail_next_operation == Some(InMemoryThreadStoreFailure::ThreadMetadataUpdate) {
+            state.fail_next_operation = None;
+            return Err(ThreadStoreError::Internal {
+                message: "injected in-memory thread-store thread metadata update failure"
+                    .to_string(),
+            });
+        }
         if !state.created_threads.contains_key(&params.thread_id) {
             return Err(ThreadStoreError::ThreadNotFound {
                 thread_id: params.thread_id,
@@ -1052,6 +1081,27 @@ impl InMemoryThreadStore {
 }
 
 impl ThreadStore for InMemoryThreadStore {
+    fn append_completion_items_and_flush(
+        &self,
+        params: AppendThreadItemsParams,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(completion::append(self, params))
+    }
+
+    fn load_sub_agent_completion_context_item(
+        &self,
+        params: crate::LoadSubAgentCompletionContextItemParams,
+    ) -> ThreadStoreFuture<'_, Option<codex_protocol::models::ResponseItem>> {
+        Box::pin(completion::context_item(self, params))
+    }
+
+    fn load_sub_agent_completion_presentation(
+        &self,
+        params: crate::LoadSubAgentCompletionPresentationParams,
+    ) -> ThreadStoreFuture<'_, crate::StoredSubAgentCompletionPresentation> {
+        Box::pin(completion::presentation(self, params))
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

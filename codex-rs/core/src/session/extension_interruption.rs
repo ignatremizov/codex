@@ -81,7 +81,16 @@ impl Session {
                 return;
             }
             self.mark_interrupted();
-            active.take()
+            // The task leaves the runtime, but its terminal publication still owns this
+            // turn. Completion delivery must wait until finish_turn_abort releases it.
+            active.as_mut().map(|turn| {
+                turn.terminal_pending = true;
+                crate::state::ActiveTurn {
+                    task: turn.task.take(),
+                    terminal_pending: true,
+                    turn_state: Arc::clone(&turn.turn_state),
+                }
+            })
         };
         // The caller may be inside the task that cancellation must join.
         let _ = reply.send(active_turn.is_some());

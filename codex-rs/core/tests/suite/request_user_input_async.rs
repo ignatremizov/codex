@@ -290,6 +290,7 @@ async fn freeform_async_message_emits_an_item_without_ending_the_turn(
         memory_citation: None,
         delivery: Some(AgentMessageDelivery::Async),
         questions: None,
+        sub_agent_completion: None,
     }))?;
     assert_eq!(serde_json::to_value(started)?, expected);
     assert_eq!(serde_json::to_value(completed)?, expected);
@@ -478,6 +479,7 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
             memory_citation: None,
             delivery: Some(AgentMessageDelivery::Async),
             questions: Some(questions),
+            sub_agent_completion: None,
         })?
     );
 
@@ -533,10 +535,11 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
                 "string"
             );
         }
-        assert!(
+        assert_eq!(
             tools
                 .iter()
-                .all(|tool| tool["name"] != "send_user_message_async")
+                .any(|tool| tool["name"] == "send_user_message_async"),
+            catalog_tool_name == "send_user_message_async"
         );
     }
     assert_eq!(

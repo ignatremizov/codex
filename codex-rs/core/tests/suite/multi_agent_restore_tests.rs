@@ -78,6 +78,9 @@ impl ThreadStore for GatedChildMetadataStore {
         fn create_thread(params: CreateThreadParams) -> ();
         fn resume_thread(params: ResumeThreadParams) -> ();
         fn append_items(params: AppendThreadItemsParams) -> ();
+        fn append_completion_items_and_flush(params: AppendThreadItemsParams) -> ();
+        fn load_sub_agent_completion_context_item(params: codex_thread_store::LoadSubAgentCompletionContextItemParams) -> Option<codex_protocol::models::ResponseItem>;
+        fn load_sub_agent_completion_presentation(params: codex_thread_store::LoadSubAgentCompletionPresentationParams) -> codex_thread_store::StoredSubAgentCompletionPresentation;
         fn flush_thread(thread_id: ThreadId) -> ();
         fn shutdown_thread(thread_id: ThreadId) -> ();
         fn discard_thread(thread_id: ThreadId) -> ();

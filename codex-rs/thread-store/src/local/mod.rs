@@ -1,4 +1,6 @@
 mod archive_thread;
+mod completion_artifacts;
+mod completion_writer;
 mod create_thread;
 mod delete_thread;
 mod helpers;
@@ -24,6 +26,9 @@ mod thread_sections;
 mod unarchive_thread;
 mod update_thread_metadata;
 
+#[cfg(test)]
+#[path = "completion_writer_tests.rs"]
+mod completion_writer_tests;
 #[cfg(test)]
 #[path = "compression_writer_tests.rs"]
 mod compression_writer_tests;
@@ -80,6 +85,8 @@ use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
 use crate::ListTimelineParams;
 use crate::ListTurnsParams;
+use crate::LoadSubAgentCompletionContextItemParams;
+use crate::LoadSubAgentCompletionPresentationParams;
 use crate::LoadThreadHistoryParams;
 use crate::MoveProjectParams;
 use crate::MoveThreadToSectionParams;
@@ -99,6 +106,7 @@ use crate::SearchThreadsParams;
 use crate::StoredModelContext;
 use crate::StoredProject;
 use crate::StoredProjectsPage;
+use crate::StoredSubAgentCompletionPresentation;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::StoredThreadSection;
@@ -575,6 +583,27 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(LocalThreadStore::load_history(self, params))
     }
 
+    fn append_completion_items_and_flush(
+        &self,
+        params: AppendThreadItemsParams,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(completion_writer::append(self, params))
+    }
+
+    fn load_sub_agent_completion_context_item(
+        &self,
+        params: LoadSubAgentCompletionContextItemParams,
+    ) -> ThreadStoreFuture<'_, Option<codex_protocol::models::ResponseItem>> {
+        Box::pin(async move { completion_artifacts::load_context_item(self, params).await })
+    }
+
+    fn load_sub_agent_completion_presentation(
+        &self,
+        params: LoadSubAgentCompletionPresentationParams,
+    ) -> ThreadStoreFuture<'_, StoredSubAgentCompletionPresentation> {
+        Box::pin(async move { completion_artifacts::load_presentation(self, params).await })
+    }
+
     fn load_latest_model_context(
         &self,
         params: LoadThreadHistoryParams,
@@ -824,6 +853,7 @@ mod tests {
     use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::UserMessageEvent;
+    use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
     use codex_rollout::RolloutItem;
     use tempfile::TempDir;
 
@@ -881,6 +911,42 @@ mod tests {
             .expect_err("shutdown should remove the live thread writer");
         assert!(
             matches!(err, ThreadStoreError::ThreadNotFound { thread_id: missing } if missing == thread_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn lazy_live_thread_completion_lookups_report_artifact_absent() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let thread_id = ThreadId::default();
+        store
+            .create_thread(create_thread_params(thread_id))
+            .await
+            .expect("create lazy live thread");
+
+        let context_item = store
+            .load_sub_agent_completion_context_item(LoadSubAgentCompletionContextItemParams {
+                thread_id,
+                include_archived: false,
+                response_item_id: new_sub_agent_completion_context_response_item_id(),
+            })
+            .await
+            .expect("query unmaterialized context");
+        let presentation = store
+            .load_sub_agent_completion_presentation(LoadSubAgentCompletionPresentationParams {
+                thread_id,
+                include_archived: false,
+                item_id: "completion-item".to_string(),
+                turn_id: "completion-turn".to_string(),
+            })
+            .await
+            .expect("query unmaterialized presentation");
+
+        assert!(context_item.is_none());
+        assert!(presentation.item_completed.is_none());
+        assert_eq!(
+            (presentation.turn_started, presentation.turn_completed),
+            (false, false)
         );
     }
 
@@ -2085,7 +2151,7 @@ mod tests {
         }));
     }
 
-    fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
+    pub(super) fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
         CreateThreadParams {
             creator_user_id: None,
             creator_account_id: None,

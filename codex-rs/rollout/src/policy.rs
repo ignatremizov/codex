@@ -99,7 +99,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
             // equivalent.
             matches!(history_mode, ThreadHistoryMode::Paginated)
                 || matches!(
-                    event.item,
+                    &event.item,
                     TurnItem::FunctionCallOutput(_)
                         | TurnItem::Plan(_)
                         | TurnItem::Extension(ExtensionItem::Sleep(_))
@@ -108,6 +108,15 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
                     &event.item,
                     TurnItem::SubAgentActivity(item)
                         if item.kind == SubAgentActivityKind::Completed
+                )
+                || matches!(
+                    &event.item,
+                    TurnItem::AgentMessage(item) if item.has_sub_agent_completion_identity()
+                )
+                || matches!(
+                    &event.item,
+                    TurnItem::CollabAgentToolCall(item)
+                        if item.owns_completion_presentation()
                 )
         }
         EventMsg::TokenCount(_)

@@ -2054,6 +2054,11 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
+                    thread_id: receiver_thread_id.to_string(),
+                    agent_nickname: Some("Parfit".to_string()),
+                    agent_role: Some("reviewer".to_string()),
+                }],
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -2065,8 +2070,8 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
     assert_eq!(
         app.agent_navigation.get(&receiver_thread_id),
         Some(&AgentPickerThreadEntry {
-            agent_nickname: None,
-            agent_role: None,
+            agent_nickname: Some("Parfit".to_string()),
+            agent_role: Some("reviewer".to_string()),
             agent_path: None,
             is_running: false,
             is_closed: false,
@@ -2091,6 +2096,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                receiver_agents: Vec::new(),
                 prompt: Some("hello".to_string()),
                 model: None,
                 reasoning_effort: None,
@@ -8844,6 +8850,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                                 codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
                             sender_thread_id: ThreadId::new().to_string(),
                             receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                            receiver_agents: Vec::new(),
                             prompt: None,
                             model: None,
                             reasoning_effort: None,

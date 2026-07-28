@@ -37,6 +37,7 @@ pub(crate) struct LocalAgentRuntime {
         Arc<OnceLock<Arc<dyn ThreadInstructionsProvider>>>,
     pub(super) registry: Arc<AgentRegistry>,
     pub(super) residency: Arc<V2Residency>,
+    pub(super) wait_agent_presentations: Arc<super::presentation::WaitAgentPresentations>,
 }
 
 impl LocalAgentRuntime {
@@ -50,6 +51,7 @@ impl LocalAgentRuntime {
             thread_id_generator,
             registry: Arc::default(),
             residency: Arc::default(),
+            wait_agent_presentations: Arc::default(),
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),

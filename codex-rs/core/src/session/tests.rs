@@ -14,6 +14,9 @@ use super::step_settings::StepSettingsUpdate;
 pub(crate) use super::step_settings::tests::update_selected_settings_for_test;
 use super::turn_context::TurnEnvironment;
 use super::*;
+
+#[path = "queued_completion_boundary_tests.rs"]
+mod queued_completion_boundaries;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::agents_md_manager::SessionInstructions;
 use crate::compact::InitialContextInjection;
@@ -180,6 +183,7 @@ use codex_protocol::protocol::RealtimeVoice;
 use codex_protocol::protocol::RealtimeVoicesList;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
@@ -190,6 +194,8 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
 use codex_rmcp_client::ElicitationAction;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
@@ -443,6 +449,35 @@ async fn agent_messages_get_local_ids_without_item_ids_feature() {
             .is_some_and(|item_id| item_id.starts_with("amsg_"))
     );
     assert_eq!(items[0].turn_id(), Some(turn_context.sub_id.as_str()));
+}
+
+#[tokio::test]
+async fn untrusted_agent_messages_cannot_preserve_completion_context_ids() {
+    let (session, turn_context) = make_session_and_context().await;
+    let reserved_id = new_sub_agent_completion_context_response_item_id();
+    let response_item = ResponseItem::AgentMessage {
+        id: Some(reserved_id.clone()),
+        author: "/root/worker".to_string(),
+        recipient: "/root".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "done".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let (items, _) = session
+        .prepare_conversation_items_for_history(
+            &turn_context,
+            turn_context.model_info(),
+            std::slice::from_ref(&response_item),
+        )
+        .await;
+
+    let normalized_id = items[0].id().expect("normalized item id");
+    assert_ne!(normalized_id, &reserved_id);
+    assert!(!is_sub_agent_completion_context_response_item_id(
+        normalized_id
+    ));
 }
 
 fn assistant_message(text: &str) -> ResponseItem {
@@ -2680,6 +2715,8 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     for mut communication in [plaintext, encrypted, encrypted_with_audit] {
         let (mut session, turn_context) = make_session_and_context().await;
         let rollout_path = attach_thread_persistence(&mut session).await;
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
         communication.id = Some(ResponseItemId::with_suffix("amsg", "turn-id-test"));
         let mut expected_item = communication.to_model_input_item();
         expected_item.set_turn_id_if_missing(&turn_context.sub_id);
@@ -5483,7 +5520,7 @@ async fn open_thread_persistence(session: &mut Session) -> PathBuf {
         .expect("thread should have rollout path")
 }
 
-async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
+pub(super) async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
     let rollout_path = open_thread_persistence(session).await;
     session
         .ensure_rollout_materialized(PersistContext::Standard)
@@ -6485,6 +6522,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
             /*reference_context_item*/ None,
             /*world_state_baseline*/ None,
             CompactedHistoryMetadata {
+                completion_source_items: Vec::new(),
                 message: "summary".to_string(),
                 compaction_summary_tokens: None,
                 window_number,
@@ -6614,6 +6652,7 @@ async fn mcp_attribution_checkpoints_cover_batch_prefixes_compaction_and_restore
             CompactedHistoryMetadata {
                 message: "summary".to_string(),
                 compaction_summary_tokens: None,
+                completion_source_items: Vec::new(),
                 window_number,
                 window_ids,
                 compaction_response_id: None,
@@ -6758,6 +6797,7 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
                 CompactedHistoryMetadata {
                     message: String::new(),
                     compaction_summary_tokens: None,
+                    completion_source_items: Vec::new(),
                     window_number,
                     window_ids,
                     compaction_response_id: None,
@@ -7514,6 +7554,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
 
     let session = Session {
         thread_id,
+        instance_id: Uuid::now_v7(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
@@ -7537,10 +7578,14 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         mcp_prewarm_tx: async_channel::bounded(1).0,
         mcp_prewarm_shutdown: CancellationToken::new(),
         mcp_prewarm_task: std::sync::Mutex::new(None),
+        spawn_parent_thread_id: None,
+        terminal_publication_lock: std::sync::Mutex::new(()),
+        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
         active_turn: Mutex::new(None),
         async_hook_results,
+        active_turn_transition: Notify::new(),
         input_queue: super::input_queue::InputQueue::new(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
@@ -9810,6 +9855,7 @@ where
 
     let session = Arc::new(Session {
         thread_id,
+        instance_id: Uuid::now_v7(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
@@ -9833,10 +9879,14 @@ where
         mcp_prewarm_tx: async_channel::bounded(1).0,
         mcp_prewarm_shutdown: CancellationToken::new(),
         mcp_prewarm_task: std::sync::Mutex::new(None),
+        spawn_parent_thread_id: None,
+        terminal_publication_lock: std::sync::Mutex::new(()),
+        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
         active_turn: Mutex::new(None),
         async_hook_results,
+        active_turn_transition: Notify::new(),
         input_queue: super::input_queue::InputQueue::new(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
@@ -12129,7 +12179,7 @@ enum TerminalEventKind {
     TurnAborted,
 }
 
-async fn attach_in_memory_thread_store(
+pub(crate) async fn attach_in_memory_thread_store(
     session: &mut Session,
 ) -> Arc<codex_thread_store::InMemoryThreadStore> {
     let store = Arc::new(codex_thread_store::InMemoryThreadStore::default());
@@ -12786,10 +12836,11 @@ async fn turn_aborted_flushes_terminal_event_after_delivery() {
     abort_task.await.expect("abort task should finish");
     // Expected flushes:
     // 1. Task-runner flush after the task body observes cancellation.
-    // 2. Interrupted-marker flush before TurnAborted so abort observers can reread it.
-    // 3. Terminal-event flush after TurnAborted is appended.
-    let calls = wait_for_flush_count(&store, /*expected_flushes*/ 3).await;
-    assert_eq!(3, calls.flush_thread);
+    // 2. Canonical interrupted-marker append-and-flush before raw-item delivery.
+    // 3. Explicit marker barrier before TurnAborted so abort observers can reread it.
+    // 4. Terminal-event flush after TurnAborted is appended.
+    let calls = wait_for_flush_count(&store, /*expected_flushes*/ 4).await;
+    assert_eq!(4, calls.flush_thread);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
