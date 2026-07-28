@@ -816,6 +816,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 paginated_completed_item(
@@ -830,6 +831,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 paginated_completed_item(
@@ -844,6 +846,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 paginated_turn_completed("turn-1"),
@@ -1903,6 +1906,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 paginated_completed_item(

@@ -464,6 +464,7 @@ fn interrupted_and_failed_history_turns_are_not_revived_as_placeholders() {
         (
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-1".into()),
+                root_turn_id: None,
                 reason: TurnAbortReason::Interrupted,
                 error: None,
                 started_at: None,

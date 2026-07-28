@@ -12,6 +12,7 @@ use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use codex_utils_path_uri::PathUri;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 use owo_colors::OwoColorize;
@@ -101,6 +102,8 @@ impl EventProcessorWithHumanOutput {
 
     fn render_item_completed(&mut self, item: ThreadItem) {
         match item {
+            ThreadItem::AgentMessage { id, .. }
+                if sub_agent_completion_status_from_response_item_id(&id).is_some() => {}
             ThreadItem::AgentMessage {
                 text,
                 inter_agent_source,
@@ -563,10 +566,13 @@ fn final_message_from_turn_items(items: &[ThreadItem]) -> Option<String> {
         .rev()
         .find_map(|item| match item {
             ThreadItem::AgentMessage {
+                id,
                 text,
                 inter_agent_source: None,
                 ..
-            } => Some(text.clone()),
+            } if sub_agent_completion_status_from_response_item_id(id).is_none() => {
+                Some(text.clone())
+            }
             _ => None,
         })
         .or_else(|| {

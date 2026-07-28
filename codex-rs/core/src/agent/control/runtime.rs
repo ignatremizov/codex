@@ -202,6 +202,7 @@ pub(crate) struct LocalAgentRuntime {
     /// Shared by every session in this tree, including private delegates.
     pub(crate) shutdown: CancellationToken,
     shutdown_state: Arc<AgentTreeShutdownState>,
+    pub(super) wait_agent_presentations: Arc<super::presentation::WaitAgentPresentations>,
 }
 
 impl LocalAgentRuntime {
@@ -218,6 +219,7 @@ impl LocalAgentRuntime {
             mailboxes: Arc::default(),
             shutdown: CancellationToken::new(),
             shutdown_state: Arc::default(),
+            wait_agent_presentations: Arc::default(),
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),

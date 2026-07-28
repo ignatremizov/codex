@@ -44,6 +44,7 @@ impl Session {
                     prefix_context,
                     initial_context,
                     model_info,
+                    completion_source_items,
                     compaction_response_id,
                     compaction_summary_tokens,
                     reviewer_compaction_hash,
@@ -81,6 +82,7 @@ impl Session {
                     (
                         CompactedHistoryMetadata {
                             input_goal_ids: Default::default(),
+                            completion_source_items,
                             message: String::new(),
                             compaction_summary_tokens,
                             window_number: state.auto_compact_window_number().saturating_add(1),
@@ -170,6 +172,23 @@ impl Session {
                     ResponseItemEnvelope::new(item)
                 }));
             }
+            // Completion registration shares this publication permit with its canonical receipt.
+            // Only exact acknowledged payloads may be withheld from live queue-only history.
+            for completion in &state.acknowledged_completion_contexts {
+                if !completion.pending
+                    && metadata
+                        .completion_source_items
+                        .contains(&completion.item.item)
+                {
+                    // The successful request saw this exact acknowledged payload. Its replacement
+                    // may summarize it; a stale request without the payload cannot make this cut.
+                    continue;
+                }
+                items.retain(|item| item != &completion.item);
+                if !completion.pending && !unsummarized_suffix.contains(&completion.item) {
+                    retained.push(completion.item.clone());
+                }
+            }
             let boundary = items
                 .iter()
                 .position(|envelope| {
@@ -208,14 +227,31 @@ impl Session {
                 checkpoint
                     .metadata
                     .get_or_insert_default()
-                    .compaction_model_hash = metadata.compaction_model_hash;
+                    .compaction_model_hash = metadata.compaction_model_hash.clone();
             }
+            let mut canonical_items = items.clone();
+            canonical_items.splice(
+                prefix_len..prefix_len,
+                state
+                    .acknowledged_completion_contexts
+                    .iter()
+                    .filter(|completion| completion.pending)
+                    .map(|completion| completion.item.clone()),
+            );
+            let canonical_has_pending = canonical_items.len() != items.len();
+            let canonical_prefix_len = prefix_len + canonical_items.len() - items.len();
+            crate::context::sanitize_compacted_media_envelopes(
+                &mut canonical_items,
+                canonical_prefix_len,
+            );
             let mut projected = state.history.clone();
-            projected
-                .replace_compacted(items.clone(), metadata.reviewer_compaction_hash.as_deref());
+            projected.replace_compacted(
+                canonical_items.clone(),
+                metadata.reviewer_compaction_hash.as_deref(),
+            );
             let compacted_item = CompactedItem {
                 message: metadata.message.clone(),
-                replacement_history: Some(items.clone()),
+                replacement_history: Some(canonical_items.clone()),
                 retained_context: Some(projected.retained_context().clone()),
                 guardian_history: projected
                     .compacted_guardian_history_checkpoint(&unsummarized_suffix),
@@ -229,7 +265,11 @@ impl Session {
                     .map(|id| id.to_string()),
                 window_id: Some(metadata.window_ids.window_id.to_string()),
                 compaction_response_id: metadata.compaction_response_id.clone(),
-                latest_token_usage_record: state.latest_token_usage_record.clone(),
+                latest_token_usage_record: if canonical_has_pending {
+                    None
+                } else {
+                    state.latest_token_usage_record.clone()
+                },
                 resume_metadata: Some(CompactionResumeMetadata {
                     multi_agent_version: self.multi_agent_version(),
                     last_started_turn_id: state.last_started_turn_id.clone(),
@@ -237,7 +277,7 @@ impl Session {
                     previous_turn_settings: state.previous_turn_settings(),
                 }),
                 replacement_history_media_sanitized_prefix_len: Some(
-                    u64::try_from(prefix_len).unwrap_or(u64::MAX),
+                    u64::try_from(canonical_prefix_len).unwrap_or(u64::MAX),
                 ),
                 replacement_history_media_repair: false,
             };
@@ -269,6 +309,12 @@ impl Session {
             contributions,
             /*acknowledgement*/ None,
             move |state| {
+                state.acknowledged_completion_contexts.retain(|completion| {
+                    completion.pending
+                        || !metadata
+                            .completion_source_items
+                            .contains(&completion.item.item)
+                });
                 let installed = items.clone();
                 if advance_window {
                     // Reset window-local flags only after the durable batch succeeds.

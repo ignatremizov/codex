@@ -18,6 +18,48 @@ use tokio::sync::Notify;
 use tokio::sync::watch;
 
 #[tokio::test]
+async fn conditional_interrupt_keeps_terminal_reservation_until_publication_finishes() {
+    let (session, turn, _events) = make_session_and_context_with_rx().await;
+    session
+        .spawn_task(
+            Arc::clone(&turn),
+            Vec::new(),
+            HeldStepTask {
+                kind: TaskKind::Regular,
+                finish: Arc::new(Notify::new()),
+            },
+        )
+        .await;
+    let turn_state = Arc::clone(
+        &session
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .expect("active turn")
+            .turn_state,
+    );
+    let permit = session.reserve_history_publication().await;
+    let (reply, response) = tokio::sync::oneshot::channel();
+    let interruption = session.interrupt_turn_if_no_pending_input(&turn.sub_id, reply);
+    tokio::pin!(interruption);
+    assert!(futures::poll!(interruption.as_mut()).is_pending());
+    assert!(response.await.expect("decision precedes cancellation join"));
+    {
+        let active = session.active_turn.lock().await;
+        let active = active.as_ref().expect("pending terminal retains its turn");
+        assert!(active.task.is_none());
+        assert!(active.terminal_pending);
+        assert!(Arc::ptr_eq(&active.turn_state, &turn_state));
+    }
+    drop(permit);
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 5), interruption)
+        .await
+        .expect("terminal publication should settle");
+    assert!(session.active_turn.lock().await.is_none());
+}
+
+#[tokio::test]
 async fn interrupt_if_no_pending_input_handles_cancelled_submission() {
     let (session, turn_context, rx_event) = make_session_and_context_with_rx().await;
     session

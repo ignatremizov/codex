@@ -2479,6 +2479,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
             memory_citation: None,
             delivery: None,
             questions: None,
+            sub_agent_completion: None,
         })
     }));
     items.extend([
@@ -2674,6 +2675,7 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                sub_agent_completion: None,
             }),
             started_at_ms: None,
             completed_at_ms: 0,
@@ -3148,6 +3150,7 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                sub_agent_completion: None,
             }),
             started_at_ms: None,
             completed_at_ms: 0,
@@ -5233,6 +5236,7 @@ async fn command_center_read_only_open_requests_and_failure_preservation() -> Re
                             memory_citation: None,
                             delivery: None,
                             questions: None,
+                            sub_agent_completion: None,
                         }),
                         started_at_ms: None,
                         completed_at_ms: 0,

@@ -59,6 +59,7 @@ impl ThreadManagerState {
         tokio::spawn(async move {
             let _residency_guard = residency_guard;
             thread.ensure_rollout_materialized().await;
+            let disarm = thread.session.disarm_terminal_presentation();
             if let Err(err) = thread.shutdown_and_wait().await {
                 teardown.record_shutdown_failure("stop_resident", CodexErrKind::from(&err).into());
                 teardown.complete();
@@ -88,6 +89,9 @@ impl ThreadManagerState {
             runtime
                 .registry
                 .save_evicted_environments(thread_id, environments);
+            // Eviction is a residency handoff, not a terminal child result.
+            disarm.commit();
+            thread.session.prepare_for_thread_removal();
             let removed = threads.remove(&thread_id).is_some();
             runtime.residency.remove(thread_id);
             teardown.complete();
