@@ -125,6 +125,7 @@ fn projects_completed_canonical_turn_items() {
         }],
         phase: None,
         memory_citation: None,
+        sub_agent_completion: None,
     });
 
     let user_changes = project(item_completed(thread_id, "turn-1", user_item.clone()));
@@ -204,6 +205,8 @@ fn projects_inter_agent_response_items_into_paginated_history() {
         ThreadHistoryChangeSet {
             changed_items: vec![ThreadHistoryItemChange {
                 turn_id: "turn-1".to_string(),
+                started_at_ms: None,
+                completed_at_ms: None,
                 item: ThreadItem::AgentMessage {
                     id: "amsg_task".to_string(),
                     text: "Agent message from `/root`:\n\nInspect the repository.".to_string(),

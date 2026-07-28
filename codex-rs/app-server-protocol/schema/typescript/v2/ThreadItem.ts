@@ -8,6 +8,7 @@ import type { ReasoningEffort } from "../ReasoningEffort";
 import type { SleepItem } from "../SleepItem";
 import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
+import type { CollabAgentRef } from "./CollabAgentRef";
 import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
 import type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
@@ -99,6 +100,10 @@ senderThreadId: string,
  * this corresponds to the newly spawned agent.
  */
 receiverThreadIds: Array<string>,
+/**
+ * Known display metadata for receiving agents.
+ */
+receiverAgents: Array<CollabAgentRef>,
 /**
  * Prompt text sent as part of the collab tool call, when available.
  */

@@ -1123,6 +1123,24 @@ impl App {
             return;
         }
 
+        if let Some(receiver_agents) = collab_receiver_agents(notification) {
+            for receiver in receiver_agents {
+                if collab_receiver_is_not_found(notification, &receiver.thread_id) {
+                    continue;
+                }
+                let Some(thread_id) = crate::multi_agents::parse_thread_id(&receiver.thread_id)
+                else {
+                    continue;
+                };
+                self.upsert_agent_picker_thread(
+                    thread_id,
+                    receiver.agent_nickname.clone(),
+                    receiver.agent_role.clone(),
+                    /*is_closed*/ false,
+                );
+            }
+        }
+
         let Some(receiver_thread_ids) = collab_receiver_thread_ids(notification) else {
             return;
         };

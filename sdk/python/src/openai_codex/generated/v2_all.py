@@ -4317,6 +4317,10 @@ class SubAgentActivityThreadItem(BaseModel):
     agent_thread_id: Annotated[str, Field(alias="agentThreadId")]
     id: str
     kind: SubAgentActivityKind
+    prompt: Annotated[
+        str | None,
+        Field(description="Plaintext or audited task text, when available."),
+    ] = None
     type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]
 
 
@@ -5989,6 +5993,15 @@ class CollabAgentState(BaseModel):
     status: CollabAgentStatus
 
 
+class CollabAgentRef(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agent_nickname: Annotated[str | None, Field(alias="agentNickname")] = None
+    agent_role: Annotated[str | None, Field(alias="agentRole")] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class CollaborationMode(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7329,6 +7342,13 @@ class CollabAgentToolCallThreadItem(BaseModel):
             description="Reasoning effort requested for the spawned agent, when applicable.",
         ),
     ] = None
+    receiver_agents: Annotated[
+        list[CollabAgentRef],
+        Field(
+            alias="receiverAgents",
+            description="Known display metadata for receiving agents.",
+        ),
+    ]
     receiver_thread_ids: Annotated[
         list[str],
         Field(
@@ -8951,13 +8971,6 @@ class Thread(BaseModel):
             description="Unix timestamp (in seconds) used for thread recency ordering.",
         ),
     ] = None
-    session_id: Annotated[
-        str,
-        Field(
-            alias="sessionId",
-            description="Session id shared by threads that belong to the same session tree.",
-        ),
-    ]
     session_id: Annotated[
         str,
         Field(

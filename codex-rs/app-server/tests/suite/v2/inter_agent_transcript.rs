@@ -147,6 +147,7 @@ async fn injected_agent_message_gets_a_stable_id_without_starting_model_work() -
         }],
         internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
             turn_id: Some("caller-turn".to_string()),
+            executed_tool_calls: None,
         }),
     };
 

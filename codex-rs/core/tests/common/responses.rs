@@ -1053,6 +1053,24 @@ where
     response_mock
 }
 
+pub async fn mount_responder_once_match<M, R>(
+    server: &MockServer,
+    matcher: M,
+    responder: R,
+) -> ResponseMock
+where
+    M: wiremock::Match + Send + Sync + 'static,
+    R: Respond + Send + Sync + 'static,
+{
+    let (mock, response_mock) = base_mock();
+    mock.and(matcher)
+        .respond_with(responder)
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    response_mock
+}
+
 fn base_mock() -> (MockBuilder, ResponseMock) {
     let response_mock = ResponseMock::new();
     let mock = Mock::given(method("POST"))

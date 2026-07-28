@@ -96,6 +96,14 @@ pub use crate::permissions::NetworkSandboxPolicy;
 use crate::permissions::default_read_only_subpaths_for_writable_root;
 pub use crate::request_permissions::RequestPermissionsArgs;
 pub use crate::request_user_input::RequestUserInputEvent;
+pub use crate::sub_agent_completion::SubAgentCompletionStatus;
+pub use crate::sub_agent_completion::is_sub_agent_completion_context_response_item_id;
+pub use crate::sub_agent_completion::new_sub_agent_completion_context_response_item_id;
+pub use crate::sub_agent_completion::ordinary_agent_message_response_item_id;
+pub use crate::sub_agent_completion::sub_agent_completion_item;
+pub use crate::sub_agent_completion::sub_agent_completion_status_from_response_item_id;
+pub use crate::sub_agent_completion::sub_agent_completion_transcript;
+pub use crate::sub_agent_completion::sub_agent_completion_transcript_parts;
 
 /// Open/close tags for special context blocks. Used across crates to avoid duplicated hardcoded
 /// strings.

@@ -154,6 +154,7 @@ impl Session {
             && Arc::ptr_eq(&active_turn.turn_state, turn_state)
         {
             *active_turn_guard = None;
+            self.active_turn_transition.notify_waiters();
         }
     }
 

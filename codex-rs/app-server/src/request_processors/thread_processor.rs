@@ -3615,8 +3615,14 @@ impl ThreadRequestProcessor {
                     // thread that timed out during shutdown.
                     match wait_for_thread_shutdown(&existing_thread).await {
                         ThreadShutdownResult::Complete => {
-                            self.thread_manager.remove_thread(&existing_thread_id).await;
-                            self.finalize_thread_teardown(existing_thread_id).await;
+                            if self
+                                .thread_manager
+                                .remove_thread_if_current(&existing_thread)
+                                .await
+                                .is_some()
+                            {
+                                self.finalize_thread_teardown(existing_thread_id).await;
+                            }
                             // Shutdown can flush newer rollout items, so reload the
                             // stored thread before starting the replacement session.
                             return Ok(RunningThreadResumeResult::NotRunning(None));

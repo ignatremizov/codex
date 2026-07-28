@@ -276,9 +276,16 @@ impl AgentControl {
             self.touch_loaded_v2_residency(&state, thread_id).await;
             return Ok(());
         }
-        if self.state.agent_metadata_for_thread(thread_id).is_none() {
-            return Err(CodexErr::ThreadNotFound(thread_id));
-        }
+        let registered_metadata = self
+            .state
+            .agent_metadata_for_thread(thread_id)
+            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+        let registered_parent_thread_id = registered_metadata
+            .agent_path
+            .as_ref()
+            .and_then(|agent_path| agent_path.as_str().rsplit_once('/'))
+            .and_then(|(parent_path, _)| AgentPath::try_from(parent_path).ok())
+            .and_then(|parent_path| self.state.agent_id_for_path(&parent_path));
 
         let stored_thread = state
             .read_stored_thread(ReadThreadParams {
@@ -300,9 +307,27 @@ impl AgentControl {
         if initial_history.get_multi_agent_version() != Some(MultiAgentVersion::V2) {
             return Err(CodexErr::ThreadNotFound(thread_id));
         }
-        let (session_source, _) = initial_history
+        let resumed_session_source = initial_history
             .get_resumed_session_sources()
-            .unwrap_or((stored_source, None));
+            .map(|(session_source, _)| session_source)
+            .unwrap_or_else(|| stored_source.clone());
+        let session_source = if stored_source.is_non_root_agent() {
+            stored_source
+        } else if let (Some(parent_thread_id), Some(agent_path)) = (
+            registered_parent_thread_id,
+            registered_metadata.agent_path.clone(),
+        ) {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: i32::try_from(agent_path.as_str().matches('/').count().saturating_sub(1))
+                    .unwrap_or(i32::MAX),
+                agent_path: Some(agent_path),
+                agent_nickname: registered_metadata.agent_nickname.clone(),
+                agent_role: registered_metadata.agent_role.clone(),
+            })
+        } else {
+            resumed_session_source
+        };
         if let Some(role_name) = session_source.get_agent_role() {
             let runtime_approval_policy = config.permissions.approval_policy.value();
             let runtime_approvals_reviewer = config.approvals_reviewer;
@@ -345,13 +370,16 @@ impl AgentControl {
 
         let parent_thread_id = initial_history
             .get_resumed_parent_thread_id()
-            .or(stored_parent_thread_id);
+            .or(stored_parent_thread_id)
+            .or(registered_parent_thread_id)
+            .or_else(|| session_source.parent_thread_id());
         let inherited_environments = self
             .inherited_environments_for_source(&state, Some(&session_source))
             .await;
         let inherited_exec_policy = self
             .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
             .await;
+        let notification_source = session_source.clone();
 
         match state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
@@ -368,6 +396,19 @@ impl AgentControl {
             Ok(reloaded_thread) => {
                 residency_slot.commit(reloaded_thread.thread_id);
                 state.notify_thread_created(reloaded_thread.thread_id);
+                let child_agent_path = notification_source.get_agent_path();
+                let child_reference = child_agent_path
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| reloaded_thread.thread_id.to_string());
+                self.maybe_start_completion_watcher(
+                    &reloaded_thread.thread,
+                    Some(notification_source),
+                    child_reference,
+                    child_agent_path,
+                    MultiAgentVersion::V2,
+                )
+                .await;
                 Ok(())
             }
             Err(err) => {
@@ -532,6 +573,25 @@ impl AgentControl {
             );
         }
 
+        let child_reference = agent_metadata
+            .agent_path
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| new_thread.thread_id.to_string());
+        // Attach before exposing the child or submitting its first input so an early failure
+        // cannot publish a watcher-owned terminal without a consumer.
+        self.maybe_start_completion_watcher(
+            &new_thread.thread,
+            notification_source.clone(),
+            child_reference,
+            agent_metadata.agent_path.clone(),
+            new_thread
+                .thread
+                .multi_agent_version()
+                .unwrap_or(MultiAgentVersion::V1),
+        )
+        .await;
+
         if matches!(
             notification_source.as_ref(),
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
@@ -571,19 +631,6 @@ impl AgentControl {
                 )
                 .await?;
             }
-        }
-        if multi_agent_version != MultiAgentVersion::V2 {
-            let child_reference = agent_metadata
-                .agent_path
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| new_thread.thread_id.to_string());
-            self.maybe_start_completion_watcher(
-                new_thread.thread_id,
-                notification_source,
-                child_reference,
-                agent_metadata.agent_path.clone(),
-            );
         }
 
         Ok(LiveAgent {
@@ -1047,19 +1094,22 @@ impl AgentControl {
         // Resumed threads are re-registered in-memory and need the same listener
         // attachment path as freshly spawned threads.
         state.notify_thread_created(resumed_thread.thread_id);
-        if multi_agent_version != MultiAgentVersion::V2 {
-            let child_reference = agent_metadata
-                .agent_path
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| resumed_thread.thread_id.to_string());
-            self.maybe_start_completion_watcher(
-                resumed_thread.thread_id,
-                Some(notification_source.clone()),
-                child_reference,
-                agent_metadata.agent_path.clone(),
-            );
-        }
+        let child_reference = agent_metadata
+            .agent_path
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| resumed_thread.thread_id.to_string());
+        self.maybe_start_completion_watcher(
+            &resumed_thread.thread,
+            Some(notification_source.clone()),
+            child_reference,
+            agent_metadata.agent_path.clone(),
+            resumed_thread
+                .thread
+                .multi_agent_version()
+                .unwrap_or(MultiAgentVersion::V1),
+        )
+        .await;
         self.persist_thread_spawn_edge_for_source(
             resumed_thread.thread.as_ref(),
             resumed_thread.thread_id,

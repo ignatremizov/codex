@@ -501,6 +501,7 @@ mod tests {
                 /*state_db_ctx*/ None,
                 &SessionTarget {
                     path: Some(rollout_path.clone()),
+                    source_rollout_path: None,
                     thread_id,
                 },
                 CwdPromptAction::Fork,
@@ -534,6 +535,7 @@ mod tests {
             /*state_db_ctx*/ None,
             &SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
             },
             CwdPromptAction::Resume,

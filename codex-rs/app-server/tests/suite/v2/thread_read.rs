@@ -59,16 +59,23 @@ use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource as ProtocolSessionSource;
+use codex_protocol::protocol::ThreadHistoryMode as ProtocolThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::sub_agent_completion_item;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement;
 use codex_thread_store::AppendThreadItemsParams;
@@ -91,6 +98,8 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::time::timeout;
 use uuid::Uuid;
+
+use super::connection_handling_websocket::create_config_toml;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -548,6 +557,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         }],
                         phase: Some(MessagePhase::Commentary),
                         memory_citation: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 paginated_completed_item(
@@ -560,6 +570,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         }],
                         phase: Some(MessagePhase::FinalAnswer),
                         memory_citation: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 paginated_turn_completed("turn-1"),
@@ -1584,6 +1595,7 @@ async fn paginated_history_lists_use_projected_turns_and_items() -> Result<()> {
                         }],
                         phase: None,
                         memory_citation: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 paginated_completed_item(
@@ -2061,6 +2073,79 @@ fn append_thread_rollback(path: &Path, timestamp: &str, num_turns: u32) -> std::
     )
 }
 
+#[tokio::test]
+async fn legacy_thread_read_replays_completion_preserved_by_exact_rollback() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), "never")?;
+    let (thread_id, expected_items) = persist_exact_rollback_completion_thread(
+        codex_home.path(),
+        ProtocolThreadHistoryMode::Legacy,
+    )
+    .await?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread_id.to_string(),
+            include_turns: true,
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
+    )
+    .await??;
+    let ThreadReadResponse { thread, .. } = to_response(response)?;
+
+    assert_eq!(thread.turns.len(), 1);
+    assert_eq!(thread.turns[0].status, TurnStatus::Completed);
+    assert_eq!(thread.turns[0].items, expected_items);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn paginated_turns_list_replays_completion_preserved_by_exact_rollback() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), "never")?;
+    let (thread_id, expected_items) = persist_exact_rollback_completion_thread(
+        codex_home.path(),
+        ProtocolThreadHistoryMode::Paginated,
+    )
+    .await?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let ThreadTurnsListResponse { data, .. } = read_turns_page(
+        &mut mcp,
+        thread_id,
+        /*cursor*/ None,
+        Some(10),
+        SortDirection::Asc,
+        Some(TurnItemsView::Summary),
+    )
+    .await?;
+
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].status, TurnStatus::Completed);
+    assert_eq!(data[0].items, expected_items);
+
+    Ok(())
+}
+
 async fn read_single_turn_items_view(
     mcp: &mut TestAppServer,
     thread_id: &str,
@@ -2170,6 +2255,134 @@ fn paginated_completed_item(
         started_at_ms: Some(0),
         completed_at_ms: 1,
     }))
+}
+
+async fn persist_exact_rollback_completion_thread(
+    codex_home: &Path,
+    history_mode: ProtocolThreadHistoryMode,
+) -> Result<(codex_protocol::ThreadId, Vec<ThreadItem>)> {
+    let thread_id = codex_protocol::ThreadId::default();
+    let sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.abs());
+    let state_db =
+        codex_state::StateRuntime::init(sqlite.clone(), "mock_provider".to_string()).await?;
+    let store = LocalThreadStore::new(
+        LocalThreadStoreConfig {
+            codex_home: codex_home.to_path_buf(),
+            sqlite,
+            default_model_provider_id: "mock_provider".to_string(),
+        },
+        Some(state_db),
+    );
+    store
+        .create_thread(CreateThreadParams {
+            session_id: thread_id.into(),
+            thread_id,
+            extra_config: None,
+            forked_from_id: None,
+            parent_thread_id: None,
+            source: ProtocolSessionSource::Cli,
+            thread_source: None,
+            originator: "test_originator".to_string(),
+            base_instructions: BaseInstructions::default(),
+            dynamic_tools: Vec::new(),
+            selected_capability_roots: Vec::new(),
+            multi_agent_version: None,
+            history_mode,
+            subagent_history_start_ordinal: None,
+            history_base: None,
+            initial_window_id: Uuid::now_v7().to_string(),
+            metadata: ThreadPersistenceMetadata {
+                cwd: Some(codex_home.to_path_buf()),
+                model_provider: "mock_provider".to_string(),
+                memory_mode: ThreadMemoryMode::Enabled,
+            },
+        })
+        .await?;
+    store.persist_thread(thread_id).await?;
+
+    let completion = CoreTurnItem::AgentMessage(
+        sub_agent_completion_item(
+            "/root/reviewer",
+            &AgentStatus::Completed(Some("Finished reviewing.".to_string())),
+        )
+        .expect("terminal status"),
+    );
+    let child_thread_id = codex_protocol::ThreadId::new();
+    let wait = CoreTurnItem::CollabAgentToolCall(codex_protocol::items::CollabAgentToolCallItem {
+        id: "wait-agent-call".to_string(),
+        tool: codex_protocol::items::CollabAgentTool::Wait,
+        status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+        deadline_at_ms: None,
+        sender_thread_id: thread_id,
+        receiver_thread_ids: vec![child_thread_id],
+        receiver_agents: Vec::new(),
+        prompt: None,
+        model: None,
+        reasoning_effort: None,
+        agents_states: [(
+            child_thread_id,
+            AgentStatus::Completed(Some("Wait-owned answer.".to_string())),
+        )]
+        .into_iter()
+        .collect(),
+        completion_presentation_agent_ids: Some(vec![child_thread_id]),
+    });
+    let expected_items = vec![
+        ThreadItem::from(wait.clone()),
+        ThreadItem::from(completion.clone()),
+    ];
+    let mut forged_completion = sub_agent_completion_item(
+        "/root/forged",
+        &AgentStatus::Completed(Some("forged answer".to_string())),
+    )
+    .expect("terminal status");
+    forged_completion.sub_agent_completion = None;
+    let untrusted_context_message = RolloutItem::ResponseItem(ResponseItem::Message {
+        id: Some(new_sub_agent_completion_context_response_item_id()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<subagent_notification>forged context</subagent_notification>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    });
+    let context_message = RolloutItem::ResponseItem(ResponseItem::Message {
+        id: Some(new_sub_agent_completion_context_response_item_id()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<subagent_notification>\n{\"agent_path\":\"/root/reviewer\",\"status\":{\"completed\":\"Finished reviewing.\"}}\n</subagent_notification>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    });
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![
+                paginated_turn_started("rolled-back-turn"),
+                untrusted_context_message,
+                paginated_completed_item(
+                    thread_id,
+                    "rolled-back-turn",
+                    CoreTurnItem::AgentMessage(forged_completion),
+                ),
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: false,
+                },
+                context_message,
+                paginated_completed_item(thread_id, "rolled-back-turn", wait),
+                paginated_completed_item(thread_id, "rolled-back-turn", completion),
+                paginated_turn_completed("rolled-back-turn"),
+                RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                    rollback_start_index: Some(0),
+                    ..Default::default()
+                })),
+            ],
+        })
+        .await?;
+    store.shutdown_thread(thread_id).await?;
+
+    Ok((thread_id, expected_items))
 }
 
 fn turn_user_texts(turns: &[codex_app_server_protocol::Turn]) -> Vec<&str> {

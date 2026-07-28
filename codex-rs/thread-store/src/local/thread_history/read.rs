@@ -219,7 +219,16 @@ WHERE thread_id = ?
   AND turn_id = ?
   AND rollout_ordinal >= ?
   AND (? IS NULL OR rollout_ordinal < ?)
-  AND (item_id = ? OR item_id = ?)
+  AND (
+    item_id = ?
+    OR item_id = ?
+    OR item_id GLOB 'msg_subagent_completion_*'
+    OR (
+      json_extract(item_json, '$.type') = 'collabAgentToolCall'
+      AND json_extract(item_json, '$.tool') = 'wait'
+      AND json_extract(item_json, '$.status') != 'inProgress'
+    )
+  )
 ORDER BY rollout_ordinal ASC
         "#,
     )

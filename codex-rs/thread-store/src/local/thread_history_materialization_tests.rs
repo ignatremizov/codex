@@ -318,6 +318,7 @@ async fn paginated_live_append_materializes_turn_items_and_state() {
                         }],
                         phase: None,
                         memory_citation: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 turn_completed("turn-1"),
@@ -2209,6 +2210,7 @@ fn agent_message(id: &str, phase: MessagePhase) -> TurnItem {
         }],
         phase: Some(phase),
         memory_citation: None,
+        sub_agent_completion: None,
     })
 }
 

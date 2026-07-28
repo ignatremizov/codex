@@ -60,6 +60,42 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
 }
 
 #[test]
+fn background_subagent_completion_does_not_replace_final_message() {
+    let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+    let ordinary =
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            item: ThreadItem::AgentMessage {
+                id: "msg-parent".to_string(),
+                text: "parent answer".to_string(),
+                phase: None,
+                memory_citation: None,
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+        });
+    let completion =
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            item: ThreadItem::AgentMessage {
+                id: "msg_subagent_completion_completed_01900000-0000-7000-8000-000000000001"
+                    .to_string(),
+                text: "Agent final answer from `/root/reviewer`:\n\nDone.".to_string(),
+                phase: Some(codex_protocol::models::MessagePhase::Commentary),
+                memory_citation: None,
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 1,
+        });
+
+    let _ = processor.collect_thread_events(ordinary);
+    let collected = processor.collect_thread_events(completion);
+
+    assert!(collected.events.is_empty());
+    assert_eq!(processor.final_message(), Some("parent answer"));
+}
+
+#[test]
 fn runtime_warning_emits_a_non_fatal_error_item() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 

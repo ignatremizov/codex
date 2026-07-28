@@ -17,6 +17,7 @@ use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::WorldStateItem;
+use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::path::PathBuf;
@@ -73,6 +74,59 @@ fn inter_agent_assistant_message(text: &str) -> ResponseItem {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     }
+}
+
+fn completion_context_item() -> ResponseItem {
+    ResponseItem::Message {
+        id: Some(new_sub_agent_completion_context_response_item_id()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<subagent_notification>child done</subagent_notification>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+#[tokio::test]
+async fn reconstruction_deduplicates_completion_context_response_item_ids() {
+    let (session, turn_context) = make_session_and_context().await;
+    let completion = completion_context_item();
+    let rollout_items = vec![
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        RolloutItem::ResponseItem(completion.clone()),
+        RolloutItem::InterAgentCommunicationMetadata {
+            trigger_turn: false,
+        },
+        RolloutItem::ResponseItem(completion.clone()),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, vec![completion]);
+}
+
+#[tokio::test]
+async fn reconstruction_deduplicates_completion_context_ids_inside_compacted_history() {
+    let (session, turn_context) = make_session_and_context().await;
+    let completion = completion_context_item();
+    let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
+        message: "checkpoint".to_string(),
+        replacement_history: Some(vec![completion.clone(), completion.clone()]),
+        window_number: Some(1),
+        ..Default::default()
+    })];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, vec![completion]);
+    assert_eq!(reconstructed.compacted_prefix_len, Some(1));
 }
 
 fn completed_user_turn_rollout(

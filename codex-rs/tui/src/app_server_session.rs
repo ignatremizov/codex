@@ -47,6 +47,7 @@ use codex_app_server_protocol::ReviewDelivery;
 use codex_app_server_protocol::ReviewStartParams;
 use codex_app_server_protocol::ReviewStartResponse;
 use codex_app_server_protocol::ReviewTarget;
+use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::Thread;
@@ -135,6 +136,7 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::protocol::SubAgentSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use color_eyre::eyre::ContextCompat;
@@ -647,6 +649,7 @@ impl AppServerSession {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fork_thread_at_with_presentation(
         &mut self,
         config: Config,
@@ -2042,6 +2045,15 @@ pub(crate) fn app_server_rate_limit_snapshots(
     snapshots
 }
 
+pub(crate) fn source_agent_path(source: &SessionSource) -> Option<String> {
+    match source {
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) => {
+            agent_path.clone().map(String::from)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2695,7 +2707,7 @@ mod tests {
         let mut ephemeral_config = config;
         ephemeral_config.ephemeral = true;
         let normal_ephemeral_fork = app_server
-            .fork_thread(ephemeral_config.clone(), source_thread_id)
+            .fork_thread(ephemeral_config.clone(), source_thread_id, None)
             .await?;
         let side_fork = app_server
             .fork_side_thread(ephemeral_config, source_thread_id)
@@ -2794,7 +2806,9 @@ mod tests {
         )?;
         let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
 
-        let regular = app_server.fork_thread(config.clone(), thread_id).await?;
+        let regular = app_server
+            .fork_thread(config.clone(), thread_id, None)
+            .await?;
         let side = app_server.fork_side_thread(config, thread_id).await?;
 
         assert_eq!(regular.turns.len(), 1);

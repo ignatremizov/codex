@@ -20,6 +20,7 @@ use crate::protocol::PatchApplyStatus;
 use crate::protocol::ReviewOutputEvent;
 use crate::protocol::ReviewTarget;
 use crate::protocol::SubAgentActivityKind;
+use crate::sub_agent_completion::SubAgentCompletionMetadata;
 use crate::user_input::ByteRange;
 use crate::user_input::TextElement;
 use crate::user_input::UserInput;
@@ -134,6 +135,10 @@ pub struct AgentMessageItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub memory_citation: Option<MemoryCitation>,
+    /// Core-authored provenance for a visible background subagent completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sub_agent_completion: Option<SubAgentCompletionMetadata>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
@@ -314,6 +319,36 @@ pub struct CollabAgentToolCallItem {
     pub reasoning_effort: Option<ReasoningEffortConfig>,
     #[serde(default)]
     pub agents_states: HashMap<ThreadId, AgentStatus>,
+    /// Agent completions whose visible presentation is durably owned by this wait item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub completion_presentation_agent_ids: Option<Vec<ThreadId>>,
+}
+
+impl CollabAgentToolCallItem {
+    /// Returns whether this completed wait durably owns terminal-agent presentation.
+    pub fn owns_completion_presentation(&self) -> bool {
+        let Some(agent_ids) = self.completion_presentation_agent_ids.as_deref() else {
+            return false;
+        };
+        self.tool == CollabAgentTool::Wait
+            && matches!(
+                self.status,
+                CollabAgentToolCallStatus::Completed | CollabAgentToolCallStatus::Failed
+            )
+            && !agent_ids.is_empty()
+            && agent_ids.iter().all(|id| {
+                self.agents_states.get(id).is_some_and(|status| {
+                    matches!(
+                        status,
+                        AgentStatus::Completed(_)
+                            | AgentStatus::Errored(_)
+                            | AgentStatus::Shutdown
+                            | AgentStatus::NotFound
+                    )
+                })
+            })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -677,6 +712,17 @@ fn serialize_hook_prompt_fragment(text: &str, hook_run_id: &str) -> Option<Strin
     .ok()
 }
 
+impl AgentMessageItem {
+    pub fn new(content: &[AgentMessageContent]) -> Self {
+        Self {
+            id: new_item_id(),
+            content: content.to_vec(),
+            phase: None,
+            memory_citation: None,
+            sub_agent_completion: None,
+        }
+    }
+}
 impl TurnItem {
     pub fn id(&self) -> String {
         match self {
@@ -698,6 +744,30 @@ impl TurnItem {
             TurnItem::FileChange(item) => item.id.clone(),
             TurnItem::McpToolCall(item) => item.id.clone(),
             TurnItem::ContextCompaction(item) => item.id.clone(),
+        }
+    }
+
+    /// Returns whether this item durably presents a subagent completion.
+    pub fn is_sub_agent_completion_presentation(&self) -> bool {
+        match self {
+            TurnItem::AgentMessage(item) => item.has_sub_agent_completion_identity(),
+            TurnItem::CollabAgentToolCall(item) => item.owns_completion_presentation(),
+            TurnItem::UserMessage(_)
+            | TurnItem::HookPrompt(_)
+            | TurnItem::Plan(_)
+            | TurnItem::Reasoning(_)
+            | TurnItem::CommandExecution(_)
+            | TurnItem::DynamicToolCall(_)
+            | TurnItem::SubAgentActivity(_)
+            | TurnItem::WebSearch(_)
+            | TurnItem::ImageView(_)
+            | TurnItem::Extension(_)
+            | TurnItem::ImageGeneration(_)
+            | TurnItem::EnteredReviewMode(_)
+            | TurnItem::ExitedReviewMode(_)
+            | TurnItem::FileChange(_)
+            | TurnItem::McpToolCall(_)
+            | TurnItem::ContextCompaction(_) => false,
         }
     }
 }

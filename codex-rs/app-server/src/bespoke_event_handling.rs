@@ -965,6 +965,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     &thread_state,
                     &thread_state_manager,
                     &thread_watch_manager,
+                    &thread_list_state_permit,
                     &outgoing,
                 )
                 .await;
@@ -1573,6 +1574,7 @@ async fn handle_thread_rollback_failed(
     thread_state: &Arc<Mutex<ThreadState>>,
     thread_state_manager: &ThreadStateManager,
     thread_watch_manager: &ThreadWatchManager,
+    thread_list_state_permit: &Arc<tokio::sync::Semaphore>,
     outgoing: &ThreadScopedOutgoingMessageSender,
 ) {
     let pending_rollback = thread_state.lock().await.pending_rollbacks.take();
@@ -1586,6 +1588,22 @@ async fn handle_thread_rollback_failed(
             }
         }
         ThreadRollbackFailure::RefreshRequired => {
+            let _thread_list_state_permit = match thread_list_state_permit.acquire().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    if let Some(request_id) = pending_rollback {
+                        outgoing
+                            .send_error(
+                                request_id,
+                                thread_rollback_refresh_required_error(format!(
+                                    "{message}; failed to serialize thread teardown: {err}"
+                                )),
+                            )
+                            .await;
+                    }
+                    return;
+                }
+            };
             let terminated = tokio::time::timeout(
                 Duration::from_secs(10),
                 conversation.wait_until_terminated(),
@@ -1598,13 +1616,18 @@ async fn handle_thread_rollback_failed(
                     "thread teardown is still running after an indeterminate rollback commit; unloading the quarantined app-server handle"
                 );
             }
-            thread_manager.remove_thread(&conversation_id).await;
-            thread_state_manager
-                .remove_thread_state(conversation_id)
-                .await;
-            thread_watch_manager
-                .remove_thread(&conversation_id.to_string())
-                .await;
+            if thread_manager
+                .remove_thread_if_current(conversation)
+                .await
+                .is_some()
+            {
+                thread_state_manager
+                    .remove_thread_state(conversation_id)
+                    .await;
+                thread_watch_manager
+                    .remove_thread(&conversation_id.to_string())
+                    .await;
+            }
             if let Some(request_id) = pending_rollback {
                 outgoing
                     .send_error(request_id, thread_rollback_refresh_required_error(message))
@@ -2302,7 +2325,6 @@ mod tests {
     use codex_protocol::AgentPath;
     use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
     use codex_protocol::items::AgentMessageItem as CoreAgentMessageItem;
-    use codex_protocol::ResponseItemId;
     use codex_protocol::items::DynamicToolCallItem;
     use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
     use codex_protocol::items::SubAgentActivityItem;
@@ -3922,6 +3944,7 @@ mod tests {
                         ],
                         phase: None,
                         memory_citation: None,
+                        sub_agent_completion: None,
                     }),
                     started_at_ms: Some(0),
                     completed_at_ms: 0,
@@ -3939,6 +3962,7 @@ mod tests {
                         }],
                         phase: None,
                         memory_citation: None,
+                        sub_agent_completion: None,
                     }),
                     started_at_ms: Some(0),
                     completed_at_ms: 0,

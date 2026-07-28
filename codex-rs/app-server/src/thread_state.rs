@@ -3,9 +3,9 @@ use crate::outgoing_message::ConnectionRequestId;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
-use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadHistoryChangeSet;
 use codex_app_server_protocol::ThreadHistoryItemChange;
+use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError;
@@ -201,6 +201,8 @@ impl ThreadState {
                         |item| ThreadHistoryChangeSet {
                             changed_items: vec![ThreadHistoryItemChange {
                                 turn_id: turn_id.to_string(),
+                                started_at_ms: None,
+                                completed_at_ms: None,
                                 item,
                             }],
                             ..Default::default()
@@ -294,6 +296,7 @@ mod tests {
                     internal_chat_message_metadata_passthrough: Some(
                         InternalChatMessageMetadataPassthrough {
                             turn_id: Some("turn-a".to_string()),
+                            executed_tool_calls: None,
                         },
                     ),
                 },
@@ -310,6 +313,8 @@ mod tests {
             changes.changed_items,
             vec![codex_app_server_protocol::ThreadHistoryItemChange {
                 turn_id: "turn-a".to_string(),
+                started_at_ms: None,
+                completed_at_ms: None,
                 item: expected_item,
             }]
         );

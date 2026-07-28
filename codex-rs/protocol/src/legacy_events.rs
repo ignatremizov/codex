@@ -101,6 +101,9 @@ impl UserMessageItem {
 
 impl AgentMessageItem {
     pub fn as_legacy_events(&self) -> Vec<EventMsg> {
+        if self.has_sub_agent_completion_identity() {
+            return Vec::new();
+        }
         self.content
             .iter()
             .map(|c| match c {

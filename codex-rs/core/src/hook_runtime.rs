@@ -588,7 +588,7 @@ pub(crate) async fn record_pending_input(
                 .await;
         }
         TurnInput::InterAgentCommunication(communication) => {
-            sess.record_inter_agent_communication(turn_context, communication)
+            sess.record_inter_agent_communication(Arc::clone(turn_context), communication)
                 .await;
         }
     }

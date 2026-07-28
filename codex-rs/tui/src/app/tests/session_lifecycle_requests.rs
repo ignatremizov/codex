@@ -11,6 +11,8 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadStatus;
 use codex_protocol::AgentPath;
+use codex_protocol::protocol::SessionSource as RolloutSessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_state::SqliteConfig;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -401,6 +403,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         &mut app_server,
                         crate::resume_picker::SessionTarget {
                             path: Some(root_rollout_path),
+                            source_rollout_path: None,
                             thread_id: root_thread_id,
                         },
                     )
@@ -469,6 +472,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         /*approval_id*/ None,
                     ),
                     /*replay_kind*/ None,
+                    std::time::Instant::now(),
                 );
                 app.agent_navigation.mark_stopped(child_thread_id);
                 release_tx.send(()).expect("release blocked thread list");

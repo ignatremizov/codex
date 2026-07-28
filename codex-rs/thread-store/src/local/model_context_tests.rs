@@ -10,6 +10,7 @@ use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
@@ -22,12 +23,16 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::sub_agent_completion_item;
 use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use uuid::Uuid;
 
 use super::*;
+use crate::LoadSubAgentCompletionContextItemParams;
+use crate::LoadSubAgentCompletionPresentationParams;
 use crate::ThreadStore;
 use crate::local::test_support::test_config;
 use crate::local::test_support::write_session_file_with_history_mode;
@@ -116,6 +121,135 @@ async fn fork_context_excludes_items_after_frozen_cutoff() {
     assert_eq!(
         serde_json::to_value(context).expect("serialize fork context"),
         serde_json::to_value(expected).expect("serialize expected fork context")
+    );
+}
+
+#[tokio::test]
+async fn completion_artifact_lookups_scan_past_the_latest_checkpoint() {
+    let home = TempDir::new().expect("temp dir");
+    let uuid = Uuid::from_u128(/*v*/ 1008);
+    let thread_id = codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let response_item_id = new_sub_agent_completion_context_response_item_id();
+    let response_item = ResponseItem::Message {
+        id: Some(response_item_id.clone()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<subagent_notification>complete answer</subagent_notification>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let completion_turn_id = "completion-turn";
+    let completion_item = TurnItem::AgentMessage(
+        sub_agent_completion_item(
+            "/root/reviewer",
+            &AgentStatus::Completed(Some("complete answer".to_string())),
+        )
+        .expect("terminal status"),
+    );
+    let completion_item_id = completion_item.id();
+    let item_completed = ItemCompletedEvent {
+        thread_id,
+        turn_id: completion_turn_id.to_string(),
+        item: completion_item,
+        started_at_ms: None,
+        completed_at_ms: 1,
+    };
+    write_paginated_rollout(
+        home.path(),
+        "2025-01-03T13-00-07",
+        uuid,
+        [
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: false,
+            },
+            RolloutItem::ResponseItem(response_item.clone()),
+            turn_started(completion_turn_id),
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(item_completed.clone())),
+            turn_complete(completion_turn_id),
+            compacted("latest checkpoint", Some(Vec::new())),
+            turn_started("user-turn"),
+            user_message("latest turn"),
+            completed_user_message("user-turn", "latest turn"),
+            turn_context(home.path(), "user-turn"),
+            turn_complete("user-turn"),
+        ],
+    );
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+
+    let latest_context = store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("load latest model context");
+    assert!(!latest_context.items.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::ResponseItem(item) if item.id() == Some(&response_item_id)
+        )
+    }));
+    assert!(!latest_context.items.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                if event.item.id() == completion_item_id
+        )
+    }));
+
+    let persisted_context = store
+        .load_sub_agent_completion_context_item(LoadSubAgentCompletionContextItemParams {
+            thread_id,
+            include_archived: false,
+            response_item_id,
+        })
+        .await
+        .expect("load completion context");
+    assert_eq!(persisted_context, Some(response_item));
+    let persisted_presentation = store
+        .load_sub_agent_completion_presentation(LoadSubAgentCompletionPresentationParams {
+            thread_id,
+            include_archived: false,
+            item_id: completion_item_id,
+            turn_id: completion_turn_id.to_string(),
+        })
+        .await
+        .expect("load completion presentation");
+    assert_eq!(
+        (
+            serde_json::to_value(&persisted_presentation.item_completed)
+                .expect("serialize persisted completion"),
+            persisted_presentation.turn_started,
+            persisted_presentation.turn_completed,
+        ),
+        (
+            serde_json::to_value(Some(&item_completed)).expect("serialize expected completion"),
+            true,
+            true,
+        )
+    );
+    let persisted_from_active_turn = store
+        .load_sub_agent_completion_presentation(LoadSubAgentCompletionPresentationParams {
+            thread_id,
+            include_archived: false,
+            item_id: item_completed.item.id(),
+            turn_id: "history-only-retry-turn".to_string(),
+        })
+        .await
+        .expect("load active-turn completion presentation");
+    assert_eq!(
+        (
+            serde_json::to_value(&persisted_from_active_turn.item_completed)
+                .expect("serialize active-turn completion"),
+            persisted_from_active_turn.turn_started,
+            persisted_from_active_turn.turn_completed,
+        ),
+        (
+            serde_json::to_value(Some(&item_completed)).expect("serialize expected completion"),
+            false,
+            false,
+        )
     );
 }
 

@@ -43,6 +43,8 @@ use codex_protocol::protocol::GuardianUserAuthorization as CoreGuardianUserAutho
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::ordinary_agent_message_response_item_id;
 use codex_shell_command::parse_command::shlex_join;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
@@ -354,6 +356,8 @@ pub enum ThreadItem {
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
         /// this corresponds to the newly spawned agent.
         receiver_thread_ids: Vec<String>,
+        /// Known display metadata for receiving agents.
+        receiver_agents: Vec<CollabAgentRef>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
         /// Model requested for the spawned agent, when applicable.
@@ -418,6 +422,9 @@ pub(crate) fn inter_agent_message_thread_item_with_id(
     item: &ResponseItem,
     id: String,
 ) -> Option<ThreadItem> {
+    if is_sub_agent_completion_context_response_item_id(&id) {
+        return None;
+    }
     let ResponseItem::AgentMessage {
         author,
         recipient,
@@ -867,6 +874,11 @@ impl From<CoreTurnItem> for ThreadItem {
                     .collect(),
             },
             CoreTurnItem::AgentMessage(agent) => {
+                let id = if agent.has_sub_agent_completion_identity() {
+                    agent.id.clone()
+                } else {
+                    ordinary_agent_message_response_item_id(&agent.id)
+                };
                 let text = agent
                     .content
                     .into_iter()
@@ -875,7 +887,7 @@ impl From<CoreTurnItem> for ThreadItem {
                     })
                     .collect::<String>();
                 ThreadItem::AgentMessage {
-                    id: agent.id,
+                    id,
                     text,
                     phase: agent.phase,
                     memory_citation: agent.memory_citation.map(Into::into),
@@ -934,6 +946,11 @@ impl From<CoreTurnItem> for ThreadItem {
                     .receiver_thread_ids
                     .into_iter()
                     .map(String::from)
+                    .collect(),
+                receiver_agents: call
+                    .receiver_agents
+                    .into_iter()
+                    .map(CollabAgentRef::from)
                     .collect(),
                 prompt: call.prompt,
                 model: call.model,
@@ -1185,6 +1202,25 @@ pub enum CollabAgentToolCallStatus {
     InProgress,
     Completed,
     Failed,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CollabAgentRef {
+    pub thread_id: String,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+}
+
+impl From<codex_protocol::protocol::CollabAgentRef> for CollabAgentRef {
+    fn from(value: codex_protocol::protocol::CollabAgentRef) -> Self {
+        Self {
+            thread_id: value.thread_id.to_string(),
+            agent_nickname: value.agent_nickname,
+            agent_role: value.agent_role,
+        }
+    }
 }
 
 impl From<CoreCollabAgentTool> for CollabAgentTool {

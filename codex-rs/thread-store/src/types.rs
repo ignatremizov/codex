@@ -14,6 +14,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::HistoryPosition;
+use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
@@ -154,6 +155,41 @@ pub struct LoadThreadHistoryParams {
     pub thread_id: ThreadId,
     /// Whether archived threads are eligible.
     pub include_archived: bool,
+}
+
+/// Parameters for locating one trusted subagent-completion context item in canonical history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadSubAgentCompletionContextItemParams {
+    /// Thread whose canonical rollout should be inspected.
+    pub thread_id: ThreadId,
+    /// Whether archived threads are eligible.
+    pub include_archived: bool,
+    /// Stable reserved identity reused by completion-delivery retries.
+    pub response_item_id: codex_protocol::ResponseItemId,
+}
+
+/// Parameters for locating one canonical subagent-completion presentation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadSubAgentCompletionPresentationParams {
+    /// Thread whose canonical rollout should be inspected.
+    pub thread_id: ThreadId,
+    /// Whether archived threads are eligible.
+    pub include_archived: bool,
+    /// Stable canonical item identity reused by presentation retries.
+    pub item_id: String,
+    /// Turn identity whose start and completion markers should be reconciled.
+    pub turn_id: String,
+}
+
+/// Canonical presentation and queried turn lifecycle found for a stable identity.
+#[derive(Clone, Debug, Default)]
+pub struct StoredSubAgentCompletionPresentation {
+    /// The matching trusted completion presentation, if it committed.
+    pub item_completed: Option<ItemCompletedEvent>,
+    /// Whether the queried turn's start survives canonical rollback semantics.
+    pub turn_started: bool,
+    /// Whether the queried turn's completion survives canonical rollback semantics.
+    pub turn_completed: bool,
 }
 
 /// Persisted rollout history for a thread, without any filesystem path requirement.

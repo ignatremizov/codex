@@ -1,4 +1,5 @@
 use codex_protocol::ThreadId;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadHistoryMode;
 use std::any::Any;
 use std::future::Future;
@@ -14,6 +15,8 @@ use crate::ItemPage;
 use crate::ListItemsParams;
 use crate::ListThreadsParams;
 use crate::ListTurnsParams;
+use crate::LoadSubAgentCompletionContextItemParams;
+use crate::LoadSubAgentCompletionPresentationParams;
 use crate::LoadThreadHistoryParams;
 use crate::MoveThreadToSectionParams;
 use crate::PrepareForkParams;
@@ -24,6 +27,7 @@ use crate::ResumeThreadParams;
 use crate::SearchThreadOccurrencesParams;
 use crate::SearchThreadsParams;
 use crate::StoredModelContext;
+use crate::StoredSubAgentCompletionPresentation;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::ThreadOccurrenceSearchPage;
@@ -94,11 +98,40 @@ pub trait ThreadStore: Any + Send + Sync {
     /// already-durable thread data.
     fn discard_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
 
-    /// Loads persisted history for resume, fork, rollback, and memory jobs.
+    /// Loads persisted legacy history for resume, fork, and memory jobs.
     fn load_history(
         &self,
         params: LoadThreadHistoryParams,
     ) -> ThreadStoreFuture<'_, StoredThreadHistory>;
+
+    /// Loads full canonical rollout history for exact rollback and commit verification.
+    ///
+    /// Unlike legacy full-history reads, this internal operation remains available for paginated
+    /// threads because rollback needs absolute canonical item positions.
+    fn load_rollback_history(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> ThreadStoreFuture<'_, StoredThreadHistory> {
+        self.load_history(params)
+    }
+
+    /// Locates a trusted completion-context item by its stable reserved identity.
+    ///
+    /// This lookup spans canonical history even when paginated model-context reads use a bounded
+    /// suffix, and returns only the matching artifact.
+    fn load_sub_agent_completion_context_item(
+        &self,
+        params: LoadSubAgentCompletionContextItemParams,
+    ) -> ThreadStoreFuture<'_, Option<ResponseItem>>;
+
+    /// Locates a canonical completion presentation and the queried turn's lifecycle.
+    ///
+    /// This lookup spans canonical history so commit-unknown retries remain idempotent across
+    /// compaction boundaries.
+    fn load_sub_agent_completion_presentation(
+        &self,
+        params: LoadSubAgentCompletionPresentationParams,
+    ) -> ThreadStoreFuture<'_, StoredSubAgentCompletionPresentation>;
 
     /// Loads the persisted rollout items needed to reconstruct the latest model-visible context.
     ///

@@ -2538,8 +2538,10 @@ mod tests {
                 init_state_db_for_app_server_target(&config, &AppServerTarget::Embedded).await?;
             let target_session = resume_picker::SessionTarget {
                 path: Some(rollout_path),
+                source_rollout_path: None,
                 thread_id,
             };
+            let source_rollout_path = target_session.source_rollout_path.clone();
             let session_selection = match action {
                 CwdPromptAction::Resume => resume_picker::SessionSelection::Resume(target_session),
                 CwdPromptAction::Fork => resume_picker::SessionSelection::Fork(target_session),
@@ -2592,7 +2594,11 @@ mod tests {
                         )
                         .await?
                 }
-                CwdPromptAction::Fork => app_server.fork_thread(final_config, thread_id).await?,
+                CwdPromptAction::Fork => {
+                    app_server
+                        .fork_thread(final_config, thread_id, source_rollout_path)
+                        .await?
+                }
             };
 
             assert!(!session_resume::cwds_differ(
@@ -2625,6 +2631,7 @@ mod tests {
             /*state_db*/ None,
             &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
             }),
             /*cwd_override*/ None,
@@ -2661,6 +2668,7 @@ mod tests {
             /*state_db*/ None,
             &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
                 path: None,
+                source_rollout_path: None,
                 thread_id: ThreadId::new(),
             }),
             /*cwd_override*/ None,

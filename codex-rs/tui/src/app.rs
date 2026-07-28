@@ -252,10 +252,26 @@ enum ThreadInteractiveRequest {
     McpServerElicitation(McpServerElicitationFormRequest),
 }
 
-/// Extracts `receiver_thread_ids` from collab agent tool-call notifications.
-///
-/// Only `ItemStarted` and `ItemCompleted` notifications with a `CollabAgentToolCall` item carry
-/// receiver thread ids. All other notification variants return `None`.
+fn collab_receiver_agents(
+    notification: &ServerNotification,
+) -> Option<&[codex_app_server_protocol::CollabAgentRef]> {
+    match notification {
+        ServerNotification::ItemStarted(notification) => match &notification.item {
+            ThreadItem::CollabAgentToolCall {
+                receiver_agents, ..
+            } => Some(receiver_agents),
+            _ => None,
+        },
+        ServerNotification::ItemCompleted(notification) => match &notification.item {
+            ThreadItem::CollabAgentToolCall {
+                receiver_agents, ..
+            } => Some(receiver_agents),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn collab_receiver_thread_ids(notification: &ServerNotification) -> Option<&[String]> {
     match notification {
         ServerNotification::ItemStarted(notification) => match &notification.item {

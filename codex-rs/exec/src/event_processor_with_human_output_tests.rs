@@ -267,6 +267,27 @@ fn final_message_from_turn_items_uses_latest_agent_message() {
 }
 
 #[test]
+fn final_message_from_turn_items_skips_background_subagent_completion() {
+    let message = final_message_from_turn_items(&[
+        ThreadItem::AgentMessage {
+            id: "msg-parent".to_string(),
+            text: "parent answer".to_string(),
+            phase: None,
+            memory_citation: None,
+        },
+        ThreadItem::AgentMessage {
+            id: "msg_subagent_completion_completed_01900000-0000-7000-8000-000000000001"
+                .to_string(),
+            text: "Agent final answer from `/root/reviewer`:\n\nDone.".to_string(),
+            phase: Some(codex_protocol::models::MessagePhase::Commentary),
+            memory_citation: None,
+        },
+    ]);
+
+    assert_eq!(message.as_deref(), Some("parent answer"));
+}
+
+#[test]
 fn final_message_from_turn_items_falls_back_to_latest_plan() {
     let message = final_message_from_turn_items(&[
         ThreadItem::Reasoning {

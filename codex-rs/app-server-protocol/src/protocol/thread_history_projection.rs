@@ -104,6 +104,8 @@ fn project_inter_agent_message(
         changed_items: vec![ThreadHistoryItemChange {
             turn_id: turn_id.to_string(),
             item,
+            started_at_ms: None,
+            completed_at_ms: None,
         }],
         ..Default::default()
     }

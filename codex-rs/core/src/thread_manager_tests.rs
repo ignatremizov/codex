@@ -422,6 +422,93 @@ async fn shutdown_all_threads_bounded_submits_shutdown_to_every_thread() {
 }
 
 #[tokio::test]
+async fn exact_thread_removal_preserves_a_replaced_manager_entry() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let old = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start old thread");
+    old.thread.ensure_rollout_materialized().await;
+    old.thread.flush_rollout().await.expect("flush old thread");
+    let rollout_path = old
+        .thread
+        .rollout_path()
+        .expect("materialized old thread rollout");
+    old.thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown old thread");
+    let removed = manager
+        .remove_thread(&old.thread_id)
+        .await
+        .expect("remove old manager entry");
+    assert!(Arc::ptr_eq(&removed, &old.thread));
+    let replacement = manager
+        .resume_thread_with_history(
+            config,
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: old.thread_id,
+                history: Arc::new(Vec::new()),
+                rollout_path: Some(rollout_path),
+            }),
+            Arc::clone(&manager.state.auth_manager),
+            /*parent_trace*/ None,
+            /*supports_openai_form_elicitation*/ false,
+        )
+        .await
+        .expect("resume replacement thread");
+    assert_eq!(replacement.thread_id, old.thread_id);
+    assert!(!Arc::ptr_eq(&replacement.thread, &old.thread));
+    let cleanup_called = Arc::new(AtomicBool::new(false));
+    let cleanup_called_for_removal = Arc::clone(&cleanup_called);
+
+    let removed = manager
+        .state
+        .remove_thread_if_current(&old.thread, move || {
+            cleanup_called_for_removal.store(true, Ordering::Release);
+        })
+        .await;
+
+    assert!(removed.is_none());
+    assert!(!cleanup_called.load(Ordering::Acquire));
+    assert!(
+        manager
+            .remove_thread_if_current(&old.thread)
+            .await
+            .is_none()
+    );
+    let absent_cleanup_called = Arc::new(AtomicBool::new(false));
+    let absent_cleanup_called_for_check = Arc::clone(&absent_cleanup_called);
+    assert!(
+        !manager
+            .state
+            .run_if_thread_absent(old.thread_id, move || {
+                absent_cleanup_called_for_check.store(true, Ordering::Release);
+            })
+            .await
+    );
+    assert!(!absent_cleanup_called.load(Ordering::Acquire));
+    let current = manager
+        .get_thread(old.thread_id)
+        .await
+        .expect("replacement manager entry");
+    assert!(Arc::ptr_eq(&current, &replacement.thread));
+    let _ = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+}
+
+#[tokio::test]
 async fn code_mode_session_provider_is_shared_across_threads() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;
@@ -1420,7 +1507,7 @@ async fn rollout_path_resume_and_fork_read_history_through_thread_store() {
     assert_ne!(forked.thread_id, resumed.thread_id);
 
     let calls = in_memory_store.calls().await;
-    assert_eq!(calls.read_thread_by_rollout_path, 2);
+    assert_eq!(calls.read_thread_by_rollout_path, 4);
 
     resumed_from_path
         .thread

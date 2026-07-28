@@ -24,6 +24,29 @@
       ],
       "type": "object"
     },
+    "CollabAgentRef": {
+      "properties": {
+        "agentNickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentRole": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "CollabAgentState": {
       "properties": {
         "message": {
@@ -1041,6 +1064,13 @@
               ],
               "description": "Reasoning effort requested for the spawned agent, when applicable."
             },
+            "receiverAgents": {
+              "description": "Known display metadata for receiving agents.",
+              "items": {
+                "$ref": "#/definitions/CollabAgentRef"
+              },
+              "type": "array"
+            },
             "receiverThreadIds": {
               "description": "Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
               "items": {
@@ -1079,6 +1109,7 @@
           "required": [
             "agentsStates",
             "id",
+            "receiverAgents",
             "receiverThreadIds",
             "senderThreadId",
             "status",

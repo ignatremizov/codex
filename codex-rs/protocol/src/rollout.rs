@@ -2,13 +2,17 @@ use std::collections::HashMap;
 
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
+use crate::protocol::is_sub_agent_completion_context_response_item_id;
 
 /// Marks raw rollout items removed by exact rollback markers.
 ///
 /// A marker's cutoff is an absolute index in the same raw rollout. The marker and items from that
 /// cutoff through the marker are removed together, except that a terminal event is retained when
-/// its matching turn start survives the range. Computing all ranges before replay also ensures
-/// that rollback markers inside a newer removed range cannot affect the surviving history.
+/// its matching turn start survives the range and durable out-of-band subagent completion
+/// artifacts are retained regardless of their position. A terminal `wait_agent` item is one such
+/// artifact when that durable item owns completion presentation instead of a background row.
+/// Computing all ranges before replay also ensures that rollback markers inside a newer removed
+/// range cannot affect the surviving history.
 pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
     let mut range_starts = vec![0_usize; items.len().saturating_add(1)];
     let mut range_ends = vec![0_usize; items.len().saturating_add(1)];
@@ -84,7 +88,49 @@ pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
             _ => {}
         }
     }
+
+    // Subagent completion context and presentation are out-of-band arrivals, not output owned by
+    // the user turn whose raw range happens to contain them. Once accepted and durably appended,
+    // later exact rollback must not erase them. Preserve the v2 delivery metadata immediately
+    // preceding a completion context item as part of the same durable pair.
+    for index in 0..items.len() {
+        if !removed[index] || !is_sub_agent_completion_artifact(items, index) {
+            continue;
+        }
+        removed[index] = false;
+        if matches!(&items[index], RolloutItem::ResponseItem(_))
+            && matches!(
+                index.checked_sub(1).and_then(|index| items.get(index)),
+                Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+            )
+        {
+            removed[index - 1] = false;
+        }
+    }
     removed
+}
+
+fn is_sub_agent_completion_artifact(items: &[RolloutItem], index: usize) -> bool {
+    match &items[index] {
+        RolloutItem::ResponseItem(item) => {
+            item.id()
+                .is_some_and(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
+                && matches!(
+                    index.checked_sub(1).and_then(|index| items.get(index)),
+                    Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+                )
+        }
+        RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
+            event.item.is_sub_agent_completion_presentation()
+        }
+        RolloutItem::SessionMeta(_)
+        | RolloutItem::InterAgentCommunication(_)
+        | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::Compacted(_)
+        | RolloutItem::TurnContext(_)
+        | RolloutItem::WorldState(_)
+        | RolloutItem::EventMsg(_) => false,
+    }
 }
 
 /// Returns the effective raw rollout with exact rollback ranges and their markers removed.

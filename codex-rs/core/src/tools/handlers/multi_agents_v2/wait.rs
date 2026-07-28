@@ -3,6 +3,7 @@ use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use crate::turn_timing::now_unix_timestamp_ms;
+use codex_protocol::ThreadId;
 use codex_tools::ToolSpec;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -65,6 +66,10 @@ impl Handler {
             Some(ms) => ms,
             None => default_timeout_ms,
         };
+        let presentation_guard = session
+            .services
+            .agent_control
+            .register_any_child_wait_agent_presentation(session.presentation_id());
 
         let turn_state = session
             .input_queue
@@ -91,34 +96,63 @@ impl Handler {
                     model: None,
                     reasoning_effort: None,
                     agents_states: Default::default(),
+                    completion_presentation_agent_ids: None,
                 }),
             )
             .await;
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
         let outcome = wait_for_activity(&mut activity_rx, pending_activity, deadline).await;
+        let presentation_commit = match outcome {
+            WaitOutcome::MailboxActivity => {
+                let response_item_ids = session
+                    .input_queue
+                    .pending_mailbox_response_item_ids(turn_state.as_deref())
+                    .await;
+                presentation_guard.freeze_for_mailbox_response_item_ids(&response_item_ids)
+            }
+            WaitOutcome::Steered | WaitOutcome::TimedOut => presentation_guard.freeze_none(),
+        };
         let result = WaitAgentResult::from_outcome(outcome);
+        let completion_presentation_agent_ids =
+            presentation_commit.completion_presentation_agent_ids();
+        let agents_states = presentation_commit.agent_states();
+        let mut receiver_thread_ids = agents_states.keys().copied().collect::<Vec<_>>();
+        receiver_thread_ids.sort_by_key(ToString::to_string);
 
         session
-            .emit_turn_item_completed(
+            .emit_turn_item_completed_with_primary_delivery(
                 &turn,
                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                     id: call_id,
                     tool: CollabAgentTool::Wait,
-                    status: CollabAgentToolCallStatus::Completed,
+                    status: wait_tool_call_status(&agents_states),
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
-                    receiver_thread_ids: Vec::new(),
+                    receiver_thread_ids,
                     receiver_agents: Vec::new(),
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
-                    agents_states: HashMap::new(),
+                    agents_states,
+                    completion_presentation_agent_ids,
                 }),
+                move || presentation_commit.commit(),
             )
             .await;
 
         Ok(boxed_tool_output(result))
+    }
+}
+
+fn wait_tool_call_status(statuses: &HashMap<ThreadId, AgentStatus>) -> CollabAgentToolCallStatus {
+    if statuses
+        .values()
+        .any(|status| matches!(status, AgentStatus::Errored(_) | AgentStatus::NotFound))
+    {
+        CollabAgentToolCallStatus::Failed
+    } else {
+        CollabAgentToolCallStatus::Completed
     }
 }
 

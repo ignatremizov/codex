@@ -3,20 +3,42 @@ use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::config::AgentRoleConfig;
 use codex_core::config::MultiAgentMessageDelivery;
+use codex_core::config::ThreadStoreConfig;
 use codex_features::Feature;
+use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::CollabAgentTool;
+use codex_protocol::items::TurnItem;
+use codex_protocol::models::AgentMessageInputContent;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ResumedHistory;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentCompletionStatus;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
+use codex_protocol::protocol::sub_agent_completion_transcript_parts;
+use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 use codex_protocol::user_input::UserInput;
+use codex_thread_store::InMemoryThreadStore;
+use codex_thread_store::InMemoryThreadStoreFailure;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::assert_parent_turn;
@@ -25,6 +47,7 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::ev_tool_search_call;
+use core_test_support::responses::mount_responder_once_match;
 use core_test_support::responses::mount_response_once_match;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
@@ -40,12 +63,16 @@ use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event_match;
+use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::mpsc;
 use std::time::Duration;
 use test_case::test_case;
 use tokio::time::Instant;
@@ -53,6 +80,8 @@ use tokio::time::sleep;
 use tracing::Level;
 use tracing_test::internal::MockWriter;
 use wiremock::MockServer;
+use wiremock::Respond;
+use wiremock::ResponseTemplate;
 
 const SPAWN_CALL_ID: &str = "spawn-call-1";
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
@@ -60,6 +89,8 @@ const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 const TURN_0_FORK_PROMPT: &str = "seed fork context";
 const TURN_1_PROMPT: &str = "spawn a child and continue";
 const TURN_2_NO_WAIT_PROMPT: &str = "follow up without wait";
+const TURN_AFTER_ABORT_PROMPT: &str = "follow up after abort";
+const TURN_AFTER_RESUME_PROMPT: &str = "follow up after resume";
 const CHILD_PROMPT: &str = "child: do work";
 const INHERITED_MODEL: &str = "gpt-5.2";
 const INHERITED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::XHigh;
@@ -69,6 +100,31 @@ const V2_DEFAULT_MODEL: &str = "gpt-5.6-terra";
 const V2_DEFAULT_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
 const V2_REQUESTED_MODEL: &str = "gpt-5.6-sol";
 const V2_REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
+
+enum ChildResponseTiming {
+    Immediate,
+    Delayed(Duration),
+    Gated(mpsc::Receiver<()>),
+}
+
+struct GatedSseResponse {
+    gate_rx: Mutex<Option<mpsc::Receiver<()>>>,
+    response: String,
+}
+
+impl Respond for GatedSseResponse {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        if let Some(gate_rx) = self
+            .gate_rx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = gate_rx.recv();
+        }
+        sse_response(self.response.clone())
+    }
+}
 const ROLE_MODEL: &str = "gpt-5.4";
 const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
 const SUBAGENT_START_CONTEXT: &str = "subagent start context reaches child";
@@ -167,12 +223,13 @@ async fn wait_for_agent_messages(
     expected_agent_messages: &[Value],
     description: &str,
 ) -> Result<ResponsesRequest> {
+    let expected_agent_messages = normalize_agent_messages(expected_agent_messages.to_vec());
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let requests = mock.requests();
         if let Some(request) = requests.into_iter().find(|request| {
-            strip_metadata_from_json(Value::Array(request.inputs_of_type("agent_message")))
-                == Value::Array(expected_agent_messages.to_vec())
+            normalize_agent_messages(request.inputs_of_type("agent_message"))
+                == expected_agent_messages
         }) {
             return Ok(request);
         }
@@ -188,10 +245,245 @@ async fn wait_for_agent_messages(
     }
 }
 
+fn normalize_agent_messages(messages: Vec<Value>) -> Value {
+    Value::Array(
+        messages
+            .into_iter()
+            .map(strip_metadata_from_json)
+            .map(|mut message| {
+                if let Value::Object(message) = &mut message {
+                    message.remove("id");
+                }
+                message
+            })
+            .collect(),
+    )
+}
+
+async fn wait_for_request_containing_text(
+    mock: &core_test_support::responses::ResponseMock,
+    text: &str,
+) -> Result<ResponsesRequest> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(request) = mock
+            .requests()
+            .into_iter()
+            .find(|request| request.body_contains_text(text))
+        {
+            return Ok(request);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for request containing {text:?}");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn read_test_rollout_items(test: &TestCodex) -> Result<Vec<RolloutItem>> {
+    let rollout_path = test
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+    fs::read_to_string(rollout_path)?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<RolloutLine>(line)
+                .map(|rollout_line| rollout_line.item)
+                .map_err(Into::into)
+        })
+        .collect()
+}
+
 fn has_subagent_notification(req: &ResponsesRequest) -> bool {
     req.message_input_texts("user")
         .iter()
         .any(|text| text.contains("<subagent_notification>"))
+}
+
+fn sub_agent_completion_item(
+    item: &TurnItem,
+) -> Option<(String, SubAgentCompletionStatus, String, String)> {
+    let TurnItem::AgentMessage(item) = item else {
+        return None;
+    };
+    if item.phase != Some(MessagePhase::Commentary) || !item.has_sub_agent_completion_identity() {
+        return None;
+    }
+    let status = sub_agent_completion_status_from_response_item_id(&item.id)?;
+    let [AgentMessageContent::Text { text }] = item.content.as_slice() else {
+        return None;
+    };
+    let (agent_reference, payload) = sub_agent_completion_transcript_parts(text)?;
+    Some((
+        item.id.clone(),
+        status,
+        agent_reference.to_string(),
+        payload.to_string(),
+    ))
+}
+
+fn sub_agent_completion_started_id(event: &EventMsg) -> Option<String> {
+    let EventMsg::ItemStarted(event) = event else {
+        return None;
+    };
+    sub_agent_completion_item(&event.item).map(|(id, _, _, _)| id)
+}
+
+fn sub_agent_completion_event(
+    event: &EventMsg,
+) -> Option<(String, SubAgentCompletionStatus, String, String)> {
+    let EventMsg::ItemCompleted(event) = event else {
+        return None;
+    };
+    sub_agent_completion_item(&event.item)
+}
+
+fn completed_wait_agent_states(
+    event: &EventMsg,
+) -> Option<HashMap<ThreadId, codex_protocol::protocol::AgentStatus>> {
+    let EventMsg::ItemCompleted(event) = event else {
+        return None;
+    };
+    let TurnItem::CollabAgentToolCall(item) = &event.item else {
+        return None;
+    };
+    (item.tool == CollabAgentTool::Wait && !item.agents_states.is_empty())
+        .then(|| item.agents_states.clone())
+}
+
+fn completed_parent_turn_has_error(event: &EventMsg) -> Option<bool> {
+    let EventMsg::TurnComplete(event) = event else {
+        return None;
+    };
+    (event.last_agent_message.as_deref() == Some("done")).then_some(event.error.is_some())
+}
+
+async fn wait_for_terminal_status(thread: &codex_core::CodexThread) -> Result<AgentStatus> {
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 10);
+    loop {
+        let status = thread.agent_status().await;
+        if matches!(
+            status,
+            AgentStatus::Completed(_)
+                | AgentStatus::Errored(_)
+                | AgentStatus::Shutdown
+                | AgentStatus::NotFound
+        ) {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for child terminal publication");
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+async fn diagnostic_stage<T>(
+    stage: &'static str,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    tokio::time::timeout(Duration::from_secs(30), future)
+        .await
+        .unwrap_or_else(|_| panic!("timed out during {stage}"))
+}
+
+async fn wait_for_rollback_or_error(codex: &codex_core::CodexThread, stage: &'static str) {
+    diagnostic_stage(stage, async {
+        loop {
+            let event = codex.next_event().await.expect("rollback event stream");
+            match event.msg {
+                EventMsg::ThreadRolledBack(_) => return,
+                EventMsg::Error(error) => panic!("rollback failed: {}", error.message),
+                _ => {}
+            }
+        }
+    })
+    .await;
+}
+
+async fn wait_for_completion_after_rollback(
+    codex: &codex_core::CodexThread,
+) -> (String, SubAgentCompletionStatus, String, String) {
+    let mut rollback_completed = false;
+    let mut completion = None;
+    wait_for_event_with_timeout(
+        codex,
+        |event| {
+            if matches!(event, EventMsg::ThreadRolledBack(_)) {
+                rollback_completed = true;
+            }
+            if let Some(event) = sub_agent_completion_event(event) {
+                assert!(
+                    rollback_completed,
+                    "completion must not cross a pending rollback reservation"
+                );
+                completion = Some(event);
+            }
+            rollback_completed && completion.is_some()
+        },
+        Duration::from_secs(/*secs*/ 30),
+    )
+    .await;
+    completion.expect("completion event")
+}
+
+async fn resume_in_memory_thread_from_store(
+    test: &TestCodex,
+) -> Result<Arc<codex_core::CodexThread>> {
+    let stored_thread = test
+        .codex
+        .read_thread(
+            /*include_archived*/ false, /*include_history*/ true,
+        )
+        .await?;
+    let thread_id = stored_thread.thread_id;
+    let history = stored_thread
+        .history
+        .ok_or_else(|| anyhow::anyhow!("stored thread should include history"))?;
+    test.thread_manager.remove_thread(&thread_id).await;
+    let resumed = test
+        .thread_manager
+        .resume_thread_with_history(
+            test.config.clone(),
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: thread_id,
+                history: Arc::new(history.items),
+                rollout_path: None,
+            }),
+            codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test")),
+            /*parent_trace*/ None,
+            /*supports_openai_form_elicitation*/ false,
+        )
+        .await?;
+    Ok(resumed.thread)
+}
+
+async fn submit_turn_on_thread(codex: &codex_core::CodexThread, prompt: &str) -> Result<()> {
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: prompt.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    let turn_id = wait_for_event_match(codex, |event| match event {
+        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    wait_for_event_match(codex, |event| match event {
+        EventMsg::TurnComplete(event) if event.turn_id == turn_id => Some(()),
+        _ => None,
+    })
+    .await;
+    Ok(())
 }
 
 fn tool_parameter_description(tool: &Value, parameter_name: &str) -> Option<String> {
@@ -456,16 +748,17 @@ async fn wait_for_request_with_model(
 
 async fn setup_turn_one_with_spawned_child(
     server: &MockServer,
-    child_response_delay: Option<Duration>,
+    child_response_timing: ChildResponseTiming,
+    history_mode: ThreadHistoryMode,
 ) -> Result<(TestCodex, String)> {
     let (test, spawned_id, _child_request_log) = setup_turn_one_with_custom_spawned_child(
         server,
         json!({
             "message": CHILD_PROMPT,
         }),
-        child_response_delay,
+        child_response_timing,
         /*wait_for_parent_notification*/ true,
-        |builder| builder,
+        |builder| builder.with_history_mode(history_mode),
     )
     .await?;
     Ok((test, spawned_id))
@@ -474,7 +767,7 @@ async fn setup_turn_one_with_spawned_child(
 async fn setup_turn_one_with_custom_spawned_child(
     server: &MockServer,
     spawn_args: serde_json::Value,
-    child_response_delay: Option<Duration>,
+    child_response_timing: ChildResponseTiming,
     wait_for_parent_notification: bool,
     configure_test: impl FnOnce(
         core_test_support::test_codex::TestCodexBuilder,
@@ -507,24 +800,42 @@ async fn setup_turn_one_with_custom_spawned_child(
         ev_assistant_message("msg-child-1", "child done"),
         ev_completed("resp-child-1"),
     ]);
-    let child_request_log = if let Some(delay) = child_response_delay {
-        mount_response_once_match(
-            server,
-            |req: &wiremock::Request| {
-                body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
-            },
-            sse_response(child_sse).set_delay(delay),
-        )
-        .await
-    } else {
-        mount_sse_once_match(
-            server,
-            |req: &wiremock::Request| {
-                body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
-            },
-            child_sse,
-        )
-        .await
+    let wait_for_initial_notification =
+        matches!(&child_response_timing, ChildResponseTiming::Immediate);
+    let child_request_log = match child_response_timing {
+        ChildResponseTiming::Immediate => {
+            mount_sse_once_match(
+                server,
+                |req: &wiremock::Request| {
+                    body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+                },
+                child_sse,
+            )
+            .await
+        }
+        ChildResponseTiming::Delayed(delay) => {
+            mount_response_once_match(
+                server,
+                |req: &wiremock::Request| {
+                    body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+                },
+                sse_response(child_sse).set_delay(delay),
+            )
+            .await
+        }
+        ChildResponseTiming::Gated(gate_rx) => {
+            mount_responder_once_match(
+                server,
+                |req: &wiremock::Request| {
+                    body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+                },
+                GatedSseResponse {
+                    gate_rx: Mutex::new(Some(gate_rx)),
+                    response: child_sse,
+                },
+            )
+            .await
+        }
     };
 
     let _turn1_followup = mount_sse_once_match(
@@ -548,7 +859,7 @@ async fn setup_turn_one_with_custom_spawned_child(
     }));
     let test = builder.build_with_auto_env(server).await?;
     test.submit_turn(TURN_1_PROMPT).await?;
-    if child_response_delay.is_none() && wait_for_parent_notification {
+    if wait_for_initial_notification && wait_for_parent_notification {
         let _ = wait_for_requests(&child_request_log).await?;
         let rollout_path = test
             .codex
@@ -585,7 +896,7 @@ async fn spawn_child_and_capture_snapshot(
     let (test, spawned_id, _child_request_log) = setup_turn_one_with_custom_spawned_child(
         server,
         spawn_args,
-        /*child_response_delay*/ None,
+        ChildResponseTiming::Immediate,
         /*wait_for_parent_notification*/ false,
         configure_test,
     )
@@ -923,13 +1234,252 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
     Ok(())
 }
 
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn subagent_notification_is_included_without_wait() -> Result<()> {
+async fn v2_completion_waits_for_pending_rollback_and_survives_cold_resume(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": "start child",
+        "task_message": "audit child",
+        "task_name": "worker",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-parent-spawn-during-rollback"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-parent-spawn-during-rollback"),
+        ]),
+    )
+    .await;
+    let child_request = mount_response_once_match(
+        &server,
+        |req: &wiremock::Request| request_has_agent_message_route(req, "/root", "/root/worker"),
+        sse_response(sse(vec![
+            ev_response_created("resp-child-during-rollback"),
+            ev_assistant_message("msg-child-during-rollback", "child done"),
+            ev_completed("resp-child-during-rollback"),
+        ]))
+        .set_delay(Duration::from_secs(/*secs*/ 5)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, SPAWN_CALL_ID)
+                && body_contains(req, "\"type\":\"function_call_output\"")
+        },
+        sse(vec![
+            ev_response_created("resp-parent-finished-before-rollback"),
+            ev_assistant_message("msg-parent-finished-before-rollback", "parent done"),
+            ev_completed("resp-parent-finished-before-rollback"),
+        ]),
+    )
+    .await;
+    let notification =
+        "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nchild done";
+    let resumed_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
+        sse(vec![
+            ev_response_created("resp-v2-racing-rollback-resume"),
+            ev_assistant_message("msg-v2-racing-rollback-resume", "completion retained"),
+            ev_completed("resp-v2-racing-rollback-resume"),
+        ]),
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_model("koffing")
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+        });
+    let initial = builder.build(&server).await?;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+
+    initial.submit_turn(TURN_1_PROMPT).await?;
+    let child_thread_id = ThreadId::from_string(&wait_for_spawned_thread_id(&initial).await?)?;
+    let child_thread = initial.thread_manager.get_thread(child_thread_id).await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    initial
+        .codex
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("child done".to_string()))
+    );
+    drop(durable_context_permit);
+
+    let completion = wait_for_completion_after_rollback(&initial.codex).await;
+    assert_eq!(
+        completion,
+        (
+            completion.0.clone(),
+            SubAgentCompletionStatus::Completed,
+            "/root/worker".to_string(),
+            "child done".to_string(),
+        )
+    );
+    initial.codex.flush_rollout().await?;
+    let rollout_items = read_test_rollout_items(&initial)?;
+    let effective_history = rollout_without_exact_rollback_ranges(&rollout_items);
+    assert_eq!(
+        effective_history
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::ResponseItem(ResponseItem::AgentMessage { id: Some(id), .. })
+                        if is_sub_agent_completion_context_response_item_id(id)
+                )
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        effective_history
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+                )
+            })
+            .count(),
+        1
+    );
+
+    initial.codex.submit(Op::Shutdown).await?;
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete).then_some(())
+    })
+    .await;
+
+    builder = builder
+        .with_model("koffing")
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+        });
+    let resumed = builder.resume(&server, home, rollout_path).await?;
+    resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
+
+    let expected_agent_messages = vec![json!({
+        "type": "agent_message",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{
+            "type": "input_text",
+            "text": notification,
+        }],
+    })];
+    let request = wait_for_agent_messages(
+        &resumed_request,
+        &expected_agent_messages,
+        "expected one v2 completion after pending rollback and cold resume",
+    )
+    .await?;
+    assert_eq!(
+        normalize_agent_messages(request.inputs_of_type("agent_message")),
+        normalize_agent_messages(expected_agent_messages)
+    );
+
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subagent_notification_is_included_without_wait(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let (test, _spawned_id) =
-        setup_turn_one_with_spawned_child(&server, /*child_response_delay*/ None).await?;
+    let (child_gate_tx, child_gate_rx) = mpsc::channel();
+    let (test, spawned_id) = setup_turn_one_with_spawned_child(
+        &server,
+        ChildResponseTiming::Gated(child_gate_rx),
+        history_mode,
+    )
+    .await?;
+
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+    let started_id = wait_for_event_match(&test.codex, sub_agent_completion_started_id).await;
+    let expected_completion = (
+        started_id,
+        SubAgentCompletionStatus::Completed,
+        spawned_id,
+        "child done".to_string(),
+    );
+    assert_eq!(
+        wait_for_event_match(&test.codex, sub_agent_completion_event).await,
+        expected_completion
+    );
+    test.codex.flush_rollout().await?;
+    let history = read_test_rollout_items(&test)?;
+    let completion_index = history
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+            )
+        })
+        .expect("persisted completion");
+    let RolloutItem::EventMsg(EventMsg::ItemCompleted(completed)) = &history[completion_index]
+    else {
+        unreachable!("located completion item");
+    };
+    assert!(matches!(
+        history.get(completion_index.wrapping_sub(1)),
+        Some(RolloutItem::EventMsg(EventMsg::TurnStarted(started)))
+            if started.turn_id == completed.turn_id
+    ));
+    assert!(matches!(
+        history.get(completion_index + 1),
+        Some(RolloutItem::EventMsg(EventMsg::TurnComplete(finished)))
+            if finished.turn_id == completed.turn_id
+    ));
+    let persisted_completions = history
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(event) => sub_agent_completion_event(event),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(persisted_completions, vec![expected_completion]);
 
     let turn2 = mount_sse_once_match(
         &server,
@@ -945,6 +1495,1007 @@ async fn subagent_notification_is_included_without_wait() -> Result<()> {
 
     let turn2_requests = wait_for_requests(&turn2).await?;
     assert!(turn2_requests.iter().any(has_subagent_notification));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_subagent_notification_survives_an_active_parent_turn_abort() -> Result<()> {
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-parent-spawn"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-parent-spawn"),
+        ]),
+    )
+    .await;
+    let blocked_parent = mount_response_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        sse_response(sse(vec![
+            ev_response_created("resp-parent-blocked"),
+            ev_assistant_message("msg-parent-blocked", "should be interrupted"),
+            ev_completed("resp-parent-blocked"),
+        ]))
+        .set_delay(Duration::from_secs(60)),
+    )
+    .await;
+    let child_request = mount_response_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-child"),
+            ev_assistant_message("msg-child", "child done"),
+            ev_completed("resp-child"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    let follow_up = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_ABORT_PROMPT),
+        sse(vec![
+            ev_response_created("resp-after-abort"),
+            ev_assistant_message("msg-after-abort", "notification retained"),
+            ev_completed("resp-after-abort"),
+        ]),
+    )
+    .await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: TURN_1_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                model: Some(test.session_configured.model.clone()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let _ = wait_for_requests(&blocked_parent).await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let _ = wait_for_event_match(&test.codex, sub_agent_completion_event).await;
+
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event_match(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_)).then_some(())
+    })
+    .await;
+    test.submit_turn(TURN_AFTER_ABORT_PROMPT).await?;
+
+    let follow_up_request =
+        wait_for_request_containing_text(&follow_up, TURN_AFTER_ABORT_PROMPT).await?;
+    assert!(
+        has_subagent_notification(&follow_up_request),
+        "expected the child notification in the first request after abort"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_terminal_published_before_shutdown_survives_resume() -> Result<()> {
+    let server = start_mock_server().await;
+    let notification_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
+        sse(vec![
+            ev_response_created("resp-after-resume"),
+            ev_assistant_message("msg-after-resume", "completion retained"),
+            ev_completed("resp-after-resume"),
+        ]),
+    )
+    .await;
+    let (child_gate_tx, child_gate_rx) = mpsc::channel();
+    let (initial, spawned_id) = setup_turn_one_with_spawned_child(
+        &server,
+        ChildResponseTiming::Gated(child_gate_rx),
+        ThreadHistoryMode::Legacy,
+    )
+    .await?;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+    let child_thread = initial
+        .thread_manager
+        .get_thread(ThreadId::from_string(&spawned_id)?)
+        .await?;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if matches!(
+            child_thread.agent_status().await,
+            codex_protocol::protocol::AgentStatus::Completed(_)
+                | codex_protocol::protocol::AgentStatus::Errored(_)
+                | codex_protocol::protocol::AgentStatus::Shutdown
+                | codex_protocol::protocol::AgentStatus::NotFound
+        ) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for child terminal publication");
+        }
+        tokio::task::yield_now().await;
+    }
+
+    initial.codex.submit(Op::Shutdown).await?;
+    let started_id = wait_for_event_match(&initial.codex, sub_agent_completion_started_id).await;
+    assert_eq!(
+        wait_for_event_match(&initial.codex, sub_agent_completion_event).await,
+        (
+            started_id,
+            SubAgentCompletionStatus::Completed,
+            spawned_id,
+            "child done".to_string(),
+        )
+    );
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete).then_some(())
+    })
+    .await;
+
+    let mut resume_builder = test_codex()
+        .with_model(INHERITED_MODEL)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
+
+    let notification_request =
+        wait_for_request_containing_text(&notification_request, TURN_AFTER_RESUME_PROMPT).await?;
+    assert!(
+        has_subagent_notification(&notification_request),
+        "expected the pre-shutdown v1 completion in resumed model context"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_watcher_retries_canonical_completion_before_shutdown_and_replay() -> Result<()> {
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let configured_store_id = store_id.clone();
+    let (child_gate_tx, child_gate_rx) = mpsc::channel();
+    let (initial, spawned_id, _child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+        }),
+        ChildResponseTiming::Gated(child_gate_rx),
+        /*wait_for_parent_notification*/ false,
+        move |builder| {
+            builder.with_config(move |config| {
+                config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                    id: configured_store_id,
+                };
+            })
+        },
+    )
+    .await?;
+    let child_thread = initial
+        .thread_manager
+        .get_thread(ThreadId::from_string(&spawned_id)?)
+        .await?;
+    store.fail_next_sub_agent_completion_append().await;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("child done".to_string()))
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while store.sub_agent_completion_append_attempt_ids().await.len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("canonical completion retry should reach the persistence gate");
+
+    let attempted_ids = store.sub_agent_completion_append_attempt_ids().await;
+    assert_eq!(attempted_ids.len(), 2);
+    assert_eq!(attempted_ids[0], attempted_ids[1]);
+    while let Some(event) = initial.codex.try_next_event()? {
+        assert!(sub_agent_completion_event(&event.msg).is_none());
+    }
+    let history_after_failure = initial
+        .codex
+        .load_history(/*include_archived*/ false)
+        .await?;
+    assert_eq!(
+        history_after_failure
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+                )
+            })
+            .count(),
+        0
+    );
+
+    let shutdown_codex = initial.codex.clone();
+    let mut shutdown = tokio::spawn(async move { shutdown_codex.submit(Op::Shutdown).await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
+            .await
+            .is_err(),
+        "shutdown should wait for the accepted completion retry"
+    );
+    store.release_sub_agent_completion_retry().await;
+
+    let started_id = wait_for_event_match(&initial.codex, sub_agent_completion_started_id).await;
+    assert_eq!(
+        wait_for_event_match(&initial.codex, sub_agent_completion_event).await,
+        (
+            started_id.clone(),
+            SubAgentCompletionStatus::Completed,
+            spawned_id,
+            "child done".to_string(),
+        )
+    );
+    shutdown.await??;
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete).then_some(())
+    })
+    .await;
+
+    assert_eq!(
+        store.sub_agent_completion_append_attempt_ids().await,
+        vec![started_id.clone(), started_id]
+    );
+    let durable_history = initial
+        .codex
+        .load_history(/*include_archived*/ false)
+        .await?;
+    assert_eq!(
+        durable_history
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+                )
+            })
+            .count(),
+        1
+    );
+
+    let resumed_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
+        sse(vec![
+            ev_response_created("resp-after-retry-resume"),
+            ev_assistant_message("msg-after-retry-resume", "completion retained"),
+            ev_completed("resp-after-retry-resume"),
+        ]),
+    )
+    .await;
+    let resumed = resume_in_memory_thread_from_store(&initial).await?;
+    submit_turn_on_thread(resumed.as_ref(), TURN_AFTER_RESUME_PROMPT).await?;
+    let resumed_request =
+        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT).await?;
+    assert_eq!(
+        resumed_request
+            .message_input_texts("user")
+            .iter()
+            .filter(|text| text.contains("<subagent_notification>"))
+            .count(),
+        1
+    );
+    InMemoryThreadStore::remove_id(&store_id);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_watcher_releases_completion_when_rollback_requires_reload() -> Result<()> {
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let configured_store_id = store_id.clone();
+    let (child_gate_tx, child_gate_rx) = mpsc::channel();
+    let (initial, spawned_id, _child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+        }),
+        ChildResponseTiming::Gated(child_gate_rx),
+        /*wait_for_parent_notification*/ false,
+        move |builder| {
+            builder.with_config(move |config| {
+                config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                    id: configured_store_id,
+                };
+            })
+        },
+    )
+    .await?;
+    let child_thread = initial
+        .thread_manager
+        .get_thread(ThreadId::from_string(&spawned_id)?)
+        .await?;
+    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    store
+        .fail_next_operation(InMemoryThreadStoreFailure::ThreadRollbackFlush)
+        .await;
+
+    initial
+        .codex
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("child done".to_string()))
+    );
+    drop(durable_context_permit);
+
+    wait_for_event_match(&initial.codex, |event| match event {
+        EventMsg::Error(error)
+            if error.codex_error_info == Some(CodexErrorInfo::ThreadRollbackCommitUnknown) =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        initial.codex.wait_until_terminated(),
+    )
+    .await
+    .expect("reload-required session should terminate after rejecting the completion");
+
+    assert!(
+        store
+            .sub_agent_completion_append_attempt_ids()
+            .await
+            .is_empty()
+    );
+    let durable_history = initial
+        .codex
+        .load_history(/*include_archived*/ false)
+        .await?;
+    let durable_history_json = serde_json::to_string(&durable_history.items)?;
+    assert!(!durable_history_json.contains("<subagent_notification>"));
+    assert!(!durable_history.items.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+        )
+    }));
+
+    let resumed_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
+        sse(vec![
+            ev_response_created("resp-after-reload-required-resume"),
+            ev_assistant_message("msg-after-reload-required-resume", "completion rejected"),
+            ev_completed("resp-after-reload-required-resume"),
+        ]),
+    )
+    .await;
+    let resumed = resume_in_memory_thread_from_store(&initial).await?;
+    submit_turn_on_thread(resumed.as_ref(), TURN_AFTER_RESUME_PROMPT).await?;
+    let resumed_request =
+        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT).await?;
+    assert_eq!(
+        resumed_request
+            .message_input_texts("user")
+            .iter()
+            .filter(|text| text.contains("<subagent_notification>"))
+            .count(),
+        0
+    );
+    InMemoryThreadStore::remove_id(&store_id);
+
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_accepted_completion_survives_exact_rollback_and_cold_resume(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let resumed_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
+        sse(vec![
+            ev_response_created("resp-after-rollback-resume"),
+            ev_assistant_message("msg-after-rollback-resume", "completion retained"),
+            ev_completed("resp-after-rollback-resume"),
+        ]),
+    )
+    .await;
+    let (child_gate_tx, child_gate_rx) = mpsc::channel();
+    let (initial, spawned_id) = setup_turn_one_with_spawned_child(
+        &server,
+        ChildResponseTiming::Gated(child_gate_rx),
+        history_mode,
+    )
+    .await?;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+    let started_id = wait_for_event_match(&initial.codex, sub_agent_completion_started_id).await;
+    let completion = wait_for_event_match(&initial.codex, sub_agent_completion_event).await;
+    let expected_completion = (
+        started_id,
+        SubAgentCompletionStatus::Completed,
+        spawned_id,
+        "child done".to_string(),
+    );
+    assert_eq!(
+        completion, expected_completion,
+        "completion item should carry its generated canonical identity"
+    );
+
+    initial
+        .codex
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_)).then_some(())
+    })
+    .await;
+    initial.codex.flush_rollout().await?;
+
+    let rollout_items = read_test_rollout_items(&initial)?;
+    let effective_history = rollout_without_exact_rollback_ranges(&rollout_items);
+    assert!(effective_history.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::ResponseItem(ResponseItem::Message { id: Some(id), .. })
+                if is_sub_agent_completion_context_response_item_id(id)
+        )
+    }));
+    assert_eq!(
+        effective_history
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+                )
+            })
+            .count(),
+        1
+    );
+
+    initial.codex.submit(Op::Shutdown).await?;
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete).then_some(())
+    })
+    .await;
+
+    let mut resume_builder = test_codex()
+        .with_model(INHERITED_MODEL)
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
+
+    let resumed_request =
+        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT).await?;
+    assert!(
+        has_subagent_notification(&resumed_request),
+        "expected the accepted v1 completion after exact rollback and cold resume"
+    );
+
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let resumed_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
+        sse(vec![
+            ev_response_created("resp-after-racing-rollback-resume"),
+            ev_assistant_message("msg-after-racing-rollback-resume", "completion retained"),
+            ev_completed("resp-after-racing-rollback-resume"),
+        ]),
+    )
+    .await;
+    let (child_gate_tx, child_gate_rx) = mpsc::channel();
+    let (initial, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+        }),
+        ChildResponseTiming::Gated(child_gate_rx),
+        /*wait_for_parent_notification*/ false,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+    let child_thread = initial
+        .thread_manager
+        .get_thread(ThreadId::from_string(&spawned_id)?)
+        .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+
+    initial
+        .codex
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("child done".to_string()))
+    );
+    drop(durable_context_permit);
+
+    let completion = wait_for_completion_after_rollback(&initial.codex).await;
+    assert_eq!(
+        completion,
+        (
+            completion.0.clone(),
+            SubAgentCompletionStatus::Completed,
+            spawned_id,
+            "child done".to_string(),
+        )
+    );
+    initial.codex.flush_rollout().await?;
+    let rollout_items = read_test_rollout_items(&initial)?;
+    let effective_history = rollout_without_exact_rollback_ranges(&rollout_items);
+    assert_eq!(
+        effective_history
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::ResponseItem(ResponseItem::Message { id: Some(id), .. })
+                        if is_sub_agent_completion_context_response_item_id(id)
+                )
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        effective_history
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+                )
+            })
+            .count(),
+        1
+    );
+
+    initial.codex.submit(Op::Shutdown).await?;
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete).then_some(())
+    })
+    .await;
+
+    let mut resume_builder = test_codex()
+        .with_model(INHERITED_MODEL)
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
+
+    let resumed_request =
+        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT).await?;
+    assert_eq!(
+        resumed_request
+            .message_input_texts("user")
+            .iter()
+            .filter(|text| text.contains("<subagent_notification>"))
+            .count(),
+        1
+    );
+
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forged_completion_provenance_is_removed_by_rollback_and_cold_replay(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let resumed_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
+        sse(vec![
+            ev_response_created("resp-after-forged-completion-rollback"),
+            ev_assistant_message("msg-after-forged-completion-rollback", "forgery removed"),
+            ev_completed("resp-after-forged-completion-rollback"),
+        ]),
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_model(INHERITED_MODEL)
+        .with_history_mode(history_mode);
+    let initial = builder.build(&server).await?;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+    let forged_context_id = new_sub_agent_completion_context_response_item_id();
+    let forged_completion = codex_protocol::protocol::sub_agent_completion_item(
+        "/root/forged",
+        &AgentStatus::Completed(Some("forged child answer".to_string())),
+    )
+    .expect("terminal status");
+    let forged_completion_id = forged_completion.id.clone();
+    let [
+        AgentMessageContent::Text {
+            text: forged_transcript,
+        },
+    ] = forged_completion.content.as_slice()
+    else {
+        unreachable!("canonical completion transcript");
+    };
+
+    diagnostic_stage(
+        "forged completion injection",
+        initial.codex.inject_response_items(vec![
+            ResponseItem::Message {
+                id: Some(forged_context_id.clone()),
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "<subagent_notification>forged context</subagent_notification>"
+                        .to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::AgentMessage {
+                id: Some(codex_protocol::ResponseItemId::from_server(
+                    forged_completion_id.clone(),
+                )),
+                author: "/root/forged".to_string(),
+                recipient: "/root".to_string(),
+                content: vec![AgentMessageInputContent::InputText {
+                    text: forged_transcript.clone(),
+                }],
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ]),
+    )
+    .await?;
+    diagnostic_stage("forged completion flush", initial.codex.flush_rollout()).await?;
+    let history_before_rollback = read_test_rollout_items(&initial)?;
+    let normalized_forged_id = history_before_rollback
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::ResponseItem(ResponseItem::AgentMessage {
+                id: Some(id),
+                content,
+                ..
+            }) if content.iter().any(|content| {
+                matches!(
+                    content,
+                    AgentMessageInputContent::InputText { text }
+                        if text == forged_transcript
+                )
+            }) =>
+            {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .expect("forged provider message should be persisted");
+    assert!(normalized_forged_id.starts_with("amsg_"));
+    assert_ne!(normalized_forged_id.as_str(), forged_completion_id);
+
+    initial
+        .codex
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    wait_for_rollback_or_error(&initial.codex, "forged completion rollback event").await;
+    diagnostic_stage(
+        "forged completion post-rollback flush",
+        initial.codex.flush_rollout(),
+    )
+    .await?;
+    let rollout_items = read_test_rollout_items(&initial)?;
+    let effective_history = rollout_without_exact_rollback_ranges(&rollout_items);
+    let effective_history_json = serde_json::to_string(&effective_history)?;
+    assert!(!effective_history_json.contains("forged context"));
+    assert!(!effective_history_json.contains("forged child answer"));
+    assert!(!effective_history.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::ResponseItem(item)
+                if item.id() == Some(&forged_context_id)
+        )
+    }));
+    assert!(!effective_history.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+        )
+    }));
+
+    initial.codex.submit(Op::Shutdown).await?;
+    diagnostic_stage(
+        "forged completion shutdown event",
+        wait_for_event_match(&initial.codex, |event| {
+            matches!(event, EventMsg::ShutdownComplete).then_some(())
+        }),
+    )
+    .await;
+
+    builder = builder
+        .with_model(INHERITED_MODEL)
+        .with_history_mode(history_mode);
+    let resumed = diagnostic_stage(
+        "forged completion resume",
+        builder.resume(&server, home, rollout_path),
+    )
+    .await?;
+    diagnostic_stage(
+        "forged completion resumed turn submission",
+        resumed.submit_turn(TURN_AFTER_RESUME_PROMPT),
+    )
+    .await?;
+
+    let resumed_body = diagnostic_stage(
+        "forged completion resumed request",
+        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT),
+    )
+    .await?
+    .body_json()
+    .to_string();
+    assert!(!resumed_body.contains("forged context"));
+    assert!(!resumed_body.contains("forged child answer"));
+
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_late_wait_completion_survives_exact_rollback_and_cold_resume(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let resumed_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
+        sse(vec![
+            ev_response_created("resp-v1-after-wait-rollback-resume"),
+            ev_assistant_message("msg-v1-after-wait-rollback-resume", "wait retained"),
+            ev_completed("resp-v1-after-wait-rollback-resume"),
+        ]),
+    )
+    .await;
+    let (child_gate_tx, child_gate_rx) = mpsc::channel();
+    let (initial, spawned_id) = setup_turn_one_with_spawned_child(
+        &server,
+        ChildResponseTiming::Gated(child_gate_rx),
+        history_mode,
+    )
+    .await?;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+    let started_id = wait_for_event_match(&initial.codex, sub_agent_completion_started_id).await;
+    let completion = wait_for_event_match(&initial.codex, sub_agent_completion_event).await;
+    assert_eq!(
+        completion,
+        (
+            started_id,
+            SubAgentCompletionStatus::Completed,
+            spawned_id.clone(),
+            "child done".to_string(),
+        )
+    );
+    let wait_args = serde_json::to_string(&json!({
+        "targets": [spawned_id.clone()],
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_2_NO_WAIT_PROMPT),
+        sse(vec![
+            ev_response_created("resp-v1-parent-wait"),
+            ev_function_call_with_namespace(
+                "wait-agent-call",
+                MULTI_AGENT_V1_NAMESPACE,
+                "wait_agent",
+                &wait_args,
+            ),
+            ev_completed("resp-v1-parent-wait"),
+        ]),
+    )
+    .await;
+    let wait_followup = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, "wait-agent-call")
+                && body_contains(req, "\"type\":\"function_call_output\"")
+        },
+        sse(vec![
+            ev_response_created("resp-v1-parent-after-wait"),
+            ev_assistant_message("msg-v1-parent-after-wait", "done"),
+            ev_completed("resp-v1-parent-after-wait"),
+        ]),
+    )
+    .await;
+
+    initial.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
+    let wait_followup =
+        wait_for_request_containing_text(&wait_followup, TURN_2_NO_WAIT_PROMPT).await?;
+    assert!(has_subagent_notification(&wait_followup));
+    initial.codex.flush_rollout().await?;
+    let history = read_test_rollout_items(&initial)?;
+    let wait_agent_states = history
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::EventMsg(event) => completed_wait_agent_states(event),
+            _ => None,
+        })
+        .expect("persisted completed wait");
+    assert_eq!(
+        wait_agent_states,
+        [(
+            ThreadId::from_string(&spawned_id)?,
+            AgentStatus::Completed(Some("child done".to_string())),
+        )]
+        .into_iter()
+        .collect()
+    );
+    assert_eq!(
+        history
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+                )
+            })
+            .count(),
+        1
+    );
+
+    initial
+        .codex
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_)).then_some(())
+    })
+    .await;
+    initial.codex.flush_rollout().await?;
+    let rollout_items = read_test_rollout_items(&initial)?;
+    let effective_history = rollout_without_exact_rollback_ranges(&rollout_items);
+    assert_eq!(
+        effective_history.iter().find_map(|item| match item {
+            RolloutItem::EventMsg(event) => completed_wait_agent_states(event),
+            _ => None,
+        }),
+        Some(wait_agent_states)
+    );
+    assert_eq!(
+        effective_history
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+                )
+            })
+            .count(),
+        1
+    );
+
+    initial.codex.submit(Op::Shutdown).await?;
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete).then_some(())
+    })
+    .await;
+
+    let mut resume_builder = test_codex()
+        .with_model(INHERITED_MODEL)
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
+    let resumed_request =
+        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT).await?;
+    assert_eq!(
+        resumed_request
+            .message_input_texts("user")
+            .iter()
+            .filter(|text| text.contains("<subagent_notification>"))
+            .count(),
+        1
+    );
 
     Ok(())
 }
@@ -1357,7 +2908,7 @@ async fn spawned_agent_uses_summary_support_for_final_model(
             "message": CHILD_PROMPT,
             "model": REQUESTED_MODEL,
         }),
-        /*child_response_delay*/ Some(Duration::from_secs(1)),
+        ChildResponseTiming::Delayed(Duration::from_secs(1)),
         /*wait_for_parent_notification*/ false,
         move |builder| {
             builder.with_config(move |config| {
@@ -1749,7 +3300,9 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     }))?;
     mount_sse_once_match(
         &server,
-        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        |req: &wiremock::Request| {
+            body_contains(req, TURN_1_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
         sse(vec![
             ev_response_created("resp-parent-1"),
             ev_function_call_with_namespace(
@@ -1770,10 +3323,14 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         ],
         CompletionScenario::TerminalError => vec![ev_response_created("resp-child-1")],
     };
-    let child_request = mount_response_once_match(
+    let (child_gate_tx, child_gate_rx) = mpsc::channel();
+    let child_request = mount_responder_once_match(
         &server,
         |req: &wiremock::Request| request_has_agent_message_route(req, "/root", "/root/worker"),
-        sse_response(sse(child_events)).set_delay(Duration::from_secs(1)),
+        GatedSseResponse {
+            gate_rx: Mutex::new(Some(child_gate_rx)),
+            response: sse(child_events),
+        },
     )
     .await;
     mount_sse_once_match(
@@ -1802,8 +3359,6 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     let notification = format!(
         "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\n{payload}"
     );
-    // If the child is still running when the parent turn starts, wait_agent blocks
-    // until mailbox delivery. The follow-up request must then contain that delivery.
     mount_sse_once_match(
         &server,
         |req: &wiremock::Request| {
@@ -1854,7 +3409,18 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         .build(&server)
         .await?;
 
-    test.submit_turn(TURN_1_PROMPT).await?;
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: TURN_1_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
     let expected_child_agent_messages = vec![json!({
         "type": "agent_message",
         "author": "/root",
@@ -1870,13 +3436,237 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
             },
         ],
     })];
-    let _ = wait_for_agent_messages(
-        &child_request,
-        &expected_child_agent_messages,
-        "expected child agent message request",
+    let _ = diagnostic_stage(
+        "plaintext v2 child request",
+        wait_for_agent_messages(
+            &child_request,
+            &expected_child_agent_messages,
+            "expected child agent message request",
+        ),
     )
     .await?;
-    test.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+    let expected_completion = match scenario {
+        CompletionScenario::Completed => (
+            diagnostic_stage(
+                "plaintext v2 completed presentation start",
+                wait_for_event_match(&test.codex, sub_agent_completion_started_id),
+            )
+            .await,
+            SubAgentCompletionStatus::Completed,
+            "/root/worker".to_string(),
+            "child done".to_string(),
+        ),
+        CompletionScenario::TerminalError => (
+            diagnostic_stage(
+                "plaintext v2 errored presentation start",
+                wait_for_event_match(&test.codex, sub_agent_completion_started_id),
+            )
+            .await,
+            SubAgentCompletionStatus::Errored,
+            "/root/worker".to_string(),
+            error.to_string(),
+        ),
+    };
+    assert_eq!(
+        diagnostic_stage(
+            "plaintext v2 presentation completion",
+            wait_for_event_match(&test.codex, sub_agent_completion_event),
+        )
+        .await,
+        expected_completion
+    );
+    diagnostic_stage(
+        "plaintext v2 late wait turn",
+        test.submit_turn(TURN_2_NO_WAIT_PROMPT),
+    )
+    .await?;
+
+    let expected_agent_messages = vec![json!({
+        "type": "agent_message",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{
+            "type": "input_text",
+            "text": notification,
+        }],
+    })];
+    let request = diagnostic_stage(
+        "plaintext v2 parent completion context request",
+        wait_for_agent_messages(
+            &agent_request,
+            &expected_agent_messages,
+            "expected parent completion agent message request",
+        ),
+    )
+    .await?;
+    assert_eq!(
+        normalize_agent_messages(request.inputs_of_type("agent_message")),
+        normalize_agent_messages(expected_agent_messages)
+    );
+    diagnostic_stage("plaintext v2 completion flush", test.codex.flush_rollout()).await?;
+    let history = read_test_rollout_items(&test)?;
+    let wait_agent_states = history
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::EventMsg(event) => completed_wait_agent_states(event),
+            _ => None,
+        })
+        .expect("persisted completed wait");
+    let expected_wait_status = match scenario {
+        CompletionScenario::Completed => {
+            codex_protocol::protocol::AgentStatus::Completed(Some("child done".to_string()))
+        }
+        CompletionScenario::TerminalError => {
+            codex_protocol::protocol::AgentStatus::Errored(error.to_string())
+        }
+    };
+    assert_eq!(
+        wait_agent_states.values().collect::<Vec<_>>(),
+        vec![&expected_wait_status]
+    );
+    assert_eq!(
+        history.iter().rev().find_map(|item| match item {
+            RolloutItem::EventMsg(event) => completed_parent_turn_has_error(event),
+            _ => None,
+        }),
+        Some(false)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_completion_context_survives_shutdown_before_the_next_turn() -> Result<()> {
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": "start child",
+        "task_message": "audit child",
+        "task_name": "worker",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-parent-spawn"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-parent-spawn"),
+        ]),
+    )
+    .await;
+    let child_request = mount_response_once_match(
+        &server,
+        |req: &wiremock::Request| request_has_agent_message_route(req, "/root", "/root/worker"),
+        sse_response(sse(vec![
+            ev_response_created("resp-child"),
+            ev_assistant_message("msg-child", "child done"),
+            ev_completed("resp-child"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, SPAWN_CALL_ID)
+                && body_contains(req, "\"type\":\"function_call_output\"")
+        },
+        sse(vec![
+            ev_response_created("resp-parent-finished"),
+            ev_assistant_message("msg-parent-finished", "parent done"),
+            ev_completed("resp-parent-finished"),
+        ]),
+    )
+    .await;
+    let notification =
+        "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nchild done";
+    let notification_for_request = notification.to_string();
+    let resumed_request = mount_sse_once_match(
+        &server,
+        move |req: &wiremock::Request| {
+            body_contains(req, TURN_AFTER_RESUME_PROMPT)
+                && request_has_agent_message_text(req, &notification_for_request)
+        },
+        sse(vec![
+            ev_response_created("resp-after-resume"),
+            ev_assistant_message("msg-after-resume", "completion retained"),
+            ev_completed("resp-after-resume"),
+        ]),
+    )
+    .await;
+    let mut builder = test_codex().with_model("koffing").with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+    });
+    let initial = builder.build(&server).await?;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+
+    initial.submit_turn(TURN_1_PROMPT).await?;
+    let child_thread_id = ThreadId::from_string(&wait_for_spawned_thread_id(&initial).await?)?;
+    let child_thread = initial.thread_manager.get_thread(child_thread_id).await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if matches!(
+            child_thread.agent_status().await,
+            codex_protocol::protocol::AgentStatus::Completed(_)
+                | codex_protocol::protocol::AgentStatus::Errored(_)
+                | codex_protocol::protocol::AgentStatus::Shutdown
+                | codex_protocol::protocol::AgentStatus::NotFound
+        ) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for child terminal publication");
+        }
+        tokio::task::yield_now().await;
+    }
+    initial.codex.submit(Op::Shutdown).await?;
+    let started_id = wait_for_event_match(&initial.codex, sub_agent_completion_started_id).await;
+    assert_eq!(
+        wait_for_event_match(&initial.codex, sub_agent_completion_event).await,
+        (
+            started_id,
+            SubAgentCompletionStatus::Completed,
+            "/root/worker".to_string(),
+            "child done".to_string(),
+        )
+    );
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete).then_some(())
+    })
+    .await;
+
+    builder = builder.with_model("koffing").with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+    });
+    let resumed = builder.resume(&server, home, rollout_path).await?;
+    resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
 
     let expected_agent_messages = vec![json!({
         "type": "agent_message",
@@ -1888,16 +3678,438 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         }],
     })];
     let request = wait_for_agent_messages(
-        &agent_request,
+        &resumed_request,
         &expected_agent_messages,
-        "expected parent completion agent message request",
+        "expected persisted completion context after shutdown and resume",
     )
     .await?;
     assert_eq!(
-        strip_response_item_ids_from_json(strip_metadata_from_json(Value::Array(
-            request.inputs_of_type("agent_message"),
-        ))),
-        strip_response_item_ids_from_json(Value::Array(expected_agent_messages))
+        normalize_agent_messages(request.inputs_of_type("agent_message")),
+        normalize_agent_messages(expected_agent_messages)
+    );
+
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_accepted_completion_survives_exact_rollback_and_cold_resume(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": "start child",
+        "task_message": "audit child",
+        "task_name": "worker",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-parent-spawn-before-rollback"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-parent-spawn-before-rollback"),
+        ]),
+    )
+    .await;
+    let child_request = mount_response_once_match(
+        &server,
+        |req: &wiremock::Request| request_has_agent_message_route(req, "/root", "/root/worker"),
+        sse_response(sse(vec![
+            ev_response_created("resp-child-before-rollback"),
+            ev_assistant_message("msg-child-before-rollback", "child done"),
+            ev_completed("resp-child-before-rollback"),
+        ]))
+        .set_delay(Duration::from_secs(/*secs*/ 5)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, SPAWN_CALL_ID)
+                && body_contains(req, "\"type\":\"function_call_output\"")
+        },
+        sse(vec![
+            ev_response_created("resp-parent-before-rollback"),
+            ev_assistant_message("msg-parent-before-rollback", "parent done"),
+            ev_completed("resp-parent-before-rollback"),
+        ]),
+    )
+    .await;
+    let notification =
+        "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nchild done";
+    let resumed_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
+        sse(vec![
+            ev_response_created("resp-v2-after-rollback-resume"),
+            ev_assistant_message("msg-v2-after-rollback-resume", "completion retained"),
+            ev_completed("resp-v2-after-rollback-resume"),
+        ]),
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_model("koffing")
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+        });
+    let initial = builder.build(&server).await?;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+
+    initial.submit_turn(TURN_1_PROMPT).await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let started_id = wait_for_event_match(&initial.codex, sub_agent_completion_started_id).await;
+    let completion = wait_for_event_match(&initial.codex, sub_agent_completion_event).await;
+    let expected_completion = (
+        started_id,
+        SubAgentCompletionStatus::Completed,
+        "/root/worker".to_string(),
+        "child done".to_string(),
+    );
+    assert_eq!(completion, expected_completion);
+
+    initial
+        .codex
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_)).then_some(())
+    })
+    .await;
+    initial.codex.flush_rollout().await?;
+
+    let rollout_items = read_test_rollout_items(&initial)?;
+    let effective_history = rollout_without_exact_rollback_ranges(&rollout_items);
+    assert!(effective_history.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::ResponseItem(ResponseItem::AgentMessage { id: Some(id), .. })
+                if is_sub_agent_completion_context_response_item_id(id)
+        )
+    }));
+    assert_eq!(
+        effective_history
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+                )
+            })
+            .count(),
+        1
+    );
+
+    initial.codex.submit(Op::Shutdown).await?;
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete).then_some(())
+    })
+    .await;
+
+    builder = builder
+        .with_model("koffing")
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+        });
+    let resumed = builder.resume(&server, home, rollout_path).await?;
+    resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
+
+    let expected_agent_messages = vec![json!({
+        "type": "agent_message",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{
+            "type": "input_text",
+            "text": notification,
+        }],
+    })];
+    let request = wait_for_agent_messages(
+        &resumed_request,
+        &expected_agent_messages,
+        "expected the accepted v2 completion after exact rollback and cold resume",
+    )
+    .await?;
+    assert_eq!(
+        normalize_agent_messages(request.inputs_of_type("agent_message")),
+        normalize_agent_messages(expected_agent_messages)
+    );
+
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let resumed_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
+        sse(vec![
+            ev_response_created("resp-after-wait-rollback-resume"),
+            ev_assistant_message("msg-after-wait-rollback-resume", "wait retained"),
+            ev_completed("resp-after-wait-rollback-resume"),
+        ]),
+    )
+    .await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": "start child",
+        "task_message": "audit child",
+        "task_name": "worker",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-parent-1"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-parent-1"),
+        ]),
+    )
+    .await;
+    let child_request = mount_response_once_match(
+        &server,
+        |req: &wiremock::Request| request_has_agent_message_route(req, "/root", "/root/worker"),
+        sse_response(sse(vec![
+            ev_response_created("resp-child-1"),
+            ev_assistant_message("msg-child-1", "child done"),
+            ev_completed("resp-child-1"),
+        ]))
+        .set_delay(Duration::from_secs(5)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, SPAWN_CALL_ID)
+                && body_contains(req, "\"type\":\"function_call_output\"")
+        },
+        sse(vec![
+            ev_response_created("resp-parent-2"),
+            ev_assistant_message("msg-parent-2", "parent done"),
+            ev_completed("resp-parent-2"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, TURN_2_NO_WAIT_PROMPT)
+                && !body_contains(req, "Message Type: FINAL_ANSWER")
+        },
+        sse(vec![
+            ev_response_created("resp-parent-3"),
+            ev_function_call_with_namespace(
+                "wait-agent-call",
+                MULTI_AGENT_V2_NAMESPACE,
+                "wait_agent",
+                "{}",
+            ),
+            ev_completed("resp-parent-3"),
+        ]),
+    )
+    .await;
+    let notification =
+        "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nchild done";
+    let notification_for_request = notification.to_string();
+    let agent_request = mount_sse_once_match(
+        &server,
+        move |req: &wiremock::Request| {
+            request_has_agent_message_text(req, &notification_for_request)
+        },
+        sse(vec![
+            ev_response_created("resp-parent-4"),
+            ev_assistant_message("msg-parent-4", "done"),
+            ev_completed("resp-parent-4"),
+        ]),
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_model("koffing")
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build(&server).await?;
+    let home = test.home.clone();
+    let rollout_path = test
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+
+    test.submit_turn(TURN_1_PROMPT).await?;
+    let _ = wait_for_requests(&child_request).await?;
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: TURN_2_NO_WAIT_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    let mut turn_id = None;
+    let mut wait_started = false;
+    wait_for_event_with_timeout(
+        &test.codex,
+        |event| {
+            if turn_id.is_none()
+                && let EventMsg::TurnStarted(event) = event
+            {
+                turn_id = Some(event.turn_id.clone());
+            }
+            if matches!(
+                event,
+                EventMsg::ItemStarted(event)
+                    if matches!(
+                        &event.item,
+                        TurnItem::CollabAgentToolCall(item)
+                            if item.tool == CollabAgentTool::Wait
+                    )
+            ) {
+                wait_started = true;
+            }
+            matches!(
+                event,
+                EventMsg::TurnComplete(event)
+                    if turn_id.as_deref() == Some(event.turn_id.as_str())
+            )
+        },
+        Duration::from_secs(/*secs*/ 30),
+    )
+    .await;
+    if !wait_started {
+        anyhow::bail!("parent turn completed before wait_agent started");
+    }
+    let expected_agent_messages = vec![json!({
+        "type": "agent_message",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{
+            "type": "input_text",
+            "text": notification,
+        }],
+    })];
+    let _ = wait_for_agent_messages(
+        &agent_request,
+        &expected_agent_messages,
+        "expected completion delivery through active wait",
+    )
+    .await?;
+    test.codex.flush_rollout().await?;
+    let history = read_test_rollout_items(&test)?;
+    let wait_agent_states = history
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::EventMsg(event) => completed_wait_agent_states(event),
+            _ => None,
+        })
+        .expect("persisted completed wait");
+    assert_eq!(wait_agent_states.len(), 1);
+    assert_eq!(
+        wait_agent_states.values().next(),
+        Some(&codex_protocol::protocol::AgentStatus::Completed(Some(
+            "child done".to_string()
+        )))
+    );
+    assert!(!history.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+        )
+    }));
+    assert_eq!(
+        history.iter().find_map(|item| match item {
+            RolloutItem::EventMsg(event) => completed_wait_agent_states(event),
+            _ => None,
+        }),
+        Some(wait_agent_states.clone())
+    );
+
+    test.codex
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    wait_for_event_match(&test.codex, |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_)).then_some(())
+    })
+    .await;
+    test.codex.flush_rollout().await?;
+    let rollout_items = read_test_rollout_items(&test)?;
+    let effective_history = rollout_without_exact_rollback_ranges(&rollout_items);
+    assert_eq!(
+        effective_history.iter().find_map(|item| match item {
+            RolloutItem::EventMsg(event) => completed_wait_agent_states(event),
+            _ => None,
+        }),
+        Some(wait_agent_states.clone())
+    );
+    assert!(!effective_history.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(event) if sub_agent_completion_event(event).is_some()
+        )
+    }));
+
+    test.codex.submit(Op::Shutdown).await?;
+    wait_for_event_match(&test.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete).then_some(())
+    })
+    .await;
+
+    let resumed = builder.resume(&server, home, rollout_path).await?;
+    resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
+    let request = wait_for_agent_messages(
+        &resumed_request,
+        &expected_agent_messages,
+        "expected completion context after wait-owned exact rollback and cold resume",
+    )
+    .await?;
+    assert_eq!(
+        normalize_agent_messages(request.inputs_of_type("agent_message")),
+        normalize_agent_messages(expected_agent_messages)
     );
 
     Ok(())

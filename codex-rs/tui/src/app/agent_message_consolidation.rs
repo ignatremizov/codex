@@ -23,6 +23,7 @@ use crate::pager_overlay::Overlay;
 use crate::tui;
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_consolidate_agent_message(
         &mut self,
         tui: &mut tui::Tui,

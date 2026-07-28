@@ -2214,6 +2214,7 @@ async fn emit_agent_message_in_plan_mode(
                     content: Vec::new(),
                     phase: None,
                     memory_citation: None,
+                    sub_agent_completion: None,
                 })
             });
         sess.emit_turn_item_started(turn_context, &start_item).await;

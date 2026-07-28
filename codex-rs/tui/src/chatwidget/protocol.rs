@@ -326,8 +326,10 @@ impl ChatWidget {
                     self.handle_thread_item(
                         item.clone(),
                         notification.turn.id.clone(),
-                        replay_kind
-                            .map_or(ThreadItemRenderSource::Live, ThreadItemRenderSource::Replay),
+                        replay_kind.map_or(
+                            ThreadItemRenderSource::Live,
+                            ThreadItemRenderSource::ReplayedNotification,
+                        ),
                     );
                 }
                 self.last_non_retry_error = None;
@@ -395,6 +397,7 @@ impl ChatWidget {
                 status,
                 sender_thread_id,
                 receiver_thread_ids,
+                receiver_agents,
                 prompt,
                 model,
                 reasoning_effort,
@@ -406,6 +409,7 @@ impl ChatWidget {
                     status,
                     sender_thread_id,
                     receiver_thread_ids,
+                    receiver_agents,
                     prompt,
                     model,
                     reasoning_effort,

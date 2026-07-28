@@ -7,8 +7,6 @@ use crate::session::SteerInputError;
 use crate::session::session::Session;
 use codex_exec_server::SelectedCapabilityRootsStatus;
 use codex_features::Feature;
-use codex_mcp::McpConfig;
-use codex_mcp::ToolPluginProvenance;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -20,13 +18,13 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::ActivePermissionProfile;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AdditionalContextEntry;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
@@ -61,6 +59,8 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use codex_rollout::state_db::StateDbHandle;
+
+mod sub_agent_completion;
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
@@ -242,6 +242,15 @@ impl CodexThread {
                 .await;
         }
         result
+    }
+
+    pub(crate) async fn submit_accepted_completion(
+        &self,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<String> {
+        self.io
+            .submit_accepted_completion(Op::InterAgentCommunication { communication })
+            .await
     }
 
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
@@ -518,20 +527,6 @@ impl CodexThread {
         self.session.token_usage_info().await
     }
 
-    /// Records a user-role session-prefix message without creating a new user turn boundary.
-    pub(crate) async fn inject_user_message_without_turn(&self, message: String) {
-        let item = ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText { text: message }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        };
-        self.session
-            .inject_no_new_turn(vec![item], /*current_turn_context*/ None)
-            .await;
-    }
-
     /// Record raw Responses API items without starting a new turn.
     pub async fn inject_response_items(&self, items: Vec<ResponseItem>) -> CodexResult<()> {
         if items.is_empty() {
@@ -736,31 +731,6 @@ impl CodexThread {
 
     pub async fn has_reference_context(&self) -> bool {
         self.session.reference_context_item().await.is_some()
-    }
-
-    pub async fn refresh_mcp_servers_now(
-        &self,
-        refresh_config: codex_protocol::protocol::McpServerRefreshConfig,
-    ) -> anyhow::Result<()> {
-        let turn_context = self.session.new_default_turn().await;
-        self.session
-            .refresh_mcp_servers_from_refresh_config(turn_context.as_ref(), refresh_config, None)
-            .await
-    }
-
-    pub async fn refresh_mcp_servers_now_with_mcp_config(
-        &self,
-        mcp_config: McpConfig,
-        tool_plugin_provenance: ToolPluginProvenance,
-    ) {
-        let turn_context = self.session.new_default_turn().await;
-        self.session
-            .refresh_mcp_servers_now_with_mcp_config(
-                turn_context.as_ref(),
-                mcp_config,
-                tool_plugin_provenance,
-            )
-            .await;
     }
 
     pub async fn latest_mcp_server_use_context_text(&self, server_name: &str) -> Option<String> {

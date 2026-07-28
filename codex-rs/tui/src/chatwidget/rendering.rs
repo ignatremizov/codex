@@ -233,14 +233,13 @@ mod tests {
         assert!(
             cell.complete_call(
                 &call_id,
-                CommandOutput {
-                    exit_code: 0,
-                    aggregated_output: (1..=40)
+                CommandOutput::new(
+                    0,
+                    (1..=40)
                         .map(|line| format!("output line {line:02}"))
                         .collect::<Vec<_>>()
                         .join("\n"),
-                    formatted_output: String::new(),
-                },
+                ),
                 Duration::from_millis(1),
             )
         );
@@ -288,11 +287,10 @@ mod tests {
         );
         assert!(url_cell.complete_call(
             &url_call_id,
-            CommandOutput {
-                exit_code: 0,
-                aggregated_output: format!("https://example.com/{}\nlast output", "a".repeat(120)),
-                formatted_output: String::new(),
-            },
+            CommandOutput::new(
+                0,
+                format!("https://example.com/{}\nlast output", "a".repeat(120)),
+            ),
             Duration::from_millis(1),
         ));
         let url_renderable = TranscriptAreaRenderable {

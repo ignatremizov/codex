@@ -154,10 +154,13 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
         &RolloutItem::Compacted(CompactedItem {
             message: "compacted history".to_string(),
             replacement_history: Some(Vec::new()),
+            compaction_summary_tokens: None,
             window_number: Some(1),
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            replacement_history_media_sanitized_prefix_len: None,
+            replacement_history_media_repair: false,
         }),
     )
     .await?;

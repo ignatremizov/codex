@@ -403,6 +403,9 @@ Pass any combination of:
 - `searchTerm` — restrict results to threads whose extracted title contains this substring (case-sensitive).
 - Responses include `nextCursor` to continue in the same direction and `backwardsCursor` to pass as `cursor` when reversing `sortDirection`.
 - Responses include `agentNickname` and `agentRole` for AgentControl-spawned thread sub-agents when available.
+- Collab-agent thread items include `receiverAgents` entries with each known receiver's
+  `threadId`, `agentNickname`, and `agentRole`. Clients can use this metadata to label a newly
+  spawned agent immediately instead of waiting for a later `thread/read`.
 
 Example:
 

@@ -9,6 +9,7 @@ use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
@@ -57,6 +58,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::TempDirExt;
@@ -106,6 +108,82 @@ fn thread_manager() -> ThreadManager {
         CodexAuth::from_api_key("dummy"),
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone(),
     )
+}
+
+async fn wait_for_agent_status(thread: &crate::CodexThread, expected: &AgentStatus) {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if &thread.agent_status().await == expected {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("agent status publication");
+}
+
+async fn wait_for_agent_turn_started(thread: &crate::CodexThread) {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let event = thread.next_event().await.expect("child event");
+            if matches!(event.msg, EventMsg::TurnStarted(_)) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("child turn start");
+}
+
+async fn publish_agent_turn_started(
+    thread: &crate::CodexThread,
+    turn: &crate::session::turn_context::TurnContext,
+) {
+    timeout(
+        Duration::from_secs(5),
+        thread.session.send_event(
+            turn,
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn.sub_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+        ),
+    )
+    .await
+    .expect("child turn start delivery");
+}
+
+async fn wait_for_parent_completion_message(
+    manager: &ThreadManager,
+    parent_thread_id: ThreadId,
+    worker_path: &AgentPath,
+    expected: &str,
+) {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if manager.captured_ops().iter().any(|(id, op)| {
+                *id == parent_thread_id
+                    && matches!(
+                        op,
+                        Op::InterAgentCommunication { communication }
+                            if &communication.author == worker_path
+                                && communication.recipient == AgentPath::root()
+                                && communication.other_recipients.is_empty()
+                                && communication.content == expected
+                                && !communication.trigger_turn
+                    )
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("parent completion notification");
 }
 
 async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
@@ -410,7 +488,7 @@ async fn multi_agent_v2_spawn_allows_child_model_without_v2_catalog_tag() {
     set_turn_config(&mut turn, config);
     let manager = thread_manager();
     let root = manager
-        .start_thread((*turn.config).clone())
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
         .await
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
@@ -462,7 +540,7 @@ async fn multi_agent_v2_spawn_omitted_fork_turns_defaults_to_no_context() {
     let role_name = install_role_with_model_override(&mut turn).await;
     let manager = thread_manager();
     let root = manager
-        .start_thread((*turn.config).clone())
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
         .await
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
@@ -1113,7 +1191,7 @@ async fn multi_agent_v2_spawn_requires_task_message() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
-        .start_thread((*turn.config).clone())
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
         .await
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
@@ -1151,7 +1229,7 @@ async fn multi_agent_v2_spawn_rejects_empty_task_message() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
-        .start_thread((*turn.config).clone())
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
         .await
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
@@ -1664,6 +1742,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         .get_thread(agent_id)
         .await
         .expect("child thread should exist");
+    wait_for_agent_turn_started(child_thread.as_ref()).await;
 
     SendMessageHandlerV2::default()
         .handle(invocation(
@@ -1714,9 +1793,9 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         .expect("encrypted-only send_message should succeed");
 
     let child_turn = child_thread.session.new_default_turn().await;
-    child_thread
-        .session
-        .send_event(
+    timeout(
+        Duration::from_secs(5),
+        child_thread.session.send_event(
             child_turn.as_ref(),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: child_turn.sub_id.clone(),
@@ -1727,8 +1806,15 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
                 duration_ms: None,
                 time_to_first_token_ms: None,
             }),
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("child completion delivery");
+    wait_for_agent_status(
+        child_thread.as_ref(),
+        &AgentStatus::Completed(Some("done".to_string())),
+    )
+    .await;
 
     let output = ListAgentsHandlerV2
         .handle(invocation(
@@ -2155,9 +2241,10 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
     let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
 
     let first_turn = thread.session.new_default_turn().await;
-    thread
-        .session
-        .send_event(
+    publish_agent_turn_started(thread.as_ref(), first_turn.as_ref()).await;
+    timeout(
+        Duration::from_secs(5),
+        thread.session.send_event(
             first_turn.as_ref(),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: first_turn.sub_id.clone(),
@@ -2168,7 +2255,17 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
                 duration_ms: None,
                 time_to_first_token_ms: None,
             }),
-        )
+        ),
+    )
+    .await
+    .expect("first child completion delivery");
+    let first_notification = format_inter_agent_completion_message(
+        AgentPath::root(),
+        worker_path.clone(),
+        &AgentStatus::Completed(Some("first done".to_string())),
+    )
+    .expect("completed status should render");
+    wait_for_parent_completion_message(&manager, root.thread_id, &worker_path, &first_notification)
         .await;
 
     FollowupTaskHandlerV2::default()
@@ -2199,9 +2296,10 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
     }));
 
     let second_turn = thread.session.new_default_turn().await;
-    thread
-        .session
-        .send_event(
+    publish_agent_turn_started(thread.as_ref(), second_turn.as_ref()).await;
+    timeout(
+        Duration::from_secs(5),
+        thread.session.send_event(
             second_turn.as_ref(),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: second_turn.sub_id.clone(),
@@ -2212,61 +2310,47 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
                 duration_ms: None,
                 time_to_first_token_ms: None,
             }),
-        )
-        .await;
-
-    let first_notification = format_inter_agent_completion_message(
-        AgentPath::root(),
-        worker_path.clone(),
-        &AgentStatus::Completed(Some("first done".to_string())),
+        ),
     )
-    .expect("completed status should render");
+    .await
+    .expect("second child completion delivery");
+
     let second_notification = format_inter_agent_completion_message(
         AgentPath::root(),
         worker_path.clone(),
         &AgentStatus::Completed(Some("second done".to_string())),
     )
     .expect("completed status should render");
+    wait_for_parent_completion_message(
+        &manager,
+        root.thread_id,
+        &worker_path,
+        &second_notification,
+    )
+    .await;
 
-    let notifications = timeout(Duration::from_secs(5), async {
-        loop {
-            let notifications = manager
-                .captured_ops()
-                .into_iter()
-                .filter_map(|(id, op)| {
-                    (id == root.thread_id)
-                        .then_some(op)
-                        .and_then(|op| match op {
-                            Op::InterAgentCommunication { communication }
-                                if communication.author == worker_path
-                                    && communication.recipient == AgentPath::root()
-                                    && communication.other_recipients.is_empty()
-                                    && !communication.trigger_turn =>
-                            {
-                                Some(communication.content)
-                            }
-                            _ => None,
-                        })
+    let notifications = manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(id, op)| {
+            (id == root.thread_id)
+                .then_some(op)
+                .and_then(|op| match op {
+                    Op::InterAgentCommunication { communication }
+                        if communication.author == worker_path
+                            && communication.recipient == AgentPath::root()
+                            && communication.other_recipients.is_empty()
+                            && !communication.trigger_turn =>
+                    {
+                        Some(communication.content)
+                    }
+                    _ => None,
                 })
-                .collect::<Vec<_>>();
-            let first_count = notifications
-                .iter()
-                .filter(|message| **message == first_notification)
-                .count();
-            let second_count = notifications
-                .iter()
-                .filter(|message| **message == second_notification)
-                .count();
-            if first_count == 1 && second_count == 1 {
-                break notifications;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("parent should receive one completion notification per child turn");
+        })
+        .collect::<Vec<_>>();
 
     assert_eq!(notifications.len(), 2);
+    assert_eq!(notifications, vec![first_notification, second_notification]);
 }
 
 #[tokio::test]
@@ -3223,6 +3307,184 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
         }
     );
     assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_cancelled_wait_releases_terminal_presentation() {
+    let (session, mut turn, events) = make_session_and_context_with_rx().await;
+    let turn_mut = Arc::get_mut(&mut turn).expect("single turn context ref");
+    let mut config = (*turn_mut.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(turn_mut, config);
+    let wait_task = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn = Arc::clone(&turn);
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({"timeout_ms": 10_000})),
+                ))
+                .await
+        }
+    });
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let event = events.recv().await.expect("wait start event");
+            if matches!(
+                event.msg,
+                EventMsg::ItemStarted(ref event)
+                    if matches!(
+                        event.item,
+                        TurnItem::CollabAgentToolCall(ref item)
+                            if item.tool == CollabAgentTool::Wait
+                    )
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("wait handler should register and emit its start item");
+    let presentation = session
+        .services
+        .agent_control
+        .record_agent_terminal_presentation(
+            session.presentation_id(),
+            crate::agent::control::SessionPresentationId::new(
+                ThreadId::new(),
+                uuid::Uuid::now_v7(),
+            ),
+            "child-turn",
+            AgentStatus::Completed(Some("done".to_string())),
+            crate::agent::control::TerminalPresentationDelivery::Direct,
+            || {},
+        )
+        .expect("direct terminal presentation");
+    assert!(
+        timeout(
+            Duration::from_millis(20),
+            presentation.wait_owns_presentation()
+        )
+        .await
+        .is_err(),
+        "active wait should hold terminal presentation ownership open"
+    );
+
+    wait_task.abort();
+    let wait_error = match wait_task.await {
+        Ok(_) => panic!("wait task should be cancelled"),
+        Err(err) => err,
+    };
+    assert!(wait_error.is_cancelled());
+    assert!(!presentation.wait_owns_presentation().await);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wait_commits_when_completed_item_is_delivered() {
+    let (session, mut turn, events) = make_session_and_context_with_rx().await;
+    let turn_mut = Arc::get_mut(&mut turn).expect("single turn context ref");
+    let mut config = (*turn_mut.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(turn_mut, config);
+    let wait_task = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn = Arc::clone(&turn);
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({"timeout_ms": 10_000})),
+                ))
+                .await
+        }
+    });
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let event = events.recv().await.expect("wait start event");
+            if matches!(
+                event.msg,
+                EventMsg::ItemStarted(ref event)
+                    if matches!(
+                        event.item,
+                        TurnItem::CollabAgentToolCall(ref item)
+                            if item.tool == CollabAgentTool::Wait
+                    )
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("wait handler should register and emit its start item");
+    let child_thread_id = ThreadId::new();
+    let presentation = session
+        .services
+        .agent_control
+        .record_agent_terminal_presentation(
+            session.presentation_id(),
+            crate::agent::control::SessionPresentationId::new(
+                child_thread_id,
+                uuid::Uuid::now_v7(),
+            ),
+            "child-turn",
+            AgentStatus::Completed(Some("done".to_string())),
+            crate::agent::control::TerminalPresentationDelivery::Direct,
+            || {},
+        )
+        .expect("direct terminal presentation");
+    session
+        .services
+        .agent_control
+        .authorize_pending_completion_context(session.presentation_id(), &presentation);
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::try_from("/root/worker").expect("agent path"),
+        AgentPath::root(),
+        Vec::new(),
+        "done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(presentation.completion_context_response_item_id());
+    session
+        .input_queue
+        .enqueue_mailbox_communication(communication, /*parent_turn_id*/ None)
+        .await;
+
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let event = events.recv().await.expect("wait completion event");
+            if matches!(
+                event.msg,
+                EventMsg::ItemCompleted(ref event)
+                    if matches!(
+                        event.item,
+                        TurnItem::CollabAgentToolCall(ref item)
+                            if item.tool == CollabAgentTool::Wait
+                                && item.agents_states.contains_key(&child_thread_id)
+                    )
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("wait handler should deliver its populated completion item");
+
+    assert!(presentation.wait_owns_presentation().await);
+    wait_task
+        .await
+        .expect("wait task should join")
+        .expect("wait handler should succeed");
 }
 
 #[tokio::test]
