@@ -6,36 +6,75 @@ use pretty_assertions::assert_eq;
 #[tokio::test]
 async fn direct_checkpoint_publication_sanitizes_media_before_certification_and_installation() {
     let (mut session, _turn, _rx) = make_session_and_context_with_auth_and_config_and_rx(
-        CodexAuth::from_api_key("Test API Key"), Vec::new(), |_| {},
-    ).await;
-    let rollout_path = attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
-    let item = ResponseItemEnvelope::new(serde_json::from_value(serde_json::json!({
-        "type": "message", "role": "developer",
-        "content": [{"type": "input_image", "image_url": "data:image/png;base64,payload"}],
-    })).expect("media input"));
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |_| {},
+    )
+    .await;
+    let rollout_path =
+        attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
+    let item = ResponseItemEnvelope::new(
+        serde_json::from_value(serde_json::json!({
+            "type": "message", "role": "developer",
+            "content": [{"type": "input_image", "image_url": "data:image/png;base64,payload"}],
+        }))
+        .expect("media input"),
+    );
     let (window_number, window_ids) = session.advance_auto_compact_window().await;
-    let installed = session.replace_compacted_history(
-        vec![item],
-        /*reference_context_item*/ None,
-        /*world_state_baseline*/ None,
-        CompactedHistoryMetadata {
-            message: String::new(), compaction_summary_tokens: None,
-            window_number, window_ids, compaction_response_id: None,
-            compaction_model_hash: None, reviewer_compaction_hash: None,
-        },
-    ).await.expect("published media-free checkpoint");
-    assert!(!serde_json::to_string(&installed).unwrap().contains("data:image/png"));
+    let installed = session
+        .replace_compacted_history(
+            vec![item],
+            /*reference_context_item*/ None,
+            /*world_state_baseline*/ None,
+            CompactedHistoryMetadata {
+                completion_source_items: Vec::new(),
+                message: String::new(),
+                compaction_summary_tokens: None,
+                window_number,
+                window_ids,
+                compaction_response_id: None,
+                compaction_model_hash: None,
+                reviewer_compaction_hash: None,
+            },
+        )
+        .await
+        .expect("published media-free checkpoint");
+    assert!(
+        !serde_json::to_string(
+            &installed
+                .iter()
+                .cloned()
+                .map(RolloutItem::ResponseItem)
+                .collect::<Vec<_>>()
+        )
+        .unwrap()
+        .contains("data:image/png")
+    );
     assert_eq!(installed, session.clone_history().await.annotated_items());
     let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
-        .await.expect("cold read") else { panic!("saved history"); };
-    let checkpoint = resumed.history.iter().rev().find_map(|item| match item {
-        RolloutItem::Compacted(checkpoint) => Some(checkpoint),
-        _ => None,
-    }).expect("saved checkpoint");
+        .await
+        .expect("cold read")
+    else {
+        panic!("saved history");
+    };
+    let checkpoint = resumed
+        .history
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::Compacted(checkpoint) => Some(checkpoint),
+            _ => None,
+        })
+        .expect("saved checkpoint");
     let mut persisted = installed.clone();
-    for item in &mut persisted { item.metadata.get_or_insert_default(); }
+    for item in &mut persisted {
+        item.metadata.get_or_insert_default();
+    }
     assert_eq!(checkpoint.replacement_history.as_ref(), Some(&persisted));
-    assert_eq!(checkpoint.replacement_history_media_sanitized_prefix_len, Some(1));
+    assert_eq!(
+        checkpoint.replacement_history_media_sanitized_prefix_len,
+        Some(1)
+    );
     assert!(!checkpoint.replacement_history_media_repair);
 }
 
@@ -98,6 +137,7 @@ async fn checkpoint_and_cold_reconstruction_preserve_full_mcp_union_and_latest_e
             /*reference_context_item*/ None,
             /*world_state_baseline*/ None,
             CompactedHistoryMetadata {
+                completion_source_items: Vec::new(),
                 message: "summary".to_string(),
                 compaction_summary_tokens: None,
                 window_number,

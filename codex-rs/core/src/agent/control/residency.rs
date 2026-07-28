@@ -181,6 +181,7 @@ impl V2Residency {
             let eviction = tokio::spawn(async move {
                 let _residency_guard = residency_guard;
                 candidate_thread.ensure_rollout_materialized().await;
+                let disarm = candidate_thread.session.disarm_terminal_presentation();
                 if let Err(err) = candidate_thread.shutdown_and_wait().await {
                     warn!(
                         "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
@@ -201,6 +202,9 @@ impl V2Residency {
                     .local_agent_runtime
                     .registry
                     .save_evicted_environments(candidate_thread_id, environments);
+                // Eviction is not terminal failure; disarm only the exact acknowledged actor.
+                disarm.commit();
+                candidate_thread.session.prepare_for_thread_removal();
                 // Keep publication excluded until both entries have been removed.
                 threads.remove(&candidate_thread_id);
                 residency.remove(candidate_thread_id);

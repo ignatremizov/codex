@@ -1093,6 +1093,7 @@ impl ThreadRequestProcessor {
             outgoing: Arc::clone(&self.outgoing),
             pending_thread_unloads: Arc::clone(&self.pending_thread_unloads),
             thread_watch_manager: self.thread_watch_manager.clone(),
+            thread_list_state_permit: Arc::clone(&self.thread_list_state_permit),
             codex_home: self.config.codex_home.to_path_buf(),
             thread_unload_delay: self.config.thread_unload_delay,
             skills_watcher: Arc::clone(&self.skills_watcher),
@@ -1224,6 +1225,7 @@ impl ThreadRequestProcessor {
             outgoing: Arc::clone(&self.outgoing),
             pending_thread_unloads: Arc::clone(&self.pending_thread_unloads),
             thread_watch_manager: self.thread_watch_manager.clone(),
+            thread_list_state_permit: Arc::clone(&self.thread_list_state_permit),
             codex_home: self.config.codex_home.to_path_buf(),
             thread_unload_delay: self.config.thread_unload_delay,
             skills_watcher: Arc::clone(&self.skills_watcher),
@@ -4282,8 +4284,14 @@ impl ThreadRequestProcessor {
                     // thread that timed out during shutdown.
                     match wait_for_thread_shutdown(&existing_thread).await {
                         ThreadShutdownResult::Complete => {
-                            self.thread_manager.remove_thread(&existing_thread_id).await;
-                            self.finalize_thread_teardown(existing_thread_id).await;
+                            if self
+                                .thread_manager
+                                .remove_thread_if_matches(&existing_thread_id, &existing_thread)
+                                .await
+                                .is_some()
+                            {
+                                self.finalize_thread_teardown(existing_thread_id).await;
+                            }
                             // Shutdown can flush newer rollout items, so reload the
                             // stored thread before starting the replacement session.
                             return Ok(RunningThreadResumeResult::NotRunning(None));

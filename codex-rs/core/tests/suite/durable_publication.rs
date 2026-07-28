@@ -1,6 +1,7 @@
 //! Ambiguous canonical commit must stop retries and later manual compaction.
 
 use std::any::Any;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -19,13 +20,18 @@ use codex_thread_store::AppendThreadItemsParams;
 use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::DeleteThreadParams;
-use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::ListThreadsParams;
+use codex_thread_store::LoadSubAgentCompletionContextItemParams;
+use codex_thread_store::LoadSubAgentCompletionPresentationParams;
 use codex_thread_store::LoadThreadHistoryParams;
+use codex_thread_store::LocalThreadStore;
+use codex_thread_store::LocalThreadStoreConfig;
 use codex_thread_store::PersistContext;
 use codex_thread_store::ReadThreadByRolloutPathParams;
 use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
+use codex_thread_store::StoredModelContext;
+use codex_thread_store::StoredSubAgentCompletionPresentation;
 use codex_thread_store::StoredThread;
 use codex_thread_store::StoredThreadHistory;
 use codex_thread_store::ThreadPage;
@@ -33,17 +39,37 @@ use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreError;
 use codex_thread_store::ThreadStoreFuture;
 use codex_thread_store::UpdateThreadMetadataParams;
+use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
-#[derive(Default)]
 struct AmbiguousAssistantStore {
-    inner: InMemoryThreadStore,
+    inner: LocalThreadStore,
     failed_appends: AtomicUsize,
     settings_failure: bool,
+}
+
+impl AmbiguousAssistantStore {
+    async fn new(home: &Path) -> anyhow::Result<Self> {
+        let config = LocalThreadStoreConfig {
+            codex_home: home.to_path_buf(),
+            sqlite: codex_state::SqliteConfig::new_for_testing(home.abs()),
+            default_model_provider_id: "openai".to_string(),
+        };
+        let state = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await?;
+        Ok(Self {
+            inner: LocalThreadStore::new(config, Some(state)),
+            failed_appends: AtomicUsize::new(0),
+            settings_failure: false,
+        })
+    }
 }
 
 macro_rules! delegate_store_methods {
@@ -59,11 +85,22 @@ impl ThreadStore for AmbiguousAssistantStore {
         self
     }
 
+    fn supports_paginated_history_lists(&self) -> bool {
+        self.inner.supports_paginated_history_lists()
+    }
+
     delegate_store_methods! {
         fn create_thread(params: CreateThreadParams) -> ();
         fn resume_thread(params: ResumeThreadParams) -> ();
         fn discard_thread(thread_id: ThreadId) -> ();
         fn load_history(params: LoadThreadHistoryParams) -> StoredThreadHistory;
+        fn load_latest_model_context(params: LoadThreadHistoryParams) -> StoredModelContext;
+        fn load_sub_agent_completion_context_item(
+            params: LoadSubAgentCompletionContextItemParams
+        ) -> Option<codex_protocol::models::ResponseItem>;
+        fn load_sub_agent_completion_presentation(
+            params: LoadSubAgentCompletionPresentationParams
+        ) -> StoredSubAgentCompletionPresentation;
         fn read_thread(params: ReadThreadParams) -> StoredThread;
         fn read_thread_by_rollout_path(params: ReadThreadByRolloutPathParams) -> StoredThread;
         fn list_threads(params: ListThreadsParams) -> ThreadPage;
@@ -73,6 +110,13 @@ impl ThreadStore for AmbiguousAssistantStore {
         fn delete_thread(params: DeleteThreadParams) -> ();
         fn flush_thread(thread_id: ThreadId) -> ();
         fn shutdown_thread(thread_id: ThreadId) -> ();
+    }
+
+    fn append_completion_items_and_flush(
+        &self,
+        params: AppendThreadItemsParams,
+    ) -> ThreadStoreFuture<'_, ()> {
+        self.inner.append_completion_items_and_flush(params)
     }
 
     fn persist_thread(
@@ -93,14 +137,14 @@ impl ThreadStore for AmbiguousAssistantStore {
                         if matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "assistant"))
                 }
             });
-            self.inner.append_items(params).await?;
             if fails {
+                self.inner.append_items_and_flush(params).await?;
                 self.failed_appends.fetch_add(1, Ordering::SeqCst);
                 return Err(ThreadStoreError::Internal {
                     message: "metadata projection failed after canonical commit".to_string(),
                 });
             }
-            Ok(())
+            self.inner.append_items(params).await
         })
     }
 }
@@ -127,8 +171,10 @@ async fn ambiguous_publication_prevents_stream_retry_and_manual_compaction(
     }
     // An incomplete stream ordinarily retries; a completed one must still report failure.
     let response = responses::mount_sse_once(&server, responses::sse(events)).await;
-    let store = Arc::new(AmbiguousAssistantStore::default());
+    let home = Arc::new(tempfile::tempdir()?);
+    let store = Arc::new(AmbiguousAssistantStore::new(home.path()).await?);
     let test = test_codex()
+        .with_home(home)
         .with_thread_store(store.clone())
         .with_history_mode(history_mode)
         .with_config(move |config| {
@@ -208,11 +254,12 @@ async fn ambiguous_publication_prevents_stream_retry_and_manual_compaction(
 async fn ambiguous_settings_append_rejects_admission_and_does_not_sample() -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
     let response = responses::mount_sse_once(&server, responses::sse_completed("unexpected")).await;
-    let store = Arc::new(AmbiguousAssistantStore {
-        settings_failure: true,
-        ..Default::default()
-    });
+    let home = Arc::new(tempfile::tempdir()?);
+    let mut store = AmbiguousAssistantStore::new(home.path()).await?;
+    store.settings_failure = true;
+    let store = Arc::new(store);
     let test = test_codex()
+        .with_home(home)
         .with_thread_store(store.clone())
         .build_with_auto_env(&server)
         .await?;

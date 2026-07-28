@@ -248,7 +248,16 @@ mod submission;
 mod world_state_publication;
 pub(crate) use reasoning_effort::RequestEffortUsage;
 pub(crate) use submission::Submission;
+mod completion_admission;
+mod completion_provenance;
+mod completion_replay;
 mod input_queue;
+mod item_completion;
+mod sub_agent_completion;
+mod terminal_capture;
+pub(crate) use completion_admission::AcceptedCompletionDelivery;
+pub(crate) use sub_agent_completion::CompletionContextDelivery;
+pub(crate) use sub_agent_completion::CompletionContextPublication;
 mod mcp;
 mod mcp_prewarm;
 mod mcp_prompt;
@@ -2325,6 +2334,11 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        let terminal = self
+            .prepare_sub_agent_terminal_presentation(turn_context, &msg)
+            .await;
+        self.maybe_notify_parent_of_terminal_turn(turn_context, &msg, terminal)
+            .await;
         let legacy_source = msg.clone();
         if let EventMsg::Error(error) = &legacy_source
             && error
@@ -2367,8 +2381,6 @@ impl Session {
                 .track_guardian_session_event(self.thread_id, &event);
         }
         self.send_event_raw(event).await;
-        self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
-            .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
         self.maybe_clear_realtime_handoff_for_event(&legacy_source)
@@ -2392,6 +2404,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         msg: &EventMsg,
+        terminal: Option<crate::agent::control::AgentTerminalPresentation>,
     ) {
         if turn_context.multi_agent_version != MultiAgentVersion::V2 {
             return;
@@ -2410,11 +2423,7 @@ impl Session {
         };
 
         let status = match turn_context.terminal_error.lock().await.take() {
-            Some(error) => {
-                let status = AgentStatus::Errored(error.message);
-                self.agent_status.send_replace(status.clone());
-                status
-            }
+            Some(error) => AgentStatus::Errored(error.message),
             None => {
                 let Some(status) = agent_status_from_event(msg) else {
                     return;
@@ -2425,24 +2434,42 @@ impl Session {
         if !is_final(&status) {
             return;
         }
-
-        self.services
-            .agent_control
-            .turn_finished(
-                AgentTurnOutcome {
-                    thread_id: self.thread_id,
-                    turn_id: turn_context.sub_id.clone(),
-                    source: turn_context.session_source.clone(),
-                    parent_turn_id: turn_context.turn_metadata_state.parent_turn_id(),
-                    initiating_agent_path: turn_context
-                        .turn_metadata_state
-                        .initiating_agent_path()
-                        .cloned(),
-                    status,
-                },
-                &self.services.rollout_thread_trace,
-            )
-            .await;
+        let outcome = AgentTurnOutcome {
+            thread_id: self.thread_id,
+            turn_id: turn_context.sub_id.clone(),
+            source: turn_context.session_source.clone(),
+            parent_turn_id: turn_context.turn_metadata_state.parent_turn_id(),
+            initiating_agent_path: turn_context
+                .turn_metadata_state
+                .initiating_agent_path()
+                .cloned(),
+            status,
+        };
+        // The shared controller API carries outcomes, not local publication authority.
+        // Start exact-parent delivery independently so a slow or failed host callback cannot
+        // lose an accepted lease or hold the child's terminal event behind parent backpressure.
+        if let Some(terminal) = terminal {
+            let child_path = outcome.source.get_agent_path();
+            let reference = child_path
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| self.thread_id.to_string());
+            self.services
+                .local_agent_runtime
+                .control(self.session_id())
+                .deliver_terminal_completion(
+                    outcome.clone(),
+                    terminal,
+                    &reference,
+                    child_path,
+                    &self.services.rollout_thread_trace,
+                );
+        }
+        let controller = Arc::clone(&self.services.agent_control);
+        let trace = self.services.rollout_thread_trace.clone();
+        tokio::spawn(async move {
+            controller.turn_finished(outcome, &trace).await;
+        });
     }
 
     async fn maybe_mirror_event_text_to_realtime(&self, msg: &EventMsg) {
@@ -2577,9 +2604,8 @@ impl Session {
 
     async fn deliver_event_raw(&self, event: Event) {
         // Record the last known agent status.
-        if let Some(status) = agent_status_from_event(&event.msg) {
-            self.agent_status.send_replace(status);
-        }
+        self.prepare_raw_sub_agent_terminal_presentation(&event);
+        self.publish_agent_status_from_event(&event.msg);
         if let Err(e) = self.tx_event.send(event).await {
             debug!("dropping event because channel is closed: {e}");
         }
@@ -2624,42 +2650,11 @@ impl Session {
         turn_context: &TurnContext,
         item: TurnItem,
     ) {
-        record_turn_ttfm_metric(turn_context, &item).await;
-        for contributor in self.services.extensions.turn_lifecycle_contributors() {
-            contributor
-                .on_item_completed(
-                    &self.services.thread_extension_data,
-                    turn_context.extension_data.as_ref(),
-                    &item,
-                )
-                .await;
-        }
-        let completed_at_ms = now_unix_timestamp_ms();
-        let item_id = item.id();
-        let started_at_ms = turn_context
-            .turn_timing_state
-            .take_item_started(&item_id)
-            .await
-            .unwrap_or_else(|| {
-                warn!(
-                    thread_id = %self.thread_id,
-                    turn_id = %turn_context.sub_id,
-                    item_id = %item_id,
-                    "item completed without a recorded start timestamp"
-                );
-                completed_at_ms
-            });
-        self.send_event(
-            turn_context,
-            EventMsg::ItemCompleted(ItemCompletedEvent {
-                thread_id: self.thread_id,
-                turn_id: turn_context.sub_id.clone(),
-                item,
-                started_at_ms: Some(started_at_ms),
-                completed_at_ms,
-            }),
-        )
-        .await;
+        let completed = self
+            .prepare_turn_item_completed_event(turn_context, item)
+            .await;
+        self.send_event(turn_context, EventMsg::ItemCompleted(completed))
+            .await;
     }
 
     /// Adds an execpolicy amendment to both the in-memory and on-disk policies so future
@@ -3350,6 +3345,14 @@ impl Session {
         prepare_audio_response_items(&mut items);
         // Most response items get their passthrough turn ID at the durable history boundary.
         for item in &mut items {
+            // Only the dedicated acknowledged-completion path may retain this namespace.
+            if item.id().is_some_and(|id| {
+                codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
+                    id.as_str(),
+                )
+            }) {
+                item.set_id(None);
+            }
             Self::stamp_response_item_for_history(item, &turn_context.sub_id);
         }
         let items = Cow::Owned(items);
@@ -3797,11 +3800,35 @@ impl Session {
     }
 
     pub(crate) async fn record_inter_agent_communication(
-        &self,
+        self: &Arc<Self>,
         turn_context: &TurnContext,
         model_info: &ModelInfo,
-        communication: InterAgentCommunication,
+        mut communication: InterAgentCommunication,
     ) {
+        if communication.id.as_ref().is_some_and(|id| {
+            codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(id.as_str())
+        }) {
+            let response = communication.to_model_input_item();
+            let acknowledged = self
+                .state
+                .lock()
+                .await
+                .acknowledged_completion_contexts
+                .iter()
+                .any(|completion| completion.item.item == response);
+            if acknowledged {
+                if let Err(error) = self
+                    .consume_completion_context(&communication, model_info)
+                    .await
+                {
+                    self.quarantine_history(format!(
+                        "completion context consumption failed: {error}"
+                    ));
+                }
+                return;
+            }
+            communication.id = None;
+        }
         let response_item = communication.to_model_input_item();
         let (items, _) = self
             .prepare_conversation_items_for_history(
@@ -4370,6 +4397,7 @@ impl Session {
             Some(turn_context_item),
             Some(world_state),
             CompactedHistoryMetadata {
+                completion_source_items: Vec::new(),
                 message: String::new(),
                 compaction_summary_tokens: None,
                 window_number,

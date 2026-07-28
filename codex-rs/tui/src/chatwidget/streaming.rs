@@ -422,6 +422,18 @@ impl ChatWidget {
         turn_id: &str,
         from_replay: bool,
     ) {
+        if item.has_sub_agent_completion_identity()
+            && let [AgentMessageContent::Text { text }] = item.content.as_slice()
+            && let Some(cell) = multi_agents::background_completion_history_cell_from_agent_message(
+                &item.id,
+                text,
+                item.phase.as_ref(),
+                self.local_settings.tui.agent_response_preview_lines,
+            )
+        {
+            self.on_collab_event(cell);
+            return;
+        }
         if !from_replay && let Some(questions) = &item.questions {
             self.add_async_questions(&item.id, questions);
         }

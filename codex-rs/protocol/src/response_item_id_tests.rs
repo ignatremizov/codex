@@ -14,6 +14,12 @@ fn creates_prefixed_uuid_v7_ids() {
 }
 
 #[test]
+#[should_panic(expected = "generated response item ID exceeds 64 characters")]
+fn rejects_oversized_generated_ids() {
+    ResponseItemId::new("prefix_that_is_too_long_for_uuid");
+}
+
+#[test]
 fn creates_prefixed_ids_with_explicit_suffix() {
     let id = ResponseItemId::with_suffix("msg", "test");
     assert_eq!(id.as_str(), "msg_test");

@@ -17,6 +17,7 @@ use codex_rollout_trace::CompactionTraceContext;
 use tracing::info;
 
 pub(super) struct RemoteCompactV2Attempt {
+    pub(super) completion_source_items: Vec<ResponseItem>,
     pub(super) trace_input_history: Option<Vec<ResponseItem>>,
     pub(super) replacement_history_input: Vec<ResponseItemEnvelope>,
     pub(super) compacted_prefix_len: usize,
@@ -139,6 +140,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         token_usage,
     } = compaction_output_result?;
     Ok(RemoteCompactV2Attempt {
+        completion_source_items: crate::compact::completion_source_items(&prompt.input),
         trace_input_history,
         replacement_history_input,
         compacted_prefix_len,

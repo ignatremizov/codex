@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use codex_core::config::MultiAgentMessageDelivery;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
@@ -339,22 +340,30 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     const FOLLOWUP_TASK: &str = "continue work in the original environment";
 
     let server = start_mock_server().await;
-    mount_root_collaboration_call(
+    let first_admission = mount_root_collaboration_call(
         &server,
         FIRST_PROMPT,
         "first-call",
         "spawn_agent",
-        json!({ "message": FIRST_TASK, "task_name": "first", "fork_turns": "none" }),
+        json!({
+            "message": FIRST_TASK,
+            "task_name": "first",
+            "fork_turns": "none",
+        }),
     )
     .await;
     mount_completed_worker(&server, FIRST_TASK, "first-call").await;
 
-    mount_root_collaboration_call(
+    let replacement_admission = mount_root_collaboration_call(
         &server,
         EVICT_PROMPT,
         "replacement-call",
         "spawn_agent",
-        json!({ "message": SECOND_TASK, "task_name": "replacement", "fork_turns": "none" }),
+        json!({
+            "message": SECOND_TASK,
+            "task_name": "replacement",
+            "fork_turns": "none",
+        }),
     )
     .await;
     mount_completed_worker(&server, SECOND_TASK, "replacement-call").await;
@@ -364,7 +373,10 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         FOLLOWUP_PROMPT,
         "followup-call",
         "followup_task",
-        json!({ "target": "first", "message": FOLLOWUP_TASK }),
+        json!({
+            "target": "first",
+            "message": FOLLOWUP_TASK,
+        }),
     )
     .await;
     let reloaded_worker_request =
@@ -474,7 +486,14 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     )
     .await?;
     test.submit_text_turn(FIRST_PROMPT).await?;
-    let first_thread_id = created_threads.recv().await?;
+    let first_output = first_admission
+        .function_call_output_text("first-call")
+        .context("initial spawn should return an admission result")?;
+    let first_result: serde_json::Value = serde_json::from_str(&first_output)
+        .with_context(|| format!("initial spawn was rejected: {first_output}"))?;
+    assert_eq!(first_result["task_name"], json!("/root/first"));
+    let first_thread_id =
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 10), created_threads.recv()).await??;
     let first_thread = test.thread_manager.get_thread(first_thread_id).await?;
     wait_for_event(first_thread.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -504,7 +523,14 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         .await?;
     }
     test.submit_text_turn(EVICT_PROMPT).await?;
-    let replacement_thread_id = created_threads.recv().await?;
+    let replacement_output = replacement_admission
+        .function_call_output_text("replacement-call")
+        .context("replacement spawn should return an admission result")?;
+    let replacement_result: serde_json::Value = serde_json::from_str(&replacement_output)
+        .with_context(|| format!("replacement spawn was rejected: {replacement_output}"))?;
+    assert_eq!(replacement_result["task_name"], json!("/root/replacement"));
+    let replacement_thread_id =
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 10), created_threads.recv()).await??;
     let replacement_thread = test
         .thread_manager
         .get_thread(replacement_thread_id)

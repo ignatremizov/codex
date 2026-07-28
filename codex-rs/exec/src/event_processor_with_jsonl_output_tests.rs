@@ -114,6 +114,23 @@ fn inter_agent_item_remains_visible_without_replacing_final_message() {
             },
         })]
     );
+    let completion = processor.collect_thread_events(ServerNotification::ItemCompleted(
+        codex_app_server_protocol::ItemCompletedNotification {
+            item: ThreadItem::AgentMessage {
+                id: "msg_c_01900000-0000-7000-8000-000000000001".to_string(),
+                text: "Agent final answer from `/root/reviewer`:\n\nDone.".to_string(),
+                inter_agent_source: None,
+                phase: Some(codex_protocol::models::MessagePhase::Commentary),
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 1,
+        },
+    ));
+    assert!(completion.events.is_empty());
     assert_eq!(processor.final_message(), Some("ordinary answer"));
 }
 
@@ -134,6 +151,38 @@ fn transcript_only_completed_turn_has_no_final_message() {
                         recipient: "/root/worker".to_string(),
                     }),
                     phase: None,
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                }],
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+        },
+    ));
+
+    assert_eq!(completed.status, CodexStatus::InitiateShutdown);
+    assert_eq!(processor.final_message(), None);
+}
+
+#[test]
+fn canonical_completion_only_completed_turn_has_no_final_message() {
+    let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+    let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
+        TurnCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: Turn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: vec![ThreadItem::AgentMessage {
+                    id: "msg_c_01900000-0000-7000-8000-000000000001".to_string(),
+                    text: "Agent final answer from `/root/reviewer`:\n\nworker transcript"
+                        .to_string(),
+                    inter_agent_source: None,
+                    phase: Some(codex_protocol::models::MessagePhase::Commentary),
                     memory_citation: None,
                     delivery: None,
                     questions: None,

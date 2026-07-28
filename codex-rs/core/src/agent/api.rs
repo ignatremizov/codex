@@ -112,9 +112,10 @@ pub trait AgentControl: Send + Sync {
     /// the shared budget is now exhausted.
     fn record_usage(&self, usage: TokenUsage) -> BoxFuture<'_, Result<()>>;
 
-    /// Report the terminal result to the parent and completion activity to the task
-    /// initiator. Local delivery remains best effort and uses the reporting runtime's
-    /// diagnostic trace; it is not deduplicated.
+    /// Report a terminal result through the selected controller. Local controllers emit
+    /// best-effort initiator activity; exact-session completion publication is owned by the
+    /// reporting Session's separately admitted capability, not reconstructed by this hook.
+    /// Host implementations retain this notification without receiving private delivery tokens.
     fn turn_finished<'a>(
         &'a self,
         outcome: AgentTurnOutcome,
@@ -218,6 +219,7 @@ pub struct DeliveryReceipt {
     pub submission_id: String,
 }
 
+#[derive(Clone)]
 pub struct AgentTurnOutcome {
     pub thread_id: ThreadId,
     pub turn_id: String,

@@ -67,6 +67,8 @@ async fn rollback(sess: &Arc<Session>, sub_id: String, target: Target) -> bool {
     let result = apply(sess, target).await;
     let reload = sess.submission_admission.requires_reload();
     if !reload {
+        sess.submission_admission
+            .begin_rollback_publication(&sub_id);
         sess.submission_admission.rollback_completed(&sub_id);
     }
     let msg = match result {
@@ -82,7 +84,13 @@ async fn rollback(sess: &Arc<Session>, sub_id: String, target: Target) -> bool {
         }),
     };
     // Neither rejection nor the acknowledgement is another canonical append.
-    sess.deliver_event_raw(Event { id: sub_id, msg }).await;
+    sess.deliver_event_raw(Event {
+        id: sub_id.clone(),
+        msg,
+    })
+    .await;
+    sess.submission_admission
+        .finish_rollback_publication(&sub_id);
     reload
 }
 

@@ -105,6 +105,13 @@ impl Handler {
         };
 
         let deadline_at_ms = now_unix_timestamp_ms().checked_add(timeout_ms);
+        let presentation_guard = session
+            .services
+            .local_agent_runtime.control(session.session_id())
+            .register_targeted_wait_agent_presentation(
+                session.presentation_id(),
+                receiver_thread_ids.as_slice(),
+            );
         session
             .emit_turn_item_started(
                 &turn,
@@ -120,6 +127,7 @@ impl Handler {
                     model: None,
                     reasoning_effort: None,
                     agents_states: Default::default(),
+                    completion_presentation_agent_ids: None,
                 }),
             )
             .await;
@@ -151,8 +159,12 @@ impl Handler {
                 Err(err) => {
                     let mut statuses = HashMap::with_capacity(1);
                     statuses.insert(*id, local_agent_control.get_status(*id).await);
+                    let presentation_commit =
+                        presentation_guard.freeze_for_children(statuses.keys().copied());
+                    let completion_presentation_agent_ids =
+                        presentation_commit.completion_presentation_agent_ids();
                     session
-                        .emit_turn_item_completed(
+                        .emit_turn_item_completed_with_primary_delivery(
                             &turn,
                             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                                 id: call_id.clone(),
@@ -166,7 +178,9 @@ impl Handler {
                                 model: None,
                                 reasoning_effort: None,
                                 agents_states: statuses,
+                                completion_presentation_agent_ids,
                             }),
+                            move || presentation_commit.commit(),
                         )
                         .await;
                     return Err(collab_agent_error(*id, err));
@@ -210,6 +224,10 @@ impl Handler {
 
         let timed_out = statuses.is_empty();
         let statuses_by_id = statuses.clone().into_iter().collect::<HashMap<_, _>>();
+        let presentation_commit =
+            presentation_guard.freeze_for_children(statuses_by_id.keys().copied());
+        let completion_presentation_agent_ids =
+            presentation_commit.completion_presentation_agent_ids();
         let result = WaitAgentResult {
             status: statuses
                 .into_iter()
@@ -224,7 +242,7 @@ impl Handler {
         };
 
         session
-            .emit_turn_item_completed(
+            .emit_turn_item_completed_with_primary_delivery(
                 &turn,
                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                     id: call_id,
@@ -238,7 +256,9 @@ impl Handler {
                     model: None,
                     reasoning_effort: None,
                     agents_states: statuses_by_id,
+                    completion_presentation_agent_ids,
                 }),
+                move || presentation_commit.commit(),
             )
             .await;
 

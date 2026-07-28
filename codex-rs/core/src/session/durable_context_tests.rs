@@ -3,7 +3,9 @@ use super::*;
 use codex_extension_api::PostCompactionContextContribution;
 use codex_extension_api::TurnInputContribution;
 use codex_utils_output_truncation::TruncationPolicy;
+use pretty_assertions::assert_eq;
 use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 
 #[path = "publication_integration_tests.rs"]
 mod integration_tests;
@@ -85,6 +87,11 @@ async fn accepted_transcript_publication_enqueues_after_flush_even_without_recei
         assert_eq!(installed.load(Ordering::SeqCst), usize::from(succeeded));
         assert_eq!(store.appends.load(Ordering::SeqCst), 1);
         assert_eq!(session.check_history_publication().is_ok(), succeeded);
+        assert_eq!(session.submission_admission.requires_reload(), !succeeded);
+        assert_eq!(
+            session.submission_admission.check_ready().is_ok(),
+            succeeded
+        );
         if !succeeded {
             assert!(session.acquire_history_publication_barrier().await.is_err());
             assert!(
@@ -381,6 +388,8 @@ async fn panicked_worker_leaves_sticky_failure_and_never_acknowledges() {
             .is_err()
     );
     assert!(session.check_history_publication().is_err());
+    assert!(session.submission_admission.requires_reload());
+    assert!(session.submission_admission.check_ready().is_err());
     assert_eq!(count.load(Ordering::SeqCst), 0);
     assert_eq!(store.appends.load(Ordering::SeqCst), 1);
 }
@@ -413,6 +422,8 @@ async fn invalidated_goal_lease_is_rejected_before_append() {
     );
     assert_eq!(store.appends.load(Ordering::SeqCst), 0);
     assert!(session.clone_history().await.annotated_items().is_empty());
+    assert!(session.check_history_publication().is_ok());
+    assert!(session.submission_admission.check_ready().is_ok());
 }
 
 #[tokio::test]
