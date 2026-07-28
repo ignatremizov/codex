@@ -1,6 +1,9 @@
 use std::time::Duration;
 
 use codex_protocol::ThreadId;
+use codex_protocol::items::CollabAgentTool;
+use codex_protocol::items::CollabAgentToolCallItem;
+use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::CommandExecutionStatus;
 use codex_protocol::items::EnteredReviewModeItem;
@@ -10,6 +13,7 @@ use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::parse_command::ParsedCommand;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EnteredReviewModeEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
@@ -21,8 +25,10 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::sub_agent_completion_item;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
+use std::collections::HashMap;
 
 use super::CompletedTurnMeasurement;
 use super::TurnMeasurementState;
@@ -359,6 +365,86 @@ fn projected_items_report_post_projection_bytes() {
         persisted_bytes < original_bytes,
         "projection should reduce serialized bytes"
     );
+}
+
+#[test]
+fn sub_agent_completion_item_is_persisted_in_both_history_modes() {
+    let completion = sub_agent_completion_item(
+        "/root/reviewer",
+        &AgentStatus::Completed(Some("Finished reviewing.".to_string())),
+    )
+    .expect("terminal status");
+    let item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: ThreadId::default(),
+        turn_id: "turn".to_string(),
+        item: TurnItem::AgentMessage(completion),
+        started_at_ms: None,
+        completed_at_ms: 0,
+    }));
+
+    for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        assert!(crate::policy::is_persisted_rollout_item(
+            &item,
+            history_mode
+        ));
+    }
+    let RolloutItem::EventMsg(EventMsg::ItemCompleted(mut untrusted)) = item else {
+        unreachable!("completion fixture");
+    };
+    let TurnItem::AgentMessage(message) = &mut untrusted.item else {
+        unreachable!("agent message fixture");
+    };
+    message.sub_agent_completion = None;
+    assert!(!crate::policy::is_persisted_rollout_item(
+        &RolloutItem::EventMsg(EventMsg::ItemCompleted(untrusted)),
+        ThreadHistoryMode::Legacy,
+    ));
+}
+
+#[test]
+fn wait_item_that_owns_completion_is_persisted_in_both_history_modes() {
+    let child_thread_id = ThreadId::new();
+    let item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: ThreadId::new(),
+        turn_id: "turn".to_string(),
+        item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+            id: "wait-call".to_string(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Completed,
+            deadline_at_ms: None,
+            sender_thread_id: ThreadId::new(),
+            receiver_thread_ids: vec![child_thread_id],
+            receiver_agents: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::from([(
+                child_thread_id,
+                AgentStatus::Completed(Some("done".to_string())),
+            )]),
+            completion_presentation_agent_ids: Some(vec![child_thread_id]),
+        }),
+        started_at_ms: None,
+        completed_at_ms: 0,
+    }));
+
+    for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        assert!(crate::policy::is_persisted_rollout_item(
+            &item,
+            history_mode
+        ));
+    }
+    let RolloutItem::EventMsg(EventMsg::ItemCompleted(mut unowned)) = item else {
+        unreachable!("wait fixture");
+    };
+    let TurnItem::CollabAgentToolCall(wait) = &mut unowned.item else {
+        unreachable!("wait item fixture");
+    };
+    wait.completion_presentation_agent_ids = None;
+    assert!(!crate::policy::is_persisted_rollout_item(
+        &RolloutItem::EventMsg(EventMsg::ItemCompleted(unowned)),
+        ThreadHistoryMode::Legacy,
+    ));
 }
 
 #[test]

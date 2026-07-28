@@ -17,6 +17,7 @@ use codex_app_server_protocol::WebSearchAction as ApiWebSearchAction;
 use codex_core::config::Config;
 use codex_protocol::models::WebSearchAction;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use serde_json::json;
 
 pub use crate::event_processor::CodexStatus;
@@ -146,10 +147,15 @@ impl EventProcessorWithJsonOutput {
         make_id: impl FnOnce() -> String,
     ) -> Option<ExecThreadItem> {
         match item {
-            ThreadItem::AgentMessage { text, .. } => Some(ExecThreadItem {
-                id: make_id(),
-                details: ThreadItemDetails::AgentMessage(AgentMessageItem { text }),
-            }),
+            ThreadItem::AgentMessage { id, text, .. }
+                if sub_agent_completion_status_from_response_item_id(&id).is_none() =>
+            {
+                Some(ExecThreadItem {
+                    id: make_id(),
+                    details: ThreadItemDetails::AgentMessage(AgentMessageItem { text }),
+                })
+            }
+            ThreadItem::AgentMessage { .. } => None,
             ThreadItem::Reasoning { summary, .. } => {
                 let text = summary.join("\n");
                 if text.trim().is_empty() {
@@ -391,10 +397,13 @@ impl EventProcessorWithJsonOutput {
             .rev()
             .find_map(|item| match item {
                 ThreadItem::AgentMessage {
+                    id,
                     text,
                     inter_agent_source: None,
                     ..
-                } => Some(text.clone()),
+                } if sub_agent_completion_status_from_response_item_id(id).is_none() => {
+                    Some(text.clone())
+                }
                 _ => None,
             })
             .or_else(|| {

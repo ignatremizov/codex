@@ -113,7 +113,11 @@ pub(crate) fn combine_selected_capability_roots(
                 .clone()
         })
         .collect::<Vec<_>>();
-    combined_roots.extend(attachment_roots);
+    for root in attachment_roots {
+        if !combined_roots.contains(&root) {
+            combined_roots.push(root);
+        }
+    }
     combined_roots
 }
 
