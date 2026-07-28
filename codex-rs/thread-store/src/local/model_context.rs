@@ -27,7 +27,7 @@ use crate::ThreadStoreResult;
 mod tests;
 
 #[path = "model_context_rollback.rs"]
-mod rollback;
+pub(super) mod rollback;
 
 /// Loads rollout items needed to reconstruct the latest model-visible context.
 ///

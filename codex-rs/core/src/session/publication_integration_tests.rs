@@ -59,6 +59,7 @@ async fn prepared_prefix_installs_suffix_and_window_only_after_writer_flush() {
                 prefix_context: Vec::new(),
                 initial_context: Vec::new(),
                 model_info: turn.model_info(),
+                completion_source_items: Vec::new(),
                 compaction_response_id: "prepared".to_string(),
                 compaction_summary_tokens: Some(777),
                 reviewer_compaction_hash: None,
@@ -191,6 +192,8 @@ async fn standalone_settings_reply_follows_publication_but_precedes_blocked_live
         session.await_history_publication().await;
         assert!(event_receiver.try_recv().is_err());
         assert_eq!(session.check_history_publication().is_ok(), succeeds);
+        assert_eq!(session.submission_admission.requires_reload(), !succeeds);
+        assert_eq!(session.submission_admission.check_ready().is_ok(), succeeds);
         assert_eq!(store.appends.load(Ordering::SeqCst), 1);
     }
 }

@@ -90,6 +90,7 @@ impl ToolExecutor<ToolInvocation> for SendMessageToUserAsyncHandler {
                 memory_citation: None,
                 delivery: Some(AgentMessageDelivery::Async),
                 questions: None,
+                sub_agent_completion: None,
             });
             session.emit_turn_item_started(turn.as_ref(), &item).await;
             session.emit_turn_item_completed(turn.as_ref(), item).await;

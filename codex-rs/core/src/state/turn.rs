@@ -39,6 +39,8 @@ pub(crate) struct ActiveTurn {
     /// Present when input admission is closed; cancelled when the final batch is recorded.
     /// Reservations that have not started still accept inputs.
     pub(crate) finishing: Option<CancellationToken>,
+    /// A removed task still owns terminal publication and active-state cleanup.
+    pub(crate) terminal_pending: bool,
     pub(crate) turn_state: Arc<Mutex<TurnState>>,
 }
 
@@ -67,6 +69,7 @@ impl Default for ActiveTurn {
         Self {
             task: None,
             finishing: None,
+            terminal_pending: false,
             turn_state: Arc::new(Mutex::new(TurnState::default())),
         }
     }

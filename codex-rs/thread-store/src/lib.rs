@@ -4,6 +4,7 @@
 //! Implementations are responsible for resolving that id to local rollout files, RPC requests, or
 //! any other backing store.
 
+mod completion_artifacts;
 mod error;
 mod in_memory;
 mod live_thread;
@@ -87,6 +88,8 @@ pub use types::ListItemsPosition;
 pub use types::ListThreadsParams;
 pub use types::ListTimelineParams;
 pub use types::ListTurnsParams;
+pub use types::LoadSubAgentCompletionContextItemParams;
+pub use types::LoadSubAgentCompletionPresentationParams;
 pub use types::LoadThreadHistoryParams;
 pub use types::MoveThreadToSectionParams;
 pub use types::PrepareForkParams;
@@ -100,6 +103,7 @@ pub use types::SearchThreadOccurrencesParams;
 pub use types::SearchThreadsParams;
 pub use types::SortDirection;
 pub use types::StoredModelContext;
+pub use types::StoredSubAgentCompletionPresentation;
 pub use types::StoredThread;
 pub use types::StoredThreadHistory;
 pub use types::StoredThreadItem;

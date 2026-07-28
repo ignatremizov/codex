@@ -6,6 +6,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
+const MAX_GENERATED_RESPONSE_ITEM_ID_LEN: usize = 64;
+
 /// A Responses API item ID. New IDs require an explicit prefix; deserialization
 /// remains permissive so legacy rollouts can still be read.
 #[derive(
@@ -18,7 +20,12 @@ pub struct ResponseItemId(String);
 
 impl ResponseItemId {
     pub fn new(prefix: &str) -> Self {
-        Self::with_suffix(prefix, uuid::Uuid::now_v7())
+        let id = Self::with_suffix(prefix, uuid::Uuid::now_v7());
+        assert!(
+            id.len() <= MAX_GENERATED_RESPONSE_ITEM_ID_LEN,
+            "generated response item ID exceeds {MAX_GENERATED_RESPONSE_ITEM_ID_LEN} characters"
+        );
+        id
     }
 
     pub fn with_suffix(prefix: &str, suffix: impl fmt::Display) -> Self {

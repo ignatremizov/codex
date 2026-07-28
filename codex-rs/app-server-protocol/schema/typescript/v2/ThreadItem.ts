@@ -11,6 +11,7 @@ import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
 import type { AgentMessageDelivery } from "./AgentMessageDelivery";
 import type { AsyncUserInputQuestion } from "./AsyncUserInputQuestion";
+import type { CollabAgentRef } from "./CollabAgentRef";
 import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
 import type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
@@ -119,6 +120,11 @@ senderThreadId: string,
  * this corresponds to the newly spawned agent.
  */
 receiverThreadIds: Array<string>,
+/**
+ * Receiver metadata, when available. Absent in older history and
+ * populated for new collab tool calls.
+ */
+receiverAgents: Array<CollabAgentRef>,
 /**
  * Prompt text sent as part of the collab tool call, when available.
  */

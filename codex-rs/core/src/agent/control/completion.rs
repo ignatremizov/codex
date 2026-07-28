@@ -1,15 +1,13 @@
 //! Delivers terminal child results and completion activity to the agent tree.
 //!
 //! Sessions capture terminal state; the controller owns routing and queue-only delivery.
-//! Delivery remains best effort; metrics distinguish queue acceptance from delivery failure.
+//! Accepted delivery retains the exact parent runtime through canonical publication.
 
 use super::LocalAgentControl;
-use crate::TurnStartOptions;
 use crate::agent::api::AgentTurnOutcome;
-use crate::agent_communication::AgentCommunicationContext;
-use crate::agent_communication::AgentCommunicationKind;
 use crate::session_prefix::format_guardian_interruption_message;
 use crate::session_prefix::format_inter_agent_completion_message;
+use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
@@ -23,11 +21,12 @@ use codex_rollout_trace::ThreadTraceContext;
 use tracing::debug;
 
 impl LocalAgentControl {
-    /// Routes a captured terminal outcome without retaining the child's live turn context.
+    /// Reports best-effort initiator activity through the shared controller interface.
+    /// Exact-session completion delivery is admitted separately by Session.
     pub(crate) async fn notify_parent_of_terminal_turn(
         &self,
         outcome: AgentTurnOutcome,
-        trace: &ThreadTraceContext,
+        _trace: &ThreadTraceContext,
     ) {
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
@@ -89,68 +88,148 @@ impl LocalAgentControl {
                 );
             }
         }
+    }
+}
 
-        let message = match (&status, outcome.error_info) {
-            (AgentStatus::Errored(error), Some(CodexErrorInfo::TooManyDenials)) => {
-                Some(format_guardian_interruption_message(
-                    parent_agent_path.clone(),
-                    child_agent_path.clone(),
-                    error,
-                ))
+impl LocalAgentControl {
+    pub(crate) fn deliver_terminal_completion(
+        &self,
+        outcome: AgentTurnOutcome,
+        terminal: super::AgentTerminalPresentation,
+        reference: &str,
+        child_path: Option<AgentPath>,
+        trace: &ThreadTraceContext,
+    ) {
+        let Some(parent) = terminal.take_parent_thread() else {
+            return;
+        };
+        let Some(reservation) = terminal.take_accepted_completion_delivery() else {
+            return;
+        };
+        let control = self.clone();
+        let reference = reference.to_string();
+        let trace = trace.clone();
+        tokio::spawn(async move {
+            let parent_id = terminal.parent();
+            let context_id = terminal.completion_context_response_item_id();
+            let result = async {
+                let communication = child_path.and_then(|child_path| {
+                    let parent_path = child_path
+                        .as_str()
+                        .rsplit_once('/')
+                        .and_then(|(parent, _)| AgentPath::try_from(parent).ok())?;
+                    let message = match (&outcome.status, &outcome.error_info) {
+                        (AgentStatus::Errored(error), Some(CodexErrorInfo::TooManyDenials)) => {
+                            format_guardian_interruption_message(
+                                parent_path.clone(),
+                                child_path.clone(),
+                                error,
+                            )
+                        }
+                        _ => format_inter_agent_completion_message(
+                            parent_path.clone(),
+                            child_path.clone(),
+                            &outcome.status,
+                        )?,
+                    };
+                    let mut communication = InterAgentCommunication::new(
+                        child_path,
+                        parent_path,
+                        Vec::new(),
+                        message,
+                        /*trigger_turn*/ false,
+                    );
+                    communication.id = Some(context_id.clone());
+                    Some(communication)
+                });
+                let response = match &communication {
+                    Some(communication) => communication.to_model_input_item(),
+                    None => codex_protocol::models::ResponseItem::Message {
+                        id: Some(context_id.clone()),
+                        role: "user".to_string(),
+                        phase: None,
+                        status: None,
+                        encrypted_content: None,
+                        content: vec![codex_protocol::models::ContentItem::InputText {
+                            text: crate::session_prefix::format_subagent_notification_message(
+                                &reference,
+                                &outcome.status,
+                            ),
+                        }],
+                        internal_chat_message_metadata_passthrough: None,
+                    },
+                };
+                let delivery = if communication.is_some() {
+                    crate::session::CompletionContextDelivery::QueueOnly
+                } else {
+                    crate::session::CompletionContextDelivery::InstallNow
+                };
+                let has_mailbox_context = communication.is_some();
+                let publication = parent
+                    .session
+                    .persist_completion_context(response, &reservation, delivery)
+                    .await?;
+                if publication == crate::session::CompletionContextPublication::AlreadyPublished {
+                    control.claim_completion_context_response_item_id(parent_id, &context_id);
+                    return Ok(false);
+                }
+                if let Some(communication) = communication {
+                    parent
+                        .session
+                        .input_queue
+                        .enqueue_mailbox_communication(
+                            communication.into(),
+                            crate::TurnStartOptions::default(),
+                        )
+                        .await;
+                }
+                if !terminal.wait_owns_presentation().await {
+                    parent
+                        .session
+                        .publish_completion_item(terminal.completion_presentation(), &reservation)
+                        .await?;
+                }
+                if trace.is_enabled() {
+                    trace.record_agent_result_interaction(
+                        &outcome.turn_id,
+                        parent_id.thread_id,
+                        &AgentResultTracePayload {
+                            child_agent_path: &reference,
+                            message: &crate::session_prefix::format_subagent_notification_message(
+                                &reference,
+                                &outcome.status,
+                            ),
+                            status: &outcome.status,
+                        },
+                    );
+                }
+                if !has_mailbox_context {
+                    control.claim_completion_context_response_item_id(parent_id, &context_id);
+                }
+                Ok::<_, codex_protocol::error::CodexErr>(has_mailbox_context)
             }
-            _ => format_inter_agent_completion_message(
-                parent_agent_path.clone(),
-                child_agent_path.clone(),
-                &status,
-            ),
-        };
-        let Some(message) = message else {
-            return;
-        };
-        // `communication` owns the message. Keep a second copy only when the
-        // recorder will actually need it after parent delivery succeeds.
-        let trace_message = trace.is_enabled().then(|| message.clone());
-        let communication = InterAgentCommunication::new(
-            child_agent_path.clone(),
-            parent_agent_path,
-            Vec::new(),
-            message,
-            /*trigger_turn*/ false,
-        );
-        let context =
-            AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
-        let delivery = self
-            .send_inter_agent_communication(
-                parent_thread_id,
-                communication,
-                context,
-                TurnStartOptions::default(),
-            )
             .await;
-        if let Some(metrics) = codex_otel::global() {
-            let _ = metrics.counter(
-                "codex.multi_agent.result_delivery",
-                /*inc*/ 1,
-                &[(
-                    "outcome",
-                    if delivery.is_ok() { "queued" } else { "failed" },
-                )],
-            );
-        }
-        if let Err(err) = delivery {
-            debug!("failed to notify parent thread {parent_thread_id}: {err}");
-            return;
-        }
-        if let Some(message) = trace_message {
-            trace.record_agent_result_interaction(
-                outcome.turn_id.as_str(),
-                parent_thread_id,
-                &AgentResultTracePayload {
-                    child_agent_path: child_agent_path.as_str(),
-                    message: &message,
-                    status: &status,
-                },
-            );
-        }
+            let queued_mail = match result {
+                Ok(queued_mail) => queued_mail,
+                Err(error) => {
+                    parent
+                        .session
+                        .quarantine_history(format!("completion delivery failed: {error}"));
+                    debug!("completion delivery remains unresolved: {error}");
+                    control.claim_completion_context_response_item_id(parent_id, &context_id);
+                    false
+                }
+            };
+            drop(reservation);
+            // Native completion mail bypasses the submission handler. Once publication
+            // releases its delivery lease, apply the same idle-wake policy as ordinary mail.
+            if queued_mail
+                && !parent.session.submission_admission.completion_is_closing()
+                && (parent.session.enabled(Feature::WakeOnAgentMessages)
+                    || parent.session.has_outstanding_durable_sleep())
+            {
+                parent.session.maybe_start_turn_for_pending_work().await;
+            }
+        });
     }
 }
