@@ -236,6 +236,8 @@ mod approval_requests;
 mod approval_timeout_tests;
 #[path = "tests/backend_banners_tests.rs"]
 mod backend_banners_tests;
+#[path = "tests/background_completion_tests.rs"]
+mod background_completion;
 #[path = "tests/bedrock_catalog_tests.rs"]
 mod bedrock_catalog_tests;
 #[path = "tests/collab_preview_tests.rs"]

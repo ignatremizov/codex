@@ -73,6 +73,7 @@ pub(crate) struct SessionState {
     /// Persisted origin of the session base instructions, when known.
     pub(crate) base_instructions_provenance: Option<BaseInstructionsProvenance>,
     pub(crate) history: ContextManager,
+    pub(crate) acknowledged_completion_contexts: Vec<super::AcknowledgedCompletionContext>,
     /// Cancels work bound to discarded history or a superseded Guardian evidence policy.
     pub(crate) history_reset: CancellationToken,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
@@ -123,6 +124,7 @@ impl SessionState {
             session_configuration,
             base_instructions_provenance: None,
             history,
+            acknowledged_completion_contexts: Vec::new(),
             history_reset: CancellationToken::new(),
             latest_rate_limits: None,
             latest_token_usage_record: None,

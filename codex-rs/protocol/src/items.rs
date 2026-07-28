@@ -167,6 +167,10 @@ pub struct AgentMessageItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub questions: Option<Vec<AsyncUserInputQuestion>>,
+    /// Validated provenance for a canonical background completion presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sub_agent_completion: Option<crate::SubAgentCompletionMetadata>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
@@ -367,6 +371,10 @@ pub struct CollabAgentToolCallItem {
     pub reasoning_effort: Option<ReasoningEffortConfig>,
     #[serde(default)]
     pub agents_states: HashMap<ThreadId, AgentStatus>,
+    /// Terminal completions whose presentation is durably owned by this wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub completion_presentation_agent_ids: Option<Vec<ThreadId>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]

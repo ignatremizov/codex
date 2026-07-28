@@ -47,7 +47,10 @@ use codex_sandboxing::SandboxType;
 use codex_skills::SkillError;
 use codex_utils_git_discovery::GitRootDiscovery;
 use codex_utils_path::replace_path_and_deduplicate;
+use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 
 type McpToolApprovalMetadataMap =
@@ -58,6 +61,7 @@ type McpToolApprovalMetadataMap =
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
 pub(crate) struct Session {
     pub(crate) thread_id: ThreadId,
+    pub(crate) instance_id: Uuid,
     pub(crate) installation_id: String,
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
@@ -88,10 +92,14 @@ pub(crate) struct Session {
     pub(super) mcp_prewarm_tx: async_channel::Sender<()>,
     pub(super) mcp_prewarm_shutdown: CancellationToken,
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
+    pub(super) spawn_parent_thread_id: Option<ThreadId>,
+    pub(super) terminal_publication_lock: StdMutex<()>,
+    pub(super) terminal_presentation_armed: AtomicBool,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) realtime_history: Option<Mutex<crate::realtime_history::RealtimeHistoryState>>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) async_hook_results: async_channel::Receiver<HookCompletedEvent>,
+    pub(crate) active_turn_transition: Notify,
     pub(crate) input_queue: InputQueue,
     pub(crate) services: SessionServices,
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
@@ -99,6 +107,25 @@ pub(crate) struct Session {
     pub(super) forked_from_ordinal_exclusive: Option<u64>,
     pub(crate) submission_admission: Arc<SubmissionAdmission>,
     pub(super) next_internal_sub_id: AtomicU64,
+}
+
+pub(crate) struct TerminalPresentationDisarmGuard<'a> {
+    armed: &'a AtomicBool,
+    restore_on_drop: bool,
+}
+
+impl TerminalPresentationDisarmGuard<'_> {
+    pub(crate) fn commit(mut self) {
+        self.restore_on_drop = false;
+    }
+}
+
+impl Drop for TerminalPresentationDisarmGuard<'_> {
+    fn drop(&mut self) {
+        if self.restore_on_drop {
+            self.armed.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -642,6 +669,72 @@ async fn warm_plugins_and_skills_for_session_init(
 }
 
 impl Session {
+    pub(crate) fn presentation_id(&self) -> crate::agent::control::SessionPresentationId {
+        crate::agent::control::SessionPresentationId::new(self.thread_id, self.instance_id)
+    }
+
+    pub(crate) fn prepare_for_thread_removal(&self) {
+        self.submission_admission.close_completion_admission();
+        self.services
+            .agent_control
+            .clear_wait_agent_presentations_for_session(self.presentation_id());
+        self.record_not_found_terminal_if_unfinished();
+    }
+
+    pub(crate) fn disarm_terminal_presentation(&self) -> TerminalPresentationDisarmGuard<'_> {
+        let restore_on_drop = self
+            .terminal_presentation_armed
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        TerminalPresentationDisarmGuard {
+            armed: &self.terminal_presentation_armed,
+            restore_on_drop,
+        }
+    }
+
+    /// Publishes a terminal fallback before manager removal or final `Session` drop.
+    pub(crate) fn record_not_found_terminal_if_unfinished(&self) {
+        if !self
+            .terminal_presentation_armed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        let Some(parent_thread_id) = self.spawn_parent_thread_id else {
+            return;
+        };
+        let _terminal_guard = self
+            .terminal_publication_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let status = self.agent_status.borrow().clone();
+        if crate::agent::status::is_final(&status) {
+            return;
+        }
+        let status = AgentStatus::NotFound;
+        let published_status = status.clone();
+        let child = self.presentation_id();
+        let Some(parent) = self
+            .services
+            .agent_control
+            .completion_parent_for_child(child, parent_thread_id)
+        else {
+            return;
+        };
+        let _ = self
+            .services
+            .agent_control
+            .record_agent_terminal_presentation(
+                parent,
+                child,
+                &uuid::Uuid::now_v7().to_string(),
+                status,
+                crate::agent::control::TerminalPresentationDelivery::Watcher,
+                || {
+                    self.agent_status.send_replace(published_status);
+                },
+            );
+    }
+
     /// Returns the concrete identity for this thread.
     pub(crate) fn thread_id(&self) -> ThreadId {
         self.thread_id
@@ -1738,6 +1831,7 @@ impl Session {
             let (mcp_prewarm_tx, mcp_prewarm_rx) = async_channel::bounded(1);
             let sess = Arc::new(Session {
                 thread_id,
+                instance_id: Uuid::now_v7(),
                 installation_id,
                 tx_event: tx_event.clone(),
                 agent_status,
@@ -1762,12 +1856,16 @@ impl Session {
                 mcp_prewarm_tx,
                 mcp_prewarm_shutdown: CancellationToken::new(),
                 mcp_prewarm_task: std::sync::Mutex::new(None),
+                spawn_parent_thread_id: session_configuration.session_source.parent_thread_id(),
+                terminal_publication_lock: StdMutex::new(()),
+                terminal_presentation_armed: AtomicBool::new(false),
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 realtime_history: (session_configuration.history_mode == ThreadHistoryMode::Paginated
                     && services.live_thread.is_some())
                 .then(|| Mutex::new(Default::default())),
                 active_turn: Mutex::new(None),
                 async_hook_results,
+                active_turn_transition: Notify::new(),
                 input_queue: InputQueue::new(),
                 services,
                 git_enrichment_policy,
@@ -1905,6 +2003,8 @@ impl Session {
         .await;
         match session_result {
             Ok(sess) => {
+                sess.terminal_presentation_armed
+                    .store(true, std::sync::atomic::Ordering::Release);
                 live_thread_init.commit();
                 Ok(sess)
             }
@@ -1913,5 +2013,14 @@ impl Session {
                 Err(err)
             }
         }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.prepare_for_thread_removal();
+        self.services
+            .agent_control
+            .clear_completion_contexts_for_session(self.presentation_id());
     }
 }

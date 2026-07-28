@@ -20,6 +20,7 @@ use tokio::sync::oneshot;
 use tokio_util::task::TaskTracker;
 
 use super::Session;
+use super::completion_provenance::CompletionPublicationReceipt;
 use super::thread_settings;
 use crate::state::SessionState;
 
@@ -60,10 +61,14 @@ struct PublicationOutcome {
     failure: Arc<Mutex<Option<String>>>,
     stage: &'static str,
     finished: bool,
+    reload: Option<Arc<super::SubmissionAdmission>>,
 }
 
 impl PublicationOutcome {
     fn fail(&mut self, error: impl std::fmt::Display) -> CodexErr {
+        if let Some(admission) = &self.reload {
+            admission.rollback_requires_reload();
+        }
         let message = format!(
             "history publication failed during {}: {error}; canonical reload required",
             self.stage
@@ -83,6 +88,65 @@ impl Drop for PublicationOutcome {
 }
 
 impl Session {
+    /// Persistent completions use single-attempt writer barriers, never the retry queue.
+    /// Ephemeral completions share the owned installation/event boundary without a disk receipt.
+    pub(super) fn dispatch_completion_publication(
+        &self,
+        permit: OwnedSemaphorePermit,
+        items: Vec<RolloutItem>,
+        events: Vec<codex_protocol::protocol::Event>,
+        install: impl FnOnce(&mut SessionState) + Send + 'static,
+        on_primary_delivery: impl FnOnce() + Send + 'static,
+    ) -> CodexResult<oneshot::Receiver<CodexResult<CompletionPublicationReceipt>>> {
+        self.history_publication.check()?;
+        let live = self.live_thread().cloned();
+        let state = Arc::clone(&self.state);
+        let failure = Arc::clone(&self.history_publication.failure);
+        let admission = Arc::clone(&self.submission_admission);
+        let tx_event = self.tx_event.clone();
+        let (sender, receiver) = oneshot::channel();
+        self.history_publication.tasks.spawn(async move {
+            let _permit = permit;
+            let mut outcome = PublicationOutcome {
+                failure,
+                stage: "completion append",
+                finished: false,
+                reload: Some(Arc::clone(&admission)),
+            };
+            if let Some(live) = &live
+                && let Err(error) = live
+                    .append_completion_items_and_flush_canonical(&items)
+                    .await
+            {
+                admission.rollback_requires_reload();
+                let _ = sender.send(Err(outcome.fail(error)));
+                return;
+            }
+            outcome.stage = "completion live installation";
+            {
+                let mut state = state.lock().await;
+                install(&mut state);
+            }
+            let mut primary_event = super::sub_agent_completion::PrimaryEventEnqueue::Enqueued;
+            for event in events {
+                if tx_event.send(event).await.is_err() {
+                    primary_event = super::sub_agent_completion::PrimaryEventEnqueue::Closed;
+                }
+            }
+            if primary_event == super::sub_agent_completion::PrimaryEventEnqueue::Enqueued {
+                on_primary_delivery();
+            }
+            outcome.finished = true;
+            let receipt = if live.is_some() {
+                CompletionPublicationReceipt::Canonical { primary_event }
+            } else {
+                CompletionPublicationReceipt::RuntimeOnly { primary_event }
+            };
+            let _ = sender.send(Ok(receipt));
+        });
+        Ok(receiver)
+    }
+
     pub(crate) fn quarantine_history(&self, reason: String) {
         self.submission_admission.rollback_requires_reload();
         self.history_publication
@@ -182,6 +246,7 @@ impl Session {
                 failure,
                 stage: "append",
                 finished: false,
+                reload: None,
             };
             if !items.is_empty()
                 && let Some(live_thread) = live_thread

@@ -43,6 +43,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand as CoreParsedCommand;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
+use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
@@ -50,6 +51,7 @@ use codex_protocol::protocol::GuardianUserAuthorization as CoreGuardianUserAutho
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_protocol::protocol::ordinary_agent_message_response_item_id;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use serde::Deserialize;
@@ -381,6 +383,10 @@ pub enum ThreadItem {
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
         /// this corresponds to the newly spawned agent.
         receiver_thread_ids: Vec<String>,
+        /// Receiver metadata, when available. Absent in older history and
+        /// populated for new collab tool calls.
+        #[serde(default)]
+        receiver_agents: Vec<CollabAgentRef>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
         /// Model requested for the spawned agent, when applicable.
@@ -907,6 +913,11 @@ impl From<CoreTurnItem> for ThreadItem {
                     .collect(),
             },
             CoreTurnItem::AgentMessage(agent) => {
+                let id = if agent.has_sub_agent_completion_identity() {
+                    agent.id.clone()
+                } else {
+                    ordinary_agent_message_response_item_id(&agent.id)
+                };
                 let text = agent
                     .content
                     .into_iter()
@@ -915,7 +926,7 @@ impl From<CoreTurnItem> for ThreadItem {
                     })
                     .collect::<String>();
                 ThreadItem::AgentMessage {
-                    id: agent.id,
+                    id,
                     text,
                     inter_agent_source: None,
                     phase: agent.phase,
@@ -991,6 +1002,11 @@ impl From<CoreTurnItem> for ThreadItem {
                     .receiver_thread_ids
                     .into_iter()
                     .map(String::from)
+                    .collect(),
+                receiver_agents: call
+                    .receiver_agents
+                    .into_iter()
+                    .map(CollabAgentRef::from)
                     .collect(),
                 prompt: call.prompt,
                 model: call.model,
@@ -1323,6 +1339,30 @@ pub enum CollabAgentStatus {
 pub struct CollabAgentState {
     pub status: CollabAgentStatus,
     pub message: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub struct CollabAgentRef {
+    /// Thread ID of the receiving agent.
+    pub thread_id: String,
+    /// Optional nickname assigned to the receiving agent.
+    #[serde(default)]
+    pub agent_nickname: Option<String>,
+    /// Optional role assigned to the receiving agent.
+    #[serde(default)]
+    pub agent_role: Option<String>,
+}
+
+impl From<CoreCollabAgentRef> for CollabAgentRef {
+    fn from(value: CoreCollabAgentRef) -> Self {
+        Self {
+            thread_id: value.thread_id.to_string(),
+            agent_nickname: value.agent_nickname,
+            agent_role: value.agent_role,
+        }
+    }
 }
 
 impl From<CoreAgentStatus> for CollabAgentState {

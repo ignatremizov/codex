@@ -314,6 +314,7 @@ async fn run_remote_compact_task_inner_impl(
         }
     };
     let RemoteCompactV2Attempt {
+        completion_source_items,
         trace_input_history,
         replacement_history_input,
         compacted_prefix_len,
@@ -382,6 +383,7 @@ async fn run_remote_compact_task_inner_impl(
             reference_context_item,
             world_state_baseline,
             CompactedHistoryMetadata {
+                completion_source_items,
                 message: String::new(),
                 compaction_summary_tokens,
                 window_number: new_window_number,

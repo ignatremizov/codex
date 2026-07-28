@@ -17,13 +17,18 @@ use super::command_approval::QueuedSubmission;
 
 #[derive(Default)]
 pub(crate) struct SubmissionAdmission {
-    send_lock: Mutex<()>,
-    state: StdMutex<State>,
+    pub(super) send_lock: Mutex<()>,
+    pub(super) state: StdMutex<State>,
     writer_closed: AtomicBool,
+    pub(super) completion_closed: AtomicBool,
+    pub(super) completion_sealed: AtomicBool,
+    pub(super) accepted_completions: std::sync::atomic::AtomicUsize,
+    pub(super) completion_publication: StdMutex<Option<String>>,
+    pub(super) changed: tokio::sync::Notify,
 }
 
 #[derive(Default)]
-enum State {
+pub(super) enum State {
     #[default]
     Ready,
     RollbackPending(String),
@@ -48,10 +53,12 @@ impl SubmissionAdmission {
         if matches!(&*state, State::RollbackPending(id) if id == submission_id) {
             *state = State::Ready;
         }
+        self.changed.notify_waiters();
     }
 
     pub(crate) fn rollback_requires_reload(&self) {
         *self.state.lock().unwrap_or_else(PoisonError::into_inner) = State::ReloadRequired;
+        self.changed.notify_waiters();
     }
 
     pub(crate) fn requires_reload(&self) -> bool {
@@ -72,6 +79,13 @@ impl SubmissionAdmission {
     /// Holds public history-only injection ahead of any rollback reservation.
     pub(crate) async fn admit_injection(&self) -> CodexResult<tokio::sync::MutexGuard<'_, ()>> {
         let guard = self.send_lock.lock().await;
+        if self.completion_closed.load(Ordering::Acquire)
+            || self.completion_sealed.load(Ordering::Acquire)
+        {
+            return Err(CodexErr::InvalidRequest(
+                "thread shutdown is already in progress".to_string(),
+            ));
+        }
         self.check_ready()?;
         Ok(guard)
     }
@@ -87,6 +101,10 @@ impl SubmissionAdmission {
     ) -> CodexResult<()> {
         let submission = submission.into();
         let _order = self.send_lock.lock().await;
+        let mut shutdown = super::completion_admission::ShutdownAdmission::for_submission(
+            Arc::clone(self),
+            &submission.submission,
+        );
         let mut reservation = self.reserve(&submission.submission)?;
         sender
             .send(submission)
@@ -96,6 +114,7 @@ impl SubmissionAdmission {
         if let Some(reservation) = reservation.as_mut() {
             reservation.submission_id = None;
         }
+        shutdown.commit();
         Ok(())
     }
 
@@ -111,6 +130,10 @@ impl SubmissionAdmission {
                 "thread submission admission is busy; retry when idle".to_string(),
             )
         })?;
+        let mut shutdown = super::completion_admission::ShutdownAdmission::for_submission(
+            Arc::clone(self),
+            &submission.submission,
+        );
         let mut reservation = self.reserve(&submission.submission)?;
         sender.try_send(submission).map_err(|error| match error {
             async_channel::TrySendError::Full(_) => CodexErr::InvalidRequest(
@@ -121,6 +144,7 @@ impl SubmissionAdmission {
         if let Some(reservation) = reservation.as_mut() {
             reservation.submission_id = None;
         }
+        shutdown.commit();
         Ok(())
     }
 
@@ -128,6 +152,13 @@ impl SubmissionAdmission {
     fn reserve(self: &Arc<Self>, submission: &Submission) -> CodexResult<Option<Reservation>> {
         let shutdown = matches!(&submission.op, Op::Shutdown);
         if !shutdown {
+            if self.completion_closed.load(Ordering::Acquire)
+                || self.completion_sealed.load(Ordering::Acquire)
+            {
+                return Err(CodexErr::InvalidRequest(
+                    "thread shutdown is already in progress".to_string(),
+                ));
+            }
             self.check_ready()?;
         }
         let rollback = matches!(

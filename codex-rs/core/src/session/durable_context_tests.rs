@@ -3,7 +3,9 @@ use super::*;
 use codex_extension_api::PostCompactionContextContribution;
 use codex_extension_api::TurnInputContribution;
 use codex_utils_output_truncation::TruncationPolicy;
+use pretty_assertions::assert_eq;
 use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 
 #[tokio::test]
 async fn accepted_transcript_publication_enqueues_after_flush_even_without_receipt_waiter() {
@@ -148,7 +150,7 @@ async fn gated_session(
         release: AsyncMutex::new(Some(gate)),
         appends: AtomicUsize::new(0),
         gate_polls: AtomicUsize::new(0),
-        writer: AsyncMutex::new(()),
+        writer: Semaphore::new(/*permits*/ 1),
     });
     let config = session.get_config().await;
     session.services.live_thread = Some(

@@ -316,6 +316,12 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     }
     let _ = sess.conversation.shutdown().await;
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    sess.submission_admission.drain_accepted_completions().await;
+    if !sess.submission_admission.requires_reload()
+        && let Err(error) = sess.drain_completion_mailbox().await
+    {
+        sess.quarantine_history(format!("completion shutdown drain failed: {error}"));
+    }
     sess.close_history_publication().await;
     let shell_snapshot_prewarm = sess.state.lock().await.shell_snapshot_prewarm.take();
     if let Some(shell_snapshot_prewarm) = shell_snapshot_prewarm {

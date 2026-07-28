@@ -86,7 +86,10 @@ async fn exact_model_context_is_masked_before_segment_headers_are_removed() {
             expected.push(parent_removed.clone());
         }
         expected.push(child_retained.clone());
-        assert_eq!(actual, expected);
+        assert_eq!(
+            serde_json::to_value(actual).expect("actual"),
+            serde_json::to_value(expected).expect("expected"),
+        );
     }
     assert!(!parent.exists());
     assert!(!child.exists());

@@ -44,6 +44,9 @@ use tempfile::TempDir;
 #[path = "thread_history_fork_projection_tests.rs"]
 mod fork_projection_tests;
 
+#[path = "completion_summary_tests.rs"]
+mod completion_summary_tests;
+
 use super::super::LocalThreadStore;
 use super::super::LocalThreadStoreConfig;
 use super::super::test_support::test_config;
@@ -237,6 +240,7 @@ async fn split_homes_support_backfill_listing_and_paginated_history() {
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 turn_completed("turn-1"),
@@ -331,6 +335,7 @@ async fn paginated_live_append_materializes_turn_items_and_state() {
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 turn_completed("turn-1"),
@@ -487,6 +492,7 @@ async fn paginated_realtime_items_materialize_separately_in_rollout_order() {
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        sub_agent_completion: None,
                     }),
                 ),
                 RolloutItem::RealtimeItem(RealtimeItem {
@@ -836,34 +842,50 @@ async fn named_fork_boundaries_reject_invisible_and_noncanonical_turns() {
         .await
         .expect("append invisible, stale, and terminal-only turns");
 
-    for (thread_id, boundary, expected_error) in [
-        (
-            child_id,
-            ForkBoundary::ThroughTurn("inherited-turn".to_string()),
-            "fork boundary exceeds inherited source history",
-        ),
-        (
-            source_id,
-            ForkBoundary::ThroughTurn("stale-turn".to_string()),
-            "lastTurnId 'stale-turn' identifies an in-progress turn",
-        ),
-        (
-            source_id,
-            ForkBoundary::BeforeTurn("review-turn".to_string()),
-            "turn review-turn does not have a persisted start boundary",
-        ),
-    ] {
-        let error = store
-            .prepare_fork(PrepareForkParams {
-                thread_id,
-                boundary,
-            })
-            .await
-            .expect_err("reject an invalid fork boundary");
-        assert!(matches!(
-            error,
-            crate::ThreadStoreError::InvalidRequest { message } if message == expected_error
-        ));
+    for representation in ["plain", "compressed"] {
+        if representation == "compressed" {
+            let path = store
+                .live_rollout_path(source_id)
+                .await
+                .expect("source path");
+            store
+                .shutdown_thread(source_id)
+                .await
+                .expect("close source");
+            compress_rollout(&path);
+        }
+        for (thread_id, boundary, expected_error) in [
+            (
+                child_id,
+                ForkBoundary::ThroughTurn("inherited-turn".to_string()),
+                "fork boundary exceeds inherited source history",
+            ),
+            (
+                source_id,
+                ForkBoundary::ThroughTurn("stale-turn".to_string()),
+                "lastTurnId 'stale-turn' identifies an in-progress turn",
+            ),
+            (
+                source_id,
+                ForkBoundary::BeforeTurn("review-turn".to_string()),
+                "turn review-turn does not have a persisted start boundary",
+            ),
+        ] {
+            let boundary_label = format!("{boundary:?}");
+            let Err(error) = store
+                .prepare_fork(PrepareForkParams {
+                    thread_id,
+                    boundary,
+                })
+                .await
+            else {
+                panic!("accepted {boundary_label} for {thread_id} in {representation} history");
+            };
+            assert!(matches!(
+                error,
+                crate::ThreadStoreError::InvalidRequest { message } if message == expected_error
+            ));
+        }
     }
 }
 
@@ -2795,11 +2817,7 @@ async fn populated_projection() -> ProjectionFixture {
     let home = TempDir::new().expect("temp dir");
     let store = projection_store(home.path()).await;
     let thread_id = ThreadId::default();
-    create_paginated_thread(&store, thread_id).await;
-    store
-        .persist_thread(thread_id, PersistContext::Standard)
-        .await
-        .expect("persist session metadata");
+    create_indexed_paginated_thread(&store, thread_id, /*history_base*/ None).await;
     store
         .append_items(AppendThreadItemsParams {
             thread_id,
@@ -2903,32 +2921,66 @@ async fn create_paginated_subagent_thread(
     subagent_history_start_ordinal: Option<u64>,
 ) {
     store
-        .create_thread(CreateThreadParams {
-            session_id: thread_id.into(),
+        .create_thread(paginated_thread_params(
             thread_id,
-            extra_config: None,
-            forked_from_id: None,
-            parent_thread_id: None,
-            source: SessionSource::Exec,
-            thread_source: None,
-            originator: "test_originator".to_string(),
-            base_instructions: BaseInstructions::default(),
-            dynamic_tools: Vec::new(),
-            selected_capability_roots: Vec::new(),
-            multi_agent_version: None,
-            history_mode: ThreadHistoryMode::Paginated,
             history_base,
             subagent_history_start_ordinal,
-            initial_window_id: "window-1".to_string(),
-            runtime_workspace_roots: None,
-            metadata: ThreadPersistenceMetadata {
-                cwd: Some(std::env::current_dir().expect("cwd")),
-                model_provider: "test-provider".to_string(),
-                memory_mode: ThreadMemoryMode::Enabled,
-            },
-        })
+        ))
         .await
         .expect("create paginated thread");
+}
+
+async fn create_indexed_paginated_thread(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    history_base: Option<HistoryPosition>,
+) {
+    // Public list APIs need the metadata index as well as canonical/projection files.
+    // Keep raw lazy-writer tests on create_paginated_subagent_thread instead.
+    let live = crate::LiveThread::create(
+        std::sync::Arc::new(store.clone()),
+        paginated_thread_params(
+            thread_id,
+            history_base,
+            /*subagent_history_start_ordinal*/ None,
+        ),
+    )
+    .await
+    .expect("create indexed paginated fixture");
+    live.persist(PersistContext::Standard)
+        .await
+        .expect("publish the fixture metadata through the normal owner");
+}
+
+fn paginated_thread_params(
+    thread_id: ThreadId,
+    history_base: Option<HistoryPosition>,
+    subagent_history_start_ordinal: Option<u64>,
+) -> CreateThreadParams {
+    CreateThreadParams {
+        session_id: thread_id.into(),
+        thread_id,
+        extra_config: None,
+        forked_from_id: None,
+        parent_thread_id: None,
+        source: SessionSource::Exec,
+        thread_source: None,
+        originator: "test_originator".to_string(),
+        base_instructions: BaseInstructions::default(),
+        dynamic_tools: Vec::new(),
+        selected_capability_roots: Vec::new(),
+        multi_agent_version: None,
+        history_mode: ThreadHistoryMode::Paginated,
+        history_base,
+        subagent_history_start_ordinal,
+        initial_window_id: "window-1".to_string(),
+        runtime_workspace_roots: None,
+        metadata: ThreadPersistenceMetadata {
+            cwd: Some(std::env::current_dir().expect("cwd")),
+            model_provider: "test-provider".to_string(),
+            memory_mode: ThreadMemoryMode::Enabled,
+        },
+    }
 }
 
 fn turn_started(turn_id: &str) -> RolloutItem {
@@ -3003,6 +3055,7 @@ fn agent_message(id: &str, phase: MessagePhase) -> TurnItem {
         memory_citation: None,
         delivery: None,
         questions: None,
+        sub_agent_completion: None,
     })
 }
 

@@ -1,4 +1,7 @@
 use codex_protocol::ThreadId;
+use codex_protocol::models::MessagePhase;
+use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
+use codex_protocol::protocol::sub_agent_completion_transcript_parts;
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::Row;
@@ -10,6 +13,7 @@ use super::segment_paging::page_turn_rows;
 use super::segment_paging::validate_page_size;
 use super::sqlite_integer;
 use super::turn_lookup::find_source_turn;
+use super::turn_lookup::find_visible_turn;
 use crate::ItemPage;
 use crate::ListItemsParams;
 use crate::ListTurnsParams;
@@ -121,16 +125,7 @@ pub(in crate::local) async fn list_turns(
     for turn in page.rows {
         let items = match params.items_view {
             StoredTurnItemsView::NotLoaded => Vec::new(),
-            StoredTurnItemsView::Summary
-                if matches!(turn.status, StoredTurnStatus::Interrupted)
-                    && turn.first_user_item_id.is_none()
-                    && turn.final_agent_item_id.is_none() =>
-            {
-                // Synthetic fork-boundary rows are interrupted without local summary IDs.
-                // Load their summary from the earliest visible source turn.
-                load_inherited_summary_items(pool, lineage, &turn).await?
-            }
-            StoredTurnItemsView::Summary => turn.summary_items,
+            StoredTurnItemsView::Summary => load_summary_items(pool, lineage, &turn).await?,
         };
         turns.push(StoredTurn {
             turn_id: turn.turn_id,
@@ -174,47 +169,123 @@ pub(in crate::local) async fn list_items(
     })
 }
 
-async fn load_inherited_summary_items(
+async fn load_summary_items(
     pool: &sqlx::SqlitePool,
     lineage: &RolloutLineage,
     turn: &StoredTurnRow,
 ) -> ThreadStoreResult<Vec<StoredThreadItem>> {
-    let source = find_source_turn(pool, lineage, turn.turn_id.as_str()).await?;
-    let Some(segment) = lineage
-        .segments()
-        .iter()
-        .find(|segment| segment.rollout_id() == source.rollout_id)
-    else {
-        return Ok(Vec::new());
+    let source = if matches!(turn.status, StoredTurnStatus::Interrupted)
+        && turn.first_user_item_id.is_none()
+        && turn.final_agent_item_id.is_none()
+    {
+        // Synthetic fork-boundary rows inherit the earliest visible source turn.
+        find_source_turn(pool, lineage, turn.turn_id.as_str()).await?
+    } else {
+        find_visible_turn(pool, lineage, turn.turn_id.as_str()).await?
     };
-    let start_ordinal = sqlite_integer(segment.start_ordinal(), "rollout ordinal")?;
-    let end_ordinal = segment
-        .end_ordinal()
-        .map(|ordinal| sqlite_integer(ordinal, "rollout ordinal"))
-        .transpose()?;
-    let rows = sqlx::query(
-        r#"
+    let mut summary = Vec::new();
+    // A logical turn can have inherited rows and later completion arrivals in the child.
+    // Query only this turn in each frozen source range; never extend an inherited cutoff.
+    for segment in lineage.segments() {
+        let start_ordinal = sqlite_integer(segment.start_ordinal(), "rollout ordinal")?;
+        let end_ordinal = segment
+            .end_ordinal()
+            .map(|ordinal| sqlite_integer(ordinal, "rollout ordinal"))
+            .transpose()?;
+        let rows = sqlx::query(
+            r#"
 SELECT turn_id, item_id, updated_at_ordinal, created_at_ms, item_json
 FROM thread_items
 WHERE thread_id = ?
   AND turn_id = ?
   AND rollout_ordinal >= ?
   AND (? IS NULL OR rollout_ordinal < ?)
-  AND (item_id = ? OR item_id = ?)
+  AND (
+    item_id = ?
+    OR item_id = ?
+    OR item_id GLOB 'msg_[cesn]_*'
+    OR (
+      json_extract(item_json, '$.type') = 'collabAgentToolCall'
+      AND json_extract(item_json, '$.tool') = 'wait'
+      AND json_extract(item_json, '$.status') != 'inProgress'
+    )
+  )
 ORDER BY rollout_ordinal ASC
         "#,
-    )
-    .bind(source.rollout_id.to_string())
-    .bind(turn.turn_id.as_str())
-    .bind(start_ordinal)
-    .bind(end_ordinal)
-    .bind(end_ordinal)
-    .bind(source.first_user_item_id)
-    .bind(source.final_agent_item_id)
-    .fetch_all(pool)
-    .await
-    .map_err(super::thread_history_error)?;
-    rows.into_iter().map(stored_thread_item).collect()
+        )
+        .bind(segment.rollout_id().to_string())
+        .bind(turn.turn_id.as_str())
+        .bind(start_ordinal)
+        .bind(end_ordinal)
+        .bind(end_ordinal)
+        .bind(&source.first_user_item_id)
+        .bind(&source.final_agent_item_id)
+        .fetch_all(pool)
+        .await
+        .map_err(super::thread_history_error)?;
+        summary.extend(
+            rows.into_iter()
+                .map(stored_thread_item)
+                .filter_map(|result| match result {
+                    Ok(item)
+                        if source.first_user_item_id.as_ref() == Some(&item.item_id)
+                            || source.final_agent_item_id.as_ref() == Some(&item.item_id)
+                            || turn
+                                .summary_items
+                                .iter()
+                                .any(|ordinary| ordinary.item_id == item.item_id)
+                            || is_completion_summary_item(&item) =>
+                    {
+                        Some(Ok(item))
+                    }
+                    Ok(_) => None,
+                    Err(err) => Some(Err(err)),
+                })
+                .collect::<ThreadStoreResult<Vec<_>>>()?,
+        );
+    }
+    // A newer segment can carry a later version of an existing canonical item. Preserve its
+    // position and identity, rather than deduplicating unrelated messages by their text.
+    let mut seen = std::collections::HashSet::new();
+    summary.reverse();
+    summary.retain(|item| seen.insert(item.item_id.clone()));
+    summary.reverse();
+    Ok(summary)
+}
+
+fn is_completion_summary_item(item: &StoredThreadItem) -> bool {
+    use codex_app_server_protocol::CollabAgentTool;
+    use codex_app_server_protocol::CollabAgentToolCallStatus;
+    use codex_app_server_protocol::ThreadItem;
+
+    // This is display selection over the trusted canonical-to-public projection, not evidence
+    // of canonical commit or completion ownership. Private rollout metadata owns those decisions.
+    match serde_json::from_slice::<ThreadItem>(&item.item_json) {
+        Ok(ThreadItem::AgentMessage {
+            id,
+            text,
+            phase,
+            inter_agent_source,
+            ..
+        }) => {
+            id == item.item_id
+                && phase == Some(MessagePhase::Commentary)
+                && inter_agent_source.is_none()
+                && sub_agent_completion_status_from_response_item_id(&id).is_some()
+                && sub_agent_completion_transcript_parts(&text)
+                    .is_some_and(|(reference, _)| !reference.is_empty())
+        }
+        Ok(ThreadItem::CollabAgentToolCall { tool, status, .. }) => {
+            // Ordinary terminal waits remain useful summary rows too. Only explicitly owned
+            // waits survive exact rollback; that masking happened before projection.
+            tool == CollabAgentTool::Wait
+                && matches!(
+                    status,
+                    CollabAgentToolCallStatus::Completed | CollabAgentToolCallStatus::Failed
+                )
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn parse_cursor(

@@ -5,19 +5,15 @@ use crate::agent::AgentStatus;
 use crate::agent::registry::AgentRegistry;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
-use crate::agent::status::is_final;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
 use crate::agent_communication::AgentCommunicationContext;
-use crate::agent_communication::AgentCommunicationKind;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
-use crate::context::SubagentNotification;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::rollout_budget::RolloutBudget;
 use crate::session::emit_subagent_session_started;
-use crate::session_prefix::format_inter_agent_completion_message;
 use crate::session_prefix::format_subagent_context_line;
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
 use crate::thread_manager::ThreadIdGenerator;
@@ -71,6 +67,12 @@ use self::residency::V2Residency;
 
 mod budget;
 mod completion;
+mod completion_watcher;
+mod presentation;
+pub(crate) use presentation::AgentTerminalPresentation;
+pub(crate) use presentation::CompletionPresentation;
+pub(crate) use presentation::SessionPresentationId;
+pub(crate) use presentation::TerminalPresentationDelivery;
 mod delivery;
 mod execution;
 mod fork_goal_context;
@@ -108,6 +110,7 @@ pub(crate) struct LocalAgentControl {
     state: Arc<AgentRegistry>,
     v2_residency: Arc<V2Residency>,
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
+    wait_agent_presentations: Arc<presentation::WaitAgentPresentations>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
     /// The user-selected root routing tier, shared by the entire agent tree.
@@ -140,6 +143,7 @@ impl LocalAgentControl {
             state: Arc::default(),
             v2_residency: Arc::default(),
             agent_execution_limiter: Arc::default(),
+            wait_agent_presentations: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
             shared_thread_instructions_provider: Arc::default(),
@@ -641,102 +645,6 @@ impl LocalAgentControl {
         }
 
         Ok(agents)
-    }
-
-    /// Starts a detached watcher for sub-agents spawned from another thread.
-    ///
-    /// This is only enabled for `SubAgentSource::ThreadSpawn`, where a parent thread exists and
-    /// can receive completion notifications.
-    fn maybe_start_completion_watcher(
-        &self,
-        child_thread_id: ThreadId,
-        session_source: Option<SessionSource>,
-        child_reference: String,
-        child_agent_path: Option<AgentPath>,
-    ) {
-        let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        })) = session_source
-        else {
-            return;
-        };
-        let control = self.clone();
-        tokio::spawn(async move {
-            let status = match control.subscribe_status(child_thread_id).await {
-                Ok(mut status_rx) => {
-                    let mut status = status_rx.borrow().clone();
-                    while !is_final(&status) {
-                        if status_rx.changed().await.is_err() {
-                            status = control.get_status(child_thread_id).await;
-                            break;
-                        }
-                        status = status_rx.borrow().clone();
-                    }
-                    status
-                }
-                Err(_) => control.get_status(child_thread_id).await,
-            };
-            if !is_final(&status) {
-                return;
-            }
-
-            let Ok(state) = control.upgrade() else {
-                return;
-            };
-            let child_thread = state.get_thread(child_thread_id).await.ok();
-            let child_uses_multi_agent_v2 = match child_thread.as_ref() {
-                Some(child_thread) => {
-                    child_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
-                }
-                None => true,
-            };
-            if child_agent_path.is_some() && child_uses_multi_agent_v2 {
-                let Some(child_agent_path) = child_agent_path.clone() else {
-                    return;
-                };
-                let Some(parent_agent_path) = child_agent_path
-                    .as_str()
-                    .rsplit_once('/')
-                    .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
-                else {
-                    return;
-                };
-                let Some(message) = format_inter_agent_completion_message(
-                    parent_agent_path.clone(),
-                    child_agent_path.clone(),
-                    &status,
-                ) else {
-                    return;
-                };
-                let communication = InterAgentCommunication::new(
-                    child_agent_path,
-                    parent_agent_path,
-                    Vec::new(),
-                    message,
-                    /*trigger_turn*/ false,
-                );
-                let context =
-                    AgentCommunicationContext::new(AgentCommunicationKind::Result, child_thread_id);
-                let _ = control
-                    .send_inter_agent_communication(
-                        parent_thread_id,
-                        communication,
-                        context,
-                        TurnStartOptions::default(),
-                    )
-                    .await;
-                return;
-            }
-            let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
-                return;
-            };
-            parent_thread
-                .inject_fragment_without_turn(SubagentNotification::new(
-                    child_reference.as_str(),
-                    status,
-                ))
-                .await;
-        });
     }
 
     fn prepare_agent_metadata(
