@@ -571,29 +571,45 @@ async fn apply_patch_cli_preserves_distinct_updated_paths() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn apply_patch_cli_rejects_duplicate_resolved_paths() -> Result<()> {
+async fn apply_patch_cli_combines_repeated_resolved_path_updates() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = apply_patch_harness().await?;
     harness.write_file("duplicate.txt", "before\n").await?;
-
-    let patch = "*** Begin Patch\n*** Update File: duplicate.txt\n@@\n-before\n+first after\n*** Update File: ./duplicate.txt\n@@\n-before\n+second after\n*** End Patch";
-    let call_id = "apply-duplicate-resolved-path";
+    let patch = "*** Begin Patch\n*** Update File: duplicate.txt\n@@\n-before\n+first after\n*** Update File: ./duplicate.txt\n@@\n-first after\n+second after\n*** End Patch";
+    let call_id = "apply-repeated-resolved-path";
     mount_apply_patch(&harness, call_id, patch, "done").await;
 
     harness.submit("please apply both updates").await?;
+    assert_eq!(
+        harness.read_file_text("duplicate.txt").await?,
+        "second after\n"
+    );
+    let out = harness.apply_patch_output(call_id).await;
+    assert!(
+        !out.contains("apply_patch verification failed"),
+        "unexpected verification failure: {out}"
+    );
+    Ok(())
+}
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_cli_rejects_invalid_second_update_without_writing_first() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = apply_patch_harness().await?;
+    harness.write_file("duplicate.txt", "before\n").await?;
+    let patch = "*** Begin Patch\n*** Update File: duplicate.txt\n@@\n-before\n+first after\n*** Update File: ./duplicate.txt\n@@\n-before\n+second after\n*** End Patch";
+    let call_id = "apply-invalid-second-update";
+    mount_apply_patch(&harness, call_id, patch, "done").await;
+
+    harness.submit("please apply both updates").await?;
     let out = harness.apply_patch_output(call_id).await;
     assert!(
         out.contains("apply_patch verification failed"),
         "expected verification failure: {out}"
     );
-    assert!(
-        out.contains("multiple operations target"),
-        "expected duplicate-path diagnostics: {out}"
-    );
     assert_eq!(harness.read_file_text("duplicate.txt").await?, "before\n");
-
     Ok(())
 }
 
