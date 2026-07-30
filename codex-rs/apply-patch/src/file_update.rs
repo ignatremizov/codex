@@ -42,16 +42,25 @@ pub(crate) async fn derive_new_contents_from_chunks(
             })
         })?;
 
-    let path_text = path.inferred_native_path_string();
-    let mut source_file = SourceFile::parse(&original_contents);
-    let original_lines = source_file.line_texts();
-    let replacements = compute_replacements(&original_lines, &path_text, chunks)?;
-    source_file.apply_replacements(&replacements);
-    let new_contents = source_file.into_contents();
+    let new_contents =
+        derive_new_contents_from_chunks_for_content(path, &original_contents, chunks)?;
     Ok(AppliedPatch {
         original_contents,
         new_contents,
     })
+}
+
+pub(crate) fn derive_new_contents_from_chunks_for_content(
+    path: &PathUri,
+    original_contents: &str,
+    chunks: &[UpdateFileChunk],
+) -> std::result::Result<String, ApplyPatchError> {
+    let path_text = path.inferred_native_path_string();
+    let mut source_file = SourceFile::parse(original_contents);
+    let original_lines = source_file.line_texts();
+    let replacements = compute_replacements(&original_lines, &path_text, chunks)?;
+    source_file.apply_replacements(&replacements);
+    Ok(source_file.into_contents())
 }
 
 /// Compute a list of replacements needed to transform `original_lines` into the
@@ -194,11 +203,21 @@ pub async fn unified_diff_from_chunks_with_context(
         new_contents,
     } = derive_new_contents_from_chunks(path, chunks, fs, /*follow_symlinks*/ true, sandbox)
         .await?;
-    let text_diff = TextDiff::from_lines(&original_contents, &new_contents);
-    let unified_diff = text_diff.unified_diff().context_radius(context).to_string();
+    let unified_diff = unified_diff_from_contents(&original_contents, &new_contents, context);
     Ok(ApplyPatchFileUpdate {
         unified_diff,
         original_content: original_contents,
         content: new_contents,
     })
+}
+
+pub(crate) fn unified_diff_from_contents(
+    original_contents: &str,
+    new_contents: &str,
+    context: usize,
+) -> String {
+    TextDiff::from_lines(original_contents, new_contents)
+        .unified_diff()
+        .context_radius(context)
+        .to_string()
 }
