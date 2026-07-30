@@ -16,10 +16,12 @@ use crate::ApplyPatchFileUpdate;
 use crate::ApplyPatchFileUpdateMode;
 use crate::IoError;
 use crate::MaybeApplyPatchVerified;
+use crate::derive_new_contents_from_chunks_for_content;
 use crate::parser::Hunk;
 use crate::parser::ParseError;
 use crate::parser::parse_patch;
 use crate::unified_diff_from_chunks_with_mode;
+use crate::unified_diff_from_contents;
 use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
 use std::str::Utf8Error;
@@ -230,20 +232,16 @@ async fn try_verify_apply_patch_args(
         .transpose()?
         .unwrap_or_else(|| cwd.clone());
     let mut changes = HashMap::new();
+    let mut original_update_contents: HashMap<PathUri, String> = HashMap::new();
     for hunk in hunks {
         let path = hunk.resolve_path(&effective_cwd)?;
-        if changes.contains_key(&path) {
-            return Err(ParseError::InvalidPatchError(format!(
-                "multiple operations target {}",
-                path.inferred_native_path_string()
-            ))
-            .into());
-        }
         match hunk {
             Hunk::AddFile { contents, .. } => {
+                reject_duplicate_operation(&changes, &path)?;
                 changes.insert(path, ApplyPatchFileChange::Add { content: contents });
             }
             Hunk::DeleteFile { .. } => {
+                reject_duplicate_operation(&changes, &path)?;
                 let content = fs
                     .read_file_text(&path, Default::default(), sandbox)
                     .await
@@ -261,10 +259,41 @@ async fn try_verify_apply_patch_args(
             Hunk::UpdateFile {
                 move_path, chunks, ..
             } => {
+                let move_path = move_path
+                    .map(|path| effective_cwd.join(&path.to_string_lossy()))
+                    .transpose()?;
+                if let Some(change) = changes.get_mut(&path) {
+                    let Some(original_content) = original_update_contents.get(&path) else {
+                        return Err(duplicate_operation_error(&path));
+                    };
+                    let ApplyPatchFileChange::Update {
+                        unified_diff,
+                        move_path: previous_move_path,
+                        new_content,
+                    } = change
+                    else {
+                        return Err(duplicate_operation_error(&path));
+                    };
+                    if move_path.is_some() || previous_move_path.is_some() {
+                        return Err(duplicate_operation_error(&path));
+                    }
+                    *new_content = derive_new_contents_from_chunks_for_content(
+                        &path,
+                        new_content,
+                        &chunks,
+                        update_file_mode,
+                    )?;
+                    *unified_diff = unified_diff_from_contents(
+                        original_content,
+                        new_content,
+                        /*context*/ 1,
+                    );
+                    continue;
+                }
                 let ApplyPatchFileUpdate {
                     unified_diff,
+                    original_content,
                     content: contents,
-                    ..
                 } = unified_diff_from_chunks_with_mode(
                     &path,
                     &chunks,
@@ -273,13 +302,14 @@ async fn try_verify_apply_patch_args(
                     sandbox,
                 )
                 .await?;
+                if move_path.is_none() {
+                    original_update_contents.insert(path.clone(), original_content);
+                }
                 changes.insert(
                     path,
                     ApplyPatchFileChange::Update {
                         unified_diff,
-                        move_path: move_path
-                            .map(|path| effective_cwd.join(&path.to_string_lossy()))
-                            .transpose()?,
+                        move_path,
                         new_content: contents,
                     },
                 );
@@ -292,6 +322,24 @@ async fn try_verify_apply_patch_args(
         patch,
         cwd: effective_cwd,
     })
+}
+
+fn reject_duplicate_operation(
+    changes: &HashMap<PathUri, ApplyPatchFileChange>,
+    path: &PathUri,
+) -> Result<(), ApplyPatchError> {
+    if changes.contains_key(path) {
+        return Err(duplicate_operation_error(path));
+    }
+    Ok(())
+}
+
+fn duplicate_operation_error(path: &PathUri) -> ApplyPatchError {
+    ParseError::InvalidPatchError(format!(
+        "multiple operations target {}",
+        path.inferred_native_path_string()
+    ))
+    .into()
 }
 
 /// Extract the heredoc body (and optional `cd` workdir) from a `bash -lc` script
@@ -916,6 +964,48 @@ PATCH"#,
                 patch: argv[1].clone(),
                 cwd: PathUri::from_host_native_path(session_dir.path())
                     .expect("absolute test path"),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_update_sections_emit_one_canonical_full_file_change() {
+        let session_dir = tempdir().unwrap();
+        let relative_path = "source.txt";
+        fs::write(session_dir.path().join(relative_path), "one\ntwo\nthree\n").unwrap();
+        let argv = vec![
+            "apply_patch".to_string(),
+            r#"*** Begin Patch
+*** Update File: source.txt
+@@
+-three
++THREE
+*** Update File: source.txt
+@@
+-one
++ONE
+*** End Patch"#
+                .to_string(),
+        ];
+
+        let MaybeApplyPatchVerified::Body(action) = maybe_parse_apply_patch_verified(
+            &argv,
+            &PathUri::from_host_native_path(session_dir.path()).expect("absolute test path"),
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await
+        else {
+            panic!("expected verified apply patch");
+        };
+        let path = PathUri::from_host_native_path(session_dir.path().join(relative_path))
+            .expect("absolute test path");
+        assert_eq!(
+            action.changes().get(&path),
+            Some(&ApplyPatchFileChange::Update {
+                unified_diff: "@@ -1,3 +1,3 @@\n-one\n+ONE\n two\n-three\n+THREE\n".to_string(),
+                move_path: None,
+                new_content: "ONE\ntwo\nTHREE\n".to_string(),
             })
         );
     }
