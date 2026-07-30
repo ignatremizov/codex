@@ -751,8 +751,31 @@ mod tests {
     }
 
     #[test]
+    fn supports_python_pathlib_walks_files() {
+        let inner = r#"python3 -c "import pathlib; print(list(pathlib.Path('.').iterdir()))""#;
+        assert_parsed(
+            &vec_str(&["bash", "-lc", inner]),
+            vec![ParsedCommand::ListFiles {
+                cmd: shlex_join(&shlex_split_safe(inner)),
+                path: None,
+            }],
+        );
+    }
+
+    #[test]
     fn python_without_file_walk_is_unknown() {
         let inner = r#"python -c "print('hello')""#;
+        assert_parsed(
+            &vec_str(&["bash", "-lc", inner]),
+            vec![ParsedCommand::Unknown {
+                cmd: shlex_join(&shlex_split_safe(inner)),
+            }],
+        );
+    }
+
+    #[test]
+    fn python_pathlib_path_without_file_walk_is_unknown() {
+        let inner = r#"python3 -c "import pathlib; print(pathlib.Path('file.txt').as_posix())""#;
         assert_parsed(
             &vec_str(&["bash", "-lc", inner]),
             vec![ParsedCommand::Unknown {
@@ -1878,7 +1901,8 @@ fn python_walks_files(args: &[String]) -> bool {
                 || script.contains("os.scandir")
                 || script.contains("glob.glob")
                 || script.contains("glob.iglob")
-                || script.contains("pathlib.Path")
+                || script.contains(".iterdir(")
+                || script.contains(".glob(")
                 || script.contains(".rglob(");
         }
     }
