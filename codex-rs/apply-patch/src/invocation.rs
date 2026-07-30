@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::LazyLock;
 
 use codex_exec_server::ExecutorFileSystem;
@@ -218,16 +219,35 @@ async fn try_verify_apply_patch_args(
                     content: contents,
                     ..
                 } = unified_diff_from_chunks(&path, &chunks, fs, sandbox).await?;
-                changes.insert(
-                    path,
-                    ApplyPatchFileChange::Update {
-                        unified_diff,
-                        move_path: move_path
-                            .map(|path| effective_cwd.join(&path.to_string_lossy()))
-                            .transpose()?,
-                        new_content: contents,
+                let move_path = move_path
+                    .map(|path| effective_cwd.join(&path.to_string_lossy()))
+                    .transpose()?;
+                match changes.entry(path) {
+                    Entry::Occupied(mut entry) => match entry.get_mut() {
+                        ApplyPatchFileChange::Update {
+                            unified_diff: existing_diff,
+                            move_path: None,
+                            new_content,
+                        } if move_path.is_none() => {
+                            existing_diff.push_str(&unified_diff);
+                            *new_content = contents;
+                        }
+                        existing => {
+                            *existing = ApplyPatchFileChange::Update {
+                                unified_diff,
+                                move_path,
+                                new_content: contents,
+                            };
+                        }
                     },
-                );
+                    Entry::Vacant(entry) => {
+                        entry.insert(ApplyPatchFileChange::Update {
+                            unified_diff,
+                            move_path,
+                            new_content: contents,
+                        });
+                    }
+                }
             }
         }
     }
@@ -860,6 +880,49 @@ PATCH"#,
                 cwd: PathUri::from_host_native_path(session_dir.path())
                     .expect("absolute test path"),
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_update_sections_preserve_every_diff_hunk() {
+        let session_dir = tempdir().unwrap();
+        let relative_path = "source.txt";
+        fs::write(session_dir.path().join(relative_path), "one\ntwo\nthree\n").unwrap();
+        let argv = vec![
+            "apply_patch".to_string(),
+            r#"*** Begin Patch
+*** Update File: source.txt
+@@
+-three
++THREE
+*** Update File: source.txt
+@@
+-one
++ONE
+*** End Patch"#
+                .to_string(),
+        ];
+
+        let MaybeApplyPatchVerified::Body(action) = maybe_parse_apply_patch_verified(
+            &argv,
+            &PathUri::from_host_native_path(session_dir.path()).expect("absolute test path"),
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await
+        else {
+            panic!("expected verified apply patch");
+        };
+        let path = PathUri::from_host_native_path(session_dir.path().join(relative_path))
+            .expect("absolute test path");
+        let Some(ApplyPatchFileChange::Update { unified_diff, .. }) = action.changes().get(&path)
+        else {
+            panic!("expected an update");
+        };
+
+        assert_eq!(
+            unified_diff,
+            "@@ -2,2 +2,2 @@\n two\n-three\n+THREE\n@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n"
         );
     }
 
