@@ -1643,6 +1643,22 @@ mod tests {
     }
 
     #[test]
+    fn ui_snapshot_apply_update_block_from_repeated_file_sections() {
+        let mut changes: HashMap<PathBuf, FileChange> = HashMap::new();
+        changes.insert(
+            PathBuf::from("repeated.txt"),
+            FileChange::Update {
+                unified_diff: "@@ -1,3 +1,3 @@\n-alpha\n+ALPHA\n middle\n-omega\n+OMEGA\n"
+                    .to_string(),
+                move_path: None,
+            },
+        );
+
+        let lines = diff_summary_for_tests(&changes);
+        snapshot_lines_text("apply_update_block_from_repeated_file_sections", &lines);
+    }
+
+    #[test]
     fn ui_snapshot_apply_update_with_rename_block() {
         let mut changes: HashMap<PathBuf, FileChange> = HashMap::new();
         let original = "A\nB\nC\n";
