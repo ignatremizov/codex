@@ -1647,6 +1647,25 @@ mod tests {
     }
 
     #[test]
+    fn ui_snapshot_apply_update_block_from_repeated_file_sections() {
+        let mut changes: HashMap<PathBuf, FileChange> = HashMap::new();
+        let original = "alpha\nmiddle\nomega\n";
+        let final_content = "ALPHA\nmiddle\nOMEGA\n";
+        // Repeated updates arrive as one original-to-final diff, not concatenated patches.
+        let unified_diff = diffy::create_patch(original, final_content).to_string();
+        changes.insert(
+            PathBuf::from("repeated.txt"),
+            FileChange::Update {
+                unified_diff,
+                move_path: None,
+            },
+        );
+
+        let lines = diff_summary_for_tests(&changes);
+        snapshot_lines_text("apply_update_block_from_repeated_file_sections", &lines);
+    }
+
+    #[test]
     fn ui_snapshot_apply_update_with_rename_block() {
         let mut changes: HashMap<PathBuf, FileChange> = HashMap::new();
         let original = "A\nB\nC\n";
