@@ -1,5 +1,6 @@
 use super::*;
 use codex_agent_graph_store::AgentGraphStoreFuture;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 
@@ -66,11 +67,13 @@ fn assert_invalid_request(
     expected_message: &str,
 ) {
     match result {
-        Err(CodexErr::InvalidRequest(message)) => assert!(
-            message.contains(expected_message),
-            "unexpected invalid-request message: {message}"
-        ),
-        Err(err) => panic!("expected invalid request, got {err}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::InvalidRequest(message) => assert!(
+                message.contains(expected_message),
+                "unexpected invalid-request message: {message}"
+            ),
+            _ => panic!("expected invalid request, got {err}"),
+        },
         Ok(_) => panic!("expected spawned V2 history to reject detached fallback"),
     }
 }

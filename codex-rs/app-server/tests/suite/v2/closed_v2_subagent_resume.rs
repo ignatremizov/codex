@@ -584,10 +584,13 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
     )
     .await??;
     assert!(
-        nested_resume_error.message.contains("direct parent")
-            && nested_resume_error.message.contains("resume the parent"),
+        nested_resume_error.error.message.contains("direct parent")
+            && nested_resume_error
+                .error
+                .message
+                .contains("resume the parent"),
         "unexpected nested resume error: {}",
-        nested_resume_error.message
+        nested_resume_error.error.message
     );
     wait_for_loaded_threads(&mut resumed, &[&root_thread.id, &sibling_thread.id]).await?;
     wait_for_spawn_edge(

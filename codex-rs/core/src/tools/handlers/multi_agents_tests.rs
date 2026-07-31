@@ -23,6 +23,7 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_context_fragments::ContextualUserFragment;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_login::AuthManager;
@@ -4115,13 +4116,15 @@ async fn wait_agent_returns_final_status_without_timeout() {
 async fn wait_agent_preserves_terminal_status_across_immediate_next_turn() {
     let (mut session, turn, events) = make_session_and_context_with_rx().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    Arc::get_mut(&mut session)
+        .expect("unique session")
+        .services
+        .agent_control = manager.agent_control();
     let child = manager
         .start_thread(StartThreadOptions::new(turn.config.as_ref().clone()))
         .await
         .expect("start child thread");
     let child_thread_id = child.thread_id;
-    let session = Arc::new(session);
     let wait_task = tokio::spawn({
         let session = Arc::clone(&session);
         let turn = Arc::clone(&turn);
