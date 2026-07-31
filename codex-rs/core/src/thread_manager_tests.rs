@@ -987,6 +987,24 @@ async fn exact_thread_removal_preserves_a_replaced_manager_entry() {
             .await
             .is_none()
     );
+    let cleanup_called = std::sync::atomic::AtomicBool::new(false);
+    assert!(
+        manager
+            .state
+            .remove_thread_if_matches_with(&old.thread_id, &old.thread, || {
+                cleanup_called.store(true, Ordering::Release);
+            })
+            .await
+            .is_none()
+    );
+    assert!(!cleanup_called.load(Ordering::Acquire));
+    manager
+        .state
+        .run_if_thread_absent(old.thread_id, || {
+            cleanup_called.store(true, Ordering::Release);
+        })
+        .await;
+    assert!(!cleanup_called.load(Ordering::Acquire));
     assert!(
         manager
             .remove_thread_if_matches(&old.thread_id, &old.thread)
@@ -1006,6 +1024,28 @@ async fn exact_thread_removal_preserves_a_replaced_manager_entry() {
         .await
         .expect("replacement manager entry");
     assert!(Arc::ptr_eq(&current, &replacement.thread));
+    replacement
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("close replacement writer");
+    let removed = manager
+        .state
+        .remove_thread_if_matches_with(&replacement.thread_id, &replacement.thread, || {
+            cleanup_called.store(true, Ordering::Release);
+        })
+        .await
+        .expect("matching runtime removed");
+    assert!(Arc::ptr_eq(&removed, &replacement.thread));
+    assert!(cleanup_called.load(Ordering::Acquire));
+    cleanup_called.store(false, Ordering::Release);
+    manager
+        .state
+        .run_if_thread_absent(replacement.thread_id, || {
+            cleanup_called.store(true, Ordering::Release);
+        })
+        .await;
+    assert!(cleanup_called.load(Ordering::Acquire));
     let _ = manager
         .shutdown_all_threads_bounded(Duration::from_secs(10))
         .await;

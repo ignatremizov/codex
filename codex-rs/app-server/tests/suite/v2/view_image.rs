@@ -4,6 +4,7 @@ use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_fake_parented_rollout_with_source;
+use app_test_support::create_fake_rollout;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::write_models_cache;
 use codex_app_server_protocol::ClientRequest;
@@ -207,6 +208,14 @@ async fn guardian_reviewer_inherits_disabled_view_image() -> Result<()> {
         .with_provider_config("supports_websockets = false")
         .write(codex_home.path())?;
 
+    let owner_thread_id = ThreadId::from_string(&create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T11-00-00",
+        "2025-01-05T11:00:00Z",
+        "request an action review",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?)?;
     let guardian_thread_id = create_fake_parented_rollout_with_source(
         codex_home.path(),
         "2025-01-05T12-00-00",
@@ -215,8 +224,8 @@ async fn guardian_reviewer_inherits_disabled_view_image() -> Result<()> {
         Some("mock_provider"),
         /*git_info*/ None,
         SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())),
-        ThreadId::new().into(),
-        ThreadId::new(),
+        owner_thread_id.into(),
+        owner_thread_id,
     )?;
 
     let mut mcp = TestAppServer::builder()

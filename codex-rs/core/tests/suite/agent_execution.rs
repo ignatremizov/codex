@@ -2,6 +2,7 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_core::AgentTreeShutdownFailure;
 use codex_core::AgentTreeShutdownFailureReason;
+use codex_core::CodexThread;
 use codex_core::config::MultiAgentMessageDelivery;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CreateDirectoryOptions;
@@ -9,6 +10,7 @@ use codex_features::Feature;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::PermissionProfileSnapshot;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
@@ -119,6 +121,22 @@ async fn mount_completed_worker(
         ]),
     )
     .await
+}
+
+async fn wait_for_agent_completion(thread: &CodexThread) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
+        loop {
+            match thread.agent_status().await {
+                AgentStatus::Completed(_) => return Ok(()),
+                AgentStatus::PendingInit | AgentStatus::Running => {
+                    tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+                }
+                status => anyhow::bail!("agent reached {status:?} before completing"),
+            }
+        }
+    })
+    .await??;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -578,10 +596,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     let first_thread_id =
         tokio::time::timeout(Duration::from_secs(/*secs*/ 10), created_threads.recv()).await??;
     let first_thread = test.thread_manager.get_thread(first_thread_id).await?;
-    wait_for_event(first_thread.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    wait_for_agent_completion(first_thread.as_ref()).await?;
 
     let evicted_thread = Arc::downgrade(&first_thread);
     drop(first_thread);
@@ -633,10 +648,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         .thread_manager
         .get_thread(replacement_thread_id)
         .await?;
-    wait_for_event(replacement_thread.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    wait_for_agent_completion(replacement_thread.as_ref()).await?;
     assert!(
         test.thread_manager
             .get_thread(first_thread_id)
@@ -674,6 +686,10 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
                 .find(|agent| agent["agent_name"] == "/root/first")
         })
         .context("evicted worker must remain listed")?;
+    assert_eq!(
+        first["agent_status"],
+        json!({"completed": "worker completed"}),
+    );
     assert_eq!(
         first["last_task_message"],
         if message_delivery == MultiAgentMessageDelivery::EncryptedWithAudit {
@@ -720,6 +736,9 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
                     || !result.as_ref().is_err_and(|err| {
                         err.to_string()
                             .contains("has no matching ready environment binding")
+                            || err
+                                .to_string()
+                                .contains("no longer matches a ready parent environment")
                     })
                 {
                     break result;
@@ -732,7 +751,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         let expected_error = match reload {
             ResidencyReload::OwnerRevokesWorkspaceRoot
             | ResidencyReload::OwnerPendingConfiguration => {
-                Some("has no matching ready environment binding")
+                Some("no longer matches a ready parent environment")
             }
             ResidencyReload::OwnerNarrowsPermissions
             | ResidencyReload::OwnerPreservesStricterChild
@@ -770,11 +789,15 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     }
 
     test.submit_text_turn(FOLLOWUP_PROMPT).await?;
-    let reloaded_worker = test.thread_manager.get_thread(first_thread_id).await?;
-    wait_for_event(reloaded_worker.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
+    let reloaded_worker = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(thread) = test.thread_manager.get_thread(first_thread_id).await {
+                break thread;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     })
-    .await;
+    .await?;
     if pending_owner {
         assert_eq!(
             reloaded_worker.environment_selections().await,
@@ -803,6 +826,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         assert_eq!(selections, vec![child_environment]);
         return Ok(());
     }
+    wait_for_agent_completion(reloaded_worker.as_ref()).await?;
     assert_eq!(
         reloaded_worker
             .config_snapshot()
@@ -867,12 +891,17 @@ async fn tree_shutdown_waits_for_children_without_affecting_other_roots() -> Res
     use codex_protocol::protocol::SessionSource;
 
     let server = start_mock_server().await;
-    mount_root_collaboration_call(
+    let admission = mount_root_collaboration_call(
         &server,
         FIRST_PROMPT,
         "first-call",
         "spawn_agent",
-        json!({"message": FIRST_TASK, "task_name": "first", "fork_turns": "none"}),
+        json!({
+            "message": FIRST_TASK,
+            "task_message": FIRST_TASK,
+            "task_name": "first",
+            "fork_turns": "none",
+        }),
     )
     .await;
     mount_completed_worker(&server, FIRST_TASK, "first-call").await;
@@ -885,6 +914,12 @@ async fn tree_shutdown_waits_for_children_without_affecting_other_roots() -> Res
         .build_with_auto_env(&server)
         .await?;
     test.submit_turn(FIRST_PROMPT).await?;
+    let output = admission
+        .function_call_output_text("first-call")
+        .context("spawn should return an admission result")?;
+    let result: serde_json::Value =
+        serde_json::from_str(&output).with_context(|| format!("spawn was rejected: {output}"))?;
+    assert_eq!(result["task_name"], json!("/root/first"));
     let root_id = test.session_configured.thread_id;
     let worker_id = test
         .thread_manager

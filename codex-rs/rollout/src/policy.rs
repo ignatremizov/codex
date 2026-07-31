@@ -242,6 +242,7 @@ fn persisted_item_completed_event<'a>(
                     | TurnItem::ContextCompaction(_)
                     | TurnItem::Plan(_)
                     | TurnItem::Extension(ExtensionItem::Sleep(_))
+                    | TurnItem::CollabAgentToolCall(_)
             ) || matches!(
                 &event.item,
                 TurnItem::SubAgentActivity(item)
@@ -249,9 +250,6 @@ fn persisted_item_completed_event<'a>(
             ) || matches!(
                 &event.item,
                 TurnItem::AgentMessage(item) if item.has_sub_agent_completion_identity()
-            ) || matches!(
-                &event.item,
-                TurnItem::CollabAgentToolCall(item) if item.owns_completion_presentation()
             ))
             .then_some(Cow::Borrowed(ev))
         }
