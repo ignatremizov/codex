@@ -106,6 +106,7 @@ use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::WorldStateItem;
 use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::InMemoryThreadStore;
+use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
 use codex_thread_store::PersistContext;
@@ -1192,7 +1193,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
 }
 
 #[tokio::test]
-async fn ensure_v2_child_loaded_preserves_evicted_parent_authority() {
+async fn ensure_v2_child_loaded_preserves_live_parent_authority() {
     check_v2_agent_reload(V2ReloadRoute::NestedParent).await;
 }
 
@@ -1318,10 +1319,16 @@ async fn cancelled_v2_send_finishes_reload_registration() {
     );
 }
 
+#[tokio::test]
+async fn ensure_v2_child_loaded_rejects_insufficient_capacity_without_evicting_parent() {
+    check_v2_agent_reload(V2ReloadRoute::NestedParentAtCapacity).await;
+}
+
 #[derive(Clone, Copy)]
 enum V2ReloadRoute {
     Sender,
     NestedParent,
+    NestedParentAtCapacity,
 }
 
 async fn spawn_v2_reload_test_child(
@@ -1373,13 +1380,13 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
             client_mcp_extensions: client_mcp_extensions.clone(),
             user_instructions: Some(LoadedUserInstructions {
                 instructions: Some(Instructions {
-                    text: "global instructions survive parent eviction".to_string(),
+                    text: "global instructions survive child restoration".to_string(),
                     source: None,
                 }),
                 warnings: Vec::new(),
             }),
             thread_instructions_provider: Some(Arc::new(TestThreadInstructionsProvider {
-                text: "thread instructions survive parent eviction".into(),
+                text: "thread instructions survive child restoration".into(),
                 shared: false,
             })),
             ..StartThreadOptions::new(harness.config.clone())
@@ -1394,7 +1401,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .control(root.thread.session.session_id());
     let parent_thread = match route {
         V2ReloadRoute::Sender => root.thread,
-        V2ReloadRoute::NestedParent => {
+        V2ReloadRoute::NestedParent | V2ReloadRoute::NestedParentAtCapacity => {
             let parent = spawn_v2_reload_test_child(
                 &control,
                 harness.config.clone(),
@@ -1477,13 +1484,65 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .cloned()
         .expect("ollama provider should be configured");
 
+    let canonical_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: Some(agent_path.clone()),
+        agent_nickname: Some("canonical-worker".to_string()),
+        agent_role: None,
+    });
+    let original_source = child_thread.session_source.clone();
     let mut parent_turn = parent_thread.session.new_default_turn().await;
     let residency_pin = match route {
-        V2ReloadRoute::Sender => control
-            .ensure_v2_agent_loaded(sender_config, spawned_agent.thread_id, /*parent*/ None)
-            .await
-            .expect("known v2 agent should reload"),
-        V2ReloadRoute::NestedParent => {
+        V2ReloadRoute::Sender => {
+            let context = control
+                .runtime
+                .upgrade()
+                .expect("manager")
+                .load_latest_model_context(LoadThreadHistoryParams {
+                    thread_id: spawned_agent.thread_id,
+                    include_archived: true,
+                })
+                .await
+                .expect("canonical child history");
+            let mut history = context.items;
+            let latest = history
+                .iter_mut()
+                .rev()
+                .find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta) if meta.meta.id == spawned_agent.thread_id => {
+                        Some(meta)
+                    }
+                    _ => None,
+                })
+                .expect("exact child metadata");
+            latest.meta.source = canonical_source.clone();
+            control
+                .ensure_v2_agent_loaded_from_history(
+                    sender_config.clone(),
+                    spawned_agent.thread_id,
+                    canonical_source.clone(),
+                    InitialHistory::Resumed(ResumedHistory {
+                        history_revision: context.revision,
+                        conversation_id: spawned_agent.thread_id,
+                        history: Arc::new(history),
+                        rollout_path: stored_child.rollout_path.clone(),
+                    }),
+                    client_mcp_extensions.clone(),
+                    Arc::clone(&parent_thread),
+                )
+                .await
+                .expect("known v2 agent should reload");
+            control
+                .ensure_v2_agent_loaded(
+                    sender_config,
+                    spawned_agent.thread_id,
+                    /*parent*/ None,
+                )
+                .await
+                .expect("loaded canonical child should stay pinned through delivery")
+        }
+        V2ReloadRoute::NestedParent | V2ReloadRoute::NestedParentAtCapacity => {
             let environment = parent_turn
                 .initial_environments
                 .primary()
@@ -1511,15 +1570,101 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
                 .input_queue
                 .drain_mailbox_input_items()
                 .await;
+            if matches!(route, V2ReloadRoute::NestedParentAtCapacity) {
+                let state = control.runtime.upgrade().expect("manager");
+                let history = state
+                    .load_latest_model_context(LoadThreadHistoryParams {
+                        thread_id: spawned_agent.thread_id,
+                        include_archived: true,
+                    })
+                    .await
+                    .expect("stored child history");
+                let metadata_snapshot = || {
+                    control
+                        .get_agent_metadata(spawned_agent.thread_id)
+                        .map(|metadata| {
+                            (
+                                metadata.agent_id,
+                                metadata.agent_path,
+                                metadata.agent_nickname,
+                                metadata.agent_role,
+                                metadata.last_task_message,
+                            )
+                        })
+                };
+                let original_metadata = metadata_snapshot();
+                let graph = state.agent_graph_store().expect("persisted graph");
+                let original_children = graph
+                    .list_thread_spawn_children(
+                        parent_thread_id,
+                        Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+                    )
+                    .await
+                    .expect("original open children");
+                let mut capacity_config = parent_turn.config.as_ref().clone();
+                capacity_config
+                    .multi_agent_v2
+                    .max_concurrent_threads_per_session = 2;
+                let error = control
+                    .ensure_v2_agent_loaded_from_history(
+                        capacity_config,
+                        spawned_agent.thread_id,
+                        original_source.clone(),
+                        InitialHistory::Resumed(ResumedHistory {
+                            history_revision: history.revision,
+                            conversation_id: spawned_agent.thread_id,
+                            history: Arc::new(history.items),
+                            rollout_path: stored_child.rollout_path.clone(),
+                        }),
+                        client_mcp_extensions.clone(),
+                        Arc::clone(&parent_thread),
+                    )
+                    .await
+                    .err()
+                    .expect("insufficient capacity must fail");
+                assert!(matches!(
+                    error.details(),
+                    CodexErrorDetails::AgentLimitReached { .. }
+                ));
+                assert!(
+                    harness
+                        .manager
+                        .get_thread(spawned_agent.thread_id)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(metadata_snapshot(), original_metadata);
+                assert_eq!(
+                    graph
+                        .list_thread_spawn_children(
+                            parent_thread_id,
+                            Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+                        )
+                        .await
+                        .expect("unchanged open children"),
+                    original_children,
+                );
+            }
             harness
                 .manager
                 .ensure_multi_agent_v2_child_loaded(spawned_agent.thread_id)
                 .await
                 .expect("known child should reload through its parent");
             parent_turn = parent_thread.session.new_default_turn().await;
-            assert!(harness.manager.get_thread(parent_thread_id).await.is_err());
+            assert!(Arc::ptr_eq(
+                &harness
+                    .manager
+                    .get_thread(parent_thread_id)
+                    .await
+                    .expect("parent stays live"),
+                &parent_thread,
+            ));
             None
         }
+    };
+    let expected_source = match route {
+        V2ReloadRoute::Sender => canonical_source,
+        V2ReloadRoute::NestedParent | V2ReloadRoute::NestedParentAtCapacity => original_source,
     };
     let reloaded_child = harness
         .manager
@@ -1540,9 +1685,12 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
     assert_eq!(
         (reloaded_instructions.user, reloaded_instructions.thread),
         (inherited_instructions.user, inherited_instructions.thread),
-        "reloading a child must retain both parent snapshots, even if residency evicts the parent",
+        "reloading a child must retain both captured parent instruction snapshots",
     );
-    if matches!(route, V2ReloadRoute::NestedParent) {
+    if matches!(
+        route,
+        V2ReloadRoute::NestedParent | V2ReloadRoute::NestedParentAtCapacity
+    ) {
         let reloaded_turn = reloaded_child.session.new_default_turn().await;
         assert_eq!(
             (
@@ -1582,6 +1730,21 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
             harness.config.model_provider.clone()
         ),
         "residency reload must preserve the worker provider instead of inheriting its sender's provider",
+    );
+    assert_eq!(reloaded_child.session_source, expected_source);
+    assert_eq!(
+        control
+            .get_agent_metadata(spawned_agent.thread_id)
+            .map(|metadata| (
+                metadata.agent_path,
+                metadata.agent_nickname,
+                metadata.agent_role,
+            )),
+        Some((
+            expected_source.get_agent_path(),
+            expected_source.get_nickname(),
+            expected_source.get_agent_role(),
+        ))
     );
 
     let communication = InterAgentCommunication::new(
@@ -1774,8 +1937,8 @@ impl ThreadInstructionsProvider for TestThreadInstructionsProvider {
 
 #[test_case::test_case(false, false; "snapshot")]
 #[test_case::test_case(true, false; "shared")]
-#[test_case::test_case(false, true; "unshared_grandchild_without_loaded_parent")]
-#[test_case::test_case(true, true; "shared_grandchild_without_loaded_parent")]
+#[test_case::test_case(false, true; "unshared_grandchild_requires_live_parent")]
+#[test_case::test_case(true, true; "shared_grandchild_requires_live_parent")]
 #[tokio::test]
 async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritance(
     shared: bool,
@@ -1891,30 +2054,49 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
 
     if nested {
         let turn = resumed_parent.thread.session.new_default_turn().await;
+        let request = || crate::SendRequest {
+            caller: parent_thread_id,
+            target: crate::AgentTarget::Id(target_thread_id),
+            resume_config: crate::agent::child_config::build_agent_resume_config(&turn)
+                .expect("capture resume config"),
+            input: crate::AgentInput::Message {
+                message: AgentMessage::Plaintext("hello after resume".to_string()),
+                mode: MessageDeliveryMode::QueueOnly,
+            },
+            start_options: TurnStartOptions {
+                root_turn_id: turn.turn_metadata_state.root_turn_id(),
+                turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+                cyber_access_program: turn.cyber_access_program,
+                ..Default::default()
+            },
+        };
+        let error = resumed_parent
+            .thread
+            .session
+            .services
+            .agent_control
+            .send(request())
+            .await
+            .err()
+            .expect("a missing direct parent cannot be replaced by the root");
+        assert!(
+            matches!(error.details(), CodexErrorDetails::InvalidRequest(message)
+            if message.contains("resume the parent first"))
+        );
+        assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
+        assert_thread_not_loaded(&resumed_manager, target_thread_id).await;
+        resumed_manager
+            .ensure_multi_agent_v2_child_loaded(worker_thread_id)
+            .await
+            .expect("explicitly restore the direct owner");
         resumed_parent
             .thread
             .session
             .services
             .agent_control
-            .send(crate::SendRequest {
-                caller: parent_thread_id,
-                target: crate::AgentTarget::Id(target_thread_id),
-                resume_config: crate::agent::child_config::build_agent_resume_config(&turn)
-                    .expect("capture resume config"),
-                input: crate::AgentInput::Message {
-                    message: AgentMessage::Plaintext("hello after resume".to_string()),
-                    mode: MessageDeliveryMode::QueueOnly,
-                },
-                start_options: TurnStartOptions {
-                    root_turn_id: turn.turn_metadata_state.root_turn_id(),
-                    turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
-                    cyber_access_program: turn.cyber_access_program,
-                    ..Default::default()
-                },
-            })
+            .send(request())
             .await
-            .expect("message should reload the grandchild");
-        assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
+            .expect("message reloads the grandchild through its now-live owner");
     } else {
         resumed_manager
             .ensure_multi_agent_v2_child_loaded(worker_thread_id)
@@ -1941,10 +2123,7 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
                 .is_some_and(|root| Arc::ptr_eq(inherited, root))),
         shared.then_some(true),
     );
-    assert_eq!(
-        inherited.thread,
-        (!nested || shared).then_some(thread_instructions),
-    );
+    assert_eq!(inherited.thread, Some(thread_instructions),);
 }
 
 enum InstructionsReloadTarget {
@@ -1956,7 +2135,7 @@ enum InstructionsReloadTarget {
 #[test_case::test_case(true, InstructionsReloadTarget::Sibling; "shared_provider_survives")]
 #[test_case::test_case(true, InstructionsReloadTarget::Root; "root_reuses_surviving_shared_provider")]
 #[tokio::test]
-async fn v2_reload_preserves_shared_instructions_after_root_unloads(
+async fn v2_reload_preserves_instruction_ownership_through_root_recovery(
     shared: bool,
     reload_target: InstructionsReloadTarget,
 ) {
@@ -2026,7 +2205,32 @@ async fn v2_reload_preserves_shared_instructions_after_root_unloads(
     root.thread
         .shutdown_and_wait()
         .await
-        .expect("shut down root");
+        .expect("close the old root writer");
+    let stored_root = root
+        .thread
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ false,
+        )
+        .await
+        .expect("root metadata after shutdown");
+    let root_id = root.thread_id;
+    let root_model_context = root
+        .thread
+        .session
+        .services
+        .thread_store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id: root_id,
+            include_archived: true,
+        })
+        .await
+        .expect("resumable root context after shutdown");
+    let root_history = InitialHistory::Resumed(ResumedHistory {
+        history_revision: root_model_context.revision,
+        conversation_id: root_id,
+        history: Arc::new(root_model_context.items),
+        rollout_path: stored_root.rollout_path,
+    });
     assert!(
         harness
             .manager
@@ -2041,28 +2245,70 @@ async fn v2_reload_preserves_shared_instructions_after_root_unloads(
     *provider.text.write().expect("update thread instructions") =
         "updated while target was unloaded";
     let sender_turn = sender.session.new_default_turn().await;
+    let request = || crate::SendRequest {
+        caller: sender_id,
+        target: crate::AgentTarget::Id(target_id),
+        resume_config: crate::agent::child_config::build_agent_resume_config(&sender_turn)
+            .expect("capture resume config"),
+        input: crate::AgentInput::Message {
+            message: AgentMessage::Plaintext("wake the sibling".to_string()),
+            mode: MessageDeliveryMode::QueueOnly,
+        },
+        start_options: TurnStartOptions {
+            root_turn_id: sender_turn.turn_metadata_state.root_turn_id(),
+            turn_trigger: sender_turn.turn_metadata_state.current_turn_trigger(),
+            cyber_access_program: sender_turn.cyber_access_program,
+            ..Default::default()
+        },
+    };
+    if matches!(reload_target, InstructionsReloadTarget::Sibling) {
+        let error = sender
+            .session
+            .services
+            .agent_control
+            .send(request())
+            .await
+            .err()
+            .expect("surviving sibling cannot replace the recorded direct owner");
+        assert!(
+            matches!(error.details(), CodexErrorDetails::InvalidRequest(message)
+        if message.contains("resume the parent first"))
+        );
+        assert_thread_not_loaded(&harness.manager, target_id).await;
+        let recovered_root = harness
+            .manager
+            .start_thread(StartThreadOptions {
+                initial_history: root_history,
+                thread_instructions_provider: Some(provider.clone()),
+                ..StartThreadOptions::new(harness.config.clone())
+            })
+            .await
+            .expect("recover root through the options entrypoint");
+        assert_eq!(recovered_root.thread_id, root_id);
+        assert!(
+            recovered_root
+                .thread
+                .session
+                .services
+                .local_agent_runtime
+                .shares_tree_with(&sender.session.services.local_agent_runtime)
+        );
+        assert!(Arc::ptr_eq(
+            &harness
+                .manager
+                .get_thread(sender_id)
+                .await
+                .expect("same surviving child"),
+            &sender
+        ));
+    }
     sender
         .session
         .services
         .agent_control
-        .send(crate::SendRequest {
-            caller: sender_id,
-            target: crate::AgentTarget::Id(target_id),
-            resume_config: crate::agent::child_config::build_agent_resume_config(&sender_turn)
-                .expect("capture resume config"),
-            input: crate::AgentInput::Message {
-                message: AgentMessage::Plaintext("wake the unloaded target".to_string()),
-                mode: MessageDeliveryMode::QueueOnly,
-            },
-            start_options: TurnStartOptions {
-                root_turn_id: sender_turn.turn_metadata_state.root_turn_id(),
-                turn_trigger: sender_turn.turn_metadata_state.current_turn_trigger(),
-                cyber_access_program: sender_turn.cyber_access_program,
-                ..Default::default()
-            },
-        })
+        .send(request())
         .await
-        .expect("reload target from a surviving child");
+        .expect("reload target through the recovered exact owning tree");
     let resumed = harness
         .manager
         .get_thread(target_id)
@@ -2080,7 +2326,7 @@ async fn v2_reload_preserves_shared_instructions_after_root_unloads(
     );
     assert_eq!(
         inherited.thread.map(|instructions| instructions.text),
-        shared.then(|| "updated while target was unloaded".to_string())
+        Some("updated while target was unloaded".to_string())
     );
 
     *provider.text.write().expect("update thread instructions") =
@@ -2100,7 +2346,14 @@ async fn v2_reload_preserves_shared_instructions_after_root_unloads(
             .await
             .thread
             .map(|instructions| instructions.text),
-        shared.then(|| "updated after target was reloaded".to_string())
+        Some(
+            if shared {
+                "updated after target was reloaded"
+            } else {
+                "updated while target was unloaded"
+            }
+            .to_string()
+        )
     );
 }
 
@@ -7113,3 +7366,6 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
         .await
         .expect("tree shutdown after partial subtree resume should succeed");
 }
+
+#[path = "control_parent_binding_tests.rs"]
+mod parent_binding_tests;

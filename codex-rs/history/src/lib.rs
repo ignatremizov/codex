@@ -563,8 +563,12 @@ impl InitialHistory {
     fn get_resumed_session_meta(&self) -> Option<&SessionMeta> {
         match self {
             Self::New | Self::Cleared | Self::Forked(_) => None,
-            Self::Resumed(resumed) => resumed.history.iter().find_map(|item| match item {
-                RolloutItem::SessionMeta(meta_line) => Some(&meta_line.meta),
+            Self::Resumed(resumed) => resumed.history.iter().rev().find_map(|item| match item {
+                RolloutItem::SessionMeta(meta_line)
+                    if meta_line.meta.id == resumed.conversation_id =>
+                {
+                    Some(&meta_line.meta)
+                }
                 _ => None,
             }),
         }
