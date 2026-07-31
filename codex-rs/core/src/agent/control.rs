@@ -58,15 +58,22 @@ pub(crate) use self::runtime::AgentTreeMembership;
 pub(crate) use self::runtime::AgentTreeShutdownState;
 pub(crate) use self::runtime::AgentTreeTeardownGuard;
 pub(crate) use self::runtime::LocalAgentRuntime;
-pub(crate) use self::watch::StatusSubscription;
 
 mod api;
 mod budget;
 mod completion;
 mod completion_watcher;
 mod presentation;
+mod restore_environments;
+mod restore_metadata;
+mod restore_publication;
+mod restore_v2;
 pub(crate) use presentation::AgentTerminalPresentation;
+pub(crate) use presentation::CompletionParentAdoption;
+pub(crate) use presentation::CompletionParentBinding;
+pub(crate) use presentation::CompletionParentState;
 pub(crate) use presentation::CompletionPresentation;
+pub(crate) use presentation::CompletionWatcherRegistration;
 pub(crate) use presentation::SessionPresentationId;
 pub(crate) use presentation::TerminalPresentationDelivery;
 pub(crate) use presentation::TerminalPresentationOutcome;
@@ -291,7 +298,11 @@ impl LocalAgentControl {
             return AgentStatus::NotFound;
         };
         let Ok(thread) = state.get_thread(agent_id).await else {
-            return AgentStatus::NotFound;
+            return self
+                .runtime
+                .registry
+                .evicted_status(agent_id)
+                .unwrap_or(AgentStatus::NotFound);
         };
         thread.agent_status().await
     }
@@ -360,13 +371,17 @@ impl LocalAgentControl {
                 continue;
             }
 
-            let Ok(thread) = state.get_thread(thread_id).await else {
-                continue;
+            let status = match state.get_thread(thread_id).await {
+                Ok(thread) => thread.agent_status().await,
+                Err(_) => match self.runtime.registry.evicted_status(thread_id) {
+                    Some(status) => status,
+                    None => continue,
+                },
             };
             agents.push(LiveAgent {
                 thread_id,
                 metadata,
-                status: thread.agent_status().await,
+                status,
             });
         }
 
@@ -397,6 +412,35 @@ impl LocalAgentControl {
             agent_role,
             last_task_message: None,
         })
+    }
+
+    fn prepare_restored_agent_metadata_exact(
+        &self,
+        reservation: &mut crate::agent::registry::SpawnReservation,
+        agent_path: Option<AgentPath>,
+        agent_role: Option<String>,
+        agent_nickname: Option<String>,
+    ) -> CodexResult<AgentMetadata> {
+        if let Some(path) = &agent_path {
+            reservation.reserve_agent_path(path)?;
+        }
+        if let Some(nickname) = agent_nickname.as_deref() {
+            reservation.reserve_agent_nickname_with_preference(&[], Some(nickname))?;
+        }
+        Ok(AgentMetadata {
+            agent_path,
+            agent_role,
+            agent_nickname,
+            ..Default::default()
+        })
+    }
+
+    pub(crate) async fn subscribe_agent_status_events(
+        &self,
+        thread_id: ThreadId,
+    ) -> CodexResult<crate::session::AgentStatusSubscription> {
+        let thread = self.runtime.upgrade()?.get_thread(thread_id).await?;
+        Ok(thread.session.subscribe_agent_status_events())
     }
 
     #[allow(clippy::too_many_arguments)]

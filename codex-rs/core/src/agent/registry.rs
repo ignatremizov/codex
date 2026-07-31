@@ -6,6 +6,7 @@ use codex_protocol::error::AgentErrorContext;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
@@ -19,6 +20,9 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tokio::sync::Semaphore;
+
+#[path = "registry_metadata_replacement.rs"]
+mod metadata_replacement;
 
 /// This structure is used to add some limits on the multi-agent capabilities for Codex. In
 /// the current implementation, it limits:
@@ -40,6 +44,8 @@ struct ActiveAgents {
     nickname_reset_count: usize,
     /// Retain the same gate while any registration or in-flight submission owns it.
     submission_gates: HashMap<ThreadId, Weak<Semaphore>>,
+    /// A metadata transaction retains both paths even if its registration is removed.
+    metadata_reservations: HashMap<String, Arc<()>>,
 }
 
 /// Thread defaults and executor bindings retained while a child's runtime is unloaded.
@@ -49,9 +55,11 @@ pub(crate) struct EvictedEnvironments {
     pub(crate) bindings: TurnEnvironmentSnapshot,
 }
 
+#[derive(Clone)]
 struct RegisteredAgent {
     path: String,
     evicted_environments: Option<EvictedEnvironments>,
+    evicted_status: Option<AgentStatus>,
     submission: Arc<AgentSubmission>,
 }
 
@@ -66,6 +74,7 @@ impl RegisteredAgent {
         Self {
             path,
             evicted_environments: None,
+            evicted_status: None,
             submission: Arc::new(AgentSubmission {
                 semaphore,
                 registered: true,
@@ -175,6 +184,9 @@ impl AgentRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root_path = AgentPath::ROOT.to_string();
+        if active_agents.metadata_reservations.contains_key(&root_path) {
+            return;
+        }
         let root_thread_id = active_agents
             .agent_tree
             .entry(root_path.clone())
@@ -218,6 +230,7 @@ impl AgentRegistry {
         &self,
         thread_id: ThreadId,
         environments: EvictedEnvironments,
+        status: AgentStatus,
     ) {
         let mut active_agents = self
             .active_agents
@@ -225,6 +238,7 @@ impl AgentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
             agent.evicted_environments = Some(environments);
+            agent.evicted_status = Some(status);
         }
     }
 
@@ -246,7 +260,17 @@ impl AgentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
             agent.evicted_environments = None;
+            agent.evicted_status = None;
         }
+    }
+
+    pub(crate) fn evicted_status(&self, thread_id: ThreadId) -> Option<AgentStatus> {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .thread_paths
+            .get(&thread_id)
+            .and_then(|agent| agent.evicted_status.clone())
     }
 
     pub(crate) fn live_agents(&self) -> Vec<AgentMetadata> {
@@ -348,6 +372,41 @@ impl AgentRegistry {
         }
     }
 
+    fn register_spawned_thread_if_absent(&self, agent_metadata: AgentMetadata) -> bool {
+        let Some(thread_id) = agent_metadata.agent_id else {
+            return false;
+        };
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active_agents.thread_paths.contains_key(&thread_id) {
+            return false;
+        }
+        let key = agent_metadata
+            .agent_path
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("thread:{thread_id}"));
+        if active_agents.metadata_reservations.contains_key(&key)
+            || active_agents
+                .agent_tree
+                .get(&key)
+                .is_some_and(|metadata| metadata.agent_id.is_some())
+        {
+            return false;
+        }
+        if let Some(agent_nickname) = agent_metadata.agent_nickname.clone() {
+            active_agents.used_agent_nicknames.insert(agent_nickname);
+        }
+        let gate = active_agents.submission_gate(thread_id);
+        active_agents
+            .thread_paths
+            .insert(thread_id, RegisteredAgent::new(key.clone(), gate));
+        active_agents.agent_tree.insert(key, agent_metadata);
+        true
+    }
+
     fn reserve_agent_nickname(&self, names: &[&str], preferred: Option<&str>) -> Option<String> {
         let mut active_agents = self
             .active_agents
@@ -393,6 +452,14 @@ impl AgentRegistry {
             .active_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active_agents
+            .metadata_reservations
+            .contains_key(agent_path.as_str())
+        {
+            return Err(CodexErr::UnsupportedOperation(format!(
+                "agent path `{agent_path}` is reserved for restoration"
+            )));
+        }
         match active_agents.agent_tree.entry(agent_path.to_string()) {
             Entry::Occupied(_) => Err(CodexErr::UnsupportedOperation(format!(
                 "agent path `{agent_path}` already exists"
@@ -476,6 +543,16 @@ impl SpawnReservation {
         self.reserved_agent_path = None;
         self.state.register_spawned_thread(agent_metadata);
         self.active = false;
+    }
+
+    pub(crate) fn commit_if_absent(mut self, agent_metadata: AgentMetadata) -> bool {
+        if !self.state.register_spawned_thread_if_absent(agent_metadata) {
+            return false;
+        }
+        self.reserved_agent_nickname = None;
+        self.reserved_agent_path = None;
+        self.active = false;
+        true
     }
 }
 

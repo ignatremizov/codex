@@ -70,6 +70,8 @@ pub(crate) struct Session {
     /// transferring ownership of the private session's event receiver.
     pub(crate) parent_observer_event_tx: OnceLock<Sender<Event>>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
+    pub(super) agent_status_observations: super::AgentStatusObservations,
+    pub(super) completion_parent: StdMutex<crate::agent::control::CompletionParentState>,
     pub(super) state: Arc<Mutex<SessionState>>,
     /// Orders accepted settings commits and their persisted events with compaction checkpoints.
     /// Keep this separate from `state` so storage I/O does not block runtime state access.
@@ -120,11 +122,13 @@ pub(crate) struct Session {
 pub(crate) struct TerminalPresentationDisarmGuard<'a> {
     armed: &'a AtomicBool,
     restore_on_drop: bool,
+    observation_suppression: super::AgentStatusObservationSuppressionGuard<'a>,
 }
 
 impl TerminalPresentationDisarmGuard<'_> {
     pub(crate) fn commit(mut self) {
         self.restore_on_drop = false;
+        self.observation_suppression.keep_suppressed();
     }
 }
 
@@ -736,6 +740,7 @@ impl Session {
             .control(self.session_id())
             .clear_wait_agent_presentations_for_session(self.presentation_id());
         self.record_not_found_terminal_if_unfinished();
+        self.retire_agent_status_observers(super::AgentStatusRetirement::ExplicitRemoval);
     }
 
     pub(crate) fn disarm_terminal_presentation(&self) -> TerminalPresentationDisarmGuard<'_> {
@@ -745,6 +750,7 @@ impl Session {
         TerminalPresentationDisarmGuard {
             armed: &self.terminal_presentation_armed,
             restore_on_drop,
+            observation_suppression: self.agent_status_observations.suppress(),
         }
     }
 
@@ -795,7 +801,7 @@ impl Session {
                 || {
                     self.terminal_presentation_recorded
                         .store(true, std::sync::atomic::Ordering::Release);
-                    self.agent_status.send_replace(published_status);
+                    self.replace_agent_status_locked(published_status);
                 },
             );
     }
@@ -803,6 +809,11 @@ impl Session {
     /// Returns the concrete identity for this thread.
     pub(crate) fn thread_id(&self) -> ThreadId {
         self.thread_id
+    }
+
+    /// Returns the spawn parent captured by this runtime, not current graph ownership.
+    pub(crate) fn spawn_parent_thread_id(&self) -> Option<ThreadId> {
+        self.spawn_parent_thread_id
     }
 
     /// Returns the identity shared by the root thread and all descendant threads.
@@ -1078,8 +1089,12 @@ impl Session {
         };
         let resumed_session_id = match &initial_history {
             InitialHistory::Resumed(resumed) => {
-                resumed.history.iter().find_map(|item| match item {
-                    RolloutItem::SessionMeta(meta_line) => Some(meta_line.meta.session_id),
+                resumed.history.iter().rev().find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta_line)
+                        if meta_line.meta.id == resumed.conversation_id =>
+                    {
+                        Some(meta_line.meta.session_id)
+                    }
                     _ => None,
                 })
             }
@@ -1979,6 +1994,8 @@ impl Session {
                 tx_event: tx_event.clone(),
                 parent_observer_event_tx: OnceLock::new(),
                 agent_status,
+                agent_status_observations: Default::default(),
+                completion_parent: StdMutex::new(Default::default()),
                 state: Arc::new(Mutex::new(state)),
                 thread_settings_persistence: Arc::new(Semaphore::new(/*permits*/ 1)),
                 history_publication: Default::default(),
