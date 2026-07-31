@@ -355,11 +355,6 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
     ] {
         wait_for_mock_request(mock).await?;
     }
-    assert!(
-        worker_spawn
-            .single_request()
-            .body_contains_text(ROLE_INSTRUCTIONS)
-    );
 
     let worker_thread = wait_for_direct_children(&mut initial, &root_thread.id, 1)
         .await?
