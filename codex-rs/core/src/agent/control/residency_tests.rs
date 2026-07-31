@@ -70,7 +70,7 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
 }
 
 #[tokio::test]
-async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
+async fn interrupted_v2_agent_reloads_after_residency_eviction() {
     let mut config = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.max_concurrent_threads_per_session = 2;
@@ -115,20 +115,18 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
     second_slot.commit(second.thread_id);
     mark_thread_completed(second.thread.as_ref()).await;
 
-    let err = control
-        .ensure_v2_agent_loaded(config, first.thread_id, /*parent*/ None)
+    control
+        .ensure_v2_agent_loaded(config, first.thread_id)
         .await
-        .expect_err("evicted interrupted agent should stay lost");
-    match err.details() {
-        CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
-        _ => panic!("expected ThreadNotFound, got {err:?}"),
-    }
+        .expect("evicted interrupted agent should reload from its persisted rollout");
 
     assert!(manager.get_thread(root.thread_id).await.is_ok());
-    assert!(manager.get_thread(second.thread_id).await.is_ok());
-    match manager.get_thread(first.thread_id).await {
+    assert!(manager.get_thread(first.thread_id).await.is_ok());
+    match manager.get_thread(second.thread_id).await {
         Err(err) => match err.details() {
-            CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
+            CodexErrorDetails::ThreadNotFound(thread_id) => {
+                assert_eq!(*thread_id, second.thread_id)
+            }
             _ => panic!("expected evicted thread to be missing, got {err:?}"),
         },
         Ok(_) => panic!("expected evicted thread to be missing"),

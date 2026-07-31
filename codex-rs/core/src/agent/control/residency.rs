@@ -52,6 +52,14 @@ impl AgentControl {
         config: &Config,
         protected_thread_id: Option<ThreadId>,
     ) -> CodexResult<V2ResidencySlot> {
+        if let Some(protected_thread_id) = protected_thread_id
+            && state
+                .get_thread_including_pending(protected_thread_id)
+                .await
+                .is_err()
+        {
+            self.v2_residency.remove(protected_thread_id);
+        }
         let capacity = config
             .effective_agent_max_threads(MultiAgentVersion::V2)
             .unwrap_or(usize::MAX);
@@ -122,7 +130,7 @@ impl V2Residency {
         let candidates_to_scan = self.resident_count();
         for _ in 0..candidates_to_scan {
             let Some(candidate_thread_id) = self.pop_lru_candidate(protected_thread_id) else {
-                return false;
+                break;
             };
             let Some(candidate_thread) = manager
                 .get_thread(candidate_thread_id)
@@ -169,7 +177,10 @@ impl V2Residency {
                 .clear_evicted_environments(candidate_thread_id);
             self.touch(candidate_thread_id);
         }
-        false
+        // Missing or no-longer-resident runtimes are deliberately removed from the LRU while
+        // scanning. Let the caller retry its reservation against that corrected resident count
+        // even when this pass did not need to unload a live runtime.
+        self.resident_count() < candidates_to_scan
     }
 
     fn resident_count(&self) -> usize {

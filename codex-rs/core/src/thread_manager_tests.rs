@@ -723,7 +723,7 @@ async fn exact_thread_removal_preserves_a_replaced_manager_entry() {
             }),
             Arc::clone(&manager.state.auth_manager),
             /*parent_trace*/ None,
-            /*supports_openai_form_elicitation*/ false,
+            ClientMcpExtensions::default(),
         )
         .await
         .expect("resume replacement thread");

@@ -12,7 +12,6 @@ use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
 
 use tokio::time::timeout_at;
@@ -101,39 +100,16 @@ impl Handler {
         };
 
         let deadline_at_ms = now_unix_timestamp_ms().checked_add(timeout_ms);
-        let presentation_guard = session
-            .services
-            .agent_control
-            .register_targeted_wait_agent_presentation(
-                session.presentation_id(),
-                receiver_thread_ids.as_slice(),
-            );
-        session
-            .emit_turn_item_started(
-                &turn,
-                &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                    id: call_id.clone(),
-                    tool: CollabAgentTool::Wait,
-                    status: CollabAgentToolCallStatus::InProgress,
-                    deadline_at_ms,
-                    sender_thread_id: session.thread_id,
-                    receiver_thread_ids: receiver_thread_ids.clone(),
-                    receiver_agents: receiver_agents.clone(),
-                    prompt: None,
-                    model: None,
-                    reasoning_effort: None,
-                    agents_states: Default::default(),
-                    completion_presentation_agent_ids: None,
-                }),
-            )
-            .await;
-
         let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
         let mut initial_final_statuses = Vec::new();
         for id in &receiver_thread_ids {
-            match session.services.agent_control.subscribe_status(*id).await {
-                Ok(rx) => {
-                    let status = rx.borrow().clone();
+            match session
+                .services
+                .agent_control
+                .subscribe_terminal_status(*id)
+                .await
+            {
+                Ok((status, rx)) => {
                     if is_final(&status) {
                         initial_final_statuses.push((*id, status));
                     }
@@ -143,6 +119,13 @@ impl Handler {
                     initial_final_statuses.push((*id, AgentStatus::NotFound));
                 }
                 Err(err) => {
+                    let presentation_guard = session
+                        .services
+                        .agent_control
+                        .register_targeted_wait_agent_presentation(
+                            session.presentation_id(),
+                            receiver_thread_ids.as_slice(),
+                        );
                     let mut statuses = HashMap::with_capacity(1);
                     statuses.insert(*id, session.services.agent_control.get_status(*id).await);
                     let presentation_commit =
@@ -173,6 +156,32 @@ impl Handler {
                 }
             }
         }
+        let presentation_guard = session
+            .services
+            .agent_control
+            .register_targeted_wait_agent_presentation(
+                session.presentation_id(),
+                receiver_thread_ids.as_slice(),
+            );
+        session
+            .emit_turn_item_started(
+                &turn,
+                &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    id: call_id.clone(),
+                    tool: CollabAgentTool::Wait,
+                    status: CollabAgentToolCallStatus::InProgress,
+                    deadline_at_ms,
+                    sender_thread_id: session.thread_id,
+                    receiver_thread_ids: receiver_thread_ids.clone(),
+                    receiver_agents: receiver_agents.clone(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: Default::default(),
+                    completion_presentation_agent_ids: None,
+                }),
+            )
+            .await;
 
         let statuses = if !initial_final_statuses.is_empty() {
             initial_final_statuses
@@ -342,21 +351,13 @@ impl ToolOutput for WaitAgentResult {
 async fn wait_for_final_status(
     session: Arc<Session>,
     thread_id: ThreadId,
-    mut status_rx: Receiver<AgentStatus>,
+    mut status_rx: crate::session::TerminalStatusSubscription,
 ) -> Option<(ThreadId, AgentStatus)> {
-    let mut status = status_rx.borrow().clone();
-    if is_final(&status) {
-        return Some((thread_id, status));
-    }
-
-    loop {
-        if status_rx.changed().await.is_err() {
+    match status_rx.recv().await {
+        Some(status) => Some((thread_id, status)),
+        None => {
             let latest = session.services.agent_control.get_status(thread_id).await;
-            return is_final(&latest).then_some((thread_id, latest));
-        }
-        status = status_rx.borrow().clone();
-        if is_final(&status) {
-            return Some((thread_id, status));
+            is_final(&latest).then_some((thread_id, latest))
         }
     }
 }

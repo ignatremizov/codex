@@ -730,3 +730,38 @@ async fn terminal_status_is_preserved_until_the_next_turn_starts() {
         AgentStatus::Completed(Some("done".to_string()))
     );
 }
+
+#[tokio::test]
+async fn dropped_terminal_status_subscription_unregisters_immediately() {
+    let (session, _turn_context, _events) = make_session_and_context_with_rx().await;
+    let (_status, subscription) = session.subscribe_terminal_status();
+    assert_eq!(
+        session
+            .terminal_status_subscribers
+            .lock()
+            .expect("terminal subscriber lock")
+            .len(),
+        1
+    );
+
+    drop(subscription);
+
+    assert!(
+        session
+            .terminal_status_subscribers
+            .lock()
+            .expect("terminal subscriber lock")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn terminal_status_subscription_disconnects_when_session_drops() {
+    let (session, _turn_context, _events) = make_session_and_context_with_rx().await;
+    let (_status, mut subscription) = session.subscribe_terminal_status();
+
+    drop(session);
+
+    assert_eq!(subscription.recv().await, Some(AgentStatus::NotFound));
+    assert_eq!(subscription.recv().await, None);
+}

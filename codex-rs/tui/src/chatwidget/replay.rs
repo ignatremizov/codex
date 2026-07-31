@@ -131,6 +131,7 @@ impl ChatWidget {
                         &text,
                         phase.as_ref(),
                         self.config.tui_agent_response_preview_lines,
+                        |thread_id| self.collab_agent_metadata(thread_id),
                     )
                 {
                     self.on_collab_event(cell);

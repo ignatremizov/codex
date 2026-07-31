@@ -2,7 +2,74 @@ use super::*;
 use codex_protocol::error::CodexErrorDetails;
 use codex_thread_store::PersistContext;
 
+#[derive(Clone, Copy)]
+pub(crate) enum LiveAgentMetadataDisposition {
+    Preserve,
+    Release,
+}
+
 impl AgentControl {
+    /// Remove a specific restored runtime when graceful rollback cannot finish.
+    ///
+    /// Dropping the manager's last `CodexThread` handle closes its submission channel. Cleanup
+    /// deliberately targets the concrete instance so a concurrent replacement with the same
+    /// thread ID is left intact.
+    pub(crate) async fn discard_live_agent_instance(
+        &self,
+        thread: &Arc<CodexThread>,
+        metadata_disposition: LiveAgentMetadataDisposition,
+    ) -> CodexResult<()> {
+        let state = self.upgrade()?;
+        let child = thread.session.presentation_id();
+        let _ = state
+            .remove_thread_if_current(thread, || {
+                self.forget_v2_residency(child.thread_id);
+                if matches!(metadata_disposition, LiveAgentMetadataDisposition::Release) {
+                    self.release_spawned_thread(SpawnedThreadRelease::Session(child));
+                }
+            })
+            .await;
+        Ok(())
+    }
+
+    /// Shut down one concrete runtime without affecting a replacement that reused its thread ID.
+    pub(crate) async fn shutdown_live_agent_instance(
+        &self,
+        thread: &Arc<CodexThread>,
+        metadata_disposition: LiveAgentMetadataDisposition,
+    ) -> CodexResult<String> {
+        let state = self.upgrade()?;
+        let agent_id = thread.session.thread_id();
+        thread
+            .session
+            .ensure_rollout_materialized(PersistContext::Standard)
+            .await;
+        thread.session.flush_rollout().await?;
+        let result = if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
+            Ok(String::new())
+        } else {
+            state
+                .send_op_to_thread(
+                    thread,
+                    Op::Shutdown {},
+                    /*parent_turn_id*/ None,
+                    /*root_turn_id*/ None,
+                )
+                .await
+        };
+        thread.wait_until_terminated().await;
+        let child = thread.session.presentation_id();
+        let _ = state
+            .remove_thread_if_current(thread, || {
+                self.forget_v2_residency(agent_id);
+                if matches!(metadata_disposition, LiveAgentMetadataDisposition::Release) {
+                    self.release_spawned_thread(SpawnedThreadRelease::Session(child));
+                }
+            })
+            .await;
+        result
+    }
+
     /// Submit a shutdown request for a live agent without marking it explicitly closed in
     /// persisted spawn-edge state.
     pub(crate) async fn shutdown_live_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
@@ -19,32 +86,8 @@ impl AgentControl {
                 return Err(err);
             }
         };
-        thread
-            .session
-            .ensure_rollout_materialized(PersistContext::Standard)
-            .await;
-        thread.session.flush_rollout().await?;
-        let result = if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
-            Ok(String::new())
-        } else {
-            state
-                .send_op_to_thread(
-                    &thread,
-                    Op::Shutdown {},
-                    /*parent_turn_id*/ None,
-                    /*root_turn_id*/ None,
-                )
-                .await
-        };
-        thread.wait_until_terminated().await;
-        let child = thread.session.presentation_id();
-        let _ = state
-            .remove_thread_if_current(&thread, || {
-                self.forget_v2_residency(agent_id);
-                self.release_spawned_thread(SpawnedThreadRelease::Session(child));
-            })
-            .await;
-        result
+        self.shutdown_live_agent_instance(&thread, LiveAgentMetadataDisposition::Release)
+            .await
     }
 
     /// Mark `agent_id` as explicitly closed in persisted spawn-edge state, then shut down the

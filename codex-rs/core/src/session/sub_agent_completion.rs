@@ -25,6 +25,36 @@ use codex_thread_store::LoadSubAgentCompletionContextItemParams;
 use codex_thread_store::LoadSubAgentCompletionPresentationParams;
 use codex_thread_store::StoredSubAgentCompletionPresentation;
 use codex_thread_store::ThreadStoreError;
+use tokio::sync::mpsc;
+
+pub(crate) struct TerminalStatusSubscription {
+    id: u64,
+    subscribers: std::sync::Weak<
+        std::sync::Mutex<std::collections::HashMap<u64, mpsc::UnboundedSender<AgentStatus>>>,
+    >,
+    receiver: mpsc::UnboundedReceiver<AgentStatus>,
+}
+
+impl TerminalStatusSubscription {
+    pub(crate) fn try_recv(&mut self) -> Result<AgentStatus, mpsc::error::TryRecvError> {
+        self.receiver.try_recv()
+    }
+
+    pub(crate) async fn recv(&mut self) -> Option<AgentStatus> {
+        self.receiver.recv().await
+    }
+}
+
+impl Drop for TerminalStatusSubscription {
+    fn drop(&mut self) {
+        if let Some(subscribers) = self.subscribers.upgrade() {
+            subscribers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&self.id);
+        }
+    }
+}
 
 impl Session {
     pub(crate) async fn wait_for_completion_submission_admission(
@@ -150,6 +180,43 @@ impl Session {
             .await
     }
 
+    pub(crate) fn subscribe_terminal_status(&self) -> (AgentStatus, TerminalStatusSubscription) {
+        let _terminal_guard = self
+            .terminal_publication_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (terminal_status_tx, terminal_status_rx) = mpsc::unbounded_channel();
+        let id = self
+            .next_terminal_status_subscriber_id
+            .fetch_add(/*val*/ 1, std::sync::atomic::Ordering::Relaxed);
+        self.terminal_status_subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, terminal_status_tx);
+        (
+            self.agent_status.borrow().clone(),
+            TerminalStatusSubscription {
+                id,
+                subscribers: std::sync::Arc::downgrade(&self.terminal_status_subscribers),
+                receiver: terminal_status_rx,
+            },
+        )
+    }
+
+    pub(super) fn replace_agent_status_locked(&self, status: AgentStatus) {
+        if is_final(&status)
+            && !self
+                .terminal_status_suppressed
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            self.terminal_status_subscribers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|_, subscriber| subscriber.send(status.clone()).is_ok());
+        }
+        self.agent_status.send_replace(status);
+    }
+
     pub(super) fn publish_agent_status_from_event(&self, event: &EventMsg) {
         let Some(status) = agent_status_from_event(event) else {
             return;
@@ -160,7 +227,7 @@ impl Session {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current_status = self.agent_status.borrow().clone();
         if matches!(&status, AgentStatus::Running) || !is_final(&current_status) {
-            self.agent_status.send_replace(status);
+            self.replace_agent_status_locked(status);
         }
     }
 
@@ -189,13 +256,23 @@ impl Session {
         let parent = self
             .services
             .agent_control
-            .completion_parent_for_child(child, parent_thread_id)?;
-        let published_status = status.clone();
+            .completion_parent_for_child(child, parent_thread_id);
+        let Some(parent) = parent else {
+            self.replace_agent_status_locked(status);
+            return None;
+        };
         self.services
             .agent_control
-            .record_agent_terminal_presentation(parent, child, turn_id, status, delivery, || {
-                self.agent_status.send_replace(published_status);
-            })
+            .record_agent_terminal_presentation(
+                parent,
+                child,
+                turn_id,
+                status.clone(),
+                delivery,
+                || {
+                    self.replace_agent_status_locked(status);
+                },
+            )
     }
 
     pub(super) async fn prepare_sub_agent_terminal_presentation(

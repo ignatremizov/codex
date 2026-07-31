@@ -1377,6 +1377,9 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
         let source = SessionSource::from(session_meta.meta.source.clone());
         if let Some(version) = version {
             session_meta.meta.multi_agent_version = Some(version);
+            if version == MultiAgentVersion::V2 {
+                session_meta.meta.session_id = parent_thread_id.into();
+            }
             append_rollout_item_to_path(&path, &RolloutItem::SessionMeta(session_meta)).await?;
         }
         if should_resume {

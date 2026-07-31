@@ -19,6 +19,7 @@ use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
@@ -501,7 +502,7 @@ async fn resume_in_memory_thread_from_store(
             }),
             codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test")),
             /*parent_trace*/ None,
-            /*supports_openai_form_elicitation*/ false,
+            ClientMcpExtensions::default(),
         )
         .await?;
     Ok(resumed.thread)
