@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::control::render_input_preview;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;

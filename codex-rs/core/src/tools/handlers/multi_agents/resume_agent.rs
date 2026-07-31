@@ -3,6 +3,7 @@ use crate::agent::next_thread_spawn_depth;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::create_resume_agent_tool;
+use codex_protocol::protocol::SessionSource;
 use codex_tools::ToolSpec;
 use std::sync::Arc;
 
