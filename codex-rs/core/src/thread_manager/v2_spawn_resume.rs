@@ -28,10 +28,12 @@ async fn cleanup_failed_v2_spawn_resume(
     let terminal_presentation_disarm = child_thread.session.disarm_terminal_presentation();
     let edge_restore_result = match edge_restore {
         Some((agent_graph_store, edge_status)) => {
-            let threads = state.threads.read().await;
-            let child_is_current = threads
-                .get(&child_thread_id)
-                .is_some_and(|current| Arc::ptr_eq(current, child_thread));
+            let child_is_current = {
+                let threads = state.threads.read().await;
+                threads
+                    .get(&child_thread_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, child_thread))
+            };
             if child_is_current {
                 agent_graph_store
                     .set_thread_spawn_edge_status(child_thread_id, edge_status)
@@ -108,7 +110,7 @@ impl ThreadManager {
         let resume_lock = self
             .state
             .v2_spawn_resume_lock(initial_resume.child_thread_id);
-        let _resume_guard = resume_lock.lock().await;
+        let _resume_guard = resume_lock.lock_owned().await;
         let Some(resume) = self
             .state
             .persisted_v2_spawn_resume(initial_history)

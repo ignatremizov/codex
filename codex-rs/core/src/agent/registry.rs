@@ -167,67 +167,6 @@ impl AgentRegistry {
             .cloned()
     }
 
-    pub(crate) fn replace_agent_metadata(
-        &self,
-        thread_id: ThreadId,
-        mut metadata: AgentMetadata,
-    ) -> Result<()> {
-        metadata.agent_id = Some(thread_id);
-        let new_key = metadata
-            .agent_path
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| format!("thread:{thread_id}"));
-        let mut active_agents = self
-            .active_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if active_agents
-            .agent_tree
-            .get(&new_key)
-            .is_some_and(|existing| existing.agent_id != Some(thread_id))
-        {
-            return Err(CodexErr::UnsupportedOperation(format!(
-                "agent path `{new_key}` already exists"
-            )));
-        }
-
-        let previous_metadata = active_agents
-            .thread_paths
-            .get(&thread_id)
-            .cloned()
-            .and_then(|previous_key| active_agents.agent_tree.remove(&previous_key));
-        if let Some(previous_nickname) = previous_metadata
-            .as_ref()
-            .and_then(|metadata| metadata.agent_nickname.as_ref())
-        {
-            active_agents.used_agent_nicknames.remove(previous_nickname);
-        }
-        if let Some(agent_nickname) = metadata.agent_nickname.as_ref() {
-            active_agents
-                .used_agent_nicknames
-                .insert(agent_nickname.clone());
-        }
-        let replacement_is_counted = !metadata.agent_path.as_ref().is_some_and(AgentPath::is_root);
-        active_agents
-            .thread_paths
-            .insert(thread_id, new_key.clone());
-        active_agents.agent_tree.insert(new_key, metadata);
-        let previous_was_counted = previous_metadata
-            .as_ref()
-            .is_some_and(|metadata| !metadata.agent_path.as_ref().is_some_and(AgentPath::is_root));
-        match (previous_was_counted, replacement_is_counted) {
-            (false, true) => {
-                self.total_count.fetch_add(/*val*/ 1, Ordering::AcqRel);
-            }
-            (true, false) => {
-                self.total_count.fetch_sub(/*val*/ 1, Ordering::AcqRel);
-            }
-            (false, false) | (true, true) => {}
-        }
-        Ok(())
-    }
-
     pub(crate) fn reserve_agent_metadata_replacement(
         self: &Arc<Self>,
         thread_id: ThreadId,

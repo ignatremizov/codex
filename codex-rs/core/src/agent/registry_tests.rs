@@ -489,7 +489,7 @@ fn canonical_metadata_replacement_updates_identity_without_changing_count() {
     });
 
     registry
-        .replace_agent_metadata(
+        .reserve_agent_metadata_replacement(
             thread_id,
             AgentMetadata {
                 agent_id: Some(thread_id),
@@ -499,7 +499,9 @@ fn canonical_metadata_replacement_updates_identity_without_changing_count() {
                 last_task_message: Some("continue".to_string()),
             },
         )
-        .expect("replace metadata");
+        .expect("reserve replacement")
+        .commit()
+        .expect("commit replacement");
 
     assert_eq!(registry.agent_id_for_path(&previous_path), None);
     assert_eq!(registry.agent_id_for_path(&canonical_path), Some(thread_id));

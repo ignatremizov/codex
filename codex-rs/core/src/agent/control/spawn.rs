@@ -385,7 +385,7 @@ impl AgentControl {
     ) -> CodexResult<()> {
         let state = self.upgrade()?;
         let resume_lock = state.v2_spawn_resume_lock(thread_id);
-        let _resume_guard = resume_lock.lock().await;
+        let _resume_guard = resume_lock.lock_owned().await;
         if let Ok(thread) = state.get_thread(thread_id).await {
             return self
                 .ensure_v2_agent_loaded_from_source_and_history(
