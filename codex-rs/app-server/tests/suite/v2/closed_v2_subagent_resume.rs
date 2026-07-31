@@ -683,10 +683,17 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
         ]),
     )
     .await;
+    let worker_thread_id_for_match = worker_thread.id.clone();
     let worker_followup = responses::mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| {
-            body_contains(request, FOLLOWUP_TASK) && !body_contains(request, FOLLOWUP_CALL_ID)
+        move |request: &wiremock::Request| {
+            body_contains(request, FOLLOWUP_TASK)
+                && serde_json::from_slice::<serde_json::Value>(&request.body)
+                    .ok()
+                    .is_some_and(|body| {
+                        body["client_metadata"]["thread_id"].as_str()
+                            == Some(worker_thread_id_for_match.as_str())
+                    })
         },
         responses::sse(vec![
             responses::ev_response_created("worker-followup"),
