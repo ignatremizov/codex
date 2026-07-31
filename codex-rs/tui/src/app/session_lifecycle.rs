@@ -249,6 +249,9 @@ impl App {
         agent_role: Option<String>,
         is_closed: bool,
     ) {
+        if is_closed && let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+            channel.mark_replay_only();
+        }
         self.chat_widget.set_collab_agent_metadata(
             thread_id,
             agent_nickname.clone(),
@@ -264,6 +267,9 @@ impl App {
     /// Closing a thread is not the same as removing it: users can still inspect finished agent
     /// transcripts, and the stable next/previous traversal order should not collapse around them.
     pub(super) fn mark_agent_picker_thread_closed(&mut self, thread_id: ThreadId) {
+        if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+            channel.mark_replay_only();
+        }
         self.agent_navigation.mark_closed(thread_id);
         self.sync_active_agent_label();
     }

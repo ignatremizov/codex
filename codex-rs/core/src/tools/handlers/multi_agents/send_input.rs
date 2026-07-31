@@ -47,7 +47,8 @@ impl Handler {
             .services
             .agent_control
             .get_agent_metadata(receiver_thread_id);
-        if receiver_agent.is_some() {
+        if receiver_agent.is_some() && session.multi_agent_version() == Some(MultiAgentVersion::V2)
+        {
             let resume_config = build_agent_resume_config(turn.as_ref())?;
             session
                 .services

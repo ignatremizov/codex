@@ -4,6 +4,7 @@ use crate::ThreadManager;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::MultiAgentMessageDelivery;
+use crate::context::SubagentNotification;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
@@ -12,6 +13,7 @@ use crate::session::tests::make_session_and_context;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
+use crate::session_prefix::format_subagent_notification_message;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
@@ -134,6 +136,34 @@ async fn wait_for_agent_turn_started(thread: &crate::CodexThread) {
     })
     .await
     .expect("child turn start");
+}
+
+async fn subagent_notification_texts(session: &crate::session::session::Session) -> Vec<String> {
+    session
+        .clone_history()
+        .await
+        .raw_items()
+        .iter()
+        .filter_map(|item| {
+            let ResponseItem::Message { role, content, .. } = item else {
+                return None;
+            };
+            if role != "user" {
+                return None;
+            }
+            content.iter().find_map(|content| match content {
+                ContentItem::InputText { text } | ContentItem::OutputText { text }
+                    if SubagentNotification::matches_text(text) =>
+                {
+                    Some(text.clone())
+                }
+                ContentItem::InputText { .. }
+                | ContentItem::OutputText { .. }
+                | ContentItem::InputImage { .. }
+                | ContentItem::InputAudio { .. } => None,
+            })
+        })
+        .collect()
 }
 
 async fn publish_agent_turn_started(
@@ -3048,6 +3078,155 @@ async fn resume_agent_noops_for_active_agent() {
 }
 
 #[tokio::test]
+async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("parent thread should start");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("independently resumed child thread should be live");
+    let child_thread_id = child.thread_id;
+    let parent_session = parent.thread.session.clone();
+    let child_turn = child.thread.session.new_default_turn().await;
+
+    let first_resume = tokio::spawn({
+        let parent_session = Arc::clone(&parent_session);
+        async move {
+            let mut resume_invocation = invocation(
+                Arc::clone(&parent_session),
+                parent_session.new_default_turn().await,
+                "resume_agent",
+                function_payload(json!({"id": child_thread_id.to_string()})),
+            );
+            resume_invocation.call_id = "resume-1".to_string();
+            ResumeAgentHandler.handle(resume_invocation).await
+        }
+    });
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let event = parent
+                .thread
+                .next_event()
+                .await
+                .expect("resume start event");
+            if matches!(
+                event.msg,
+                EventMsg::ItemStarted(ref event)
+                    if matches!(
+                        event.item,
+                        TurnItem::CollabAgentToolCall(ref item)
+                            if item.tool == CollabAgentTool::ResumeAgent
+                    )
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("live completion watcher should be installed before resume start is presented");
+    child
+        .thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("child done".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+    first_resume
+        .await
+        .expect("first resume task should join")
+        .expect("first resume should adopt the already-live thread");
+
+    let mut second_resume_invocation = invocation(
+        parent_session.clone(),
+        parent_session.new_default_turn().await,
+        "resume_agent",
+        function_payload(json!({"id": child_thread_id.to_string()})),
+    );
+    second_resume_invocation.call_id = "resume-2".to_string();
+    ResumeAgentHandler
+        .handle(second_resume_invocation)
+        .await
+        .expect("resume_agent should idempotently retain the live adoption");
+
+    assert!(
+        parent_session
+            .services
+            .agent_control
+            .get_agent_metadata(child_thread_id)
+            .is_none()
+    );
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if subagent_notification_texts(parent_session.as_ref())
+                .await
+                .len()
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completion should survive an immediate running transition");
+    assert_eq!(
+        subagent_notification_texts(parent_session.as_ref()).await,
+        vec![format_subagent_notification_message(
+            child_thread_id.to_string().as_str(),
+            &AgentStatus::Completed(Some("child done".to_string())),
+        )]
+    );
+
+    child
+        .thread
+        .session
+        .record_not_found_terminal_if_unfinished();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if subagent_notification_texts(parent_session.as_ref())
+                .await
+                .len()
+                == 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("removal should deliver a terminal fallback to the adopting parent");
+    assert_eq!(
+        subagent_notification_texts(parent_session.as_ref()).await,
+        vec![
+            format_subagent_notification_message(
+                child_thread_id.to_string().as_str(),
+                &AgentStatus::Completed(Some("child done".to_string())),
+            ),
+            format_subagent_notification_message(
+                child_thread_id.to_string().as_str(),
+                &AgentStatus::NotFound,
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -3099,6 +3278,18 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         serde_json::from_str(&content).expect("resume_agent result should be json");
     assert_ne!(result.status, AgentStatus::NotFound);
     assert_eq!(success, Some(true));
+    assert!(
+        manager
+            .agent_control()
+            .get_agent_metadata(agent_id)
+            .is_none()
+    );
+    let resumed_thread = manager
+        .get_thread(agent_id)
+        .await
+        .expect("resumed arbitrary thread should be live");
+    assert_eq!(resumed_thread.session_source.clone(), SessionSource::Exec);
+    let parent_session = Arc::clone(&session);
 
     let send_invocation = invocation(
         session,
@@ -3119,6 +3310,45 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         .unwrap_or_default();
     assert!(!submission_id.is_empty());
     assert_eq!(success, Some(true));
+
+    let completion_turn = resumed_thread.session.new_default_turn().await;
+    resumed_thread
+        .session
+        .send_event(
+            completion_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: completion_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("standalone done".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    publish_agent_turn_started(resumed_thread.as_ref(), completion_turn.as_ref()).await;
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if subagent_notification_texts(parent_session.as_ref())
+                .await
+                .len()
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("standalone completion should reach the adopting parent");
+    assert_eq!(
+        subagent_notification_texts(parent_session.as_ref()).await,
+        vec![format_subagent_notification_message(
+            agent_id.to_string().as_str(),
+            &AgentStatus::Completed(Some("standalone done".to_string())),
+        )]
+    );
 
     let _ = manager
         .agent_control()
@@ -3876,6 +4106,93 @@ async fn wait_agent_returns_final_status_without_timeout() {
         wait::WaitAgentResult {
             status: HashMap::from([(agent_id.to_string(), AgentStatus::Shutdown)]),
             timed_out: false
+        }
+    );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn wait_agent_preserves_terminal_status_across_immediate_next_turn() {
+    let (mut session, turn, events) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let child = manager
+        .start_thread(StartThreadOptions::new(turn.config.as_ref().clone()))
+        .await
+        .expect("start child thread");
+    let child_thread_id = child.thread_id;
+    let session = Arc::new(session);
+    let wait_task = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn = Arc::clone(&turn);
+        async move {
+            WaitAgentHandler::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({
+                        "targets": [child_thread_id.to_string()],
+                        "timeout_ms": 10_000
+                    })),
+                ))
+                .await
+        }
+    });
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let event = events.recv().await.expect("wait start event");
+            if matches!(
+                event.msg,
+                EventMsg::ItemStarted(ref event)
+                    if matches!(
+                        event.item,
+                        TurnItem::CollabAgentToolCall(ref item)
+                            if item.tool == CollabAgentTool::Wait
+                    )
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("wait handler should subscribe before emitting its start item");
+
+    let child_turn = child.thread.session.new_default_turn().await;
+    child
+        .thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("child done".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+
+    let output = timeout(Duration::from_secs(1), wait_task)
+        .await
+        .expect("wait should observe the lossless terminal transition")
+        .expect("wait task should join")
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        wait::WaitAgentResult {
+            status: HashMap::from([(
+                child_thread_id.to_string(),
+                AgentStatus::Completed(Some("child done".to_string())),
+            )]),
+            timed_out: false,
         }
     );
     assert_eq!(success, None);

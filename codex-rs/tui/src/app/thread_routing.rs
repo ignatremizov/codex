@@ -458,6 +458,41 @@ impl App {
             return Ok(());
         }
 
+        let requires_live_thread = matches!(
+            &op,
+            AppCommand::Interrupt
+                | AppCommand::CleanBackgroundTerminals
+                | AppCommand::RealtimeConversationStart { .. }
+                | AppCommand::RealtimeConversationAudio(_)
+                | AppCommand::RealtimeConversationClose
+                | AppCommand::RunUserShellCommand { .. }
+                | AppCommand::UserTurn { .. }
+                | AppCommand::OverrideTurnContext { .. }
+                | AppCommand::Compact
+                | AppCommand::Review { .. }
+                | AppCommand::ActivateMcpServer { .. }
+                | AppCommand::ApproveGuardianDeniedAction { .. }
+        );
+        if requires_live_thread
+            && let Err(error) = self.resume_replay_only_thread(app_server, thread_id).await
+        {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %error,
+                "failed to resume replay-only thread for live operation"
+            );
+            let message = format!("Failed to resume agent thread: {error:#}");
+            if matches!(&op, AppCommand::UserTurn { .. })
+                && self
+                    .chat_widget
+                    .handle_turn_start_rejection(message.clone())
+            {
+                return Ok(());
+            }
+            self.chat_widget.add_error_message(message);
+            return Ok(());
+        }
+
         if self
             .try_submit_active_thread_op_via_app_server(app_server, thread_id, &op)
             .await?

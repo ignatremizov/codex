@@ -142,7 +142,88 @@ async fn load_agent_model_context(
     }
 }
 
+async fn apply_restored_v2_agent_role(
+    config: &mut Config,
+    session_source: &SessionSource,
+) -> CodexResult<()> {
+    let Some(role_name) = session_source.get_agent_role() else {
+        return Ok(());
+    };
+    let runtime_approval_policy = config.permissions.approval_policy.value();
+    let runtime_approvals_reviewer = config.approvals_reviewer;
+    let runtime_cwd = config.cwd.clone();
+    let runtime_workspace_roots = config.workspace_roots.clone();
+    let runtime_workspace_roots_explicit = config.workspace_roots_explicit;
+    let runtime_permission_profile = match config.permissions.active_permission_profile() {
+        Some(active_permission_profile) => {
+            PermissionProfileSnapshot::active_with_profile_workspace_roots(
+                config.permissions.permission_profile().clone(),
+                active_permission_profile,
+                config.permissions.profile_workspace_roots().to_vec(),
+            )
+        }
+        None => PermissionProfileSnapshot::legacy(config.permissions.permission_profile().clone()),
+    };
+
+    apply_role_to_config_for_multi_agent_v2(config, Some(&role_name))
+        .await
+        .map_err(CodexErr::InvalidRequest)?;
+    config
+        .permissions
+        .approval_policy
+        .set(runtime_approval_policy)
+        .map_err(|err| CodexErr::InvalidRequest(format!("approval_policy is invalid: {err}")))?;
+    config.approvals_reviewer = runtime_approvals_reviewer;
+    config.cwd = runtime_cwd;
+    config.workspace_roots = runtime_workspace_roots;
+    config.workspace_roots_explicit = runtime_workspace_roots_explicit;
+    config
+        .permissions
+        .set_permission_profile_from_session_snapshot(runtime_permission_profile)
+        .map_err(|err| CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}")))?;
+    Ok(())
+}
+
 impl AgentControl {
+    fn validate_loaded_v2_agent(
+        &self,
+        thread: &Arc<CodexThread>,
+        expected_session_source: Option<&SessionSource>,
+    ) -> CodexResult<()> {
+        let loaded_control = &thread.session.services.agent_control;
+        let matches_owner = Arc::ptr_eq(&self.state, &loaded_control.state)
+            && self.session_id() == loaded_control.session_id();
+        let matches_source = expected_session_source.is_none_or(|expected_session_source| {
+            &thread.session_source == expected_session_source
+        });
+        if thread.multi_agent_version() != Some(MultiAgentVersion::V2)
+            || !matches_owner
+            || !matches_source
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "loaded thread {} does not match its persisted V2 owner and session source",
+                thread.session.thread_id()
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_loaded_rollout_path(
+        &self,
+        thread: &Arc<CodexThread>,
+        expected_rollout_path: Option<&std::path::Path>,
+    ) -> CodexResult<()> {
+        if let Some(expected_rollout_path) = expected_rollout_path
+            && thread.rollout_path().as_deref() != Some(expected_rollout_path)
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "thread {} is already running with a different rollout path",
+                thread.session.thread_id()
+            )));
+        }
+        Ok(())
+    }
+
     /// Restore persisted V2 agent identities without reopening their runtimes.
     pub(crate) async fn restore_v2_agent_metadata(
         &self,
@@ -191,18 +272,49 @@ impl AgentControl {
                     .map_err(|err| {
                         CodexErr::InvalidRequest(format!("invalid stored agent path: {err}"))
                     })?;
+                let canonical_source =
+                    load_agent_model_context(&state, thread_id, stored_thread.history_mode)
+                        .await?
+                        .and_then(|history| {
+                            InitialHistory::Resumed(ResumedHistory {
+                                conversation_id: thread_id,
+                                history: Arc::new(history),
+                                rollout_path: stored_thread.rollout_path.clone(),
+                            })
+                            .get_resumed_session_sources()
+                            .map(|(session_source, _)| session_source)
+                        });
+                let effective_source = canonical_source
+                    .clone()
+                    .unwrap_or_else(|| stored_thread.source.clone());
+                if !matches!(
+                    &effective_source,
+                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+                ) {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "persisted V2 descendant {thread_id} has no canonical thread-spawn source"
+                    )));
+                }
                 let mut reservation = self.state.reserve_spawn_slot(/*max_threads*/ None)?;
-                let mut metadata = self.prepare_agent_metadata(
-                    &mut reservation,
-                    config,
-                    stored_agent_path.or_else(|| stored_thread.source.get_agent_path()),
-                    stored_thread
-                        .agent_role
-                        .or_else(|| stored_thread.source.get_agent_role()),
-                    stored_thread
-                        .agent_nickname
-                        .or_else(|| stored_thread.source.get_nickname()),
-                )?;
+                let mut metadata = match canonical_source {
+                    Some(canonical_source) => self.prepare_restored_agent_metadata_exact(
+                        &mut reservation,
+                        canonical_source.get_agent_path(),
+                        canonical_source.get_agent_role(),
+                        canonical_source.get_nickname(),
+                    )?,
+                    None => self.prepare_agent_metadata(
+                        &mut reservation,
+                        config,
+                        stored_agent_path.or_else(|| stored_thread.source.get_agent_path()),
+                        stored_thread
+                            .agent_role
+                            .or_else(|| stored_thread.source.get_agent_role()),
+                        stored_thread
+                            .agent_nickname
+                            .or_else(|| stored_thread.source.get_nickname()),
+                    )?,
+                };
                 metadata.agent_id = Some(thread_id);
                 reservation.commit(metadata);
                 Ok::<(), CodexErr>(())
@@ -268,25 +380,23 @@ impl AgentControl {
 
     pub(crate) async fn ensure_v2_agent_loaded(
         &self,
-        mut config: Config,
+        config: Config,
         thread_id: ThreadId,
     ) -> CodexResult<()> {
         let state = self.upgrade()?;
-        if state.get_thread(thread_id).await.is_ok() {
-            self.touch_loaded_v2_residency(&state, thread_id).await;
-            return Ok(());
+        let resume_lock = state.v2_spawn_resume_lock(thread_id);
+        let _resume_guard = resume_lock.lock().await;
+        if let Ok(thread) = state.get_thread(thread_id).await {
+            return self
+                .ensure_v2_agent_loaded_from_source_and_history(
+                    config,
+                    thread_id,
+                    thread.session_source.clone(),
+                    /*initial_history_override*/ None,
+                )
+                .await
+                .map(drop);
         }
-        let registered_metadata = self
-            .state
-            .agent_metadata_for_thread(thread_id)
-            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
-        let registered_parent_thread_id = registered_metadata
-            .agent_path
-            .as_ref()
-            .and_then(|agent_path| agent_path.as_str().rsplit_once('/'))
-            .and_then(|(parent_path, _)| AgentPath::try_from(parent_path).ok())
-            .and_then(|parent_path| self.state.agent_id_for_path(&parent_path));
-
         let stored_thread = state
             .read_stored_thread(ReadThreadParams {
                 thread_id,
@@ -294,8 +404,6 @@ impl AgentControl {
                 include_history: false,
             })
             .await?;
-        let stored_source = stored_thread.source.clone();
-        let stored_parent_thread_id = stored_thread.parent_thread_id;
         let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
             .await?
             .ok_or(CodexErr::ThreadNotFound(thread_id))?;
@@ -307,72 +415,268 @@ impl AgentControl {
         if initial_history.get_multi_agent_version() != Some(MultiAgentVersion::V2) {
             return Err(CodexErr::ThreadNotFound(thread_id));
         }
+        let canonical_session_source = initial_history
+            .get_resumed_session_sources()
+            .map(|(session_source, _)| session_source)
+            .unwrap_or(stored_thread.source);
+        self.ensure_v2_agent_loaded_from_source_and_history(
+            config,
+            thread_id,
+            canonical_session_source,
+            Some(initial_history),
+        )
+        .await
+        .map(drop)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn ensure_v2_agent_loaded_from_source(
+        &self,
+        config: Config,
+        thread_id: ThreadId,
+        canonical_session_source: SessionSource,
+    ) -> CodexResult<Arc<CodexThread>> {
+        self.ensure_v2_agent_loaded_from_source_and_history(
+            config,
+            thread_id,
+            canonical_session_source,
+            /*initial_history_override*/ None,
+        )
+        .await
+    }
+
+    pub(crate) async fn ensure_v2_agent_loaded_from_history(
+        &self,
+        config: Config,
+        thread_id: ThreadId,
+        canonical_session_source: SessionSource,
+        initial_history: InitialHistory,
+    ) -> CodexResult<Arc<CodexThread>> {
+        self.ensure_v2_agent_loaded_from_source_and_history(
+            config,
+            thread_id,
+            canonical_session_source,
+            Some(initial_history),
+        )
+        .await
+    }
+
+    async fn ensure_v2_agent_loaded_from_source_and_history(
+        &self,
+        config: Config,
+        thread_id: ThreadId,
+        canonical_session_source: SessionSource,
+        initial_history_override: Option<InitialHistory>,
+    ) -> CodexResult<Arc<CodexThread>> {
+        let state = self.upgrade()?;
+        if let Ok(thread) = state.get_thread(thread_id).await {
+            self.validate_loaded_v2_agent(&thread, Some(&canonical_session_source))?;
+            let expected_rollout_path = initial_history_override.as_ref().and_then(
+                |initial_history| match initial_history {
+                    InitialHistory::Resumed(resumed) => resumed.rollout_path.as_deref(),
+                    InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => {
+                        None
+                    }
+                },
+            );
+            self.validate_loaded_rollout_path(&thread, expected_rollout_path)?;
+            let last_task_message = self
+                .state
+                .agent_metadata_for_thread(thread_id)
+                .and_then(|metadata| metadata.last_task_message);
+            self.state
+                .reserve_agent_metadata_replacement(
+                    thread_id,
+                    AgentMetadata {
+                        agent_id: Some(thread_id),
+                        agent_path: canonical_session_source.get_agent_path(),
+                        agent_nickname: canonical_session_source.get_nickname(),
+                        agent_role: canonical_session_source.get_agent_role(),
+                        last_task_message,
+                    },
+                )?
+                .commit()?;
+            self.touch_loaded_v2_residency(&state, thread_id).await;
+            return Ok(thread);
+        }
+        let previous_metadata = self.state.agent_metadata_for_thread(thread_id);
+        let last_task_message = previous_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.last_task_message.clone());
+        let metadata_replacement = self.state.reserve_agent_metadata_replacement(
+            thread_id,
+            AgentMetadata {
+                agent_id: Some(thread_id),
+                agent_path: canonical_session_source.get_agent_path(),
+                agent_nickname: canonical_session_source.get_nickname(),
+                agent_role: canonical_session_source.get_agent_role(),
+                last_task_message,
+            },
+        )?;
+        let load_result = self
+            .ensure_v2_agent_loaded_inner(
+                config,
+                thread_id,
+                Some(canonical_session_source),
+                initial_history_override,
+            )
+            .await;
+        match load_result {
+            Ok(thread) => {
+                if let Err(err) = metadata_replacement.commit() {
+                    let terminal_presentation_disarm =
+                        thread.session.disarm_terminal_presentation();
+                    let cleanup_result = self
+                        .discard_live_agent_instance(&thread, LiveAgentMetadataDisposition::Release)
+                        .await;
+                    terminal_presentation_disarm.commit();
+                    if let Err(cleanup_error) = cleanup_result {
+                        return Err(CodexErr::Fatal(format!(
+                            "{err}; failed to discard incompatible restored runtime: {cleanup_error}"
+                        )));
+                    }
+                    return Err(err);
+                }
+                Ok(thread)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn ensure_v2_agent_loaded_inner(
+        &self,
+        mut config: Config,
+        thread_id: ThreadId,
+        canonical_session_source: Option<SessionSource>,
+        initial_history_override: Option<InitialHistory>,
+    ) -> CodexResult<Arc<CodexThread>> {
+        let state = self.upgrade()?;
+        let expected_rollout_path = initial_history_override
+            .as_ref()
+            .and_then(|initial_history| match initial_history {
+                InitialHistory::Resumed(resumed) => resumed.rollout_path.clone(),
+                InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
+            });
+        if let Ok(thread) = state.get_thread(thread_id).await {
+            self.validate_loaded_v2_agent(&thread, canonical_session_source.as_ref())?;
+            self.validate_loaded_rollout_path(&thread, expected_rollout_path.as_deref())?;
+            self.touch_loaded_v2_residency(&state, thread_id).await;
+            return Ok(thread);
+        }
+        let registered_metadata = self
+            .state
+            .agent_metadata_for_thread(thread_id)
+            .or_else(|| {
+                canonical_session_source
+                    .as_ref()
+                    .map(|canonical_session_source| AgentMetadata {
+                        agent_id: Some(thread_id),
+                        agent_path: canonical_session_source.get_agent_path(),
+                        agent_nickname: canonical_session_source.get_nickname(),
+                        agent_role: canonical_session_source.get_agent_role(),
+                        last_task_message: None,
+                    })
+            })
+            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+        let registered_parent_thread_id = registered_metadata
+            .agent_path
+            .as_ref()
+            .and_then(|agent_path| agent_path.as_str().rsplit_once('/'))
+            .and_then(|(parent_path, _)| AgentPath::try_from(parent_path).ok())
+            .and_then(|parent_path| self.state.agent_id_for_path(&parent_path));
+
+        let (stored_source, stored_parent_thread_id, initial_history) =
+            match initial_history_override {
+                Some(initial_history) => {
+                    let stored_source = canonical_session_source
+                        .clone()
+                        .or_else(|| {
+                            initial_history
+                                .get_resumed_session_sources()
+                                .map(|(session_source, _)| session_source)
+                        })
+                        .unwrap_or_default();
+                    let stored_parent_thread_id = initial_history
+                        .get_resumed_parent_thread_id()
+                        .or_else(|| stored_source.parent_thread_id());
+                    (stored_source, stored_parent_thread_id, initial_history)
+                }
+                None => {
+                    let stored_thread = state
+                        .read_stored_thread(ReadThreadParams {
+                            thread_id,
+                            include_archived: true,
+                            include_history: false,
+                        })
+                        .await?;
+                    let stored_source = stored_thread.source.clone();
+                    let stored_parent_thread_id = stored_thread.parent_thread_id;
+                    let history =
+                        load_agent_model_context(&state, thread_id, stored_thread.history_mode)
+                            .await?
+                            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+                    let initial_history = InitialHistory::Resumed(ResumedHistory {
+                        conversation_id: thread_id,
+                        history: Arc::new(history),
+                        rollout_path: stored_thread.rollout_path,
+                    });
+                    (stored_source, stored_parent_thread_id, initial_history)
+                }
+            };
+        if initial_history.get_multi_agent_version() != Some(MultiAgentVersion::V2) {
+            return Err(CodexErr::ThreadNotFound(thread_id));
+        }
         let resumed_session_source = initial_history
             .get_resumed_session_sources()
             .map(|(session_source, _)| session_source)
             .unwrap_or_else(|| stored_source.clone());
-        let session_source = if stored_source.is_non_root_agent() {
-            stored_source
-        } else if let (Some(parent_thread_id), Some(agent_path)) = (
-            registered_parent_thread_id,
-            registered_metadata.agent_path.clone(),
-        ) {
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                depth: i32::try_from(agent_path.as_str().matches('/').count().saturating_sub(1))
-                    .unwrap_or(i32::MAX),
-                agent_path: Some(agent_path),
-                agent_nickname: registered_metadata.agent_nickname.clone(),
-                agent_role: registered_metadata.agent_role.clone(),
-            })
-        } else {
-            resumed_session_source
-        };
-        if let Some(role_name) = session_source.get_agent_role() {
-            let runtime_approval_policy = config.permissions.approval_policy.value();
-            let runtime_approvals_reviewer = config.approvals_reviewer;
-            let runtime_cwd = config.cwd.clone();
-            let runtime_permission_profile = match config.permissions.active_permission_profile() {
-                Some(active_permission_profile) => {
-                    PermissionProfileSnapshot::active_with_profile_workspace_roots(
-                        config.permissions.permission_profile().clone(),
-                        active_permission_profile,
-                        config.permissions.profile_workspace_roots().to_vec(),
+        let has_canonical_session_source = canonical_session_source.is_some();
+        let session_source = canonical_session_source.unwrap_or_else(|| {
+            if resumed_session_source.is_non_root_agent() {
+                resumed_session_source
+            } else if let (Some(parent_thread_id), Some(agent_path)) = (
+                registered_parent_thread_id,
+                registered_metadata.agent_path.clone(),
+            ) {
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: i32::try_from(
+                        agent_path.as_str().matches('/').count().saturating_sub(1),
                     )
-                }
-                None => PermissionProfileSnapshot::legacy(
-                    config.permissions.permission_profile().clone(),
-                ),
-            };
-
-            apply_role_to_config_for_multi_agent_v2(&mut config, Some(&role_name))
-                .await
-                .map_err(CodexErr::InvalidRequest)?;
-            config
-                .permissions
-                .approval_policy
-                .set(runtime_approval_policy)
-                .map_err(|err| {
-                    CodexErr::InvalidRequest(format!("approval_policy is invalid: {err}"))
-                })?;
-            config.approvals_reviewer = runtime_approvals_reviewer;
-            config.cwd = runtime_cwd;
-            config
-                .permissions
-                .set_permission_profile_from_session_snapshot(runtime_permission_profile)
-                .map_err(|err| {
-                    CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
-                })?;
+                    .unwrap_or(i32::MAX),
+                    agent_path: Some(agent_path),
+                    agent_nickname: registered_metadata.agent_nickname.clone(),
+                    agent_role: registered_metadata.agent_role.clone(),
+                })
+            } else if stored_source.is_non_root_agent() {
+                stored_source
+            } else {
+                resumed_session_source
+            }
+        });
+        apply_restored_v2_agent_role(&mut config, &session_source).await?;
+        if config.multi_agent_version_override() == Some(MultiAgentVersion::Disabled) {
+            return Err(CodexErr::InvalidRequest(format!(
+                "cannot restore persisted V2 child {thread_id} while agents are disabled"
+            )));
         }
         let residency_slot = self
             .reserve_v2_residency_slot(&state, &config, Some(thread_id))
             .await?;
 
-        let parent_thread_id = initial_history
-            .get_resumed_parent_thread_id()
-            .or(stored_parent_thread_id)
-            .or(registered_parent_thread_id)
-            .or_else(|| session_source.parent_thread_id());
+        let parent_thread_id = if has_canonical_session_source {
+            session_source
+                .parent_thread_id()
+                .or_else(|| initial_history.get_resumed_parent_thread_id())
+                .or(stored_parent_thread_id)
+                .or(registered_parent_thread_id)
+        } else {
+            initial_history
+                .get_resumed_parent_thread_id()
+                .or(stored_parent_thread_id)
+                .or(registered_parent_thread_id)
+                .or_else(|| session_source.parent_thread_id())
+        };
         let inherited_environments = self
             .inherited_environments_for_source(&state, Some(&session_source))
             .await;
@@ -394,6 +698,11 @@ impl AgentControl {
             .await
         {
             Ok(reloaded_thread) => {
+                self.validate_loaded_v2_agent(&reloaded_thread.thread, Some(&notification_source))?;
+                self.validate_loaded_rollout_path(
+                    &reloaded_thread.thread,
+                    expected_rollout_path.as_deref(),
+                )?;
                 residency_slot.commit(reloaded_thread.thread_id);
                 state.notify_thread_created(reloaded_thread.thread_id);
                 let child_agent_path = notification_source.get_agent_path();
@@ -409,13 +718,15 @@ impl AgentControl {
                     MultiAgentVersion::V2,
                 )
                 .await;
-                Ok(())
+                Ok(reloaded_thread.thread)
             }
             Err(err) => {
-                if state.get_thread(thread_id).await.is_ok() {
+                if let Ok(thread) = state.get_thread(thread_id).await {
+                    self.validate_loaded_v2_agent(&thread, Some(&notification_source))?;
+                    self.validate_loaded_rollout_path(&thread, expected_rollout_path.as_deref())?;
                     drop(residency_slot);
                     self.touch_loaded_v2_residency(&state, thread_id).await;
-                    return Ok(());
+                    return Ok(thread);
                 }
                 Err(err)
             }
@@ -941,10 +1252,15 @@ impl AgentControl {
         session_source: SessionSource,
     ) -> CodexResult<ThreadId> {
         let root_depth = thread_spawn_depth(&session_source).unwrap_or(0);
-        let (resumed_thread_id, resumed_multi_agent_version) = Box::pin(
-            self.resume_single_agent_from_rollout(config.clone(), thread_id, session_source),
-        )
-        .await?;
+        let (resumed_thread, resumed_multi_agent_version) =
+            Box::pin(self.resume_single_agent_from_rollout(
+                config.clone(),
+                thread_id,
+                session_source,
+                /*initial_history_override*/ None,
+            ))
+            .await?;
+        let resumed_thread_id = resumed_thread.session.thread_id();
         let state = self.upgrade()?;
         if config.multi_agent_version_from_features() == MultiAgentVersion::V2
             || resumed_multi_agent_version == MultiAgentVersion::V2
@@ -990,6 +1306,7 @@ impl AgentControl {
                         config.clone(),
                         child_thread_id,
                         child_session_source,
+                        /*initial_history_override*/ None,
                     ))
                     .await
                     {
@@ -1009,67 +1326,205 @@ impl AgentControl {
         Ok(resumed_thread_id)
     }
 
-    async fn resume_single_agent_from_rollout(
+    pub(crate) async fn resume_v2_agent_from_history(
         &self,
         config: Config,
         thread_id: ThreadId,
         session_source: SessionSource,
-    ) -> CodexResult<(ThreadId, MultiAgentVersion)> {
-        let state = self.upgrade()?;
-        let stored_thread = state
-            .read_stored_thread(ReadThreadParams {
+        initial_history: InitialHistory,
+    ) -> CodexResult<Arc<CodexThread>> {
+        let (resumed_thread, multi_agent_version) =
+            Box::pin(self.resume_single_agent_from_rollout(
+                config,
                 thread_id,
-                include_archived: true,
-                include_history: false,
-            })
+                session_source,
+                Some(initial_history),
+            ))
             .await?;
-        let resumed_agent_path = stored_thread
-            .agent_path
-            .as_deref()
-            .map(AgentPath::try_from)
-            .transpose()
-            .map_err(|err| CodexErr::InvalidRequest(format!("invalid stored agent path: {err}")))?;
-        let resumed_agent_nickname = stored_thread.agent_nickname.clone();
-        let resumed_agent_role = stored_thread.agent_role.clone();
-        let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
-            .await?
-            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
-        let initial_history = InitialHistory::Resumed(ResumedHistory {
-            conversation_id: thread_id,
-            history: Arc::new(history),
-            rollout_path: stored_thread.rollout_path,
-        });
-        let parent_thread_id = stored_thread.parent_thread_id;
+        if multi_agent_version != MultiAgentVersion::V2 {
+            return Err(CodexErr::InvalidRequest(format!(
+                "persisted spawned child {thread_id} is not running Multi-Agent V2"
+            )));
+        }
+        Ok(resumed_thread)
+    }
+
+    async fn resume_single_agent_from_rollout(
+        &self,
+        mut config: Config,
+        thread_id: ThreadId,
+        session_source: SessionSource,
+        initial_history_override: Option<InitialHistory>,
+    ) -> CodexResult<(Arc<CodexThread>, MultiAgentVersion)> {
+        let state = self.upgrade()?;
+        let (
+            resumed_agent_path,
+            resumed_agent_nickname,
+            resumed_agent_role,
+            stored_source,
+            stored_parent_thread_id,
+            initial_history,
+        ) = match initial_history_override {
+            Some(initial_history) => {
+                let stored_source = initial_history
+                    .get_resumed_session_sources()
+                    .map(|(session_source, _)| session_source)
+                    .unwrap_or_else(|| session_source.clone());
+                let stored_parent_thread_id = initial_history
+                    .get_resumed_parent_thread_id()
+                    .or_else(|| stored_source.parent_thread_id());
+                (
+                    None,
+                    None,
+                    None,
+                    stored_source,
+                    stored_parent_thread_id,
+                    initial_history,
+                )
+            }
+            None => {
+                let stored_thread = state
+                    .read_stored_thread(ReadThreadParams {
+                        thread_id,
+                        include_archived: true,
+                        include_history: false,
+                    })
+                    .await?;
+                let resumed_agent_path = stored_thread
+                    .agent_path
+                    .as_deref()
+                    .map(AgentPath::try_from)
+                    .transpose()
+                    .map_err(|err| {
+                        CodexErr::InvalidRequest(format!("invalid stored agent path: {err}"))
+                    })?;
+                let history =
+                    load_agent_model_context(&state, thread_id, stored_thread.history_mode)
+                        .await?
+                        .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+                (
+                    resumed_agent_path,
+                    stored_thread.agent_nickname,
+                    stored_thread.agent_role,
+                    stored_thread.source,
+                    stored_thread.parent_thread_id,
+                    InitialHistory::Resumed(ResumedHistory {
+                        conversation_id: thread_id,
+                        history: Arc::new(history),
+                        rollout_path: stored_thread.rollout_path,
+                    }),
+                )
+            }
+        };
+        let canonical_session_source = initial_history
+            .get_resumed_session_sources()
+            .map(|(session_source, _)| session_source);
+        let persisted_session_source = canonical_session_source
+            .clone()
+            .unwrap_or_else(|| stored_source.clone());
+        let expected_rollout_path = match &initial_history {
+            InitialHistory::Resumed(resumed) => resumed.rollout_path.clone(),
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
+        };
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &initial_history,
                 Some(&session_source),
-                parent_thread_id,
+                stored_parent_thread_id,
                 /*forked_from_thread_id*/ None,
                 &config,
             )
             .await;
+        if initial_history.get_multi_agent_version() == Some(MultiAgentVersion::V2)
+            && multi_agent_version != MultiAgentVersion::V2
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "cannot restore persisted V2 child {thread_id} while agents are disabled"
+            )));
+        }
         let agent_max_threads = config.effective_agent_max_threads(multi_agent_version);
-        let mut reservation = self.state.reserve_spawn_slot(agent_max_threads)?;
-        let (session_source, agent_metadata) = match session_source {
+        let resume_uses_v2_residency = multi_agent_version == MultiAgentVersion::V2
+            && is_v2_resident_session_source(&session_source);
+        let reservation_max_threads = if resume_uses_v2_residency {
+            None
+        } else {
+            agent_max_threads
+        };
+        let mut reservation = self.state.reserve_spawn_slot(reservation_max_threads)?;
+        let (session_source, agent_metadata, register_resumed_agent) = match session_source {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
                 agent_path,
-                agent_role: _,
-                agent_nickname: _,
-            }) => self.prepare_thread_spawn(
-                &mut reservation,
-                &config,
-                parent_thread_id,
-                depth,
-                agent_path.or(resumed_agent_path),
-                resumed_agent_role,
-                resumed_agent_nickname,
-            )?,
-            other => (other, AgentMetadata::default()),
+                agent_role,
+                agent_nickname,
+            }) => {
+                if let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    agent_path,
+                    agent_role,
+                    agent_nickname,
+                    ..
+                })) = canonical_session_source
+                {
+                    let metadata = self.prepare_restored_agent_metadata_exact(
+                        &mut reservation,
+                        agent_path.clone(),
+                        agent_role.clone(),
+                        agent_nickname.clone(),
+                    )?;
+                    (
+                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id,
+                            depth,
+                            agent_path,
+                            agent_nickname,
+                            agent_role,
+                        }),
+                        metadata,
+                        true,
+                    )
+                } else if stored_parent_thread_id.is_some()
+                    || resumed_agent_path.is_some()
+                    || resumed_agent_role.is_some()
+                    || resumed_agent_nickname.is_some()
+                {
+                    let (session_source, metadata) = self.prepare_thread_spawn(
+                        &mut reservation,
+                        &config,
+                        parent_thread_id,
+                        depth,
+                        agent_path.or(resumed_agent_path),
+                        agent_role.or(resumed_agent_role),
+                        agent_nickname.or(resumed_agent_nickname),
+                    )?;
+                    (session_source, metadata, true)
+                } else {
+                    (persisted_session_source, AgentMetadata::default(), false)
+                }
+            }
+            other => (other, AgentMetadata::default(), false),
+        };
+        if resume_uses_v2_residency {
+            apply_restored_v2_agent_role(&mut config, &session_source).await?;
+            if config.multi_agent_version_override() == Some(MultiAgentVersion::Disabled) {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "cannot restore persisted V2 child {thread_id} because its restored role disables agents"
+                )));
+            }
+        }
+        let residency_slot = if resume_uses_v2_residency {
+            Some(
+                self.reserve_v2_residency_slot(&state, &config, Some(thread_id))
+                    .await?,
+            )
+        } else {
+            None
         };
         let notification_source = session_source.clone();
+        let parent_thread_id = session_source
+            .parent_thread_id()
+            .or_else(|| initial_history.get_resumed_parent_thread_id())
+            .or(stored_parent_thread_id);
         let inherited_environments = self
             .inherited_environments_for_source(&state, Some(&session_source))
             .await;
@@ -1088,9 +1543,21 @@ impl AgentControl {
                 inherited_exec_policy,
             })
             .await?;
+        if multi_agent_version == MultiAgentVersion::V2 {
+            self.validate_loaded_v2_agent(&resumed_thread.thread, Some(&notification_source))?;
+            self.validate_loaded_rollout_path(
+                &resumed_thread.thread,
+                expected_rollout_path.as_deref(),
+            )?;
+        }
         let mut agent_metadata = agent_metadata;
         agent_metadata.agent_id = Some(resumed_thread.thread_id);
-        reservation.commit(agent_metadata.clone());
+        if register_resumed_agent {
+            reservation.commit_if_absent(agent_metadata.clone());
+        }
+        if let Some(residency_slot) = residency_slot {
+            residency_slot.commit(resumed_thread.thread_id);
+        }
         // Resumed threads are re-registered in-memory and need the same listener
         // attachment path as freshly spawned threads.
         state.notify_thread_created(resumed_thread.thread_id);
@@ -1117,6 +1584,6 @@ impl AgentControl {
         )
         .await;
 
-        Ok((resumed_thread.thread_id, multi_agent_version))
+        Ok((resumed_thread.thread, multi_agent_version))
     }
 }

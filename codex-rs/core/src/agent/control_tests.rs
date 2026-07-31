@@ -832,16 +832,43 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         Ok(_) => panic!("expected thread to be removed"),
     }
 
+    let canonical_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: Some(agent_path.clone()),
+        agent_nickname: Some("canonical-worker".to_string()),
+        agent_role: None,
+    });
     harness
         .control
-        .ensure_v2_agent_loaded(harness.config.clone(), spawned_agent.thread_id)
+        .ensure_v2_agent_loaded_from_source(
+            harness.config.clone(),
+            spawned_agent.thread_id,
+            canonical_source.clone(),
+        )
         .await
         .expect("known v2 agent should reload");
-    let _ = harness
+    let reloaded_child = harness
         .manager
         .get_thread(spawned_agent.thread_id)
         .await
         .expect("reloaded child thread should exist");
+    assert_eq!(reloaded_child.session_source, canonical_source);
+    assert_eq!(
+        harness
+            .control
+            .get_agent_metadata(spawned_agent.thread_id)
+            .map(|metadata| (
+                metadata.agent_path,
+                metadata.agent_nickname,
+                metadata.agent_role,
+            )),
+        Some((
+            Some(agent_path.clone()),
+            Some("canonical-worker".to_string()),
+            None,
+        ))
+    );
 
     let communication = InterAgentCommunication::new(
         AgentPath::root(),

@@ -3,6 +3,7 @@ use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
+use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::codex_thread::CodexThread;
@@ -56,11 +57,13 @@ use tracing::warn;
 
 pub(crate) use self::execution::AgentExecutionGuard;
 use self::execution::AgentExecutionLimiter;
+pub(crate) use self::legacy::LiveAgentMetadataDisposition;
 pub(crate) use self::presentation::AgentTerminalPresentation;
 pub(crate) use self::presentation::SessionPresentationId;
 use self::presentation::SpawnedThreadRelease;
 pub(crate) use self::presentation::TerminalPresentationDelivery;
 use self::presentation::WaitAgentPresentations;
+use self::presentation::WatcherTerminalPresentation;
 use self::residency::V2Residency;
 
 const ROOT_LAST_TASK_MESSAGE: &str = "Main thread";
@@ -605,6 +608,16 @@ impl AgentControl {
         Ok(thread.subscribe_status())
     }
 
+    /// Subscribe to every future terminal transition with an atomic current-status snapshot.
+    pub(crate) async fn subscribe_terminal_status(
+        &self,
+        agent_id: ThreadId,
+    ) -> CodexResult<(AgentStatus, crate::session::TerminalStatusSubscription)> {
+        let state = self.upgrade()?;
+        let thread = state.get_thread(agent_id).await?;
+        Ok(thread.session.subscribe_terminal_status())
+    }
+
     pub(crate) async fn format_environment_context_subagents(
         &self,
         parent_thread_id: ThreadId,
@@ -755,7 +768,7 @@ impl AgentControl {
                         }
                     }
                 };
-                let status = terminal.status;
+                let status = terminal.status.clone();
                 if child_multi_agent_version == MultiAgentVersion::V2
                     && let Some(child_agent_path) = child_agent_path.clone()
                 {
@@ -849,52 +862,15 @@ impl AgentControl {
                             },
                         );
                     }
-                } else {
-                    let accepted_completion_delivery =
-                        terminal.presentation.take_accepted_completion_delivery();
-                    let admission = if accepted_completion_delivery.is_some() {
-                        CompletionSubmissionAdmission::Accepted
-                    } else {
-                        CompletionSubmissionAdmission::Ordinary
-                    };
-                    let Ok(state) = control.upgrade() else {
-                        return;
-                    };
-                    let message =
-                        format_subagent_notification_message(child_reference.as_str(), &status);
-                    let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
-                        return;
-                    };
-                    if parent_thread.session.presentation_id() != terminal.presentation.parent() {
-                        return;
-                    }
-                    if !parent_thread
-                        .persist_sub_agent_notification_without_turn(message, admission)
-                        .await
-                    {
-                        return;
-                    }
-                    if !terminal.presentation.wait_owns_presentation().await {
-                        match accepted_completion_delivery {
-                            Some(completion_delivery) => {
-                                parent_thread
-                                    .emit_accepted_sub_agent_completion_without_turn(
-                                        &child_reference,
-                                        &status,
-                                        completion_delivery,
-                                    )
-                                    .await;
-                            }
-                            None => {
-                                parent_thread
-                                    .emit_sub_agent_completion_without_turn(
-                                        &child_reference,
-                                        &status,
-                                    )
-                                    .await;
-                            }
-                        }
-                    }
+                } else if !control
+                    .deliver_v1_watcher_terminal(
+                        parent_thread_id,
+                        child_reference.as_str(),
+                        &terminal,
+                    )
+                    .await
+                {
+                    return;
                 }
                 if matches!(status, AgentStatus::Shutdown | AgentStatus::NotFound) {
                     control.finish_watcher_terminal_presentation(child, &terminal.turn_id);
@@ -902,6 +878,184 @@ impl AgentControl {
                 }
             }
         });
+    }
+
+    async fn deliver_v1_watcher_terminal(
+        &self,
+        parent_thread_id: ThreadId,
+        child_reference: &str,
+        terminal: &WatcherTerminalPresentation,
+    ) -> bool {
+        let accepted_completion_delivery =
+            terminal.presentation.take_accepted_completion_delivery();
+        let admission = if accepted_completion_delivery.is_some() {
+            CompletionSubmissionAdmission::Accepted
+        } else {
+            CompletionSubmissionAdmission::Ordinary
+        };
+        let Ok(state) = self.upgrade() else {
+            return false;
+        };
+        let message = format_subagent_notification_message(child_reference, &terminal.status);
+        let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
+            return false;
+        };
+        if parent_thread.session.presentation_id() != terminal.presentation.parent() {
+            return false;
+        }
+        if !parent_thread
+            .persist_sub_agent_notification_without_turn(message, admission)
+            .await
+        {
+            return false;
+        }
+        if !terminal.presentation.wait_owns_presentation().await {
+            match accepted_completion_delivery {
+                Some(completion_delivery) => {
+                    parent_thread
+                        .emit_accepted_sub_agent_completion_without_turn(
+                            child_reference,
+                            &terminal.status,
+                            completion_delivery,
+                        )
+                        .await;
+                }
+                None => {
+                    parent_thread
+                        .emit_sub_agent_completion_without_turn(child_reference, &terminal.status)
+                        .await;
+                }
+            }
+        }
+        true
+    }
+
+    /// Ensures an explicitly adopted live v1 thread reports terminal status to its caller.
+    ///
+    /// A thread can already be live because another client resumed its rollout directly through
+    /// the app-server. V1 tools address live threads through the global thread manager, so direct
+    /// control already works in that case, but the caller's session-scoped presentation state
+    /// still needs a completion watcher. Registering is idempotent for the child presentation.
+    pub(crate) async fn ensure_v1_completion_watcher(
+        &self,
+        child_thread_id: ThreadId,
+        session_source: SessionSource,
+    ) -> CodexResult<()> {
+        let state = self.upgrade()?;
+        let child_thread = state.get_thread(child_thread_id).await?;
+        if child_thread.multi_agent_version() == Some(MultiAgentVersion::V2) {
+            return Ok(());
+        }
+        let (initial_status, mut terminal_status_rx) =
+            child_thread.session.subscribe_terminal_status();
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id, ..
+        }) = &session_source
+        else {
+            return Ok(());
+        };
+        let parent_thread_id = *parent_thread_id;
+        if child_thread_id == parent_thread_id {
+            return Ok(());
+        }
+        let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
+            return Ok(());
+        };
+        let child_reference = self
+            .get_agent_metadata(child_thread_id)
+            .and_then(|metadata| metadata.agent_path)
+            .map_or_else(|| child_thread_id.to_string(), |path| path.to_string());
+        let child_uses_this_parent_presentation = matches!(
+            &child_thread.session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: source_parent_thread_id,
+                ..
+            }) if *source_parent_thread_id == parent_thread_id
+        );
+        if child_uses_this_parent_presentation
+            && Arc::ptr_eq(
+                &self.wait_agent_presentations,
+                &child_thread
+                    .session
+                    .services
+                    .agent_control
+                    .wait_agent_presentations,
+            )
+        {
+            self.maybe_start_completion_watcher(
+                &child_thread,
+                Some(session_source),
+                child_reference,
+                /*child_agent_path*/ None,
+                MultiAgentVersion::V1,
+            )
+            .await;
+            return Ok(());
+        }
+        let parent = parent_thread.session.presentation_id();
+        let child = child_thread.session.presentation_id();
+        let Some(watcher_registration) = self.register_completion_watcher_with_admission(
+            child,
+            parent,
+            &parent_thread.session.submission_admission,
+        ) else {
+            return Ok(());
+        };
+        let control = self.clone();
+        tokio::spawn(async move {
+            let _watcher_registration = watcher_registration;
+            let mut initial_status = Some(initial_status);
+            loop {
+                let status = match terminal_status_rx.try_recv() {
+                    Ok(status) => {
+                        initial_status = None;
+                        status
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        match initial_status.take().filter(is_final) {
+                            Some(status) => status,
+                            None => match terminal_status_rx.recv().await {
+                                Some(status) => status,
+                                None => return,
+                            },
+                        }
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        let Some(status) = initial_status.take().filter(is_final) else {
+                            return;
+                        };
+                        status
+                    }
+                };
+                let turn_id = uuid::Uuid::now_v7().to_string();
+                let _ = control.record_agent_terminal_presentation(
+                    parent,
+                    child,
+                    &turn_id,
+                    status.clone(),
+                    TerminalPresentationDelivery::Watcher,
+                    || {},
+                );
+                let Some(terminal) = control.take_watcher_terminal_presentation(child) else {
+                    continue;
+                };
+                if !control
+                    .deliver_v1_watcher_terminal(
+                        parent_thread_id,
+                        child_reference.as_str(),
+                        &terminal,
+                    )
+                    .await
+                {
+                    return;
+                }
+                if matches!(status, AgentStatus::Shutdown | AgentStatus::NotFound) {
+                    control.finish_watcher_terminal_presentation(child, &terminal.turn_id);
+                    return;
+                }
+            }
+        });
+        Ok(())
     }
 
     fn prepare_agent_metadata(
@@ -927,6 +1081,27 @@ impl AgentControl {
             agent_nickname,
             agent_role,
             last_task_message: None,
+        })
+    }
+
+    fn prepare_restored_agent_metadata_exact(
+        &self,
+        reservation: &mut crate::agent::registry::SpawnReservation,
+        agent_path: Option<AgentPath>,
+        agent_role: Option<String>,
+        agent_nickname: Option<String>,
+    ) -> CodexResult<AgentMetadata> {
+        if let Some(agent_path) = agent_path.as_ref() {
+            reservation.reserve_agent_path(agent_path)?;
+        }
+        if let Some(agent_nickname) = agent_nickname.as_deref() {
+            reservation.reserve_agent_nickname_with_preference(&[], Some(agent_nickname))?;
+        }
+        Ok(AgentMetadata {
+            agent_path,
+            agent_nickname,
+            agent_role,
+            ..Default::default()
         })
     }
 

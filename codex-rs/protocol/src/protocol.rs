@@ -2776,8 +2776,12 @@ impl InitialHistory {
         match self {
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
             InitialHistory::Resumed(resumed) => {
-                resumed.history.iter().find_map(|item| match item {
-                    RolloutItem::SessionMeta(meta_line) => Some(&meta_line.meta),
+                resumed.history.iter().rev().find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta_line)
+                        if meta_line.meta.id == resumed.conversation_id =>
+                    {
+                        Some(&meta_line.meta)
+                    }
                     _ => None,
                 })
             }

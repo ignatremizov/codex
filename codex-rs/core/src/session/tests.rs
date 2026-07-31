@@ -7169,6 +7169,11 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
+        terminal_status_subscribers: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
+        next_terminal_status_subscriber_id: std::sync::atomic::AtomicU64::new(/*v*/ 0),
+        terminal_status_suppressed: std::sync::atomic::AtomicBool::new(/*v*/ false),
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         durable_context_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
@@ -9864,6 +9869,11 @@ where
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
+        terminal_status_subscribers: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
+        next_terminal_status_subscriber_id: std::sync::atomic::AtomicU64::new(/*v*/ 0),
+        terminal_status_suppressed: std::sync::atomic::AtomicBool::new(/*v*/ false),
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         durable_context_lock: Arc::new(Semaphore::new(/*permits*/ 1)),

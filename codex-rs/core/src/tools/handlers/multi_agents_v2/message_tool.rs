@@ -216,6 +216,18 @@ pub(crate) async fn handle_message_string_tool(
         ..
     } = invocation;
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
+    session
+        .services
+        .agent_control
+        .ensure_agent_known(receiver_thread_id)
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+    let resume_config = build_agent_resume_config(turn.as_ref())?;
+    session
+        .services
+        .agent_control
+        .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
+        .await
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let receiver_agent = session
         .services
         .agent_control
@@ -234,13 +246,6 @@ pub(crate) async fn handle_message_string_tool(
     let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
-    let resume_config = build_agent_resume_config(turn.as_ref())?;
-    session
-        .services
-        .agent_control
-        .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
-        .await
-        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let author = turn
         .session_source
         .get_agent_path()

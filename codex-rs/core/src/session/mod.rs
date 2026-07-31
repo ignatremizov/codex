@@ -238,6 +238,7 @@ mod rollout_reconstruction;
 pub(crate) mod session;
 pub(crate) mod step_context;
 mod sub_agent_completion;
+pub(crate) use sub_agent_completion::TerminalStatusSubscription;
 pub(crate) mod time_reminder;
 mod token_budget;
 pub(crate) mod turn;

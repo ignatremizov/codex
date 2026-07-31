@@ -100,6 +100,8 @@ use tokio::sync::broadcast;
 use tracing::instrument;
 use tracing::warn;
 
+mod v2_spawn_resume;
+
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
 
 struct DisabledCodeModeSessionProvider;
@@ -313,6 +315,8 @@ pub(crate) struct ThreadManagerState {
     session_source: SessionSource,
     installation_id: String,
     analytics_events_client: Option<AnalyticsEventsClient>,
+    v2_spawn_resume_locks:
+        std::sync::Mutex<HashMap<ThreadId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
 }
@@ -428,6 +432,7 @@ impl ThreadManager {
                 session_source,
                 installation_id,
                 analytics_events_client,
+                v2_spawn_resume_locks: std::sync::Mutex::new(HashMap::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -566,6 +571,7 @@ impl ThreadManager {
                 session_source: SessionSource::Exec,
                 installation_id,
                 analytics_events_client: None,
+                v2_spawn_resume_locks: std::sync::Mutex::new(HashMap::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -910,6 +916,17 @@ impl ThreadManager {
         parent_trace: Option<W3cTraceContext>,
         supports_openai_form_elicitation: bool,
     ) -> CodexResult<NewThread> {
+        if let Some(restored_thread) = self
+            .try_resume_persisted_v2_spawn(
+                &config,
+                &initial_history,
+                supports_openai_form_elicitation,
+            )
+            .await?
+        {
+            return Ok(restored_thread);
+        }
+
         let agent_control = self.agent_control_for_config(&config);
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),

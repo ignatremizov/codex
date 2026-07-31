@@ -28,6 +28,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
 
 /// Context for an initialized model agent
 ///
@@ -38,6 +39,10 @@ pub(crate) struct Session {
     pub(crate) installation_id: String,
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
+    pub(super) terminal_status_subscribers:
+        Arc<StdMutex<HashMap<u64, mpsc::UnboundedSender<AgentStatus>>>>,
+    pub(super) next_terminal_status_subscriber_id: AtomicU64,
+    pub(super) terminal_status_suppressed: AtomicBool,
     pub(super) state: Mutex<SessionState>,
     /// Serializes rebuild/apply cycles for the running proxy; each cycle
     /// rebuilds from the current SessionState while holding this lock.
@@ -84,19 +89,26 @@ pub(crate) struct Session {
 
 pub(crate) struct TerminalPresentationDisarmGuard<'a> {
     armed: &'a AtomicBool,
-    restore_on_drop: bool,
+    restore_armed_on_drop: bool,
+    terminal_status_suppressed: &'a AtomicBool,
+    restore_terminal_status_suppressed_on_drop: bool,
 }
 
 impl TerminalPresentationDisarmGuard<'_> {
     pub(crate) fn commit(mut self) {
-        self.restore_on_drop = false;
+        self.restore_armed_on_drop = false;
+        self.restore_terminal_status_suppressed_on_drop = false;
     }
 }
 
 impl Drop for TerminalPresentationDisarmGuard<'_> {
     fn drop(&mut self) {
-        if self.restore_on_drop {
+        if self.restore_armed_on_drop {
             self.armed.store(true, std::sync::atomic::Ordering::Release);
+        }
+        if self.restore_terminal_status_suppressed_on_drop {
+            self.terminal_status_suppressed
+                .store(/*val*/ false, std::sync::atomic::Ordering::Release);
         }
     }
 }
@@ -537,26 +549,22 @@ impl Session {
     }
 
     pub(crate) fn disarm_terminal_presentation(&self) -> TerminalPresentationDisarmGuard<'_> {
-        let restore_on_drop = self
+        let restore_armed_on_drop = self
             .terminal_presentation_armed
             .swap(false, std::sync::atomic::Ordering::AcqRel);
+        let restore_terminal_status_suppressed_on_drop = !self
+            .terminal_status_suppressed
+            .swap(/*val*/ true, std::sync::atomic::Ordering::AcqRel);
         TerminalPresentationDisarmGuard {
             armed: &self.terminal_presentation_armed,
-            restore_on_drop,
+            restore_armed_on_drop,
+            terminal_status_suppressed: &self.terminal_status_suppressed,
+            restore_terminal_status_suppressed_on_drop,
         }
     }
 
     /// Publishes a terminal fallback before manager removal or final `Session` drop.
     pub(crate) fn record_not_found_terminal_if_unfinished(&self) {
-        if !self
-            .terminal_presentation_armed
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return;
-        }
-        let Some(parent_thread_id) = self.spawn_parent_thread_id else {
-            return;
-        };
         let _terminal_guard = self
             .terminal_publication_lock
             .lock()
@@ -566,13 +574,21 @@ impl Session {
             return;
         }
         let status = AgentStatus::NotFound;
-        let published_status = status.clone();
         let child = self.presentation_id();
-        let Some(parent) = self
-            .services
-            .agent_control
-            .completion_parent_for_child(child, parent_thread_id)
-        else {
+        let parent = self.spawn_parent_thread_id.and_then(|parent_thread_id| {
+            self.services
+                .agent_control
+                .completion_parent_for_child(child, parent_thread_id)
+        });
+        if !self
+            .terminal_presentation_armed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            self.replace_agent_status_locked(status);
+            return;
+        }
+        let Some(parent) = parent else {
+            self.replace_agent_status_locked(status);
             return;
         };
         let _ = self
@@ -582,10 +598,10 @@ impl Session {
                 parent,
                 child,
                 &uuid::Uuid::now_v7().to_string(),
-                status,
+                status.clone(),
                 crate::agent::control::TerminalPresentationDelivery::Watcher,
                 || {
-                    self.agent_status.send_replace(published_status);
+                    self.replace_agent_status_locked(status);
                 },
             );
     }
@@ -1300,6 +1316,9 @@ impl Session {
                 installation_id,
                 tx_event: tx_event.clone(),
                 agent_status,
+                terminal_status_subscribers: Arc::new(StdMutex::new(HashMap::new())),
+                next_terminal_status_subscriber_id: AtomicU64::new(/*v*/ 0),
+                terminal_status_suppressed: AtomicBool::new(/*v*/ false),
                 state: Mutex::new(state),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 durable_context_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
