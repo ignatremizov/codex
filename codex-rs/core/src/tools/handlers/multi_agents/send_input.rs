@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::control::render_input_preview;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
@@ -50,12 +51,13 @@ impl Handler {
             .services
             .agent_control
             .get_agent_metadata(receiver_thread_id);
-        if receiver_agent.is_some() {
+        if receiver_agent.is_some() && session.multi_agent_version() == Some(MultiAgentVersion::V2)
+        {
             let resume_config = build_agent_resume_config(turn.as_ref())?;
             session
                 .services
                 .agent_control
-                .ensure_v2_agent_loaded(resume_config, receiver_thread_id, /*parent*/ None)
+                .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
                 .await
                 .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
         }

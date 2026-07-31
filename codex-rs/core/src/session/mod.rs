@@ -255,6 +255,7 @@ pub(crate) mod step_context;
 pub(crate) mod step_settings;
 mod sub_agent_completion;
 mod thread_settings;
+pub(crate) use sub_agent_completion::TerminalStatusSubscription;
 pub(crate) mod time_reminder;
 mod token_budget;
 pub(crate) mod turn;

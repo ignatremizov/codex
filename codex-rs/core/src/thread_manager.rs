@@ -103,6 +103,8 @@ use tokio::sync::broadcast;
 use tracing::instrument;
 use tracing::warn;
 
+mod v2_spawn_resume;
+
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
 // Reject pathological selected cwd values at the environment-selection boundary.
 const MAX_TURN_ENVIRONMENT_CWD_BYTES: usize = 8 * 1024;
@@ -338,7 +340,7 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
     pub(crate) environment_selections: Option<Vec<TurnEnvironmentSelection>>,
     pub(crate) inherited_environments: Option<TurnEnvironmentSnapshot>,
     pub(crate) inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
-    pub(crate) client_mcp_extensions: Option<ClientMcpExtensions>,
+    pub(crate) client_mcp_extensions_override: Option<ClientMcpExtensions>,
 }
 
 /// Shared, `Arc`-owned state for [`ThreadManager`]. This `Arc` is required to have a single
@@ -366,6 +368,8 @@ pub(crate) struct ThreadManagerState {
     session_source: SessionSource,
     installation_id: String,
     analytics_events_client: Option<AnalyticsEventsClient>,
+    v2_spawn_resume_locks:
+        std::sync::Mutex<HashMap<ThreadId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
 }
@@ -495,6 +499,7 @@ impl ThreadManager {
                 session_source,
                 installation_id,
                 analytics_events_client,
+                v2_spawn_resume_locks: std::sync::Mutex::new(HashMap::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -645,6 +650,7 @@ impl ThreadManager {
                 session_source: SessionSource::Exec,
                 installation_id,
                 analytics_events_client: None,
+                v2_spawn_resume_locks: std::sync::Mutex::new(HashMap::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -1080,7 +1086,7 @@ impl ThreadManager {
         let config = parent.session.get_config().await.as_ref().clone();
         let agent_control = parent.session.services.agent_control.clone();
         agent_control
-            .ensure_v2_agent_loaded(config, child_thread_id, Some(parent))
+            .ensure_v2_agent_loaded(config, child_thread_id)
             .await
     }
 
@@ -1093,6 +1099,13 @@ impl ThreadManager {
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> CodexResult<NewThread> {
+        if let Some(restored_thread) = self
+            .try_resume_persisted_v2_spawn(&config, &initial_history, &client_mcp_extensions)
+            .await?
+        {
+            return Ok(restored_thread);
+        }
+
         let agent_control = self.agent_control_for_config(&config);
         let (session_source, thread_source) = initial_history
             .get_resumed_session_sources()
@@ -1914,9 +1927,9 @@ impl ThreadManagerState {
             environment_selections,
             inherited_environments,
             inherited_exec_policy,
-            client_mcp_extensions,
+            client_mcp_extensions_override,
         } = options;
-        let client_mcp_extensions = match client_mcp_extensions {
+        let client_mcp_extensions = match client_mcp_extensions_override {
             Some(client_mcp_extensions) => client_mcp_extensions,
             None => self.client_mcp_extensions_for_child(parent_thread_id).await,
         };

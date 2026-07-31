@@ -1,7 +1,6 @@
 use crate::RolloutItem;
 use crate::protocol::EventMsg;
 use codex_extension_items::ExtensionItem;
-use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SubAgentActivityKind;
@@ -93,14 +92,16 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
     match ev {
         EventMsg::ItemCompleted(event) => {
             // Paginated rollouts store TurnItems.
-            // Legacy rollouts keep only items with no lossless raw ResponseItem or legacy
-            // equivalent.
+            // Legacy rollouts keep items with no reconstructible raw ResponseItem or legacy
+            // equivalent. Collab tool calls need their canonical item because the raw function
+            // call/output pair does not retain enough presentation metadata for thread replay.
             matches!(history_mode, ThreadHistoryMode::Paginated)
                 || matches!(
                     &event.item,
                     TurnItem::FunctionCallOutput(_)
                         | TurnItem::Plan(_)
                         | TurnItem::Extension(ExtensionItem::Sleep(_))
+                        | TurnItem::CollabAgentToolCall(_)
                 )
                 || matches!(
                     &event.item,
@@ -110,11 +111,6 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
                 || matches!(
                     &event.item,
                     TurnItem::AgentMessage(item) if item.has_sub_agent_completion_identity()
-                )
-                || matches!(
-                    &event.item,
-                    TurnItem::CollabAgentToolCall(item)
-                        if item.tool == CollabAgentTool::Wait && !item.agents_states.is_empty()
                 )
         }
         EventMsg::TokenCount(_)

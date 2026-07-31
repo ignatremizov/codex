@@ -990,12 +990,26 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .cloned()
         .expect("ollama provider should be configured");
 
+    let canonical_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: Some(agent_path.clone()),
+        agent_nickname: Some("canonical-worker".to_string()),
+        agent_role: None,
+    });
+    let original_source = child_thread.session_source.clone();
     let mut parent_turn = parent_thread.session.new_default_turn().await;
     match route {
-        V2ReloadRoute::Sender => control
-            .ensure_v2_agent_loaded(sender_config, spawned_agent.thread_id, /*parent*/ None)
-            .await
-            .expect("known v2 agent should reload"),
+        V2ReloadRoute::Sender => {
+            control
+                .ensure_v2_agent_loaded_from_source(
+                    sender_config,
+                    spawned_agent.thread_id,
+                    canonical_source.clone(),
+                )
+                .await
+                .expect("known v2 agent should reload");
+        }
         V2ReloadRoute::NestedParent => {
             let environment = parent_turn
                 .environments
@@ -1028,6 +1042,10 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
             assert!(harness.manager.get_thread(parent_thread_id).await.is_err());
         }
     }
+    let expected_source = match route {
+        V2ReloadRoute::Sender => canonical_source,
+        V2ReloadRoute::NestedParent => original_source,
+    };
     let reloaded_child = harness
         .manager
         .get_thread(spawned_agent.thread_id)
@@ -1073,6 +1091,22 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
             harness.config.model_provider.clone()
         ),
         "residency reload must preserve the worker provider instead of inheriting its sender's provider",
+    );
+    assert_eq!(reloaded_child.session_source, expected_source);
+    assert_eq!(
+        harness
+            .control
+            .get_agent_metadata(spawned_agent.thread_id)
+            .map(|metadata| (
+                metadata.agent_path,
+                metadata.agent_nickname,
+                metadata.agent_role,
+            )),
+        Some((
+            expected_source.get_agent_path(),
+            expected_source.get_nickname(),
+            expected_source.get_agent_role(),
+        ))
     );
 
     let communication = InterAgentCommunication::new(

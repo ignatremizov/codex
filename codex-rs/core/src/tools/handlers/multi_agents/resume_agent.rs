@@ -3,6 +3,7 @@ use crate::agent::next_thread_spawn_depth;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::create_resume_agent_tool;
+use codex_protocol::protocol::SessionSource;
 use codex_tools::ToolSpec;
 use std::sync::Arc;
 
@@ -59,6 +60,29 @@ async fn handle_resume_agent(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
+    let resumed_session_source = thread_spawn_source(
+        session.thread_id(),
+        &turn.session_source,
+        child_depth,
+        /*agent_role*/ None,
+        /*task_name*/ None,
+    )?;
+    let mut status = session
+        .services
+        .agent_control
+        .get_status(receiver_thread_id)
+        .await;
+    let was_not_found = matches!(status, AgentStatus::NotFound);
+    let mut live_adoption_error = None;
+    if !was_not_found
+        && let Err(err) = session
+            .services
+            .agent_control
+            .ensure_v1_completion_watcher(receiver_thread_id, resumed_session_source.clone())
+            .await
+    {
+        live_adoption_error = Some(collab_agent_error(receiver_thread_id, err));
+    }
 
     session
         .emit_turn_item_started(
@@ -84,17 +108,12 @@ async fn handle_resume_agent(
         )
         .await;
 
-    let mut status = session
-        .services
-        .agent_control
-        .get_status(receiver_thread_id)
-        .await;
-    let (receiver_agent, error) = if matches!(status, AgentStatus::NotFound) {
+    let (receiver_agent, mut error) = if was_not_found {
         match Box::pin(try_resume_closed_agent(
             &session,
             &turn,
             receiver_thread_id,
-            child_depth,
+            resumed_session_source.clone(),
         ))
         .await
         {
@@ -123,8 +142,19 @@ async fn handle_resume_agent(
             }
         }
     } else {
-        (receiver_agent, None)
+        (receiver_agent, live_adoption_error)
     };
+    if error.is_none()
+        && was_not_found
+        && !matches!(status, AgentStatus::NotFound)
+        && let Err(err) = session
+            .services
+            .agent_control
+            .ensure_v1_completion_watcher(receiver_thread_id, resumed_session_source)
+            .await
+    {
+        error = Some(collab_agent_error(receiver_thread_id, err));
+    }
     session
         .emit_turn_item_completed(
             &turn,
@@ -196,19 +226,13 @@ async fn try_resume_closed_agent(
     session: &Arc<Session>,
     turn: &Arc<TurnContext>,
     receiver_thread_id: ThreadId,
-    child_depth: i32,
+    session_source: SessionSource,
 ) -> Result<(), FunctionCallError> {
     let config = build_agent_resume_config(turn.as_ref())?;
     Box::pin(session.services.agent_control.resume_agent_from_rollout(
         config,
         receiver_thread_id,
-        thread_spawn_source(
-            session.thread_id(),
-            &turn.session_source,
-            child_depth,
-            /*agent_role*/ None,
-            /*task_name*/ None,
-        )?,
+        session_source,
     ))
     .await
     .map(|_| ())

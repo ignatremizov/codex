@@ -3043,6 +3043,134 @@ async fn changing_directory_preserves_project_trust_permissions_history_and_hook
     Ok(())
 }
 
+#[tokio::test]
+async fn replay_only_user_turn_resumes_before_starting_exact_prompt() -> Result<()> {
+    let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let root_thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            codex_home.path(),
+            "2026-01-01T00-00-00",
+            "2026-01-01T00:00:00Z",
+            "Saved root message",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create root rollout"),
+    )?;
+    let thread_id = ThreadId::from_string(
+        &create_fake_parented_rollout_with_source(
+            codex_home.path(),
+            "2026-01-01T00-00-01",
+            "2026-01-01T00:00:01Z",
+            "Saved child message",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: Some(AgentPath::try_from("/root/worker").expect("valid agent path")),
+                agent_nickname: Some("worker".to_string()),
+                agent_role: Some("worker".to_string()),
+            }),
+            root_thread_id.into(),
+            root_thread_id,
+        )
+        .expect("create replay-only rollout"),
+    )?;
+    let (mut app_server, requests, proxy) = start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    let session = test_thread_session(thread_id, app.config.cwd.to_path_buf());
+    let receiver = {
+        let channel = app.ensure_thread_channel(thread_id);
+        channel
+            .store
+            .lock()
+            .await
+            .set_session(session.clone(), Vec::new());
+        channel.receiver.take()
+    };
+    app.active_thread_id = Some(thread_id);
+    app.active_thread_rx = receiver;
+    app.chat_widget.handle_thread_session(session);
+    app.upsert_agent_picker_thread(
+        thread_id,
+        Some("worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    app.mark_agent_picker_thread_closed(thread_id);
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(ThreadEventChannel::attachment),
+        Some(ThreadEventAttachment::ReplayOnly)
+    );
+    requests.lock().expect("request recorder lock").clear();
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.chat_widget
+        .restore_user_message_to_composer(crate::chatwidget::UserMessage::from("continue"));
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let op = next_user_turn_op(&mut op_rx);
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    while let Ok(event) = app_event_rx.try_recv() {
+        app.handle_event(&mut tui, &mut app_server, event).await?;
+    }
+
+    let control = app
+        .handle_event(&mut tui, &mut app_server, AppEvent::CodexOp(op))
+        .await?;
+
+    assert!(matches!(control, AppRunControl::Continue));
+    let recorded = requests.lock().expect("request recorder lock").clone();
+    let lifecycle = recorded
+        .iter()
+        .filter(|request| matches!(request.method.as_str(), "thread/resume" | "turn/start"))
+        .map(|request| request.method.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lifecycle,
+        vec!["thread/resume".to_string(), "turn/start".to_string()]
+    );
+    assert!(recorded.iter().any(|request| {
+        request.method == "turn/start"
+            && request
+                .params
+                .as_ref()
+                .and_then(|params| params.get("input"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item.get("text").and_then(serde_json::Value::as_str) == Some("continue")
+                    })
+                })
+    }));
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(ThreadEventChannel::attachment),
+        Some(ThreadEventAttachment::Live)
+    );
+    assert!(
+        !app.agent_navigation
+            .get(&thread_id)
+            .expect("resumed agent navigation entry")
+            .is_closed
+    );
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
 #[test]
 fn fresh_session_applies_requested_name() -> Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;

@@ -7,9 +7,13 @@ use codex_protocol::protocol::sub_agent_completion_transcript_parts;
 use ratatui::style::Stylize;
 use ratatui::text::Span;
 
+use super::AgentMetadata;
 use super::CollabAgentHistoryCell;
+use super::agent_label;
+use super::agent_label_spans;
 use super::collab_event;
 use super::completion_agent_lines;
+use super::parse_thread_id;
 use super::title_text;
 
 pub(crate) fn background_completion_history_cell_from_agent_message(
@@ -17,6 +21,7 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
     text: &str,
     phase: Option<&MessagePhase>,
     agent_response_preview_lines: usize,
+    mut agent_metadata: impl FnMut(codex_protocol::ThreadId) -> AgentMetadata,
 ) -> Option<CollabAgentHistoryCell> {
     if phase != Some(&MessagePhase::Commentary) {
         return None;
@@ -35,18 +40,17 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
         SubAgentCompletionStatus::NotFound => (CollabAgentStatus::NotFound, None),
     };
     let agent_reference = agent_reference.trim();
-    let label = if agent_reference.is_empty() {
-        "agent"
+    let label = if let Some(thread_id) = parse_thread_id(agent_reference) {
+        let metadata = agent_metadata(thread_id);
+        agent_label_spans(agent_label(thread_id, &metadata))
+    } else if agent_reference.is_empty() {
+        vec![Span::from("agent").cyan()]
     } else {
-        agent_reference
+        vec![Span::from(agent_reference.to_string()).cyan()]
     };
     let status = CollabAgentState { status, message };
     Some(collab_event(
         title_text("Agent finished"),
-        completion_agent_lines(
-            vec![Span::from(label.to_string()).cyan()],
-            &status,
-            agent_response_preview_lines,
-        ),
+        completion_agent_lines(label, &status, agent_response_preview_lines),
     ))
 }

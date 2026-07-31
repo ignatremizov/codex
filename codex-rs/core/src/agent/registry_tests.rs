@@ -470,6 +470,237 @@ fn replacing_agent_metadata_updates_thread_identity_index() {
 }
 
 #[test]
+fn canonical_metadata_replacement_updates_identity_without_changing_count() {
+    let registry = Arc::new(AgentRegistry::default());
+    let thread_id = ThreadId::new();
+    let previous_path = agent_path("/root/previous");
+    let canonical_path = agent_path("/root/canonical");
+    let mut reservation = registry
+        .reserve_spawn_slot(/*max_threads*/ Some(1))
+        .expect("reserve initial slot");
+    reservation
+        .reserve_agent_path(&previous_path)
+        .expect("reserve initial path");
+    reservation.commit(AgentMetadata {
+        agent_id: Some(thread_id),
+        agent_path: Some(previous_path.clone()),
+        agent_nickname: Some("Previous".to_string()),
+        ..Default::default()
+    });
+
+    registry
+        .reserve_agent_metadata_replacement(
+            thread_id,
+            AgentMetadata {
+                agent_id: Some(thread_id),
+                agent_path: Some(canonical_path.clone()),
+                agent_nickname: Some("Canonical".to_string()),
+                agent_role: Some("worker".to_string()),
+                last_task_message: Some("continue".to_string()),
+            },
+        )
+        .expect("reserve replacement")
+        .commit()
+        .expect("commit replacement");
+
+    assert_eq!(registry.agent_id_for_path(&previous_path), None);
+    assert_eq!(registry.agent_id_for_path(&canonical_path), Some(thread_id));
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(thread_id)
+            .map(|metadata| (
+                metadata.agent_path,
+                metadata.agent_nickname,
+                metadata.agent_role,
+                metadata.last_task_message,
+            )),
+        Some((
+            Some(canonical_path),
+            Some("Canonical".to_string()),
+            Some("worker".to_string()),
+            Some("continue".to_string()),
+        ))
+    );
+
+    registry.release_spawned_thread(thread_id);
+    assert!(
+        registry.reserve_spawn_slot(/*max_threads*/ Some(1)).is_ok(),
+        "replacement should not double-count the thread"
+    );
+}
+
+#[test]
+fn duplicate_pathless_resume_registration_releases_its_reserved_count() {
+    let registry = Arc::new(AgentRegistry::default());
+    let thread_id = ThreadId::new();
+    registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve first resume slot")
+        .commit(AgentMetadata {
+            agent_id: Some(thread_id),
+            ..Default::default()
+        });
+    let duplicate_committed = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve duplicate resume slot")
+        .commit_if_absent(AgentMetadata {
+            agent_id: Some(thread_id),
+            ..Default::default()
+        });
+
+    assert!(!duplicate_committed);
+    registry.release_spawned_thread(thread_id);
+    assert!(
+        registry.reserve_spawn_slot(/*max_threads*/ Some(1)).is_ok(),
+        "duplicate registration should not leak capacity"
+    );
+}
+
+#[test]
+fn metadata_replacement_reserves_new_path_without_releasing_old_path() {
+    let registry = Arc::new(AgentRegistry::default());
+    let thread_id = ThreadId::new();
+    let old_path = agent_path("/root/old");
+    let new_path = agent_path("/root/new");
+    let mut initial = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve initial slot");
+    initial
+        .reserve_agent_path(&old_path)
+        .expect("reserve old path");
+    initial.commit(AgentMetadata {
+        agent_id: Some(thread_id),
+        agent_path: Some(old_path.clone()),
+        ..Default::default()
+    });
+
+    let replacement = registry
+        .reserve_agent_metadata_replacement(
+            thread_id,
+            AgentMetadata {
+                agent_id: Some(thread_id),
+                agent_path: Some(new_path.clone()),
+                ..Default::default()
+            },
+        )
+        .expect("reserve metadata replacement");
+
+    assert_eq!(registry.agent_id_for_path(&old_path), Some(thread_id));
+    let mut competing = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve competing slot");
+    assert!(competing.reserve_agent_path(&old_path).is_err());
+    assert!(competing.reserve_agent_path(&new_path).is_err());
+
+    drop(replacement);
+    assert_eq!(registry.agent_id_for_path(&old_path), Some(thread_id));
+    assert!(competing.reserve_agent_path(&new_path).is_ok());
+}
+
+#[test]
+fn metadata_replacement_commit_does_not_remove_new_owner_of_old_path() {
+    let registry = Arc::new(AgentRegistry::default());
+    let restored_thread_id = ThreadId::new();
+    let sibling_thread_id = ThreadId::new();
+    let old_path = agent_path("/root/old");
+    let new_path = agent_path("/root/new");
+    let mut initial = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve initial slot");
+    initial
+        .reserve_agent_path(&old_path)
+        .expect("reserve old path");
+    initial.commit(AgentMetadata {
+        agent_id: Some(restored_thread_id),
+        agent_path: Some(old_path.clone()),
+        ..Default::default()
+    });
+    let replacement = registry
+        .reserve_agent_metadata_replacement(
+            restored_thread_id,
+            AgentMetadata {
+                agent_id: Some(restored_thread_id),
+                agent_path: Some(new_path.clone()),
+                ..Default::default()
+            },
+        )
+        .expect("reserve metadata replacement");
+
+    registry.release_spawned_thread(restored_thread_id);
+    let mut sibling = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve sibling slot");
+    sibling
+        .reserve_agent_path(&old_path)
+        .expect("sibling should claim released old path");
+    sibling.commit(AgentMetadata {
+        agent_id: Some(sibling_thread_id),
+        agent_path: Some(old_path.clone()),
+        ..Default::default()
+    });
+
+    replacement.commit().expect("commit replacement");
+
+    assert_eq!(
+        registry.agent_id_for_path(&old_path),
+        Some(sibling_thread_id)
+    );
+    assert_eq!(
+        registry.agent_id_for_path(&new_path),
+        Some(restored_thread_id)
+    );
+    registry.release_spawned_thread(restored_thread_id);
+    registry.release_spawned_thread(sibling_thread_id);
+    assert!(registry.reserve_spawn_slot(/*max_threads*/ Some(1)).is_ok());
+}
+
+#[test]
+fn unchanged_metadata_path_commit_refuses_to_overwrite_new_sibling_owner() {
+    let registry = Arc::new(AgentRegistry::default());
+    let restored_thread_id = ThreadId::new();
+    let sibling_thread_id = ThreadId::new();
+    let path = agent_path("/root/worker");
+    let mut initial = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve initial slot");
+    initial
+        .reserve_agent_path(&path)
+        .expect("reserve initial path");
+    initial.commit(AgentMetadata {
+        agent_id: Some(restored_thread_id),
+        agent_path: Some(path.clone()),
+        ..Default::default()
+    });
+    let replacement = registry
+        .reserve_agent_metadata_replacement(
+            restored_thread_id,
+            AgentMetadata {
+                agent_id: Some(restored_thread_id),
+                agent_path: Some(path.clone()),
+                agent_role: Some("worker".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("reserve unchanged-path replacement");
+
+    registry.release_spawned_thread(restored_thread_id);
+    let mut sibling = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve sibling slot");
+    sibling
+        .reserve_agent_path(&path)
+        .expect("sibling should claim released path");
+    sibling.commit(AgentMetadata {
+        agent_id: Some(sibling_thread_id),
+        agent_path: Some(path.clone()),
+        ..Default::default()
+    });
+
+    assert!(replacement.commit().is_err());
+    assert_eq!(registry.agent_id_for_path(&path), Some(sibling_thread_id));
+}
+
+#[test]
 fn thread_identity_can_move_between_pathless_and_path_backed_metadata() {
     let registry = Arc::new(AgentRegistry::default());
     let thread_id = ThreadId::new();
