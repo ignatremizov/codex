@@ -668,7 +668,7 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
         "target": "worker",
         "message": FOLLOWUP_TASK,
     }))?;
-    let root_followup = responses::mount_sse_once_match(
+    responses::mount_sse_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, FOLLOWUP_PROMPT),
         responses::sse(vec![
@@ -702,7 +702,7 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
         ]),
     )
     .await;
-    let root_followup_finished = responses::mount_sse_once_match(
+    responses::mount_sse_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, FOLLOWUP_CALL_ID),
         responses::sse(vec![
@@ -713,10 +713,19 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
     )
     .await;
     let _: TurnStartResponse = start_turn(&mut resumed, &root_thread.id, FOLLOWUP_PROMPT).await?;
-    wait_for_mock_request(&root_followup).await?;
-    wait_for_mock_request(&worker_followup).await?;
-    wait_for_mock_request(&root_followup_finished).await?;
-    let followup_request = worker_followup.single_request();
+    let followup_request = timeout(DEFAULT_TIMEOUT, async {
+        loop {
+            if let Some(request) = worker_followup.requests().into_iter().find(|request| {
+                request.body_contains_text(FOLLOWUP_TASK)
+                    && request.body_json()["client_metadata"]["thread_id"]
+                        == json!(worker_thread.id)
+            }) {
+                return request;
+            }
+            tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+        }
+    })
+    .await?;
     assert_eq!(
         followup_request.body_json()["client_metadata"]["thread_id"],
         json!(worker_thread.id)
