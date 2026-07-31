@@ -218,7 +218,7 @@ async fn replay_only_user_turn_resumes_before_starting_exact_prompt() -> Result<
             RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: root_thread_id,
                 depth: 1,
-                agent_path: Some(AgentPath::try_from("/root/worker")?),
+                agent_path: Some(AgentPath::try_from("/root/worker").expect("valid agent path")),
                 agent_nickname: Some("worker".to_string()),
                 agent_role: Some("worker".to_string()),
             }),
