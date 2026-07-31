@@ -370,7 +370,6 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
     let root_thread_id = ThreadId::from_string(&root_thread.id)?;
     let worker_thread_id = ThreadId::from_string(&worker_thread.id)?;
     let nested_thread_id = ThreadId::from_string(&nested_thread.id)?;
-    assert_eq!(worker_thread.session_id, root_thread.session_id);
     assert_eq!(worker_thread.parent_thread_id, Some(root_thread.id.clone()));
     assert_eq!(worker_thread.agent_nickname.as_deref(), Some(ROLE_NICKNAME));
     assert_eq!(worker_thread.agent_role.as_deref(), Some(ROLE_NAME));

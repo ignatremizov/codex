@@ -184,6 +184,12 @@ async fn apply_restored_v2_agent_role(
     Ok(())
 }
 
+fn canonical_agent_path(session_source: &SessionSource) -> Option<AgentPath> {
+    session_source
+        .get_agent_path()
+        .or_else(|| (!session_source.is_non_root_agent()).then(AgentPath::root))
+}
+
 impl AgentControl {
     fn validate_loaded_v2_agent(
         &self,
@@ -493,7 +499,7 @@ impl AgentControl {
                     thread_id,
                     AgentMetadata {
                         agent_id: Some(thread_id),
-                        agent_path: canonical_session_source.get_agent_path(),
+                        agent_path: canonical_agent_path(&canonical_session_source),
                         agent_nickname: canonical_session_source.get_nickname(),
                         agent_role: canonical_session_source.get_agent_role(),
                         last_task_message,
@@ -511,7 +517,7 @@ impl AgentControl {
             thread_id,
             AgentMetadata {
                 agent_id: Some(thread_id),
-                agent_path: canonical_session_source.get_agent_path(),
+                agent_path: canonical_agent_path(&canonical_session_source),
                 agent_nickname: canonical_session_source.get_nickname(),
                 agent_role: canonical_session_source.get_agent_role(),
                 last_task_message,
