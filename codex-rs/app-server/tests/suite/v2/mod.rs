@@ -22,6 +22,7 @@ mod bedrock_gov_cloud;
 mod bedrock_service_tier;
 mod bedrock_setup;
 mod client_metadata;
+mod closed_v2_subagent_resume;
 mod code_mode_host;
 mod collaboration_mode_list;
 #[cfg(unix)]
