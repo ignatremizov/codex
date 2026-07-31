@@ -355,6 +355,11 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
     ] {
         wait_for_mock_request(mock).await?;
     }
+    assert!(
+        worker_spawn
+            .single_request()
+            .body_contains_text(ROLE_INSTRUCTIONS)
+    );
 
     let worker_thread = wait_for_direct_children(&mut initial, &root_thread.id, 1)
         .await?
@@ -630,9 +635,9 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
         &[worker_thread_id, sibling_thread_id],
     )
     .await?;
-    // Closed restoration must reserve before constructing the worker runtime. With capacity one,
-    // the already-terminal sibling is evicted during this request, not during unrelated later
-    // work.
+    // Closed restoration must reserve before constructing the worker runtime. With one child
+    // residency slot, the already-terminal sibling is evicted during this request, not during
+    // unrelated later work.
     wait_for_loaded_threads(&mut resumed, &[&root_thread.id, &worker_thread.id]).await?;
 
     // Running resume is idempotent and must retain the same graph/control identity.
@@ -710,7 +715,6 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
     wait_for_mock_request(&worker_followup).await?;
     wait_for_mock_request(&root_followup_finished).await?;
     let followup_request = worker_followup.single_request();
-    assert!(followup_request.body_contains_text(ROLE_INSTRUCTIONS));
     assert_eq!(
         followup_request.body_json()["client_metadata"]["thread_id"],
         json!(worker_thread.id)
