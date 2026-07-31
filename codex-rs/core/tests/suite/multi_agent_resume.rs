@@ -103,13 +103,25 @@ fn request_has_input_type(request: &wiremock::Request, input_type: &str) -> bool
         })
 }
 
+fn request_has_function_call_output(request: &wiremock::Request, call_id: &str) -> bool {
+    decoded_body(request)
+        .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+        .and_then(|body| body.get("input").and_then(Value::as_array).cloned())
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+            })
+        })
+}
+
 async fn mount_root_collaboration_call(
     server: &wiremock::MockServer,
     prompt: &'static str,
     call_id: &'static str,
     tool_name: &'static str,
     arguments: &str,
-) {
+) -> core_test_support::responses::ResponseMock {
     let first_response_id = format!("resp-{call_id}-1");
     mount_sse_once_match(
         server,
@@ -137,7 +149,7 @@ async fn mount_root_collaboration_call(
             ev_completed(&second_response_id),
         ]),
     )
-    .await;
+    .await
 }
 
 async fn wait_for_child_request_with_role(
@@ -201,6 +213,18 @@ fn configure_multi_agent_v2_with_role(
         Some(SUBAGENT_DEVELOPER_INSTRUCTIONS.to_string());
     // Keep the root, worker, grandchild, and sibling resident until explicit shutdown.
     config.multi_agent_v2.max_concurrent_threads_per_session = 4;
+    let user_config_path = config.codex_home.join("config.toml");
+    let user_config = toml::from_str(
+        r#"
+[features.multi_agent_v2]
+message_delivery = "plaintext"
+"#,
+    )
+    .expect("plaintext multi-agent config should parse");
+    config.config_layer_stack = config
+        .config_layer_stack
+        .with_user_config(&user_config_path, user_config)
+        .expect("plaintext multi-agent config should be valid");
     let role_path = config.codex_home.join("durable-worker-role.toml");
     std::fs::write(
         &role_path,
@@ -263,18 +287,37 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         ]),
     )
     .await;
-    let nested_mock = mount_sse_once_match(
+    let grandchild_request = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
             body_contains(request, NESTED_TASK)
                 && request_has_input_type(request, "agent_message")
-                && !body_contains(request, NESTED_CALL_ID)
+                && !request_has_function_call_output(request, NESTED_CALL_ID)
         },
         sse(vec![ev_completed("resp-parent-turn-assistant")]),
     )
     .await;
-    // The grandchild's completion can arrive during the worker's completion response,
-    // causing one more sampling request to drain that message before the turn ends.
+    let nested_call_output_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            request_has_function_call_output(request, NESTED_CALL_ID)
+                && request_has_input_type(request, "agent_message")
+        },
+        sse(vec![ev_completed("resp-parent-turn-assistant")]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            request_has_function_call_output(request, QUEUE_CALL_ID)
+                && !request_has_input_type(request, "agent_message")
+        },
+        sse(vec![ev_completed("resp-parent-turn-assistant")]),
+    )
+    .await;
+    // The required nested-call continuation is handled by nested_call_output_request.
+    // A grandchild completion racing with it can require one additional drain request,
+    // but a completed turn does not require that optional request.
     let worker_completion = wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/v1/responses"))
         .and(|request: &wiremock::Request| {
@@ -292,18 +335,9 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         .respond_with(sse_response(sse(vec![ev_completed(
             "resp-worker-complete",
         )])))
-        .expect(1..=2)
+        .expect(0..=1)
         .mount_as_scoped(&server)
         .await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            body_contains(request, QUEUE_CALL_ID)
-                && !request_has_input_type(request, "agent_message")
-        },
-        sse(vec![ev_completed("resp-parent-turn-assistant")]),
-    )
-    .await;
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
@@ -341,7 +375,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     })
     .await;
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
     let worker_thread_id = loop {
         if let Some(thread_id) = initial_child_request
             .requests()
@@ -364,10 +398,39 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         sleep(Duration::from_millis(10)).await;
     };
     let worker_thread = initial.thread_manager.get_thread(worker_thread_id).await?;
-    wait_for_event(worker_thread.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    let (grandchild_thread_id, _) =
+        wait_for_child_request_from(&grandchild_request, NESTED_TASK, worker_thread_id).await?;
+    let grandchild_thread = initial
+        .thread_manager
+        .get_thread(grandchild_thread_id)
+        .await
+        .expect("spawned grandchild should remain resident");
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
+    loop {
+        if matches!(
+            worker_thread.agent_status().await,
+            AgentStatus::Completed(_)
+        ) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for worker completion");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
+    loop {
+        if matches!(
+            grandchild_thread.agent_status().await,
+            AgentStatus::Completed(_)
+        ) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for grandchild completion");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
     assert!(initial_child_request.requests().iter().any(|request| {
         request.body_contains_text(INITIAL_TASK)
             && request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS)
@@ -426,8 +489,6 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     .await;
     initial.submit_turn(SIBLING_PROMPT).await?;
 
-    let (grandchild_thread_id, grandchild) =
-        wait_for_child_request_from(&nested_mock, NESTED_TASK, worker_thread_id).await?;
     let (sibling_thread_id, _) =
         wait_for_child_request_from(&initial_sibling_request, SIBLING_TASK, root_thread_id).await?;
     assert_ne!(grandchild_thread_id, sibling_thread_id);
@@ -449,16 +510,36 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         }
         sleep(Duration::from_millis(10)).await;
     }
-    // Close the original writer graph bottom-up before opening a fresh root runtime.
-    // Dropping TestCodex alone is not an acknowledgement that those writers finished.
-    let grandchild_thread = initial.thread_manager.get_thread(grandchild_thread_id).await?;
-    grandchild_thread.shutdown_and_wait().await?;
-    sibling_thread.shutdown_and_wait().await?;
-    worker_thread.shutdown_and_wait().await?;
+    worker_thread.flush_rollout().await?;
+    grandchild_thread.flush_rollout().await?;
+    sibling_thread.flush_rollout().await?;
     initial.codex.flush_rollout().await?;
-    drop(grandchild_thread);
+    for thread in [&grandchild_thread, &worker_thread, &sibling_thread] {
+        thread.submit(Op::Shutdown).await?;
+        tokio::time::timeout(Duration::from_secs(5), thread.wait_until_terminated()).await?;
+    }
+    initial.codex.submit(Op::Shutdown).await?;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        initial.codex.wait_until_terminated(),
+    )
+    .await?;
     drop(worker_thread);
+    // ResponseMock records before the custom matcher runs, including requests
+    // rejected by that matcher. Count only the required nested-call continuation.
+    assert_eq!(
+        nested_call_output_request
+            .requests()
+            .iter()
+            .filter(|request| {
+                request.function_call_output_text(NESTED_CALL_ID).is_some()
+                    && !request.inputs_of_type("agent_message").is_empty()
+            })
+            .count(),
+        1
+    );
     drop(worker_completion);
+    drop(grandchild_thread);
     drop(sibling_thread);
 
     let followup_args = serde_json::to_string(&json!({
@@ -658,6 +739,7 @@ openai_base_url = "{redirected_base_url}"
     let queue_root = body_for(QUEUE_PROMPT, root_thread_id);
     let followup_root = body_for(FOLLOWUP_PROMPT, root_thread_id);
     let initial_child = body_for(INITIAL_TASK, worker_thread_id);
+    let grandchild = body_for(NESTED_TASK, grandchild_thread_id);
     let followup_child = body_for(FOLLOWUP_TASK, worker_thread_id);
     let roster = queue_root["input"]
         .as_array()
@@ -748,7 +830,7 @@ openai_base_url = "{redirected_base_url}"
     let interrupt_args = serde_json::to_string(&json!({
         "target": "worker",
     }))?;
-    mount_root_collaboration_call(
+    let interrupt_result = mount_root_collaboration_call(
         &server,
         INTERRUPT_PROMPT,
         INTERRUPT_CALL_ID,
@@ -762,7 +844,13 @@ openai_base_url = "{redirected_base_url}"
             .thread_manager
             .get_thread(worker_thread_id)
             .await
-            .is_err()
+            .is_err(),
+        "stopped child remains registered after interrupt; correlated tool results: {:?}",
+        interrupt_result
+            .requests()
+            .iter()
+            .map(|request| request.function_call_output_text(INTERRUPT_CALL_ID))
+            .collect::<Vec<_>>()
     );
 
     let sibling_followup_args = serde_json::to_string(&json!({

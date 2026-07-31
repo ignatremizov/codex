@@ -13,6 +13,8 @@ pub(super) async fn apply_resumed_agent_role(
     let runtime_approval_policy = config.permissions.approval_policy.value();
     let runtime_approvals_reviewer = config.approvals_reviewer;
     let runtime_cwd = config.cwd.clone();
+    let runtime_workspace_roots = config.workspace_roots.clone();
+    let runtime_workspace_roots_explicit = config.workspace_roots_explicit;
     let runtime_service_tier = config.service_tier.clone();
     let runtime_permission_profile = match config.permissions.active_permission_profile() {
         Some(active_permission_profile) => {
@@ -35,6 +37,8 @@ pub(super) async fn apply_resumed_agent_role(
         .map_err(|err| CodexErr::InvalidRequest(format!("approval_policy is invalid: {err}")))?;
     config.approvals_reviewer = runtime_approvals_reviewer;
     config.cwd = runtime_cwd;
+    config.workspace_roots = runtime_workspace_roots;
+    config.workspace_roots_explicit = runtime_workspace_roots_explicit;
     config.service_tier = runtime_service_tier;
     config
         .permissions

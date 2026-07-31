@@ -133,6 +133,26 @@ tool complements, rather than replaces, upstream asynchronous questions. Later r
 and user-spawn policy integrations must reconcile these owners, not duplicate their state.
 Protocol generation, snapshots, cross-platform tests, and executable qualification remain pending.
 
+### Restore recorded agents through the live owner
+
+Ownership anchor: `feat(multi-agent): restore recorded agents through their live owning control`.
+Native V2 child restoration requires its recorded direct parent, exact runtime/tree identity,
+and acknowledged graph publication. Options-based and dedicated resume routes share that
+boundary; root recovery retains a coherent surviving tree instead of constructing a second
+registry. Host controllers keep their shared operation facade and do not fall through to native
+restoration. Captured environment, instruction, execution-policy, and MCP authority cannot be
+retargeted by resolving the parent UUID a second time. Explicit developer instructions, including
+empty strings, stay distinct from inherited settings and saved workspace hints.
+`core/src/agent/control/restore_*`, `resume.rs`, and `thread_manager/v2_spawn_resume.rs` own
+checked initialization, metadata replacement, lifecycle exclusion, and manager-local recovery
+fences. Upstream residency leases and bounded graph-order metadata reads remain in place.
+Lossless status observations retain terminal transitions without gaining completion-delivery
+ownership; V1 standalone adoption affects only later live turns. The TUI keeps cold selections
+read-only until a live command, preserves undelivered input on failure, and uses canonical
+completion provenance. Entry points are `tui/src/app/thread_resume.rs` and the shared collab
+metadata renderers. Source-authored regression coverage is not executable qualification;
+formatting, generated artifacts, and remote validation remain pending.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.

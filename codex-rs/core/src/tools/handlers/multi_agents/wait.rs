@@ -1,10 +1,7 @@
 use super::*;
-use crate::agent::control::StatusSubscription;
 use crate::agent::status::is_final;
-use crate::session::session::Session;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
-use codex_protocol::error::CodexErr;
 
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::error::CodexErrorDetails;
@@ -13,7 +10,6 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -112,42 +108,12 @@ impl Handler {
                 session.presentation_id(),
                 receiver_thread_ids.as_slice(),
             );
-        session
-            .emit_turn_item_started(
-                &turn,
-                &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                    id: call_id.clone(),
-                    tool: CollabAgentTool::Wait,
-                    status: CollabAgentToolCallStatus::InProgress,
-                    deadline_at_ms,
-                    sender_thread_id: session.thread_id,
-                    receiver_thread_ids: receiver_thread_ids.clone(),
-                    receiver_agents: receiver_agents.clone(),
-                    prompt: None,
-                    model: None,
-                    reasoning_effort: None,
-                    agents_states: Default::default(),
-                    completion_presentation_agent_ids: None,
-                }),
-            )
-            .await;
-
         let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
         let mut initial_final_statuses = Vec::new();
         for id in &receiver_thread_ids {
-            let subscription = async {
-                let mut updates = local_agent_control.subscribe_status(*id).await?;
-                let initial = updates
-                    .next()
-                    .await
-                    .transpose()?
-                    .ok_or(CodexErr::InternalAgentDied)?;
-                Ok::<_, CodexErr>((initial, updates))
-            }
-            .await;
-            match subscription {
-                Ok((initial, updates)) => {
-                    let status = initial.status().cloned().unwrap_or(AgentStatus::NotFound);
+            match local_agent_control.subscribe_agent_status_events(*id).await {
+                Ok(updates) => {
+                    let status = updates.initial_status().clone();
                     if is_final(&status) {
                         initial_final_statuses.push((*id, status));
                     }
@@ -187,34 +153,50 @@ impl Handler {
                 }
             }
         }
+        session
+            .emit_turn_item_started(
+                &turn,
+                &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    id: call_id.clone(),
+                    tool: CollabAgentTool::Wait,
+                    status: CollabAgentToolCallStatus::InProgress,
+                    deadline_at_ms,
+                    sender_thread_id: session.thread_id,
+                    receiver_thread_ids: receiver_thread_ids.clone(),
+                    receiver_agents: receiver_agents.clone(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: Default::default(),
+                    completion_presentation_agent_ids: None,
+                }),
+            )
+            .await;
 
         let statuses = if !initial_final_statuses.is_empty() {
             initial_final_statuses
         } else {
             let mut futures = FuturesUnordered::new();
             for (id, rx) in status_rxs.into_iter() {
-                let session = session.clone();
-                futures.push(wait_for_final_status(session, id, rx));
+                futures.push(wait_for_final_status(id, rx));
             }
             let mut results = Vec::new();
             let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
             loop {
                 match timeout_at(deadline, futures.next()).await {
-                    Ok(Some(Ok(Some(result)))) => {
+                    Ok(Some(Some(result))) => {
                         results.push(result);
                         break;
                     }
-                    Ok(Some(Ok(None))) => continue,
-                    Ok(Some(Err(err))) => return Err(err),
+                    Ok(Some(None)) => continue,
                     Ok(None) | Err(_) => break,
                 }
             }
             if !results.is_empty() {
                 loop {
                     match futures.next().now_or_never() {
-                        Some(Some(Ok(Some(result)))) => results.push(result),
-                        Some(Some(Ok(None))) => continue,
-                        Some(Some(Err(err))) => return Err(err),
+                        Some(Some(Some(result))) => results.push(result),
+                        Some(Some(None)) => continue,
                         Some(None) | None => break,
                     }
                 }
@@ -346,22 +328,15 @@ impl ToolOutput for WaitAgentResult {
 }
 
 async fn wait_for_final_status(
-    session: Arc<Session>,
     thread_id: ThreadId,
-    mut updates: StatusSubscription,
-) -> Result<Option<(ThreadId, AgentStatus)>, FunctionCallError> {
-    while let Some(snapshot) = updates.next().await {
-        let snapshot = snapshot.map_err(|err| collab_agent_error(thread_id, err))?;
-        let status = snapshot.status().cloned().unwrap_or(AgentStatus::NotFound);
+    mut status_rx: crate::session::AgentStatusSubscription,
+) -> Option<(ThreadId, AgentStatus)> {
+    while let Some(status) = status_rx.recv().await {
         if is_final(&status) {
-            return Ok(Some((thread_id, status)));
+            return Some((thread_id, status));
         }
     }
-    let latest = session
-        .services
-        .local_agent_runtime
-        .control(session.session_id())
-        .get_status(thread_id)
-        .await;
-    Ok(is_final(&latest).then_some((thread_id, latest)))
+    // Explicit removal is an observed NotFound. Silent retirement must not fetch a
+    // replacement runtime's status or expose an incidental eviction Shutdown.
+    None
 }

@@ -132,6 +132,8 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
         .cloned();
     config.model_reasoning_summary = Some(turn.reasoning_summary());
     config.developer_instructions = turn.developer_instructions.clone();
+    // Inherited instructions are not a new caller override for a child's cold resume.
+    config.developer_instructions_explicit = false;
     if turn.multi_agent_version == MultiAgentVersion::V2
         && let Some(developer_instructions) = turn
             .config

@@ -63,6 +63,12 @@ impl LocalAgentRuntime {
         runtime
     }
 
+    /// Tests allocation identity without exposing the registry to orchestration callers.
+    /// Session IDs alone do not prove that two live runtimes share one agent tree.
+    pub(crate) fn shares_tree_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.registry, &other.registry)
+    }
+
     /// Bind local startup to the same tree state with this session's identity.
     pub(crate) fn control(&self, session_id: SessionId) -> LocalAgentControl {
         LocalAgentControl {

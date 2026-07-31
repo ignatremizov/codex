@@ -710,6 +710,11 @@ pub struct Config {
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
 
+    /// Whether an owned cold-resume request explicitly supplied developer instructions.
+    /// Runtime-only provenance: config-file defaults and inherited parent settings are not
+    /// explicit resume overrides.
+    pub developer_instructions_explicit: bool,
+
     /// Guardian-specific policy config override from requirements.toml or config.toml.
     /// This is inserted into the fixed guardian prompt template under the
     /// `# Policy Configuration` section rather than replacing the whole
@@ -4426,6 +4431,7 @@ impl Config {
             base_instructions_provenance,
             personality,
             developer_instructions,
+            developer_instructions_explicit: false,
             compact_prompt,
             include_permissions_instructions,
             include_apps_instructions,

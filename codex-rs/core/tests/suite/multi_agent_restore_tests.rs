@@ -10,20 +10,26 @@ use super::request_has_model;
 use anyhow::Context;
 use anyhow::Result;
 use codex_features::Feature;
+use codex_history::RolloutItem;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_thread_store::AppendThreadItemsParams;
 use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::DeleteThreadParams;
 use codex_thread_store::ListThreadsParams;
+use codex_thread_store::LoadForkSourceByRolloutPathParams;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::PersistContext;
 use codex_thread_store::ReadThreadByRolloutPathParams;
 use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
+use codex_thread_store::StoredForkSource;
 use codex_thread_store::StoredModelContext;
 use codex_thread_store::StoredThread;
 use codex_thread_store::StoredThreadHistory;
@@ -52,6 +58,7 @@ use tokio::time::timeout;
 struct GatedChildMetadataStore {
     inner: Arc<dyn ThreadStore>,
     gates: Mutex<HashMap<ThreadId, oneshot::Receiver<()>>>,
+    colliding_children: [ThreadId; 2],
     failed_child: ThreadId,
     started: mpsc::UnboundedSender<ThreadId>,
     completed: mpsc::UnboundedSender<ThreadId>,
@@ -85,8 +92,8 @@ impl ThreadStore for GatedChildMetadataStore {
         fn shutdown_thread(thread_id: ThreadId) -> ();
         fn discard_thread(thread_id: ThreadId) -> ();
         fn load_history(params: LoadThreadHistoryParams) -> StoredThreadHistory;
-        fn load_latest_model_context(params: LoadThreadHistoryParams) -> StoredModelContext;
         fn read_thread_by_rollout_path(params: ReadThreadByRolloutPathParams) -> StoredThread;
+        fn load_fork_source_by_rollout_path(params: LoadForkSourceByRolloutPathParams) -> StoredForkSource;
         fn list_threads(params: ListThreadsParams) -> ThreadPage;
         fn update_thread_metadata(params: UpdateThreadMetadataParams) -> Option<StoredThread>;
         fn archive_thread(params: ArchiveThreadParams) -> ();
@@ -102,6 +109,41 @@ impl ThreadStore for GatedChildMetadataStore {
         self.inner.persist_thread(thread_id, context)
     }
 
+    fn load_latest_model_context(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> ThreadStoreFuture<'_, StoredModelContext> {
+        Box::pin(async move {
+            let child_id = params.thread_id;
+            let mut history = self.inner.load_latest_model_context(params).await?;
+            if self.colliding_children.contains(&child_id) {
+                let mut replaced = false;
+                for item in &mut history.items {
+                    let RolloutItem::SessionMeta(meta) = item else {
+                        continue;
+                    };
+                    if meta.meta.id != child_id {
+                        continue;
+                    }
+                    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) =
+                        &mut meta.meta.source
+                    else {
+                        panic!("the child fixture must retain its canonical spawn source");
+                    };
+                    *agent_path =
+                        Some(AgentPath::try_from("/root/restored").expect("fixture path"));
+                    meta.meta.agent_path = Some("/root/restored".to_owned());
+                    replaced = true;
+                }
+                assert!(
+                    replaced,
+                    "the child model window includes its canonical metadata"
+                );
+            }
+            Ok(history)
+        })
+    }
+
     fn read_thread(&self, params: ReadThreadParams) -> ThreadStoreFuture<'_, StoredThread> {
         Box::pin(async move {
             let thread_id = params.thread_id;
@@ -110,28 +152,36 @@ impl ThreadStore for GatedChildMetadataStore {
                 .lock()
                 .expect("child read gates")
                 .remove(&thread_id);
-            let Some(gate) = gate else {
-                return self.inner.read_thread(params).await;
-            };
-            assert!(!params.include_history, "restoration only reads metadata");
-            self.started.send(thread_id).expect("read started receiver");
-            gate.await.expect("release child read");
+            let result = if let Some(gate) = gate {
+                assert!(!params.include_history, "restoration only reads metadata");
+                self.started.send(thread_id).expect("read started receiver");
+                gate.await.expect("release child read");
 
-            let result = if thread_id == self.failed_child {
-                Err(ThreadStoreError::Internal {
-                    message: "injected child metadata failure".to_owned(),
-                })
+                let result = if thread_id == self.failed_child {
+                    Err(ThreadStoreError::Internal {
+                        message: "injected child metadata failure".to_owned(),
+                    })
+                } else {
+                    self.inner.read_thread(params).await.map(|mut thread| {
+                        // Only one child can register this path, exposing which result is applied first.
+                        thread.agent_path = Some("/root/restored".to_owned());
+                        thread
+                    })
+                };
+                self.completed
+                    .send(thread_id)
+                    .expect("read completed receiver");
+                result
             } else {
-                self.inner.read_thread(params).await.map(|mut thread| {
-                    // Only one child can register this path, exposing which result is applied first.
-                    thread.agent_path = Some("/root/restored".to_owned());
-                    thread
-                })
+                self.inner.read_thread(params).await
             };
-            self.completed
-                .send(thread_id)
-                .expect("read completed receiver");
-            result
+            result.map(|mut thread| {
+                // This opaque wrapper is not a LocalThreadStore, so LiveThread does not
+                // expose its inner store's host path. Metadata must advertise the same
+                // pathless identity when the owning root is revalidated during child load.
+                thread.rollout_path = None;
+                thread
+            })
         })
     }
 }
@@ -142,6 +192,7 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
     let server = start_mock_server().await;
     let initial_url = format!("{}/v1", server.uri());
     let initial = test_codex()
+        .with_history_mode(ThreadHistoryMode::Paginated)
         .with_config(move |config| {
             configure_multi_agent_v2_with_role(config, &initial_url);
             config
@@ -211,6 +262,7 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
     let (last_release, last_gate) = oneshot::channel();
     let store = Arc::new(GatedChildMetadataStore {
         inner: Arc::clone(&initial.thread_store),
+        colliding_children: [first, last],
         gates: Mutex::new(HashMap::from([
             (first, first_gate),
             (failed, failed_gate),
@@ -222,6 +274,7 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
     });
     let resume_url = format!("{}/v1", server.uri());
     let mut resume_builder = test_codex()
+        .with_history_mode(ThreadHistoryMode::Paginated)
         .with_thread_store(store)
         .with_config(move |config| {
             configure_multi_agent_v2_with_role(config, &resume_url);
@@ -255,11 +308,37 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
     })?;
 
     assert_eq!(resumed.thread_manager.list_thread_ids().await, vec![root]);
-    for child_id in [last, failed] {
-        assert!(matches!(
-            resumed.thread_manager.ensure_multi_agent_v2_child_loaded(child_id).await,
-            Err(error) if matches!(error.details(), CodexErrorDetails::ThreadNotFound(id) if *id == child_id)
-        ));
+    assert_eq!(resumed.codex.rollout_path(), None);
+    // Interrupt observes registered unloaded identities without restoring them. Calling
+    // ensure_child_loaded here would perform new restoration rather than inspect the
+    // result of the ordered startup reads (and retry the injected read failure).
+    for (child_id, prompt, call_id) in [
+        (first, "inspect first restored identity", "inspect-first"),
+        (last, "inspect colliding restored identity", "inspect-last"),
+        (failed, "inspect failed restored identity", "inspect-failed"),
+    ] {
+        let result = mount_root_collaboration_call(
+            &server,
+            prompt,
+            call_id,
+            "interrupt_agent",
+            &json!({ "target": child_id.to_string() }).to_string(),
+        )
+        .await;
+        resumed.submit_turn(prompt).await?;
+        let output = result
+            .single_request()
+            .function_call_output_text(call_id)
+            .context("the registry probe returns a complete tool result")?;
+        if child_id == first {
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&output)?,
+                json!({"previous_status": AgentStatus::NotFound})
+            );
+        } else {
+            assert_eq!(output, format!("agent with id {child_id} not found"));
+        }
+        assert_eq!(resumed.thread_manager.list_thread_ids().await, vec![root]);
     }
     resumed
         .thread_manager

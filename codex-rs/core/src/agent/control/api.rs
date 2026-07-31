@@ -110,10 +110,19 @@ impl AgentControl for LocalAgentControl {
             let (metadata, submission_id) = match input {
                 AgentInput::UserInput(input) => {
                     let receiver = self.get_agent_metadata(target);
-                    if receiver.is_some() {
+                    if receiver.is_some()
+                        && self
+                            .runtime
+                            .upgrade()?
+                            .get_thread(caller)
+                            .await?
+                            .multi_agent_version()
+                            == Some(MultiAgentVersion::V2)
+                    {
                         self.ensure_v2_agent_loaded(resume_config, target, /*parent*/ None)
                             .await?;
                     }
+                    let receiver = self.get_agent_metadata(target);
                     let submission_id = self.send_input(target, input, start_options).await?;
                     (receiver.unwrap_or_default(), submission_id)
                 }
@@ -131,13 +140,21 @@ impl AgentControl for LocalAgentControl {
                             "Follow-up tasks can't target the root agent".to_string(),
                         ));
                     }
+                    self.ensure_v2_agent_loaded(resume_config, target, /*parent*/ None)
+                        .await?;
+                    let receiver = self.runtime.ensure_agent_known(target)?;
+                    if mode == MessageDeliveryMode::TriggerTurn
+                        && receiver.agent_path.as_ref().is_some_and(AgentPath::is_root)
+                    {
+                        return Err(CodexErr::UnsupportedOperation(
+                            "Follow-up tasks can't target the root agent".to_string(),
+                        ));
+                    }
                     let receiver_path = receiver.agent_path.clone().ok_or_else(|| {
                         CodexErr::UnsupportedOperation(
                             "target agent is missing an agent_path".to_string(),
                         )
                     })?;
-                    self.ensure_v2_agent_loaded(resume_config, target, /*parent*/ None)
-                        .await?;
                     let communication = message.into_communication(author, receiver_path, mode);
                     let kind = match mode {
                         MessageDeliveryMode::QueueOnly => {

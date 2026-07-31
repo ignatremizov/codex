@@ -262,6 +262,7 @@ mod mcp;
 mod mcp_prewarm;
 mod mcp_prompt;
 pub(crate) use mcp_prompt::is_mcp_use_input;
+mod agent_status_observation;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
@@ -279,6 +280,10 @@ mod step_activation;
 pub(crate) mod step_context;
 pub(crate) mod step_settings;
 mod thread_settings;
+pub(crate) use agent_status_observation::AgentStatusObservationSuppressionGuard;
+pub(crate) use agent_status_observation::AgentStatusObservations;
+pub(crate) use agent_status_observation::AgentStatusRetirement;
+pub(crate) use agent_status_observation::AgentStatusSubscription;
 pub(crate) mod time_reminder;
 mod token_budget;
 mod transcript_publication;
@@ -1431,7 +1436,11 @@ impl Session {
     }
 
     pub(crate) fn mark_interrupted(&self) {
-        self.agent_status.send_replace(AgentStatus::Interrupted);
+        let _terminal_guard = self
+            .terminal_publication_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.replace_agent_status_locked(AgentStatus::Interrupted);
     }
 
     pub(crate) fn is_interrupted(&self) -> bool {
@@ -1637,7 +1646,7 @@ impl Session {
                     }),
                     Some(AgentStatus::Interrupted)
                 ) {
-                    self.agent_status.send_replace(AgentStatus::Interrupted);
+                    self.mark_interrupted();
                 }
                 let applied_reconstruction = self
                     .apply_rollout_reconstruction(&turn_context, &rollout_items)

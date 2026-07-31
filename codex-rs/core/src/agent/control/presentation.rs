@@ -65,6 +65,25 @@ struct ParentBinding {
     child_reference: String,
 }
 
+/// A future-only adoption route. It cannot reload or retarget an accepted terminal.
+pub(crate) struct CompletionParentBinding {
+    pub(crate) owner: LocalAgentControl,
+    pub(crate) parent: Weak<CodexThread>,
+}
+
+#[derive(Default)]
+pub(crate) struct CompletionParentState {
+    pub(crate) binding: Option<CompletionParentBinding>,
+    pub(crate) live_turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompletionParentAdoption {
+    Adopted,
+    AlreadyBoundToCaller,
+    OriginalParentPreserved,
+}
+
 /// Immutable presentation identity allocated with terminal acceptance, before context writes.
 pub(crate) struct CompletionPresentation {
     pub(crate) item: TurnItem,

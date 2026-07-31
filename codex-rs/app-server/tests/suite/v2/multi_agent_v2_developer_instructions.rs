@@ -490,6 +490,9 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
 enum WorkerResumeMode {
     ParentFollowup,
     Direct,
+    DirectFromConfig,
+    DirectWithoutInstructions,
+    DirectEmptyInstructions,
 }
 
 /// Live attachment protects subscribers; parent followups and direct cold resumes use distinct config owners.
@@ -534,6 +537,26 @@ enum WorkerResumeMode {
     Some(CHILD_INSTRUCTIONS), Some("custom"), ROLE_INSTRUCTIONS,
     ThreadHistoryMode::Paginated, WorkerResumeMode::Direct;
     "direct paginated cold resume applies caller overrides and restores usage"
+)]
+#[test_case(
+    Some(CHILD_INSTRUCTIONS), Some("custom"), ROLE_INSTRUCTIONS,
+    ThreadHistoryMode::Paginated, WorkerResumeMode::DirectFromConfig;
+    "direct cold resume preserves config map instruction overrides"
+)]
+#[test_case(
+    Some(CHILD_INSTRUCTIONS), Some("custom"), ROLE_INSTRUCTIONS,
+    ThreadHistoryMode::Legacy, WorkerResumeMode::DirectWithoutInstructions;
+    "direct legacy cold resume without an instruction override reapplies the role"
+)]
+#[test_case(
+    Some(CHILD_INSTRUCTIONS), Some("custom"), ROLE_INSTRUCTIONS,
+    ThreadHistoryMode::Paginated, WorkerResumeMode::DirectWithoutInstructions;
+    "direct paginated cold resume without an instruction override reapplies the role"
+)]
+#[test_case(
+    Some(CHILD_INSTRUCTIONS), Some("custom"), ROLE_INSTRUCTIONS,
+    ThreadHistoryMode::Legacy, WorkerResumeMode::DirectEmptyInstructions;
+    "direct cold resume accepts an explicit empty instruction override"
 )]
 #[tokio::test]
 async fn cold_resume_preserves_effective_developer_instructions_for_worker(
@@ -742,7 +765,7 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
             .await?;
         assert!(loaded.data.contains(&child_thread_id));
 
-        let child_resume_params = ThreadResumeParams {
+        let mut child_resume_params = ThreadResumeParams {
             thread_id: child_thread_id,
             model_provider: Some("mock_provider".to_string()),
             sandbox: Some(SandboxMode::DangerFullAccess),
@@ -750,17 +773,32 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
                 "model_providers.mock_provider.base_url".to_string(),
                 json!(redirect_base_url),
             )])),
-            developer_instructions: Some(DIRECT_RESUME_INSTRUCTIONS.to_string()),
+            developer_instructions: match resume_mode {
+                WorkerResumeMode::ParentFollowup | WorkerResumeMode::Direct => {
+                    Some(DIRECT_RESUME_INSTRUCTIONS.to_string())
+                }
+                WorkerResumeMode::DirectEmptyInstructions => Some(String::new()),
+                WorkerResumeMode::DirectFromConfig
+                | WorkerResumeMode::DirectWithoutInstructions => None,
+            },
             exclude_turns: true,
             ..Default::default()
         };
+        if matches!(resume_mode, WorkerResumeMode::DirectFromConfig) {
+            child_resume_params.config.get_or_insert_default().insert(
+                "developer_instructions".to_string(),
+                json!(DIRECT_RESUME_INSTRUCTIONS),
+            );
+        }
         let reattached: ThreadResumeResponse = app_server
             .request(|request_id| ClientRequest::ThreadResume {
                 request_id,
                 params: child_resume_params.clone(),
             })
             .await?;
-        assert_eq!(reattached, baseline);
+        let mut expected_reattached = baseline.clone();
+        expected_reattached.thread.updated_at = reattached.thread.updated_at;
+        assert_eq!(reattached, expected_reattached);
         let shutdown = timeout(READ_TIMEOUT, app_server.shutdown_gracefully()).await??;
         assert!(
             shutdown.success(),
@@ -841,6 +879,45 @@ features.shell_tool = false
         path: Some(baseline.thread.path.clone().expect("worker rollout path")),
         ..child_resume_params.clone()
     };
+    for params in [child_resume_params.clone(), child_by_path.clone()] {
+        let request_id = app_server.send_thread_resume_request(params).await?;
+        let error = timeout(
+            READ_TIMEOUT,
+            app_server.read_stream_until_error_message(RequestId::Integer(request_id)),
+        )
+        .await??;
+        assert_eq!(error.error.code, -32600);
+        assert!(
+            error
+                .error
+                .message
+                .contains(&format!("spawned V2 child {child_thread_id}"))
+        );
+        assert!(
+            error
+                .error
+                .message
+                .contains(&format!("direct parent {thread_id} is not loaded"))
+        );
+    }
+    let parent_resume_id = app_server
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.clone(),
+            // A later child followup inherits this value, not the parent's override provenance.
+            developer_instructions: Some(PARENT_INSTRUCTIONS.to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let parent_resume: ThreadResumeResponse =
+        timeout(READ_TIMEOUT, app_server.read_response(parent_resume_id)).await??;
+    assert_eq!(parent_resume.thread.id, thread_id);
+    let parent_loaded: ThreadLoadedListResponse = app_server
+        .request(|request_id| ClientRequest::ThreadLoadedList {
+            request_id,
+            params: ThreadLoadedListParams::default(),
+        })
+        .await?;
+    assert!(parent_loaded.data.contains(&thread_id));
     let stored_child: ThreadReadResponse = app_server
         .request(|request_id| ClientRequest::ThreadRead {
             request_id,
@@ -879,7 +956,7 @@ features.shell_tool = false
         state_db.upsert_thread(&metadata).await?;
     }
 
-    if matches!(resume_mode, WorkerResumeMode::Direct) {
+    if !matches!(resume_mode, WorkerResumeMode::ParentFollowup) {
         let is_child_usage = |notification: &JSONRPCNotification| {
             notification.method == "thread/tokenUsage/updated"
                 && notification.params.as_ref().is_some_and(|params| {
@@ -966,7 +1043,11 @@ features.shell_tool = false
                 params: ThreadLoadedListParams::default(),
             })
             .await?;
-        assert_eq!(loaded.data, vec![child_thread_id.clone()]);
+        let mut loaded_ids = loaded.data;
+        loaded_ids.sort();
+        let mut expected_loaded_ids = vec![thread_id.clone(), child_thread_id.clone()];
+        expected_loaded_ids.sort();
+        assert_eq!(loaded_ids, expected_loaded_ids);
         let direct_request = responses::mount_sse_once(
             &redirect_server,
             responses::sse(vec![
@@ -996,7 +1077,17 @@ features.shell_tool = false
                 .into_iter()
                 .filter(|text| instruction_markers.contains(&text.as_str()))
                 .collect::<Vec<_>>(),
-            vec![DIRECT_RESUME_INSTRUCTIONS.to_string()]
+            match resume_mode {
+                WorkerResumeMode::DirectWithoutInstructions => {
+                    vec![expected_developer_instructions.to_string()]
+                }
+                WorkerResumeMode::DirectEmptyInstructions => Vec::<String>::new(),
+                WorkerResumeMode::ParentFollowup
+                | WorkerResumeMode::Direct
+                | WorkerResumeMode::DirectFromConfig => {
+                    vec![DIRECT_RESUME_INSTRUCTIONS.to_string()]
+                }
+            }
         );
         // Once idle and unsubscribed, the child can be replaced using a new caller configuration.
         let unsubscribed: ThreadUnsubscribeResponse = app_server

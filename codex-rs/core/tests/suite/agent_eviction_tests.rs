@@ -235,12 +235,18 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
     timeout(Duration::from_secs(10), send).await??;
     assert_eq!(
         delivery.function_call_output_text("late-mail"),
-        Some(format!("agent with id {first_id} not found")),
+        Some(
+            "collab tool failed: restoration owner is busy; retry after its current lifecycle operation"
+                .to_string(),
+        ),
     );
+    // The cancelled spawn's owned worker still fences restoration through its root.
+    // Rejecting at that earlier boundary must not accept mail or keep the old child.
+    assert_eq!(queued_message_count(), 1);
     assert!(test.thread_manager.get_thread(first_id).await.is_err());
 
     // The cancelled caller leaves no reservation behind once teardown finishes.
-    mount_root_collaboration_call(
+    let replacement_result = mount_root_collaboration_call(
         &server,
         "retry replacement",
         "replacement-call",
@@ -250,11 +256,19 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
     .await;
     mount_completed_worker(&server, SECOND_TASK, "replacement-call").await;
     test.submit_turn("retry replacement").await?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            &replacement_result
+                .function_call_output_text("replacement-call")
+                .context("replacement must return its admission result")?,
+        )?,
+        json!({"task_name": "/root/replacement"}),
+    );
     eprintln!("queued-eviction: replacement spawn returned; awaiting its completion");
-    let replacement = test
-        .thread_manager
-        .get_thread(created.recv().await?)
-        .await?;
+    let replacement_id = timeout(Duration::from_secs(10), created.recv())
+        .await
+        .context("accepted replacement must publish its child")??;
+    let replacement = test.thread_manager.get_thread(replacement_id).await?;
     wait_for_event(&replacement, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

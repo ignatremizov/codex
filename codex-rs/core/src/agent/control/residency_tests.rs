@@ -39,7 +39,12 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start root thread");
-    let control = manager.agent_control();
+    let control = root
+        .thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.thread.session.session_id());
     let state = control
         .runtime
         .upgrade()
@@ -73,7 +78,7 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
 }
 
 #[tokio::test]
-async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
+async fn interrupted_v2_agent_reloads_after_residency_eviction() {
     let mut config = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.max_concurrent_threads_per_session = 2;
@@ -90,7 +95,12 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start root thread");
-    let control = manager.agent_control();
+    let control = root
+        .thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.thread.session.session_id());
     let state = control
         .runtime
         .upgrade()
@@ -121,20 +131,28 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
     second_slot.commit(second.thread_id);
     mark_thread_completed(second.thread.as_ref()).await;
 
-    let err = control
-        .ensure_v2_agent_loaded(config, first.thread_id, /*parent*/ None)
+    control
+        .ensure_v2_agent_loaded(config, first.thread_id, Some(Arc::clone(&root.thread)))
         .await
-        .expect_err("evicted interrupted agent should stay lost");
-    match err.details() {
-        CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
-        _ => panic!("expected ThreadNotFound, got {err:?}"),
-    }
+        .expect("evicted interrupted agent should reload from its persisted rollout");
 
     assert!(manager.get_thread(root.thread_id).await.is_ok());
-    assert!(manager.get_thread(second.thread_id).await.is_ok());
-    match manager.get_thread(first.thread_id).await {
+    let reloaded = manager
+        .get_thread(first.thread_id)
+        .await
+        .expect("the specialized child is reloaded");
+    assert!(!Arc::ptr_eq(&reloaded, &first.thread));
+    assert_eq!(reloaded.session_source, first.thread.session_source);
+    assert_eq!(
+        control.completion_parent_for_child(reloaded.session.presentation_id(), root.thread_id),
+        None,
+        "restoring a specialized source must not install ordinary worker completion delivery",
+    );
+    match manager.get_thread(second.thread_id).await {
         Err(err) => match err.details() {
-            CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
+            CodexErrorDetails::ThreadNotFound(thread_id) => {
+                assert_eq!(*thread_id, second.thread_id)
+            }
             _ => panic!("expected evicted thread to be missing, got {err:?}"),
         },
         Ok(_) => panic!("expected evicted thread to be missing"),
