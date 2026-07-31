@@ -502,7 +502,7 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
 
     // The resumed process has room for one resident V2 child. Preload the persisted open sibling,
     // then require Closed worker restoration itself to reserve capacity and evict that sibling.
-    write_v2_config(codex_home.path(), &server.uri(), /*max_threads*/ 1)?;
+    write_v2_config(codex_home.path(), &server.uri(), /*max_threads*/ 2)?;
     let resumed_workspace_root = TempDir::new()?;
     let mut resumed = TestAppServer::builder()
         .with_codex_home(codex_home.path())
