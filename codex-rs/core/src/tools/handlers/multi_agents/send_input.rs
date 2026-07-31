@@ -54,7 +54,9 @@ impl Handler {
             .local_agent_runtime
             .control(session.session_id());
         let receiver_agent = local_agent_control.get_agent_metadata(receiver_thread_id);
-        let residency_pin = if receiver_agent.is_some() {
+        let residency_pin = if receiver_agent.is_some()
+            && session.multi_agent_version() == Some(MultiAgentVersion::V2)
+        {
             let resume_config = build_agent_resume_config(turn.as_ref())
                 .map_err(FunctionCallError::RespondToModel)?;
             local_agent_control
@@ -64,7 +66,9 @@ impl Handler {
         } else {
             None
         };
-        let receiver_agent = receiver_agent.unwrap_or_default();
+        let receiver_agent = local_agent_control
+            .get_agent_metadata(receiver_thread_id)
+            .unwrap_or_default();
         if args.interrupt {
             session
                 .services

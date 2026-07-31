@@ -38,6 +38,12 @@ impl ThreadManagerState {
         thread: Arc<CodexThread>,
         membership: &AgentTreeMembership,
     ) -> CodexResult<ThreadEvictionOutcome> {
+        let Ok(lifecycle_guard) = self
+            .v2_spawn_resume_lock(thread.session.thread_id())
+            .try_lock_owned()
+        else {
+            return Ok(ThreadEvictionOutcome::Busy);
+        };
         let Ok(residency_guard) = Arc::clone(&thread.residency_gate).try_write_owned() else {
             return Ok(ThreadEvictionOutcome::Busy);
         };
@@ -58,8 +64,10 @@ impl ThreadManagerState {
             .into_teardown_guard("resident_eviction", Some(thread_id));
         // Once shutdown is submitted, cancellation cannot release delivery or capacity early.
         tokio::spawn(async move {
+            let _lifecycle_guard = lifecycle_guard;
             let _residency_guard = residency_guard;
             thread.ensure_rollout_materialized().await;
+            let status = thread.agent_status().await;
             let disarm = thread.session.disarm_terminal_presentation();
             if let Err(err) = thread.shutdown_and_wait().await {
                 teardown.record_shutdown_failure("stop_resident", CodexErrKind::from(&err).into());
@@ -98,9 +106,12 @@ impl ThreadManagerState {
             }
             runtime
                 .registry
-                .save_evicted_environments(thread_id, environments);
+                .save_evicted_environments(thread_id, environments, status);
             // Eviction is a residency handoff, not a terminal child result.
             disarm.commit();
+            thread.session.retire_agent_status_observers(
+                crate::session::AgentStatusRetirement::ResidencyEviction,
+            );
             thread.session.prepare_for_thread_removal();
             let removed = threads.remove(&thread_id).is_some();
             runtime.residency.remove(thread_id);
@@ -154,6 +165,13 @@ impl LocalAgentControl {
         membership: &AgentTreeMembership,
         protected_thread_id: Option<ThreadId>,
     ) -> CodexResult<V2ResidencySlot> {
+        if let Some(thread_id) = protected_thread_id {
+            let threads = state.threads.read().await;
+            if !threads.contains_key(&thread_id) {
+                // Re-publication cannot race pruning this stale protected residency entry.
+                self.runtime.residency.remove(thread_id);
+            }
+        }
         let capacity = config
             .effective_agent_max_threads(MultiAgentVersion::V2)
             .unwrap_or(usize::MAX);
@@ -244,6 +262,13 @@ impl V2Residency {
             if Some(candidate_thread_id) == protected_thread_id {
                 continue;
             }
+            // Restoration also owns this boundary. Never wait on a nested parent's gate.
+            let Ok(candidate_guard) = manager
+                .v2_spawn_resume_lock(candidate_thread_id)
+                .try_lock_owned()
+            else {
+                continue;
+            };
             let candidate_thread = {
                 let threads = manager.threads.read().await;
                 match threads.get(&candidate_thread_id) {
@@ -262,6 +287,8 @@ impl V2Residency {
             ) {
                 continue;
             }
+            // The eviction worker takes and retains its own lifecycle reservation.
+            drop(candidate_guard);
             match manager
                 .try_evict_v2_thread(candidate_thread, membership)
                 .await

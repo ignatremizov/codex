@@ -1,6 +1,8 @@
 //! Exposes local status changes as shared agent snapshots instead of Tokio receivers.
 //! Subscriptions retain no runtime handle and preserve the watch channel's coalescing.
 
+#![cfg(test)]
+
 use super::LocalAgentControl;
 use crate::agent::api::AgentInfo;
 use crate::agent::types::LiveAgent;

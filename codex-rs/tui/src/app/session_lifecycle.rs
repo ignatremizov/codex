@@ -242,7 +242,8 @@ impl App {
         })
     }
 
-    /// Cache metadata in both the picker and transcript. Callers refresh the UI after a batch.
+    /// Merge cached picker and transcript metadata. Callers refresh the UI after a batch.
+    /// Missing nickname or role values retain identity learned from an earlier thread read.
     pub(super) fn upsert_agent_picker_thread(
         &mut self,
         thread_id: ThreadId,
@@ -250,13 +251,21 @@ impl App {
         agent_role: Option<String>,
         is_closed: bool,
     ) {
-        self.chat_widget.set_collab_agent_metadata(
-            thread_id,
-            agent_nickname.clone(),
-            agent_role.clone(),
-        );
+        if is_closed
+            && let Some(channel) = self.thread_event_channels.get_mut(&thread_id)
+            && channel.attachment() != ThreadEventAttachment::ExternalWriter
+        {
+            channel.mark_replay_only();
+        }
         self.agent_navigation
             .upsert(thread_id, agent_nickname, agent_role, is_closed);
+        if let Some(entry) = self.agent_navigation.get(&thread_id) {
+            self.chat_widget.set_collab_agent_metadata(
+                thread_id,
+                entry.agent_nickname.clone(),
+                entry.agent_role.clone(),
+            );
+        }
     }
 
     pub(super) fn sync_agent_picker_thread(&mut self, thread_id: ThreadId) {
@@ -272,6 +281,11 @@ impl App {
     /// Closing a thread is not the same as removing it: users can still inspect finished agent
     /// transcripts, and the stable next/previous traversal order should not collapse around them.
     pub(super) fn mark_agent_picker_thread_closed(&mut self, thread_id: ThreadId) {
+        if let Some(channel) = self.thread_event_channels.get_mut(&thread_id)
+            && channel.attachment() != ThreadEventAttachment::ExternalWriter
+        {
+            channel.mark_replay_only();
+        }
         self.agent_navigation.mark_closed(thread_id);
         self.sync_active_agent_label();
     }
