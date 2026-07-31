@@ -99,6 +99,18 @@ fn request_has_input_type(request: &wiremock::Request, input_type: &str) -> bool
         })
 }
 
+fn request_has_function_call_output(request: &wiremock::Request, call_id: &str) -> bool {
+    decoded_body(request)
+        .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+        .and_then(|body| body.get("input").and_then(Value::as_array).cloned())
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+            })
+        })
+}
+
 async fn mount_root_collaboration_call(
     server: &wiremock::MockServer,
     prompt: &'static str,
@@ -173,6 +185,18 @@ fn configure_multi_agent_v2_with_role(
     config.multi_agent_v2.subagent_developer_instructions =
         Some(SUBAGENT_DEVELOPER_INSTRUCTIONS.to_string());
     config.multi_agent_v2.max_concurrent_threads_per_session = 3;
+    let user_config_path = config.codex_home.join("config.toml");
+    let user_config = toml::from_str(
+        r#"
+[features.multi_agent_v2]
+message_delivery = "plaintext"
+"#,
+    )
+    .expect("plaintext multi-agent config should parse");
+    config.config_layer_stack = config
+        .config_layer_stack
+        .with_user_config(&user_config_path, user_config)
+        .expect("plaintext multi-agent config should be valid");
     let role_path = config.codex_home.join("durable-worker-role.toml");
     std::fs::write(
         &role_path,
@@ -235,12 +259,30 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         ]),
     )
     .await;
-    mount_sse_once_match(
+    let grandchild_request = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
             body_contains(request, NESTED_TASK)
                 && request_has_input_type(request, "agent_message")
-                && !body_contains(request, NESTED_CALL_ID)
+                && !request_has_function_call_output(request, NESTED_CALL_ID)
+        },
+        sse(vec![ev_completed("resp-parent-turn-assistant")]),
+    )
+    .await;
+    let nested_call_output_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            request_has_function_call_output(request, NESTED_CALL_ID)
+                && request_has_input_type(request, "agent_message")
+        },
+        sse(vec![ev_completed("resp-parent-turn-assistant")]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            request_has_function_call_output(request, QUEUE_CALL_ID)
+                && !request_has_input_type(request, "agent_message")
         },
         sse(vec![ev_completed("resp-parent-turn-assistant")]),
     )
@@ -319,7 +361,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     })
     .await;
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
     let worker_thread_id = loop {
         if let Some(thread_id) = initial_child_request
             .requests()
@@ -342,10 +384,62 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         sleep(Duration::from_millis(10)).await;
     };
     let worker_thread = initial.thread_manager.get_thread(worker_thread_id).await?;
-    wait_for_event(worker_thread.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
+    let grandchild_thread_id = loop {
+        if let Some(thread_id) = grandchild_request
+            .requests()
+            .into_iter()
+            .find_map(|request| {
+                let body = request.body_json();
+                if body["client_metadata"]["x-codex-parent-thread-id"] != json!(worker_thread_id) {
+                    return None;
+                }
+                body["client_metadata"]["thread_id"]
+                    .as_str()
+                    .and_then(|thread_id| codex_protocol::ThreadId::from_string(thread_id).ok())
+            })
+        {
+            break thread_id;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out waiting for spawned grandchild; nested spawn result: {:?}",
+                nested_call_output_request.function_call_output_text(NESTED_CALL_ID)
+            );
+        }
+        sleep(Duration::from_millis(10)).await;
+    };
+    let grandchild_thread = initial
+        .thread_manager
+        .get_thread(grandchild_thread_id)
+        .await
+        .expect("spawned grandchild should remain resident");
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
+    loop {
+        if matches!(
+            worker_thread.agent_status().await,
+            AgentStatus::Completed(_)
+        ) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for worker completion");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
+    loop {
+        if matches!(
+            grandchild_thread.agent_status().await,
+            AgentStatus::Completed(_)
+        ) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for grandchild completion");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
     assert!(initial_child_request.requests().iter().any(|request| {
         request.body_contains_text(INITIAL_TASK)
             && request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS)
@@ -411,7 +505,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
             .list_thread_ids()
             .await
             .into_iter()
-            .find(|id| ![root_thread_id, worker_thread_id].contains(id))
+            .find(|id| ![root_thread_id, worker_thread_id, grandchild_thread_id].contains(id))
         {
             break thread_id;
         }
@@ -439,10 +533,22 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         sleep(Duration::from_millis(10)).await;
     }
     worker_thread.flush_rollout().await?;
+    grandchild_thread.flush_rollout().await?;
     sibling_thread.flush_rollout().await?;
     initial.codex.flush_rollout().await?;
+    for thread in [&grandchild_thread, &worker_thread, &sibling_thread] {
+        thread.submit(Op::Shutdown).await?;
+        tokio::time::timeout(Duration::from_secs(5), thread.wait_until_terminated()).await?;
+    }
+    initial.codex.submit(Op::Shutdown).await?;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        initial.codex.wait_until_terminated(),
+    )
+    .await?;
     drop(worker_thread);
     drop(worker_completion);
+    drop(grandchild_thread);
     drop(sibling_thread);
     drop(initial);
 
@@ -642,6 +748,7 @@ openai_base_url = "{redirected_base_url}"
     let queue_root = body_for(QUEUE_PROMPT, root_thread_id);
     let followup_root = body_for(FOLLOWUP_PROMPT, root_thread_id);
     let initial_child = body_for(INITIAL_TASK, worker_thread_id);
+    let grandchild = body_for(NESTED_TASK, grandchild_thread_id);
     let followup_child = body_for(FOLLOWUP_TASK, worker_thread_id);
     let roster = queue_root["input"]
         .as_array()

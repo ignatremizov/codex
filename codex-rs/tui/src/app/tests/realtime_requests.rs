@@ -1644,6 +1644,95 @@ async fn delegated_final_speech_reaches_app_server_once_and_stale_speech_is_reje
 }
 
 #[tokio::test]
+async fn replay_only_resume_failure_restores_undelivered_speech() -> Result<()> {
+    let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+    let (mut server, requests, proxy) = start_recording_realtime_speech_app_server(
+        &app.config,
+        RealtimeRequestBehavior::AcceptSpeech,
+    )
+    .await?;
+    let thread_id = ThreadId::new();
+    let turn_id = "closed-voice-turn";
+    app.active_thread_id = Some(thread_id);
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(thread_id, app.config.cwd.to_path_buf()));
+    crate::chatwidget::activate_voice_for_thread(&mut app.chat_widget, thread_id);
+    while ops.try_recv().is_ok() {}
+    send_item(
+        &mut app,
+        thread_id,
+        turn_id,
+        test_user_message(
+            "voice-input",
+            "<realtime_delegation><input>question</input></realtime_delegation>",
+        ),
+        ItemEventKind::Started,
+    );
+    let answer = test_agent_message("voice-final", "Preserve this undelivered answer.");
+    send_item(
+        &mut app,
+        thread_id,
+        turn_id,
+        answer.clone(),
+        ItemEventKind::Started,
+    );
+    send_item(
+        &mut app,
+        thread_id,
+        turn_id,
+        answer.clone(),
+        ItemEventKind::Completed,
+    );
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            thread_id: thread_id.to_string(),
+            turn: Turn {
+                id: turn_id.into(),
+                items: vec![answer],
+                items_view: TurnItemsView::Summary,
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+        }),
+    )));
+    let speech = ops.try_recv()?;
+    let AppCommand::RealtimeConversationSpeech { delivery_id, .. } = &speech else {
+        panic!("expected pending speech");
+    };
+    let delivery_id = *delivery_id;
+    assert!(app.chat_widget.has_pending_realtime_speech(delivery_id));
+    app.ensure_thread_channel(thread_id).mark_replay_only();
+    while events.try_recv().is_ok() {}
+
+    app.submit_thread_op(&mut server, thread_id, speech.clone())
+        .await?;
+    assert!(!app.chat_widget.has_pending_realtime_speech(delivery_id));
+    assert_eq!(recorded_params(&requests, "thread/resume").len(), 1);
+    assert!(recorded_params(&requests, "thread/realtime/appendSpeech").is_empty());
+    let rendered = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 100)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Preserve this undelivered answer."));
+    assert!(rendered.contains("Failed to resume agent thread"));
+    // The late duplicate is no longer pending; it must not revive the thread again.
+    app.submit_thread_op(&mut server, thread_id, speech).await?;
+    assert_eq!(recorded_params(&requests, "thread/resume").len(), 1);
+    assert!(recorded_params(&requests, "thread/realtime/appendSpeech").is_empty());
+    server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn rejected_voice_setting_preserves_current_selection() -> Result<()> {
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     let (mut app_server, _requests, proxy) = start_recording_remote_app_server(&app.config).await?;

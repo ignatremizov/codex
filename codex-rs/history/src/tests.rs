@@ -879,3 +879,76 @@ fn multi_agent_version_uses_newest_present_session_meta_value() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn resumed_identity_uses_latest_exact_metadata_without_borrowing_foreign_ownership() {
+    let child = ThreadId::new();
+    let parent = ThreadId::new();
+    let source = SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+        parent_thread_id: parent,
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let metadata = |id, source, parent_thread_id, version| {
+        RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                id,
+                source,
+                parent_thread_id,
+                multi_agent_version: Some(version),
+                ..Default::default()
+            },
+            git: None,
+        })
+    };
+    let resumed = |history| {
+        InitialHistory::Resumed(ResumedHistory {
+            conversation_id: child,
+            history: Arc::new(history),
+            rollout_path: None,
+        })
+    };
+    let foreign = metadata(parent, SessionSource::Exec, None, MultiAgentVersion::V1);
+    let exact = metadata(child, source.clone(), Some(parent), MultiAgentVersion::V2);
+    let history = resumed(vec![
+        metadata(child, SessionSource::Exec, None, MultiAgentVersion::V1),
+        exact.clone(),
+        foreign.clone(),
+    ]);
+    assert_eq!(
+        (
+            history.get_resumed_session_sources(),
+            history.get_resumed_thread_source(),
+            history.get_resumed_parent_thread_id(),
+            history.get_multi_agent_version(),
+        ),
+        (
+            Some((source, None)),
+            None,
+            Some(parent),
+            Some(MultiAgentVersion::V2)
+        ),
+    );
+    let history = resumed(vec![
+        exact,
+        metadata(child, SessionSource::Exec, None, MultiAgentVersion::V1),
+        foreign.clone(),
+    ]);
+    assert_eq!(
+        (
+            history.get_resumed_session_sources(),
+            history.get_resumed_parent_thread_id()
+        ),
+        (Some((SessionSource::Exec, None)), None),
+    );
+    let history = resumed(vec![foreign]);
+    assert_eq!(
+        (
+            history.get_resumed_session_sources(),
+            history.get_resumed_parent_thread_id()
+        ),
+        (None, None),
+    );
+}

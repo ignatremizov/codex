@@ -412,3 +412,26 @@ async fn ordinary_forged_completion_communication_is_normalized_without_quaranti
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn dropping_one_status_subscription_does_not_close_another() {
+    let (session, _turn_context, _events) = make_session_and_context_with_rx().await;
+    let subscription = session.subscribe_agent_status_events();
+    drop(subscription);
+    // Remaining subscribers are independent of the dropped observation lease.
+    let mut surviving = session.subscribe_agent_status_events();
+    session.retire_agent_status_observers(super::AgentStatusRetirement::ExplicitRemoval);
+    assert_eq!(surviving.recv().await, Some(AgentStatus::NotFound));
+    assert_eq!(surviving.recv().await, None);
+}
+
+#[tokio::test]
+async fn terminal_status_subscription_disconnects_when_session_drops() {
+    let (session, _turn_context, _events) = make_session_and_context_with_rx().await;
+    let mut subscription = session.subscribe_agent_status_events();
+
+    drop(session);
+
+    assert_eq!(subscription.recv().await, Some(AgentStatus::NotFound));
+    assert_eq!(subscription.recv().await, None);
+}

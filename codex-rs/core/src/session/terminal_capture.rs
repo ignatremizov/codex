@@ -1,6 +1,10 @@
 use super::*;
 use crate::agent::control::AgentTerminalPresentation;
+use crate::agent::control::CompletionParentAdoption;
+use crate::agent::control::CompletionParentBinding;
+use crate::agent::control::LocalAgentControl;
 use crate::agent::control::TerminalPresentationDelivery;
+use crate::codex_thread::CodexThread;
 
 impl Session {
     pub(super) fn publish_agent_status_from_event(&self, event: &EventMsg) {
@@ -11,10 +15,132 @@ impl Session {
             .terminal_publication_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let EventMsg::TurnStarted(event) = event {
+            self.completion_parent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .live_turn_id = Some(event.turn_id.clone());
+        }
         let current_status = self.agent_status.borrow().clone();
         if matches!(&status, AgentStatus::Running) || !is_final(&current_status) {
-            self.agent_status.send_replace(status);
+            self.replace_agent_status_locked(status);
         }
+        if matches!(
+            event,
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) | EventMsg::ShutdownComplete
+        ) || agent_status_from_event(event)
+            .as_ref()
+            .is_some_and(is_final)
+        {
+            self.completion_parent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .live_turn_id = None;
+        }
+    }
+
+    pub(crate) fn adopt_v1_completion_parent(
+        &self,
+        owner: LocalAgentControl,
+        parent: &Arc<CodexThread>,
+    ) -> CodexResult<(
+        CompletionParentAdoption,
+        Option<crate::agent::control::CompletionWatcherRegistration>,
+    )> {
+        let _terminal_guard = self
+            .terminal_publication_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.check_history_publication()?;
+        parent.session.check_history_publication()?;
+        parent.session.submission_admission.check_ready()?;
+        let _adoption_admission = parent
+            .session
+            .submission_admission
+            .try_accept_completion_delivery()
+            .ok_or_else(|| CodexErr::InvalidRequest("completion parent is closing".to_string()))?;
+        let mut state = self
+            .completion_parent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(binding) = &state.binding {
+            let original = binding.parent.upgrade().ok_or_else(|| {
+                CodexErr::InvalidRequest("original completion parent is no longer live".to_string())
+            })?;
+            original.session.check_history_publication()?;
+            original.session.submission_admission.check_ready()?;
+            let _original_admission = original
+                .session
+                .submission_admission
+                .try_accept_completion_delivery()
+                .ok_or_else(|| {
+                    CodexErr::InvalidRequest("original completion parent is closing".to_string())
+                })?;
+            return Ok((
+                if Arc::ptr_eq(&original, parent) {
+                    CompletionParentAdoption::AlreadyBoundToCaller
+                } else {
+                    CompletionParentAdoption::OriginalParentPreserved
+                },
+                None,
+            ));
+        }
+        if self.spawn_parent_thread_id.is_some() {
+            return Err(CodexErr::InvalidRequest(
+                "native child completion ownership must be restored through its original parent"
+                    .to_string(),
+            ));
+        }
+        let registration = owner
+            .register_completion_watcher_with_parent(
+                self.presentation_id(),
+                parent,
+                &self.thread_id.to_string(),
+            )
+            .ok_or_else(|| {
+                CodexErr::InvalidRequest(
+                    "completion ownership already exists outside the adoption binding".to_string(),
+                )
+            })?;
+        state.binding = Some(CompletionParentBinding {
+            owner,
+            parent: Arc::downgrade(parent),
+        });
+        Ok((CompletionParentAdoption::Adopted, Some(registration)))
+    }
+
+    /// Called under terminal_publication_lock. A cold status is never a live turn token.
+    pub(super) fn capture_adopted_terminal_locked(&self, status: &AgentStatus) {
+        if self.spawn_parent_thread_id.is_some()
+            || !self
+                .terminal_presentation_armed
+                .load(std::sync::atomic::Ordering::Acquire)
+            || is_final(&self.agent_status.borrow())
+        {
+            return;
+        }
+        let mut state = self
+            .completion_parent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(turn_id) = state.live_turn_id.as_deref() else {
+            return;
+        };
+        let Some(binding) = &state.binding else {
+            return;
+        };
+        let Some(parent) = binding.parent.upgrade() else {
+            return;
+        };
+        let _ = binding.owner.record_agent_terminal_presentation(
+            parent.session.presentation_id(),
+            self.presentation_id(),
+            turn_id,
+            status.clone(),
+            TerminalPresentationDelivery::Watcher,
+            || self.replace_agent_status_locked(status.clone()),
+        );
+        state.live_turn_id = None;
     }
 
     fn record_sub_agent_terminal_presentation(
@@ -47,7 +173,7 @@ impl Session {
         self.services
             .agent_control
             .record_agent_terminal_presentation(parent, child, turn_id, status, delivery, || {
-                self.agent_status.send_replace(published_status);
+                self.replace_agent_status_locked(published_status);
             })
     }
 
@@ -56,6 +182,27 @@ impl Session {
         turn_context: &TurnContext,
         event: &EventMsg,
     ) -> Option<AgentTerminalPresentation> {
+        if self.spawn_parent_thread_id.is_none() {
+            if let Some(status) = agent_status_from_event(event).filter(is_final) {
+                let _terminal_guard = self
+                    .terminal_publication_lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // Only a real TurnStarted in this runtime arms adoption. The current
+                // TurnContext confirms its identity, rather than inventing a turn on resume.
+                let matches_turn = self
+                    .completion_parent
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .live_turn_id
+                    .as_deref()
+                    == Some(turn_context.sub_id.as_str());
+                if matches_turn {
+                    self.capture_adopted_terminal_locked(&status);
+                }
+            }
+            return None;
+        }
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             agent_path,
@@ -98,6 +245,22 @@ impl Session {
             return;
         };
         let Some(parent_thread_id) = self.spawn_parent_thread_id else {
+            let _terminal_guard = self
+                .terminal_publication_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let matches_turn = self
+                .completion_parent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .live_turn_id
+                .as_ref()
+                .is_some_and(|turn_id| {
+                    *turn_id == event.id || matches!(&event.msg, EventMsg::ShutdownComplete)
+                });
+            if matches_turn {
+                self.capture_adopted_terminal_locked(&status);
+            }
             return;
         };
         let generated_turn_id;

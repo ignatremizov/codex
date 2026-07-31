@@ -320,6 +320,7 @@ fn item_to_cells(
                     &text,
                     phase.as_ref(),
                     agent_preview_line_limits.response,
+                    |_| crate::multi_agents::AgentMetadata::default(),
                 )
             {
                 cells.push(Arc::new(cell));

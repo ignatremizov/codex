@@ -7057,6 +7057,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
+        agent_status_observations: Default::default(),
+        completion_parent: std::sync::Mutex::new(Default::default()),
         state: Arc::new(Mutex::new(state)),
         thread_settings_persistence: Arc::new(Semaphore::new(/*permits*/ 1)),
         history_publication: Default::default(),
@@ -7483,18 +7485,26 @@ async fn resumed_subagent_session_restores_persisted_session_id() {
         agent_nickname: None,
         agent_role: None,
     });
+    let metadata = |id, session_id| {
+        RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                session_id,
+                id,
+                source: session_source.clone(),
+                ..SessionMeta::default()
+            },
+            git: None,
+        })
+    };
+    let foreign_thread_id = ThreadId::new();
     let (session, rx_event) = make_session_with_history_source_and_agent_control_and_rx(
         InitialHistory::Resumed(ResumedHistory {
             conversation_id: thread_id,
-            history: Arc::new(vec![RolloutItem::SessionMeta(SessionMetaLine {
-                meta: SessionMeta {
-                    session_id: parent_session_id,
-                    id: thread_id,
-                    source: session_source.clone(),
-                    ..SessionMeta::default()
-                },
-                git: None,
-            })]),
+            history: Arc::new(vec![
+                metadata(thread_id, SessionId::from(ThreadId::new())),
+                metadata(thread_id, parent_session_id),
+                metadata(foreign_thread_id, SessionId::from(foreign_thread_id)),
+            ]),
             rollout_path: None,
         }),
         session_source,
@@ -9340,6 +9350,8 @@ where
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
+        agent_status_observations: Default::default(),
+        completion_parent: std::sync::Mutex::new(Default::default()),
         state: Arc::new(Mutex::new(state)),
         thread_settings_persistence: Arc::new(Semaphore::new(/*permits*/ 1)),
         history_publication: Default::default(),

@@ -763,7 +763,9 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
                 params: child_resume_params.clone(),
             })
             .await?;
-        assert_eq!(reattached, baseline);
+        let mut expected_reattached = baseline.clone();
+        expected_reattached.thread.updated_at = reattached.thread.updated_at;
+        assert_eq!(reattached, expected_reattached);
         let shutdown = timeout(READ_TIMEOUT, app_server.shutdown_gracefully()).await??;
         assert!(
             shutdown.success(),
@@ -845,6 +847,43 @@ features.shell_tool = false
         path: Some(baseline.thread.path.clone().expect("worker rollout path")),
         ..child_resume_params.clone()
     };
+    for params in [child_resume_params.clone(), child_by_path.clone()] {
+        let request_id = app_server.send_thread_resume_request(params).await?;
+        let error = timeout(
+            READ_TIMEOUT,
+            app_server.read_stream_until_error_message(RequestId::Integer(request_id)),
+        )
+        .await??;
+        assert_eq!(error.error.code, -32600);
+        assert!(
+            error
+                .error
+                .message
+                .contains(&format!("spawned V2 child {child_thread_id}"))
+        );
+        assert!(
+            error
+                .error
+                .message
+                .contains(&format!("direct parent {thread_id} is not loaded"))
+        );
+    }
+    let parent_resume_id = app_server
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let parent_resume: ThreadResumeResponse =
+        timeout(READ_TIMEOUT, app_server.read_response(parent_resume_id)).await??;
+    assert_eq!(parent_resume.thread.id, thread_id);
+    let parent_loaded: ThreadLoadedListResponse = app_server
+        .request(|request_id| ClientRequest::ThreadLoadedList {
+            request_id,
+            params: ThreadLoadedListParams::default(),
+        })
+        .await?;
+    assert!(parent_loaded.data.contains(&thread_id));
     let stored_child: ThreadReadResponse = app_server
         .request(|request_id| ClientRequest::ThreadRead {
             request_id,
@@ -970,7 +1009,11 @@ features.shell_tool = false
                 params: ThreadLoadedListParams::default(),
             })
             .await?;
-        assert_eq!(loaded.data, vec![child_thread_id.clone()]);
+        let mut loaded_ids = loaded.data;
+        loaded_ids.sort();
+        let mut expected_loaded_ids = vec![thread_id.clone(), child_thread_id.clone()];
+        expected_loaded_ids.sort();
+        assert_eq!(loaded_ids, expected_loaded_ids);
         let direct_request = responses::mount_sse_once(
             &redirect_server,
             responses::sse(vec![

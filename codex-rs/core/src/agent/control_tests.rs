@@ -83,6 +83,7 @@ use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::InMemoryThreadStore;
+use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
 use codex_thread_store::PersistContext;
@@ -872,14 +873,20 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
 }
 
 #[tokio::test]
-async fn ensure_v2_child_loaded_preserves_evicted_parent_authority() {
+async fn ensure_v2_child_loaded_preserves_live_parent_authority() {
     check_v2_agent_reload(V2ReloadRoute::NestedParent).await;
+}
+
+#[tokio::test]
+async fn ensure_v2_child_loaded_rejects_insufficient_capacity_without_evicting_parent() {
+    check_v2_agent_reload(V2ReloadRoute::NestedParentAtCapacity).await;
 }
 
 #[derive(Clone, Copy)]
 enum V2ReloadRoute {
     Sender,
     NestedParent,
+    NestedParentAtCapacity,
 }
 
 async fn spawn_v2_reload_test_child(
@@ -931,13 +938,13 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
             client_mcp_extensions: client_mcp_extensions.clone(),
             user_instructions: Some(LoadedUserInstructions {
                 instructions: Some(Instructions {
-                    text: "global instructions survive parent eviction".to_string(),
+                    text: "global instructions survive child restoration".to_string(),
                     source: None,
                 }),
                 warnings: Vec::new(),
             }),
             thread_instructions_provider: Some(Arc::new(TestThreadInstructionsProvider {
-                text: "thread instructions survive parent eviction".into(),
+                text: "thread instructions survive child restoration".into(),
                 shared: false,
             })),
             ..StartThreadOptions::new(harness.config.clone())
@@ -947,7 +954,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
     let control = root.thread.session.services.agent_control.clone();
     let parent_thread = match route {
         V2ReloadRoute::Sender => root.thread,
-        V2ReloadRoute::NestedParent => {
+        V2ReloadRoute::NestedParent | V2ReloadRoute::NestedParentAtCapacity => {
             let parent = spawn_v2_reload_test_child(
                 &control,
                 harness.config.clone(),
@@ -1030,13 +1037,54 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .cloned()
         .expect("ollama provider should be configured");
 
+    let canonical_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: Some(agent_path.clone()),
+        agent_nickname: Some("canonical-worker".to_string()),
+        agent_role: None,
+    });
+    let original_source = child_thread.session_source.clone();
     let mut parent_turn = parent_thread.session.new_default_turn().await;
     match route {
-        V2ReloadRoute::Sender => control
-            .ensure_v2_agent_loaded(sender_config, spawned_agent.thread_id, /*parent*/ None)
-            .await
-            .expect("known v2 agent should reload"),
-        V2ReloadRoute::NestedParent => {
+        V2ReloadRoute::Sender => {
+            let mut history = control
+                .upgrade()
+                .expect("manager")
+                .load_latest_model_context(LoadThreadHistoryParams {
+                    thread_id: spawned_agent.thread_id,
+                    include_archived: true,
+                })
+                .await
+                .expect("canonical child history")
+                .items;
+            let latest = history
+                .iter_mut()
+                .rev()
+                .find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta) if meta.meta.id == spawned_agent.thread_id => {
+                        Some(meta)
+                    }
+                    _ => None,
+                })
+                .expect("exact child metadata");
+            latest.meta.source = canonical_source.clone();
+            control
+                .ensure_v2_agent_loaded_from_history(
+                    sender_config,
+                    spawned_agent.thread_id,
+                    canonical_source.clone(),
+                    InitialHistory::Resumed(ResumedHistory {
+                        conversation_id: spawned_agent.thread_id,
+                        history: Arc::new(history),
+                        rollout_path: stored_child.rollout_path.clone(),
+                    }),
+                    client_mcp_extensions.clone(),
+                )
+                .await
+                .expect("known v2 agent should reload");
+        }
+        V2ReloadRoute::NestedParent | V2ReloadRoute::NestedParentAtCapacity => {
             let environment = parent_turn
                 .initial_environments
                 .primary()
@@ -1064,15 +1112,99 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
                 .input_queue
                 .drain_mailbox_input_items()
                 .await;
+            if matches!(route, V2ReloadRoute::NestedParentAtCapacity) {
+                let state = control.upgrade().expect("manager");
+                let history = state
+                    .load_latest_model_context(LoadThreadHistoryParams {
+                        thread_id: spawned_agent.thread_id,
+                        include_archived: true,
+                    })
+                    .await
+                    .expect("stored child history");
+                let metadata_snapshot = || {
+                    control
+                        .get_agent_metadata(spawned_agent.thread_id)
+                        .map(|metadata| {
+                            (
+                                metadata.agent_id,
+                                metadata.agent_path,
+                                metadata.agent_nickname,
+                                metadata.agent_role,
+                                metadata.last_task_message,
+                            )
+                        })
+                };
+                let original_metadata = metadata_snapshot();
+                let graph = state.agent_graph_store().expect("persisted graph");
+                let original_children = graph
+                    .list_thread_spawn_children(
+                        parent_thread_id,
+                        Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+                    )
+                    .await
+                    .expect("original open children");
+                let mut capacity_config = parent_turn.config.as_ref().clone();
+                capacity_config
+                    .multi_agent_v2
+                    .max_concurrent_threads_per_session = 2;
+                let error = control
+                    .ensure_v2_agent_loaded_from_history(
+                        capacity_config,
+                        spawned_agent.thread_id,
+                        original_source.clone(),
+                        InitialHistory::Resumed(ResumedHistory {
+                            conversation_id: spawned_agent.thread_id,
+                            history: Arc::new(history.items),
+                            rollout_path: stored_child.rollout_path.clone(),
+                        }),
+                        client_mcp_extensions.clone(),
+                    )
+                    .await
+                    .err()
+                    .expect("insufficient capacity must fail");
+                assert!(matches!(
+                    error.details(),
+                    CodexErrorDetails::AgentLimitReached { .. }
+                ));
+                assert!(
+                    harness
+                        .manager
+                        .get_thread(spawned_agent.thread_id)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(metadata_snapshot(), original_metadata);
+                assert_eq!(
+                    graph
+                        .list_thread_spawn_children(
+                            parent_thread_id,
+                            Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+                        )
+                        .await
+                        .expect("unchanged open children"),
+                    original_children,
+                );
+            }
             harness
                 .manager
                 .ensure_multi_agent_v2_child_loaded(spawned_agent.thread_id)
                 .await
                 .expect("known child should reload through its parent");
             parent_turn = parent_thread.session.new_default_turn().await;
-            assert!(harness.manager.get_thread(parent_thread_id).await.is_err());
+            assert!(Arc::ptr_eq(
+                &harness
+                    .manager
+                    .get_thread(parent_thread_id)
+                    .await
+                    .expect("parent stays live"),
+                &parent_thread,
+            ));
         }
     }
+    let expected_source = match route {
+        V2ReloadRoute::Sender => canonical_source,
+        V2ReloadRoute::NestedParent | V2ReloadRoute::NestedParentAtCapacity => original_source,
+    };
     let reloaded_child = harness
         .manager
         .get_thread(spawned_agent.thread_id)
@@ -1082,9 +1214,12 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
     assert_eq!(
         (reloaded_instructions.user, reloaded_instructions.thread),
         (inherited_instructions.user, inherited_instructions.thread),
-        "reloading a child must retain both parent snapshots, even if residency evicts the parent",
+        "reloading a child must retain both captured parent instruction snapshots",
     );
-    if matches!(route, V2ReloadRoute::NestedParent) {
+    if matches!(
+        route,
+        V2ReloadRoute::NestedParent | V2ReloadRoute::NestedParentAtCapacity
+    ) {
         let reloaded_turn = reloaded_child.session.new_default_turn().await;
         assert_eq!(
             (
@@ -1124,6 +1259,21 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
             harness.config.model_provider.clone()
         ),
         "residency reload must preserve the worker provider instead of inheriting its sender's provider",
+    );
+    assert_eq!(reloaded_child.session_source, expected_source);
+    assert_eq!(
+        control
+            .get_agent_metadata(spawned_agent.thread_id)
+            .map(|metadata| (
+                metadata.agent_path,
+                metadata.agent_nickname,
+                metadata.agent_role,
+            )),
+        Some((
+            expected_source.get_agent_path(),
+            expected_source.get_nickname(),
+            expected_source.get_agent_role(),
+        ))
     );
 
     let communication = InterAgentCommunication::new(
@@ -6046,3 +6196,6 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
         .await
         .expect("tree shutdown after partial subtree resume should succeed");
 }
+
+#[path = "control_parent_binding_tests.rs"]
+mod parent_binding_tests;

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_core::CodexThread;
 use codex_core::config::MultiAgentMessageDelivery;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CreateDirectoryOptions;
@@ -6,6 +7,7 @@ use codex_features::Feature;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::PermissionProfileSnapshot;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
@@ -106,6 +108,22 @@ async fn mount_completed_worker(
         ]),
     )
     .await
+}
+
+async fn wait_for_agent_completion(thread: &CodexThread) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
+        loop {
+            match thread.agent_status().await {
+                AgentStatus::Completed(_) => return Ok(()),
+                AgentStatus::PendingInit | AgentStatus::Running => {
+                    tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+                }
+                status => anyhow::bail!("agent reached {status:?} before completing"),
+            }
+        }
+    })
+    .await??;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -435,10 +453,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     test.submit_text_turn(FIRST_PROMPT).await?;
     let first_thread_id = created_threads.recv().await?;
     let first_thread = test.thread_manager.get_thread(first_thread_id).await?;
-    wait_for_event(first_thread.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    wait_for_agent_completion(first_thread.as_ref()).await?;
 
     let mut parent_environment = child_environment.clone();
     if reload == ResidencyReload::OwnerRevokesWorkspaceRoot {
@@ -468,10 +483,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         .thread_manager
         .get_thread(replacement_thread_id)
         .await?;
-    wait_for_event(replacement_thread.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    wait_for_agent_completion(replacement_thread.as_ref()).await?;
     assert!(
         test.thread_manager
             .get_thread(first_thread_id)
@@ -536,11 +548,16 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
     }
 
     test.submit_text_turn(FOLLOWUP_PROMPT).await?;
-    let reloaded_worker = test.thread_manager.get_thread(first_thread_id).await?;
-    wait_for_event(reloaded_worker.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
+    let reloaded_worker = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(thread) = test.thread_manager.get_thread(first_thread_id).await {
+                break thread;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     })
-    .await;
+    .await?;
+    wait_for_agent_completion(reloaded_worker.as_ref()).await?;
     assert_eq!(
         reloaded_worker
             .config_snapshot()

@@ -331,7 +331,7 @@ fn sub_agent_completion_item_is_persisted_in_both_history_modes() {
 }
 
 #[test]
-fn wait_item_that_owns_completion_is_persisted_in_both_history_modes() {
+fn completed_wait_items_are_persisted_with_or_without_ownership() {
     let child_thread_id = ThreadId::new();
     let item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
         thread_id: ThreadId::new(),
@@ -370,10 +370,46 @@ fn wait_item_that_owns_completion_is_persisted_in_both_history_modes() {
         unreachable!("wait item fixture");
     };
     wait.completion_presentation_agent_ids = None;
-    assert!(!crate::policy::is_persisted_rollout_item(
-        &RolloutItem::EventMsg(EventMsg::ItemCompleted(unowned)),
-        ThreadHistoryMode::Legacy,
-    ));
+    assert!(!wait.owns_completion_presentation());
+    let unowned = RolloutItem::EventMsg(EventMsg::ItemCompleted(unowned));
+    for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        assert!(crate::policy::is_persisted_rollout_item(
+            &unowned,
+            history_mode
+        ));
+    }
+}
+
+#[test]
+fn send_input_item_is_persisted_in_both_history_modes() {
+    let receiver_thread_id = ThreadId::new();
+    let item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: ThreadId::new(),
+        turn_id: "turn".to_string(),
+        item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+            id: "send-input-call".to_string(),
+            tool: CollabAgentTool::SendInput,
+            status: CollabAgentToolCallStatus::Completed,
+            deadline_at_ms: None,
+            sender_thread_id: ThreadId::new(),
+            receiver_thread_ids: vec![receiver_thread_id],
+            receiver_agents: Vec::new(),
+            prompt: Some("Reply with the ingredient.".to_string()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::from([(receiver_thread_id, AgentStatus::Running)]),
+            completion_presentation_agent_ids: None,
+        }),
+        started_at_ms: Some(0),
+        completed_at_ms: 1,
+    }));
+
+    for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        assert!(crate::policy::is_persisted_rollout_item(
+            &item,
+            history_mode
+        ));
+    }
 }
 
 #[test]
