@@ -1588,6 +1588,10 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         .expect("root thread should start");
     session.services.agent_control = root.thread.session.services.agent_control.clone();
     session.thread_id = root.thread_id;
+    session
+        .services
+        .agent_control
+        .register_session_root(root.thread_id, /*current_parent_thread_id*/ None);
 
     let child_path = AgentPath::try_from("/root/worker").expect("agent path");
     let child_thread_id = session
@@ -1612,6 +1616,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         .expect("worker spawn should succeed")
         .thread_id;
     session.thread_id = child_thread_id;
+    turn.parent_thread_id = Some(root.thread_id);
     turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: root.thread_id,
         depth: 1,
@@ -1665,6 +1670,10 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         .expect("root thread should start");
     session.services.agent_control = root.thread.session.services.agent_control.clone();
     session.thread_id = root.thread_id;
+    session
+        .services
+        .agent_control
+        .register_session_root(root.thread_id, /*current_parent_thread_id*/ None);
 
     let child_path = AgentPath::try_from("/root/worker").expect("agent path");
     let child_thread_id = session
@@ -1689,6 +1698,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         .expect("worker spawn should succeed")
         .thread_id;
     session.thread_id = child_thread_id;
+    turn.parent_thread_id = Some(root.thread_id);
     turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: root.thread_id,
         depth: 1,

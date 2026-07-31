@@ -327,7 +327,7 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
     .await;
 
     let codex_home = TempDir::new()?;
-    write_v2_config(codex_home.path(), &server.uri(), /*max_threads*/ 2)?;
+    write_v2_config(codex_home.path(), &server.uri(), /*max_threads*/ 3)?;
     let mut initial = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
