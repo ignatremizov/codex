@@ -80,14 +80,23 @@ impl LocalAgentControl {
         let (metadata, submission_id) = match input {
             AgentInput::UserInput(input) => {
                 let receiver = self.get_agent_metadata(target);
-                if receiver.is_some() {
-                    self.ensure_v2_agent_loaded(resume_config, target, /*parent*/ None)
-                        .await?;
+                if receiver.is_some()
+                    && self
+                        .upgrade()?
+                        .get_thread(caller)
+                        .await?
+                        .multi_agent_version()
+                        == Some(codex_protocol::protocol::MultiAgentVersion::V2)
+                {
+                    self.ensure_v2_agent_loaded(resume_config, target).await?;
                 }
+                let receiver = self.get_agent_metadata(target);
                 let submission_id = self.send_input(target, input, start_options).await?;
                 (receiver.unwrap_or_default(), submission_id)
             }
             AgentInput::Message { message, mode } => {
+                self.ensure_agent_known(target)?;
+                self.ensure_v2_agent_loaded(resume_config, target).await?;
                 let receiver = self.ensure_agent_known(target)?;
                 let author = self
                     .ensure_agent_known(caller)?
@@ -105,8 +114,6 @@ impl LocalAgentControl {
                         "target agent is missing an agent_path".to_string(),
                     )
                 })?;
-                self.ensure_v2_agent_loaded(resume_config, target, /*parent*/ None)
-                    .await?;
                 let communication = message.into_communication(author, receiver_path, mode);
                 let kind = match mode {
                     MessageDeliveryMode::QueueOnly => {

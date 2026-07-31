@@ -300,12 +300,7 @@ Loaded spawned-child list and search results expose the same capability. Parent 
 not prohibit direct turns, steering, settings updates, or other thread input. Queueing
 input for an unloaded spawned child still requires resuming that child first.
 
-Stored children can be resumed directly without first loading their parent. Cold resume
-applies caller configuration overrides under the ordinary config and permission rules.
-Overrides do not replace a loaded session that has subscribers or is running. An idle
-session without subscribers can be replaced only after its shutdown completes.
-Parent-driven follow-up tasks retain their separate inherited-instruction and role
-configuration behavior.
+Persisted V2 children can be resumed through their live owning control only when the direct parent is loaded and its ownership identity matches the recorded spawn edge. An absent or mismatched owner fails recoverably; resume does not create a detached fallback control. Generic `thread/resume` continues to accept stored child IDs and paths, while caller configuration overrides remain subject to the ordinary config and permission rules. Loaded sessions with subscribers or active work are not replaced; an idle session without subscribers can be replaced only after shutdown completes. Parent-driven follow-up tasks retain their separate inherited-instruction and role configuration behavior. See [agent restoration lifecycle](../../docs/agent-restoration.md) for the direct-input, TUI, and legacy V1 boundaries.
 
 ## Stored thread attachments
 

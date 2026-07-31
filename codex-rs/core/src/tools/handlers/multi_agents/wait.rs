@@ -1,6 +1,5 @@
 use super::*;
 use crate::agent::status::is_final;
-use crate::session::session::Session;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
 use crate::turn_timing::now_unix_timestamp_ms;
@@ -10,9 +9,7 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
 
 use tokio::time::timeout_at;
@@ -108,32 +105,17 @@ impl Handler {
                 session.presentation_id(),
                 receiver_thread_ids.as_slice(),
             );
-        session
-            .emit_turn_item_started(
-                &turn,
-                &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                    id: call_id.clone(),
-                    tool: CollabAgentTool::Wait,
-                    status: CollabAgentToolCallStatus::InProgress,
-                    deadline_at_ms,
-                    sender_thread_id: session.thread_id,
-                    receiver_thread_ids: receiver_thread_ids.clone(),
-                    receiver_agents: receiver_agents.clone(),
-                    prompt: None,
-                    model: None,
-                    reasoning_effort: None,
-                    agents_states: Default::default(),
-                    completion_presentation_agent_ids: None,
-                }),
-            )
-            .await;
-
         let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
         let mut initial_final_statuses = Vec::new();
         for id in &receiver_thread_ids {
-            match session.services.agent_control.subscribe_status(*id).await {
+            match session
+                .services
+                .agent_control
+                .subscribe_agent_status_events(*id)
+                .await
+            {
                 Ok(rx) => {
-                    let status = rx.borrow().clone();
+                    let status = rx.initial_status().clone();
                     if is_final(&status) {
                         initial_final_statuses.push((*id, status));
                     }
@@ -173,14 +155,32 @@ impl Handler {
                 }
             }
         }
+        session
+            .emit_turn_item_started(
+                &turn,
+                &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    id: call_id.clone(),
+                    tool: CollabAgentTool::Wait,
+                    status: CollabAgentToolCallStatus::InProgress,
+                    deadline_at_ms,
+                    sender_thread_id: session.thread_id,
+                    receiver_thread_ids: receiver_thread_ids.clone(),
+                    receiver_agents: receiver_agents.clone(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: Default::default(),
+                    completion_presentation_agent_ids: None,
+                }),
+            )
+            .await;
 
         let statuses = if !initial_final_statuses.is_empty() {
             initial_final_statuses
         } else {
             let mut futures = FuturesUnordered::new();
             for (id, rx) in status_rxs.into_iter() {
-                let session = session.clone();
-                futures.push(wait_for_final_status(session, id, rx));
+                futures.push(wait_for_final_status(id, rx));
             }
             let mut results = Vec::new();
             let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
@@ -330,23 +330,15 @@ impl ToolOutput for WaitAgentResult {
 }
 
 async fn wait_for_final_status(
-    session: Arc<Session>,
     thread_id: ThreadId,
-    mut status_rx: Receiver<AgentStatus>,
+    mut status_rx: crate::session::AgentStatusSubscription,
 ) -> Option<(ThreadId, AgentStatus)> {
-    let mut status = status_rx.borrow().clone();
-    if is_final(&status) {
-        return Some((thread_id, status));
-    }
-
-    loop {
-        if status_rx.changed().await.is_err() {
-            let latest = session.services.agent_control.get_status(thread_id).await;
-            return is_final(&latest).then_some((thread_id, latest));
-        }
-        status = status_rx.borrow().clone();
+    while let Some(status) = status_rx.recv().await {
         if is_final(&status) {
             return Some((thread_id, status));
         }
     }
+    // Explicit removal is an observed NotFound. Silent retirement must not fetch a
+    // replacement runtime's status or expose an incidental eviction Shutdown.
+    None
 }

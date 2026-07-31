@@ -225,10 +225,29 @@ async fn managed_shutdown_skips_nonpersistent_threads_and_tolerates_save_failure
 ) -> Result<()> {
     let home = TempDir::new()?;
     create_config_toml(home.path(), "http://127.0.0.1:1", "never")?;
+    // Cold ancestry recovery needs the durable owner, even though this test only
+    // loads the child and must not include its unloaded owner in recovery candidates.
+    let parent_thread_id = if matches!(
+        scenario,
+        SnapshotScenario::Child | SnapshotScenario::Parented
+    ) {
+        Some(codex_protocol::ThreadId::from_string(
+            &app_test_support::create_fake_rollout(
+                home.path(),
+                "2026-09-01T11-00-00",
+                "2026-09-01T11:00:00Z",
+                "Saved owner",
+                Some("mock_provider"),
+                /*git_info*/ None,
+            )?,
+        )?)
+    } else {
+        None
+    };
     let source = if matches!(scenario, SnapshotScenario::Child) {
         codex_protocol::protocol::SessionSource::SubAgent(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
-                parent_thread_id: codex_protocol::ThreadId::new(),
+                parent_thread_id: parent_thread_id.context("child fixture needs an owner")?,
                 depth: 1,
                 agent_path: None,
                 agent_nickname: None,
@@ -238,7 +257,7 @@ async fn managed_shutdown_skips_nonpersistent_threads_and_tolerates_save_failure
     } else {
         codex_protocol::protocol::SessionSource::Cli
     };
-    let stored = if matches!(scenario, SnapshotScenario::Parented) {
+    let stored = if let Some(parent_thread_id) = parent_thread_id {
         app_test_support::create_fake_parented_rollout_with_source(
             home.path(),
             "2026-09-01T12-00-00",
@@ -247,8 +266,8 @@ async fn managed_shutdown_skips_nonpersistent_threads_and_tolerates_save_failure
             Some("mock_provider"),
             /*git_info*/ None,
             source,
-            codex_protocol::SessionId::new(),
-            codex_protocol::ThreadId::new(),
+            parent_thread_id.into(),
+            parent_thread_id,
         )?
     } else {
         app_test_support::create_fake_rollout_with_source(

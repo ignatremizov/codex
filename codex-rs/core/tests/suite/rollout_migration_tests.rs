@@ -28,10 +28,12 @@ use codex_thread_store::ItemSortKey;
 use codex_thread_store::ListItemsParams;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::LocalThreadStore;
+use codex_thread_store::ReadThreadParams;
 use codex_thread_store::RolloutMigrationMode;
 use codex_thread_store::RolloutMigrationOptions;
 use codex_thread_store::RolloutMigrationStatus;
 use codex_thread_store::SortDirection;
+use codex_thread_store::ThreadStoreError;
 use core_test_support::responses;
 use core_test_support::responses::ResponseMock;
 use core_test_support::test_codex::test_codex;
@@ -45,6 +47,11 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
     let test = test_codex()
         .with_history_mode(ThreadHistoryMode::Legacy)
         .with_config(|config| {
+            config.features.enable(Feature::Collab).expect("V1");
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("legacy V1 ancestry");
             config
                 .features
                 .disable(Feature::BackgroundPaginatedRolloutMigration)
@@ -54,13 +61,47 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
         .build_with_auto_env(&server)
         .await?;
     let environments = test.codex.environment_selections().await;
+    let parent_thread_id = test.session_configured.thread_id;
+    let state_db = test.codex.state_db().context("durable ancestry store")?;
+    state_db
+        .ensure_agent_alias_namespace(parent_thread_id.into())
+        .await?;
+    // Main is live and owns a durable alias, but has not materialized a rollout.
+    // Recovering its child's ownership must not try to load this unrelated history.
+    match test
+        .thread_store
+        .read_thread(ReadThreadParams {
+            thread_id: parent_thread_id,
+            include_archived: true,
+            include_history: false,
+        })
+        .await
+    {
+        Err(ThreadStoreError::ThreadNotFound { thread_id }) => {
+            assert_eq!(thread_id, parent_thread_id);
+        }
+        Err(ThreadStoreError::InvalidRequest { message }) => {
+            assert_eq!(
+                message,
+                format!("no rollout found for thread id {parent_thread_id}")
+            );
+        }
+        Err(error) => return Err(error.into()),
+        Ok(_) => anyhow::bail!("fresh root unexpectedly has persisted thread metadata"),
+    }
+    // Model a legacy child discovered after the root namespace's initial backfill.
+    // Its persisted spawn edge is real, but no native spawn has allocated an alias.
     let child = test
         .thread_manager
         .start_thread(StartThreadOptions {
             history_mode: Some(ThreadHistoryMode::Legacy),
-            session_source: Some(SessionSource::SubAgent(SubAgentSource::Other(
-                "migration-test".to_string(),
-            ))),
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
             environments: Some(environments.clone()),
             ..StartThreadOptions::new(test.config.clone())
         })
@@ -212,6 +253,16 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
             include_archived: false,
         })
         .await?;
+    assert_eq!(
+        state_db.find_thread_spawn_parent(child.thread_id).await?,
+        Some(parent_thread_id)
+    );
+    assert_eq!(
+        state_db
+            .find_current_agent_alias_by_thread(child.thread_id)
+            .await?,
+        None
+    );
     let resumed = test
         .thread_manager
         .start_thread(StartThreadOptions {
@@ -224,7 +275,15 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
             }),
             ..StartThreadOptions::new(test.config.clone())
         })
-        .await?;
+        .await
+        .context("recover migrated child beneath an unmaterialized Main")?;
+    assert_eq!(
+        state_db
+            .find_current_agent_alias_by_thread(child.thread_id)
+            .await?
+            .map(|alias| (alias.session_id, alias.thread_id)),
+        Some((parent_thread_id.into(), child.thread_id))
+    );
     let mock = turn(
         &server,
         &resumed.thread,

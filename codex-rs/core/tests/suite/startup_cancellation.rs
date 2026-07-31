@@ -100,7 +100,8 @@ async fn cancelled_resume_releases_writer_while_mcp_startup_is_pending() -> Resu
     .context("resume should open persistence while MCP startup waits")?;
     drop(resume);
 
-    // The guard schedules asynchronous cleanup. Resuming then also waits for discard's writer lock.
+    // Dropping the caller cancels only initialization in the owned resume worker.
+    // Captured startup owns asynchronous cleanup until discard releases the writer.
     let resumed = timeout(Duration::from_secs(10), async {
         while store.live_rollout_path(thread_id).await.is_ok() {
             tokio::time::sleep(Duration::from_millis(10)).await;

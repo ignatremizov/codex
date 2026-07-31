@@ -6043,6 +6043,7 @@ async fn thread_resume_can_load_source_by_external_path() -> Result<()> {
     );
     assert_eq!(resumed.preview, "external path history");
     assert_eq!(resumed.status, ThreadStatus::Idle);
+    assert_eq!(resumed.source, SessionSource::Cli);
 
     Ok(())
 }

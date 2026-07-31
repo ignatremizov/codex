@@ -52,6 +52,11 @@ impl LocalAgentControl {
         config: &Config,
         protected_thread_id: Option<ThreadId>,
     ) -> CodexResult<V2ResidencySlot> {
+        if let Some(protected_thread_id) = protected_thread_id
+            && state.get_thread(protected_thread_id).await.is_err()
+        {
+            self.v2_residency.remove(protected_thread_id);
+        }
         let capacity = config
             .effective_agent_max_threads(MultiAgentVersion::V2)
             .unwrap_or(usize::MAX);
@@ -115,6 +120,27 @@ impl V2Residency {
     }
 
     async fn try_unload_one_resident(
+        self: &Arc<Self>,
+        manager: &Arc<ThreadManagerState>,
+        protected_thread_id: Option<ThreadId>,
+    ) -> bool {
+        let residency = Arc::clone(self);
+        let manager = Arc::clone(manager);
+        // Spawns also reserve capacity directly. Once eviction starts, caller cancellation
+        // must not release suppression/the lifecycle gate before shutdown and exact removal.
+        tokio::spawn(async move {
+            residency
+                .unload_one_resident(&manager, protected_thread_id)
+                .await
+        })
+        .await
+        .unwrap_or_else(|error| {
+            warn!("v2 residency eviction worker failed: {error}");
+            false
+        })
+    }
+
+    async fn unload_one_resident(
         &self,
         manager: &Arc<ThreadManagerState>,
         protected_thread_id: Option<ThreadId>,
@@ -122,7 +148,16 @@ impl V2Residency {
         let candidates_to_scan = self.resident_count();
         for _ in 0..candidates_to_scan {
             let Some(candidate_thread_id) = self.pop_lru_candidate(protected_thread_id) else {
-                return false;
+                break;
+            };
+            // Do not evict a runtime while another operation owns its restoration/removal
+            // boundary. Try-lock avoids a nested parent/child restoration deadlock.
+            let Ok(_candidate_guard) = manager
+                .v2_spawn_resume_lock(candidate_thread_id)
+                .try_lock_owned()
+            else {
+                self.touch(candidate_thread_id);
+                continue;
             };
             let Some(candidate_thread) = manager
                 .get_thread(candidate_thread_id)
@@ -147,18 +182,25 @@ impl V2Residency {
             }
             let environments = candidate_thread.environment_selections().await;
             disarm.commit();
-            candidate_thread
-                .session
-                .services
-                .agent_control
-                .state
-                .save_evicted_environments(candidate_thread_id, environments);
+            candidate_thread.session.retire_agent_status_observers(
+                crate::session::AgentStatusRetirement::ResidencyEviction,
+            );
             let _ = manager
-                .remove_thread_if_matches(&candidate_thread_id, &candidate_thread)
+                .remove_thread_if_matches_with(&candidate_thread_id, &candidate_thread, || {
+                    candidate_thread
+                        .session
+                        .services
+                        .agent_control
+                        .state
+                        .save_evicted_environments(candidate_thread_id, environments);
+                })
                 .await;
             return true;
         }
-        false
+        // Missing or no-longer-resident runtimes are deliberately removed from the LRU while
+        // scanning. Let the caller retry its reservation against that corrected resident count
+        // even when this pass did not need to unload a live runtime.
+        self.resident_count() < candidates_to_scan
     }
 
     fn resident_count(&self) -> usize {

@@ -264,6 +264,7 @@ mod thread_event_buffer;
 mod thread_events;
 mod thread_goal_actions;
 mod thread_replay_processes;
+mod thread_resume;
 mod thread_routing;
 mod thread_session_state;
 mod thread_settings;
