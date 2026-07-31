@@ -252,7 +252,6 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
     let server = responses::start_mock_server().await;
     let root_spawn_args = serde_json::to_string(&json!({
         "message": WORKER_TASK,
-        "task_message": WORKER_TASK,
         "task_name": "worker",
         "agent_type": ROLE_NAME,
         "fork_turns": "none",
@@ -274,7 +273,6 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
     .await;
     let nested_spawn_args = serde_json::to_string(&json!({
         "message": NESTED_TASK,
-        "task_message": NESTED_TASK,
         "task_name": "nested",
         "fork_turns": "none",
     }))?;
@@ -404,7 +402,6 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner() -> Resu
 
     let sibling_args = serde_json::to_string(&json!({
         "message": SIBLING_TASK,
-        "task_message": SIBLING_TASK,
         "task_name": "replacement",
         "agent_type": ROLE_NAME,
         "fork_turns": "none",

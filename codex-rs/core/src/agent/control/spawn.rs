@@ -191,8 +191,12 @@ impl AgentControl {
         expected_session_source: Option<&SessionSource>,
     ) -> CodexResult<()> {
         let loaded_control = &thread.session.services.agent_control;
-        let matches_owner = Arc::ptr_eq(&self.state, &loaded_control.state)
-            && self.session_id() == loaded_control.session_id();
+        // A standalone root keeps its persisted session identity when another root adopts it.
+        // Spawned descendants must remain attached to the exact owning control session.
+        let matches_control_session = !thread.session_source.is_non_root_agent()
+            || self.session_id() == loaded_control.session_id();
+        let matches_owner =
+            Arc::ptr_eq(&self.state, &loaded_control.state) && matches_control_session;
         let matches_source = expected_session_source.is_none_or(|expected_session_source| {
             &thread.session_source == expected_session_source
         });

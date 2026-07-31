@@ -1300,6 +1300,10 @@ async fn thread_list_reports_loaded_subagent_status() -> Result<()> {
         /*git_info*/ None,
     )?;
     let parent_thread_id = ThreadId::from_string(&cli_id)?;
+    let root_path = rollout_path(codex_home.path(), "2025-02-01T09-00-00", &cli_id);
+    let mut root_session_meta = read_session_meta_line(&root_path).await?;
+    root_session_meta.meta.multi_agent_version = Some(MultiAgentVersion::V2);
+    append_rollout_item_to_path(&root_path, &RolloutItem::SessionMeta(root_session_meta)).await?;
     let mut expected = vec![(cli_id.clone(), false)];
     let mut threads_to_resume = vec![cli_id.clone()];
 
@@ -1341,6 +1345,9 @@ async fn thread_list_reports_loaded_subagent_status() -> Result<()> {
         let path = rollout_path(codex_home.path(), filename_ts, &thread_id);
         let mut session_meta = read_session_meta_line(&path).await?;
         session_meta.meta.multi_agent_version = Some(version);
+        if version == MultiAgentVersion::V2 {
+            session_meta.meta.session_id = parent_thread_id.into();
+        }
         append_rollout_item_to_path(&path, &RolloutItem::SessionMeta(session_meta)).await?;
         if should_resume {
             threads_to_resume.push(thread_id.clone());

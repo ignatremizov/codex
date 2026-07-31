@@ -1586,7 +1586,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
         .await
         .expect("root thread should start");
-    session.services.agent_control = manager.agent_control();
+    session.services.agent_control = root.thread.session.services.agent_control.clone();
     session.thread_id = root.thread_id;
 
     let child_path = AgentPath::try_from("/root/worker").expect("agent path");
@@ -1663,7 +1663,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
         .await
         .expect("root thread should start");
-    session.services.agent_control = manager.agent_control();
+    session.services.agent_control = root.thread.session.services.agent_control.clone();
     session.thread_id = root.thread_id;
 
     let child_path = AgentPath::try_from("/root/worker").expect("agent path");
@@ -3229,10 +3229,15 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
 
 #[tokio::test]
 async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let session = Arc::clone(&parent.thread.session);
+    let turn = session.new_default_turn().await;
     let thread = manager
         .resume_thread_with_history(
             config.clone(),
@@ -3261,9 +3266,6 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         manager.agent_control().get_status(agent_id).await,
         AgentStatus::NotFound
     );
-    let session = Arc::new(session);
-    let turn = Arc::new(turn);
-
     let resume_invocation = invocation(
         session.clone(),
         turn.clone(),
