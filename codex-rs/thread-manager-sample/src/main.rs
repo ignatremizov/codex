@@ -271,6 +271,7 @@ async fn new_config(
         base_instructions: None,
         base_instructions_provenance: None,
         developer_instructions: None,
+        developer_instructions_explicit: false,
         guardian_policy_config: None,
         guardian_extra_policy: None,
         guardian_policy_template: None,

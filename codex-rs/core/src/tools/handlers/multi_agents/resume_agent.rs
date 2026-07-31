@@ -59,6 +59,23 @@ async fn handle_resume_agent(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
+    let resumed_session_source = thread_spawn_source(
+        session.thread_id(),
+        &turn.session_source,
+        child_depth,
+        /*agent_role*/ None,
+        /*task_name*/ None,
+    )?;
+    let mut status = local_agent_control.get_status(receiver_thread_id)
+        .await;
+    let was_not_found = matches!(status, AgentStatus::NotFound);
+    let mut live_adoption_error = None;
+    if !was_not_found
+        && let Err(err) = local_agent_control.ensure_v1_completion_watcher(receiver_thread_id, resumed_session_source.clone())
+            .await
+    {
+        live_adoption_error = Some(collab_agent_error(receiver_thread_id, err));
+    }
 
     session
         .emit_turn_item_started(
@@ -84,29 +101,34 @@ async fn handle_resume_agent(
         )
         .await;
 
-    let result = async {
-        let config = build_agent_resume_config(&turn).map_err(FunctionCallError::RespondToModel)?;
-        let source = thread_spawn_source(
-            session.thread_id(),
-            &turn.session_source,
-            child_depth,
-            /*agent_role*/ None,
-            /*task_name*/ None,
-        )?;
-        local_agent_control
-            .resume_agent(config, receiver_thread_id, source)
-            .await
-            .map_err(|err| collab_agent_error(receiver_thread_id, err))
-    }
-    .await;
-    let (status, receiver_agent, error) = match result {
-        Ok((agent, _)) => (agent.status, agent.metadata, None),
-        Err(err) => (
-            local_agent_control.get_status(receiver_thread_id).await,
-            receiver_agent,
-            Some(err),
-        ),
+    let (receiver_agent, mut error) = if was_not_found {
+        let result = async {
+            let config = build_agent_resume_config(&turn)
+                .map_err(FunctionCallError::RespondToModel)?;
+            local_agent_control.resume_agent(config, receiver_thread_id, resumed_session_source.clone())
+                .await.map_err(|err| collab_agent_error(receiver_thread_id, err))
+        }.await;
+        match result {
+            Ok((agent, _)) => {
+                status = agent.status;
+                (agent.metadata, None)
+            }
+            Err(error) => {
+                status = local_agent_control.get_status(receiver_thread_id).await;
+                (receiver_agent, Some(error))
+            }
+        }
+    } else {
+        (receiver_agent, live_adoption_error)
     };
+    if error.is_none()
+        && was_not_found
+        && !matches!(status, AgentStatus::NotFound)
+        && let Err(err) = local_agent_control.ensure_v1_completion_watcher(receiver_thread_id, resumed_session_source)
+            .await
+    {
+        error = Some(collab_agent_error(receiver_thread_id, err));
+    }
     session
         .emit_turn_item_completed(
             &turn,

@@ -536,6 +536,13 @@ impl App {
             return Ok(());
         }
 
+        if !self
+            .prepare_replay_only_thread_op(app_server, thread_id, &op)
+            .await
+        {
+            return Ok(());
+        }
+
         crate::session_log::log_outbound_op(&op);
 
         if self

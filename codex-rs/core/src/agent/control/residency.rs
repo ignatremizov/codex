@@ -53,6 +53,13 @@ impl LocalAgentControl {
         config: &Config,
         protected_thread_id: Option<ThreadId>,
     ) -> CodexResult<V2ResidencySlot> {
+        if let Some(thread_id) = protected_thread_id {
+            let threads = state.threads.read().await;
+            if !threads.contains_key(&thread_id) {
+                // Re-publication cannot race pruning this stale protected residency entry.
+                self.runtime.residency.remove(thread_id);
+            }
+        }
         let capacity = config
             .effective_agent_max_threads(MultiAgentVersion::V2)
             .unwrap_or(usize::MAX);
@@ -150,6 +157,13 @@ impl V2Residency {
             if Some(candidate_thread_id) == protected_thread_id {
                 continue;
             }
+            // Restoration also owns this boundary. Never wait on a nested parent's gate.
+            let Ok(candidate_guard) = manager
+                .v2_spawn_resume_lock(candidate_thread_id)
+                .try_lock_owned()
+            else {
+                continue;
+            };
             let candidate_thread = {
                 let threads = manager.threads.read().await;
                 match threads.get(&candidate_thread_id) {
@@ -180,6 +194,7 @@ impl V2Residency {
             let residency = Arc::clone(self);
             let eviction = tokio::spawn(async move {
                 let _residency_guard = residency_guard;
+                let _candidate_guard = candidate_guard;
                 candidate_thread.ensure_rollout_materialized().await;
                 let disarm = candidate_thread.session.disarm_terminal_presentation();
                 if let Err(err) = candidate_thread.shutdown_and_wait().await {
@@ -204,6 +219,9 @@ impl V2Residency {
                     .save_evicted_environments(candidate_thread_id, environments);
                 // Eviction is not terminal failure; disarm only the exact acknowledged actor.
                 disarm.commit();
+                candidate_thread.session.retire_agent_status_observers(
+                    crate::session::AgentStatusRetirement::ResidencyEviction,
+                );
                 candidate_thread.session.prepare_for_thread_removal();
                 // Keep publication excluded until both entries have been removed.
                 threads.remove(&candidate_thread_id);
