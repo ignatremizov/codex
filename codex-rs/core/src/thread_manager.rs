@@ -1,8 +1,10 @@
 mod managed;
 mod model_catalog;
+mod restoration_fence;
 mod shared_instructions;
 mod shutdown;
 
+pub(crate) use restoration_fence::RestorationFence;
 pub use shutdown::AgentTreeShutdown;
 pub use shutdown::AgentTreeShutdownFailure;
 pub use shutdown::AgentTreeShutdownFailureReason;
@@ -137,6 +139,8 @@ use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tracing::instrument;
 use tracing::warn;
+
+mod v2_spawn_resume;
 
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
 
@@ -492,6 +496,7 @@ struct PreparedChildOrigin {
 
 struct ThreadSpawnRequest {
     ready_notification: ThreadReadyNotification,
+    registration: ThreadRegistrationMode,
     startup: Option<Arc<crate::session::startup::SessionStartup>>,
     options: StartThreadOptions,
     auth_manager: Arc<AuthManager>,
@@ -518,6 +523,7 @@ impl ThreadSpawnRequest {
     ) -> Self {
         Self {
             ready_notification: ThreadReadyNotification::Emit,
+            registration: ThreadRegistrationMode::Immediate,
             startup: None,
             options,
             auth_manager,
@@ -567,7 +573,14 @@ fn effective_originator_value(
         .unwrap_or(default_originator)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ThreadRegistrationMode {
+    Immediate,
+    Deferred,
+}
+
 pub(crate) struct ResumeThreadWithHistoryOptions {
+    pub(crate) registration: ThreadRegistrationMode,
     pub(crate) config: Config,
     pub(crate) prompt_cache_key: Option<PromptCacheKey>,
     pub(crate) initial_history: InitialHistory,
@@ -578,7 +591,7 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
     pub(crate) inherited_environments: Option<TurnEnvironmentSnapshot>,
     pub(crate) inherited_instructions: Option<SessionInstructions>,
     pub(crate) inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
-    pub(crate) client_mcp_extensions: Option<ClientMcpExtensions>,
+    pub(crate) client_mcp_extensions_override: Option<ClientMcpExtensions>,
 }
 
 /// Shared, `Arc`-owned state for [`ThreadManager`]. This `Arc` is required to have a single
@@ -611,6 +624,9 @@ pub(crate) struct ThreadManagerState {
     session_source: SessionSource,
     installation_id: String,
     analytics_events_client: Option<AnalyticsEventsClient>,
+    v2_spawn_resume_locks:
+        std::sync::Mutex<HashMap<ThreadId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    restoration_fences: std::sync::Mutex<HashMap<ThreadId, RestorationFence>>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
 }
@@ -714,6 +730,8 @@ impl ThreadManager {
                 session_source,
                 installation_id,
                 analytics_events_client,
+                v2_spawn_resume_locks: std::sync::Mutex::new(HashMap::new()),
+                restoration_fences: std::sync::Mutex::new(HashMap::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -939,6 +957,8 @@ impl ThreadManager {
                 session_source: SessionSource::Exec,
                 installation_id,
                 analytics_events_client: None,
+                v2_spawn_resume_locks: std::sync::Mutex::new(HashMap::new()),
+                restoration_fences: std::sync::Mutex::new(HashMap::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -1475,6 +1495,24 @@ impl ThreadManager {
                 "a captured internal parent requires a new or forked internal session".to_owned(),
             ));
         }
+        if options.reserved_thread_id.is_some()
+            && matches!(&options.initial_history, InitialHistory::Resumed(_))
+        {
+            return Err(CodexErr::InvalidRequest(
+                "reserved thread ID cannot be used when resuming a thread".to_string(),
+            ));
+        }
+        if parent.is_none()
+            && let Some(restored) = self
+                .try_resume_persisted_v2_spawn(
+                    &options.config,
+                    &options.initial_history,
+                    &options.client_mcp_extensions,
+                )
+                .await?
+        {
+            return Ok(restored);
+        }
         let mut request = if let Some(parent) = parent {
             let mut request =
                 ThreadSpawnRequest::new(options, parent.auth_manager, parent.agent_control);
@@ -1484,7 +1522,9 @@ impl ThreadManager {
             request.forked_from_thread_id = request.options.initial_history.forked_from_id();
             request
         } else {
-            let agent_control = self.agent_control_for_config(&options.config);
+            let agent_control = self
+                .agent_control_for_resumed_history(&options.config, &options.initial_history)
+                .await?;
             let mut request = ThreadSpawnRequest::new(
                 options,
                 Arc::clone(&self.state.auth_manager),
@@ -1563,40 +1603,6 @@ impl ThreadManager {
         .await
     }
 
-    /// Reloads a recorded Multi-Agent V2 child through its currently loaded immediate parent.
-    ///
-    /// The child keeps the existing parent-controlled reload semantics. Callers cannot supply
-    /// configuration overrides, and an unavailable or unrecognized owner is an error.
-    pub async fn ensure_multi_agent_v2_child_loaded(
-        &self,
-        child_thread_id: ThreadId,
-    ) -> CodexResult<()> {
-        let stored_thread = self
-            .state
-            .read_stored_thread(ReadThreadParams {
-                thread_id: child_thread_id,
-                include_archived: true,
-                include_history: false,
-            })
-            .await?;
-        let Some(parent_thread_id) = stored_thread.parent_thread_id else {
-            return Err(CodexErr::InvalidRequest(format!(
-                "thread {child_thread_id} is not a recorded multi-agent v2 child"
-            )));
-        };
-        let parent = self.get_thread(parent_thread_id).await.map_err(|_| {
-            CodexErr::InvalidRequest(format!(
-                "cannot resume multi-agent v2 child {child_thread_id}: parent {parent_thread_id} is not loaded; resume the parent first"
-            ))
-        })?;
-        parent
-            .session
-            .services
-            .agent_control
-            .ensure_child_loaded(parent_thread_id, child_thread_id)
-            .await
-    }
-
     #[instrument(level = "trace", skip_all)]
     pub async fn resume_thread_with_history(
         &self,
@@ -1606,7 +1612,16 @@ impl ThreadManager {
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> CodexResult<NewThread> {
-        let agent_control = self.agent_control_for_config(&config);
+        if let Some(restored_thread) = self
+            .try_resume_persisted_v2_spawn(&config, &initial_history, &client_mcp_extensions)
+            .await?
+        {
+            return Ok(restored_thread);
+        }
+
+        let agent_control = self
+            .agent_control_for_resumed_history(&config, &initial_history)
+            .await?;
         let (session_source, thread_source) = initial_history
             .get_resumed_session_sources()
             .unwrap_or_else(|| (self.state.session_source.clone(), None));
@@ -2114,20 +2129,6 @@ impl ThreadManagerState {
             })
     }
 
-    /// Send an operation to a thread by ID.
-    pub(crate) async fn send_op(
-        &self,
-        thread_id: ThreadId,
-        op: Op,
-        parent_turn_id: Option<String>,
-        root_turn_id: Option<String>,
-        message_delivery: Option<crate::agent_communication::MessageDelivery>,
-    ) -> CodexResult<String> {
-        let thread = self.get_thread(thread_id).await?;
-        self.send_op_to_thread(&thread, op, parent_turn_id, root_turn_id, message_delivery)
-            .await
-    }
-
     /// Submit to the captured runtime without resolving its identifier again.
     pub(crate) async fn send_op_to_thread(
         &self,
@@ -2220,20 +2221,8 @@ impl ThreadManagerState {
         thread_id: &ThreadId,
         expected: &Arc<CodexThread>,
     ) -> Option<Arc<CodexThread>> {
-        let mut threads = self.threads.write().await;
-        if threads
-            .get(thread_id)
-            .is_some_and(|thread| Arc::ptr_eq(thread, expected))
-        {
-            let removed = threads.remove(thread_id);
-            if let Some(thread) = &removed {
-                thread.session.services.mcp_runtime.revoke_ema();
-                thread.session.prepare_for_thread_removal();
-            }
-            removed
-        } else {
-            None
-        }
+        self.remove_thread_if_matches_with(thread_id, expected, || {})
+            .await
     }
 
     pub(crate) async fn effective_multi_agent_version_for_spawn(
@@ -2510,6 +2499,7 @@ impl ThreadManagerState {
         options: ResumeThreadWithHistoryOptions,
     ) -> CodexResult<NewThread> {
         let ResumeThreadWithHistoryOptions {
+            registration,
             config,
             prompt_cache_key,
             initial_history,
@@ -2520,11 +2510,12 @@ impl ThreadManagerState {
             inherited_environments,
             inherited_instructions,
             inherited_exec_policy,
-            client_mcp_extensions,
+            client_mcp_extensions_override,
         } = options;
         let (parent_client_mcp_extensions, inherited_prompt_cache_key) =
             self.inherited_child_settings(parent_thread_id).await;
-        let client_mcp_extensions = client_mcp_extensions.unwrap_or(parent_client_mcp_extensions);
+        let client_mcp_extensions =
+            client_mcp_extensions_override.unwrap_or(parent_client_mcp_extensions);
         let prompt_cache_key = prompt_cache_key.unwrap_or(inherited_prompt_cache_key);
         let thread_source = initial_history.get_resumed_thread_source();
         let options = StartThreadOptions {
@@ -2547,6 +2538,7 @@ impl ThreadManagerState {
         request.inherited_environments = inherited_environments;
         request.inherited_instructions = inherited_instructions;
         request.inherited_exec_policy = inherited_exec_policy;
+        request.registration = registration;
         Box::pin(self.spawn_thread(request)).await
     }
 
@@ -2615,6 +2607,7 @@ impl ThreadManagerState {
             owns_startup.then(|| SessionStartupGuard::new(Arc::clone(&startup_state)));
         let ThreadSpawnRequest {
             ready_notification,
+            registration,
             startup,
             options,
             auth_manager,
@@ -2731,6 +2724,12 @@ impl ThreadManagerState {
         if let InitialHistory::Resumed(resumed) = &initial_history {
             let mut threads = self.threads.write().await;
             if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
+                if registration == ThreadRegistrationMode::Deferred {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "thread {} changed while preparing its restoration",
+                        resumed.conversation_id
+                    )));
+                }
                 if thread.is_running() {
                     // The parent's pool still owns this runtime and its rollout writer.
                     // Returning it would report success without allowing client access.
@@ -3101,7 +3100,7 @@ impl ThreadManagerState {
             }
         }
         let finalize_result = self
-            .finalize_thread_spawn(session, io, tracked_session_source)
+            .finalize_thread_spawn(session, io, tracked_session_source, registration)
             .await;
         let (new_thread, tier_acceptance) = match finalize_result {
             Ok(registered) => registered,
@@ -3112,7 +3111,9 @@ impl ThreadManagerState {
                 return Err(error);
             }
         };
-        if matches!(ready_notification, ThreadReadyNotification::Emit) {
+        if registration == ThreadRegistrationMode::Immediate
+            && matches!(ready_notification, ThreadReadyNotification::Emit)
+        {
             new_thread.thread.emit_thread_ready_lifecycle().await;
         }
         for reason in std::mem::take(
@@ -3125,7 +3126,7 @@ impl ThreadManagerState {
                 .session
                 .request_mcp_runtime_refresh(reason);
         }
-        if is_resumed_thread {
+        if registration == ThreadRegistrationMode::Immediate && is_resumed_thread {
             new_thread.thread.emit_thread_resume_lifecycle().await;
         }
         startup_state.release_membership();
@@ -3144,6 +3145,7 @@ impl ThreadManagerState {
         session: Arc<Session>,
         io: SessionIo,
         session_source: SessionSource,
+        registration: ThreadRegistrationMode,
     ) -> CodexResult<(NewThread, Option<ServiceTierAcceptance>)> {
         let thread_id = session.thread_id();
         let event = io.next_event().await?;
@@ -3164,19 +3166,22 @@ impl ThreadManagerState {
             .mcp_ema_cancellation()
             .clone();
         {
-            let pending_service_tier = if self.agent_control_factory.is_some()
-                || matches!(
-                    &session.agent_runtime,
-                    crate::agent::host::AgentRuntimeServices::Host(services)
-                        if services.service_tier.is_some()
-                ) {
+            let pending_service_tier = if registration == ThreadRegistrationMode::Immediate
+                && (self.agent_control_factory.is_some()
+                    || matches!(
+                        &session.agent_runtime,
+                        crate::agent::host::AgentRuntimeServices::Host(services)
+                            if services.service_tier.is_some()
+                    )) {
                 session.lock_pending_service_tier().await
             } else {
                 None
             };
             let mut threads = self.threads.write().await;
             if let std::collections::hash_map::Entry::Vacant(e) = threads.entry(thread_id) {
-                ema_cancellation.publish();
+                if registration == ThreadRegistrationMode::Immediate {
+                    ema_cancellation.publish();
+                }
                 let thread = Arc::new(CodexThread::new(
                     Arc::clone(&session),
                     io,
@@ -3184,7 +3189,9 @@ impl ThreadManagerState {
                     session_configured.rollout_path.clone(),
                     session_source,
                 ));
-                e.insert(thread.clone());
+                if registration == ThreadRegistrationMode::Immediate {
+                    e.insert(thread.clone());
+                }
                 let tier_acceptance = pending_service_tier.and_then(|(mut state, update)| {
                     state.service_tier_acceptance =
                         crate::agent::host::propagate_config_update(&session, update);

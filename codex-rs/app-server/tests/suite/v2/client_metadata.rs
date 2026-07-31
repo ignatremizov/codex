@@ -343,8 +343,15 @@ async fn turn_start_sends_nested_subagent_lineage_after_cold_thread_resume_v2() 
         .write(codex_home.path())?;
     mount_analytics_capture(&server, codex_home.path()).await?;
 
-    let root_thread_id = CoreThreadId::new();
-    let root_thread_id_str = root_thread_id.to_string();
+    let root_thread_id_str = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T10-00-00",
+        "2025-01-05T10:00:00Z",
+        "Saved root message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let root_thread_id = CoreThreadId::from_string(&root_thread_id_str)?;
     let parent_thread_id = CoreThreadId::new();
     let parent_thread_id_str = parent_thread_id.to_string();
     let subagent_thread_id = create_fake_parented_rollout_with_source(
@@ -411,6 +418,10 @@ async fn turn_start_sends_nested_subagent_lineage_after_cold_thread_resume_v2() 
         Some(parent_thread_id_str.as_str())
     );
     assert_eq!(metadata["subagent_kind"].as_str(), Some("guardian"));
+    assert_eq!(
+        request.header("x-openai-subagent").as_deref(),
+        Some("guardian"),
+    );
     assert_eq!(
         metadata["session_id"].as_str(),
         Some(thread.session_id.as_str())
