@@ -3453,7 +3453,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
 
 #[test]
 fn untrusted_turn_item_cannot_retain_reserved_completion_id() {
-    let reserved_id = "msg_subagent_completion_completed_01900000-0000-7000-8000-000000000001";
+    let reserved_id = "msg_c_01900000-0000-7000-8000-000000000001";
     let agent_item = TurnItem::AgentMessage(AgentMessageItem {
         id: reserved_id.to_string(),
         content: vec![AgentMessageContent::Text {

@@ -77,8 +77,7 @@ fn background_subagent_completion_does_not_replace_final_message() {
     let completion =
         ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
             item: ThreadItem::AgentMessage {
-                id: "msg_subagent_completion_completed_01900000-0000-7000-8000-000000000001"
-                    .to_string(),
+                id: "msg_c_01900000-0000-7000-8000-000000000001".to_string(),
                 text: "Agent final answer from `/root/reviewer`:\n\nDone.".to_string(),
                 phase: Some(codex_protocol::models::MessagePhase::Commentary),
                 memory_citation: None,

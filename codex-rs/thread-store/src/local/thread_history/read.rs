@@ -222,7 +222,7 @@ WHERE thread_id = ?
   AND (
     item_id = ?
     OR item_id = ?
-    OR item_id GLOB 'msg_subagent_completion_*'
+    OR item_id GLOB 'msg_[cesn]_*'
     OR (
       json_extract(item_json, '$.type') = 'collabAgentToolCall'
       AND json_extract(item_json, '$.tool') = 'wait'

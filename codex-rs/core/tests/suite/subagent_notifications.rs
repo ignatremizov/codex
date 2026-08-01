@@ -302,6 +302,15 @@ fn has_subagent_notification(req: &ResponsesRequest) -> bool {
         .any(|text| text.contains("<subagent_notification>"))
 }
 
+fn assert_input_item_ids_within_provider_limit(request: &ResponsesRequest) {
+    let body = request.body_json();
+    for item in body["input"].as_array().into_iter().flatten() {
+        if let Some(id) = item["id"].as_str() {
+            assert!(id.len() <= 64, "input item ID exceeds provider limit: {id}");
+        }
+    }
+}
+
 fn sub_agent_completion_item(
     item: &TurnItem,
 ) -> Option<(String, SubAgentCompletionStatus, String, String)> {
@@ -1412,6 +1421,7 @@ async fn v2_completion_waits_for_pending_rollback_and_survives_cold_resume(
         normalize_agent_messages(request.inputs_of_type("agent_message")),
         normalize_agent_messages(expected_agent_messages)
     );
+    assert_input_item_ids_within_provider_limit(&request);
 
     Ok(())
 }
@@ -1495,6 +1505,9 @@ async fn subagent_notification_is_included_without_wait(
 
     let turn2_requests = wait_for_requests(&turn2).await?;
     assert!(turn2_requests.iter().any(has_subagent_notification));
+    turn2_requests
+        .iter()
+        .for_each(assert_input_item_ids_within_provider_limit);
 
     Ok(())
 }
@@ -4033,12 +4046,13 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
             "text": notification,
         }],
     })];
-    let _ = wait_for_agent_messages(
+    let request = wait_for_agent_messages(
         &agent_request,
         &expected_agent_messages,
         "expected completion delivery through active wait",
     )
     .await?;
+    assert_input_item_ids_within_provider_limit(&request);
     test.codex.flush_rollout().await?;
     let history = read_test_rollout_items(&test)?;
     let wait_agent_states = history
@@ -4111,6 +4125,7 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
         normalize_agent_messages(request.inputs_of_type("agent_message")),
         normalize_agent_messages(expected_agent_messages)
     );
+    assert_input_item_ids_within_provider_limit(&request);
 
     Ok(())
 }

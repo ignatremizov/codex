@@ -10,8 +10,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
-const SUB_AGENT_COMPLETION_ID_MARKER: &str = "_subagent_completion_";
-const SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX: &str = "amsg_subagent_completion_context";
+const SUB_AGENT_COMPLETION_ID_PREFIX: &str = "msg";
+const SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX: &str = "amsg_x";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_PREFIX: &str = "Agent final answer from `";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
 
@@ -39,19 +39,19 @@ impl SubAgentCompletionStatus {
 
     fn as_id_segment(self) -> &'static str {
         match self {
-            Self::Completed => "completed",
-            Self::Errored => "errored",
-            Self::Shutdown => "shutdown",
-            Self::NotFound => "not-found",
+            Self::Completed => "c",
+            Self::Errored => "e",
+            Self::Shutdown => "s",
+            Self::NotFound => "n",
         }
     }
 
     fn from_id_segment(segment: &str) -> Option<Self> {
         match segment {
-            "completed" => Some(Self::Completed),
-            "errored" => Some(Self::Errored),
-            "shutdown" => Some(Self::Shutdown),
-            "not-found" => Some(Self::NotFound),
+            "c" => Some(Self::Completed),
+            "e" => Some(Self::Errored),
+            "s" => Some(Self::Shutdown),
+            "n" => Some(Self::NotFound),
             _ => None,
         }
     }
@@ -66,7 +66,7 @@ pub struct SubAgentCompletionMetadata {
 
 fn new_sub_agent_completion_response_item_id(status: SubAgentCompletionStatus) -> ResponseItemId {
     let status = status.as_id_segment();
-    ResponseItemId::new(&format!("msg{SUB_AGENT_COMPLETION_ID_MARKER}{status}"))
+    ResponseItemId::new(&format!("{SUB_AGENT_COMPLETION_ID_PREFIX}_{status}"))
 }
 
 /// Creates the model-context item ID paired with a terminal presentation token.
@@ -80,29 +80,31 @@ pub fn new_sub_agent_completion_context_response_item_id() -> ResponseItemId {
 
 /// Returns whether a response item belongs to a completion context delivery.
 pub fn is_sub_agent_completion_context_response_item_id(id: &str) -> bool {
-    let Some(suffix) = id
-        .strip_prefix(SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX)
-        .and_then(|suffix| suffix.strip_prefix('_'))
-    else {
-        return false;
-    };
-    uuid::Uuid::parse_str(suffix)
-        .ok()
-        .is_some_and(|suffix| suffix.get_version() == Some(uuid::Version::SortRand))
+    has_uuid_v7_suffix(id, SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX)
 }
 
 /// Returns the terminal status encoded in a canonical background-completion item ID.
 pub fn sub_agent_completion_status_from_response_item_id(
     id: &str,
 ) -> Option<SubAgentCompletionStatus> {
-    let (prefix, suffix) = id.split_once(SUB_AGENT_COMPLETION_ID_MARKER)?;
-    if prefix != "msg" {
-        return None;
-    }
+    let suffix = id
+        .strip_prefix(SUB_AGENT_COMPLETION_ID_PREFIX)?
+        .strip_prefix('_')?;
     let (status, unique_suffix) = suffix.split_once('_')?;
     let status = SubAgentCompletionStatus::from_id_segment(status)?;
-    let unique_suffix = uuid::Uuid::parse_str(unique_suffix).ok()?;
-    (unique_suffix.get_version() == Some(uuid::Version::SortRand)).then_some(status)
+    has_uuid_v7(unique_suffix).then_some(status)
+}
+
+fn has_uuid_v7_suffix(id: &str, prefix: &str) -> bool {
+    id.strip_prefix(prefix)
+        .and_then(|suffix| suffix.strip_prefix('_'))
+        .is_some_and(has_uuid_v7)
+}
+
+fn has_uuid_v7(value: &str) -> bool {
+    uuid::Uuid::parse_str(value)
+        .ok()
+        .is_some_and(|uuid| uuid.get_version() == Some(uuid::Version::SortRand))
 }
 
 impl AgentMessageItem {

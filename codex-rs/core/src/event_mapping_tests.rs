@@ -466,7 +466,7 @@ fn parses_agent_message() {
 
 #[test]
 fn provider_agent_message_cannot_claim_reserved_completion_identity() {
-    let reserved_id = "msg_subagent_completion_completed_01900000-0000-7000-8000-000000000001";
+    let reserved_id = "msg_c_01900000-0000-7000-8000-000000000001";
     let item = ResponseItem::Message {
         id: Some(ResponseItemId::from_server(reserved_id.to_string())),
         role: "assistant".to_string(),
