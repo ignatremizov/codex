@@ -11,7 +11,7 @@ use serde::Serialize;
 use ts_rs::TS;
 
 const SUB_AGENT_COMPLETION_ID_PREFIX: &str = "msg";
-const SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX: &str = "amsg_x";
+const SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX: &str = "msg_x";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_PREFIX: &str = "Agent final answer from `";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
 

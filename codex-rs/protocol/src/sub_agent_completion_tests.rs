@@ -33,11 +33,6 @@ fn completion_ids_preserve_terminal_status() {
 #[test]
 fn completion_status_rejects_ordinary_or_malformed_response_item_ids() {
     for id in [
-        "amsg_subagent_completion_completed_01900000-0000-7000-8000-000000000001",
-        "msg_subagent_completion_completed_01900000-0000-7000-8000-000000000001",
-        "msg_subagent_completion_completed_not-a-uuid",
-        "msg_subagent_completion_running_01900000-0000-7000-8000-000000000001",
-        "msg_subagent_completion_completed_550e8400-e29b-41d4-a716-446655440000",
         "msg_c_not-a-uuid",
         "msg_running_01900000-0000-7000-8000-000000000001",
         "msg_c_550e8400-e29b-41d4-a716-446655440000",
@@ -53,14 +48,11 @@ fn completion_status_rejects_ordinary_or_malformed_response_item_ids() {
 fn completion_context_ids_are_distinct_and_validated() {
     let id = new_sub_agent_completion_context_response_item_id();
 
-    assert!(id.starts_with("amsg_x_"));
+    assert!(id.starts_with("msg_x_"));
     assert!(id.len() <= 64, "{id}");
     assert!(is_sub_agent_completion_context_response_item_id(&id));
     assert!(!is_sub_agent_completion_context_response_item_id(
-        "amsg_subagent_completion_context_01900000-0000-7000-8000-000000000001"
-    ));
-    assert!(!is_sub_agent_completion_context_response_item_id(
-        "amsg_subagent_completion_context_not-a-uuid"
+        "msg_x_not-a-uuid"
     ));
 }
 

@@ -302,11 +302,17 @@ fn has_subagent_notification(req: &ResponsesRequest) -> bool {
         .any(|text| text.contains("<subagent_notification>"))
 }
 
-fn assert_input_item_ids_within_provider_limit(request: &ResponsesRequest) {
+fn assert_input_item_ids_are_provider_compatible(request: &ResponsesRequest) {
     let body = request.body_json();
     for item in body["input"].as_array().into_iter().flatten() {
         if let Some(id) = item["id"].as_str() {
             assert!(id.len() <= 64, "input item ID exceeds provider limit: {id}");
+            if item["type"].as_str() == Some("message") {
+                assert!(
+                    id.starts_with("msg"),
+                    "message input item ID has invalid provider prefix: {id}"
+                );
+            }
         }
     }
 }
@@ -1421,7 +1427,7 @@ async fn v2_completion_waits_for_pending_rollback_and_survives_cold_resume(
         normalize_agent_messages(request.inputs_of_type("agent_message")),
         normalize_agent_messages(expected_agent_messages)
     );
-    assert_input_item_ids_within_provider_limit(&request);
+    assert_input_item_ids_are_provider_compatible(&request);
 
     Ok(())
 }
@@ -1507,7 +1513,7 @@ async fn subagent_notification_is_included_without_wait(
     assert!(turn2_requests.iter().any(has_subagent_notification));
     turn2_requests
         .iter()
-        .for_each(assert_input_item_ids_within_provider_limit);
+        .for_each(assert_input_item_ids_are_provider_compatible);
 
     Ok(())
 }
@@ -4052,7 +4058,7 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
         "expected completion delivery through active wait",
     )
     .await?;
-    assert_input_item_ids_within_provider_limit(&request);
+    assert_input_item_ids_are_provider_compatible(&request);
     test.codex.flush_rollout().await?;
     let history = read_test_rollout_items(&test)?;
     let wait_agent_states = history
@@ -4125,7 +4131,7 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
         normalize_agent_messages(request.inputs_of_type("agent_message")),
         normalize_agent_messages(expected_agent_messages)
     );
-    assert_input_item_ids_within_provider_limit(&request);
+    assert_input_item_ids_are_provider_compatible(&request);
 
     Ok(())
 }
