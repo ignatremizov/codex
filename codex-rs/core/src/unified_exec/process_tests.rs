@@ -1,10 +1,12 @@
 use super::process::UnifiedExecProcess;
 use crate::unified_exec::UnifiedExecError;
+use codex_exec_server::ExecOutputStream;
 use codex_exec_server::ExecProcess;
 use codex_exec_server::ExecProcessEventReceiver;
 use codex_exec_server::ExecProcessFuture;
 use codex_exec_server::ExecServerError;
 use codex_exec_server::ProcessId;
+use codex_exec_server::ProcessOutputChunk;
 use codex_exec_server::ProcessSignal;
 use codex_exec_server::ReadResponse;
 use codex_exec_server::StartedExecProcess;
@@ -212,4 +214,112 @@ async fn remote_process_preserves_executor_sandbox_type() {
         .await;
         assert_eq!(process.sandbox_type(), sandbox_type);
     }
+}
+
+#[tokio::test]
+async fn exec_server_replay_gap_is_recorded_as_omitted_output() {
+    let output_buffer = Arc::new(Mutex::new(super::process::OutputBuffers::default()));
+    let output_notify = Arc::new(tokio::sync::Notify::new());
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(/*buffer*/ 3);
+    let mut next_output_offset = 0;
+
+    super::process::record_exec_server_output_chunk(
+        &output_buffer,
+        &output_tx,
+        &output_notify,
+        &mut next_output_offset,
+        ProcessOutputChunk {
+            seq: 1,
+            output_offset: 0,
+            stream: ExecOutputStream::Stdout,
+            chunk: b"before".to_vec().into(),
+        },
+    )
+    .await;
+    super::process::record_exec_server_output_chunk(
+        &output_buffer,
+        &output_tx,
+        &output_notify,
+        &mut next_output_offset,
+        ProcessOutputChunk {
+            seq: 3,
+            output_offset: 12,
+            stream: ExecOutputStream::Stdout,
+            chunk: b"after".to_vec().into(),
+        },
+    )
+    .await;
+
+    let transcript_state = {
+        let buffers = output_buffer.lock().await;
+        assert_eq!(buffers.pending, buffers.transcript);
+        let transcript = &buffers.transcript;
+        (
+            transcript.omitted_bytes(),
+            transcript.to_bytes_with_omission_marker(),
+            next_output_offset,
+        )
+    };
+    assert_eq!(
+        transcript_state,
+        (6, b"before\n... 6 bytes omitted ...\nafter".to_vec(), 17,)
+    );
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), output_rx.recv())
+            .await
+            .expect("streamed replay prefix should arrive"),
+        Some(b"before".to_vec())
+    );
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), output_rx.recv())
+            .await
+            .expect("streamed replay should arrive"),
+        Some(b"\n... 6 bytes omitted ...\n".to_vec())
+    );
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), output_rx.recv())
+            .await
+            .expect("streamed replay tail should arrive"),
+        Some(b"after".to_vec())
+    );
+}
+
+#[tokio::test]
+async fn replay_gap_and_received_chunk_are_retained_before_backpressured_delta_delivery() {
+    let buffers = Arc::new(Mutex::new(super::process::OutputBuffers::default()));
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let (tx, _rx) = tokio::sync::mpsc::channel(/*buffer*/ 1);
+    tx.send(b"occupied".to_vec())
+        .await
+        .expect("fill live delivery queue");
+    let mut next_offset = 4;
+    let mut delivery = Box::pin(super::process::record_exec_server_output_chunk(
+        &buffers,
+        &tx,
+        &notify,
+        &mut next_offset,
+        ProcessOutputChunk {
+            seq: 3,
+            output_offset: 10,
+            stream: ExecOutputStream::Stdout,
+            chunk: b"received".to_vec().into(),
+        },
+    ));
+    assert!(futures::poll!(delivery.as_mut()).is_pending());
+    drop(delivery);
+    let mut buffers = buffers.lock().await;
+    let expected = b"\n... 6 bytes omitted ...\nreceived".to_vec();
+    assert_eq!(buffers.pending, buffers.transcript);
+    assert_eq!(
+        (
+            buffers.pending.total_bytes(),
+            buffers.pending.to_bytes_with_omission_marker(),
+            next_offset
+        ),
+        (14, expected.clone(), 18)
+    );
+    let drained = buffers.pending.drain();
+    assert_eq!(drained.to_bytes_with_omission_marker(), expected);
+    assert_eq!(buffers.pending.total_bytes(), 0);
+    assert_eq!(buffers.transcript.to_bytes_with_omission_marker(), expected);
 }
