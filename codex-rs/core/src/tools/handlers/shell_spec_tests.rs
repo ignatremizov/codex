@@ -29,11 +29,7 @@ fn exec_command_tool_matches_expected_spec() {
         "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
             .to_string()
     };
-    let yield_time_ms_description = if cfg!(windows) {
-        "Initial wait for exec_command before returning a session ID for a still-running command. Commands that finish sooner return immediately. Omit this parameter to use configured unified_exec_yield_time_ms (10000 ms when unset). Effective range on Windows is 10000-30000 ms. Later waits use write_stdin."
-    } else {
-        "Initial wait for exec_command before yielding output. Effective range is 250-30000 ms. Later waits use write_stdin."
-    };
+    let yield_time_ms_description = "Initial wait for exec_command before returning a session ID for a still-running command. Commands that finish sooner return immediately. Omit this parameter to use configured unified_exec_yield_time_ms (10000 ms when unset). Effective range is 5000-30000 ms for POSIX targets and 10000-30000 ms for Windows targets. Later waits use write_stdin.";
 
     let mut properties = BTreeMap::from([
         (

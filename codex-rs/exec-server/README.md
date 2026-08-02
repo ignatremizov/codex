@@ -231,6 +231,12 @@ Response:
 }
 ```
 
+Each returned chunk includes `outputOffset`, the zero-based byte offset of that
+chunk in the combined process output stream. Clients can compare it with the
+number of bytes already observed to account for output evicted from the bounded
+replay buffer. Older servers may omit this field, in which case it defaults to
+zero for compatibility.
+
 ### `process/write`
 
 Writes raw bytes to a running process stdin.
@@ -299,6 +305,7 @@ Params:
 {
   "processId": "proc-1",
   "seq": 1,
+  "outputOffset": 0,
   "stream": "stdout",
   "chunk": "aGVsbG8K"
 }
@@ -308,6 +315,7 @@ Fields:
 
 - `processId`: process identifier
 - `seq`: per-process output sequence number
+- `outputOffset`: zero-based byte offset in the combined process output stream
 - `stream`: `"stdout"`, `"stderr"`, or `"pty"`
 - `chunk`: base64-encoded output bytes
 

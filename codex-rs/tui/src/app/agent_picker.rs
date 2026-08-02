@@ -123,6 +123,7 @@ impl App {
                 continue;
             }
             let agent_path = crate::app_server_session::source_agent_path(&thread.source);
+            let parent_thread_id = crate::app_server_session::thread_parent_thread_id(&thread);
             let agent_nickname = thread
                 .agent_nickname
                 .or_else(|| previous.and_then(|entry| entry.agent_nickname.clone()));
@@ -131,6 +132,8 @@ impl App {
                 .or_else(|| previous.and_then(|entry| entry.agent_role.clone()));
             self.upsert_agent_picker_thread(thread_id, agent_nickname, agent_role, is_closed);
             self.agent_navigation.set_agent_path(thread_id, agent_path);
+            self.agent_navigation
+                .set_parent_thread_id(thread_id, parent_thread_id);
             if !live && update_liveness {
                 self.agent_navigation.set_running(thread_id, is_running);
             }

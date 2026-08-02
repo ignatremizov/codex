@@ -135,7 +135,8 @@ impl App {
             return;
         }
         if side_return_shortcut_matches(key_event)
-            && self.maybe_return_from_side(tui, app_server).await
+            && (self.maybe_return_from_side(tui, app_server).await
+                || self.maybe_return_from_closed_agent(tui, app_server).await)
         {
             return;
         }
