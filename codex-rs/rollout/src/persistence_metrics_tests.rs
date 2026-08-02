@@ -352,6 +352,38 @@ fn wait_item_that_owns_completion_is_persisted_in_both_history_modes() {
 }
 
 #[test]
+fn send_input_item_is_persisted_in_both_history_modes() {
+    let receiver_thread_id = ThreadId::new();
+    let item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: ThreadId::new(),
+        turn_id: "turn".to_string(),
+        item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+            id: "send-input-call".to_string(),
+            tool: CollabAgentTool::SendInput,
+            status: CollabAgentToolCallStatus::Completed,
+            deadline_at_ms: None,
+            sender_thread_id: ThreadId::new(),
+            receiver_thread_ids: vec![receiver_thread_id],
+            receiver_agents: Vec::new(),
+            prompt: Some("Reply with the ingredient.".to_string()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::from([(receiver_thread_id, AgentStatus::Running)]),
+            completion_presentation_agent_ids: None,
+        }),
+        started_at_ms: Some(0),
+        completed_at_ms: 1,
+    }));
+
+    for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        assert!(crate::policy::is_persisted_rollout_item(
+            &item,
+            history_mode
+        ));
+    }
+}
+
+#[test]
 fn review_mode_persistence_depends_on_history_mode() {
     let completed_items = vec![
         RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
