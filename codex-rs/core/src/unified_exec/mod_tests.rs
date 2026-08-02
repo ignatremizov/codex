@@ -11,6 +11,7 @@ use crate::session::tests::update_selected_settings_for_test;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::unified_exec::WriteStdinRequest;
+use crate::unified_exec::async_watcher::start_streaming_output;
 use codex_exec_server::ExecProcess;
 use codex_exec_server::ExecProcessEventReceiver;
 use codex_exec_server::ExecProcessFuture;
@@ -134,6 +135,7 @@ async fn exec_command_with_tty(
         tokio_util::sync::CancellationToken::new(),
         "call".to_string(),
     );
+    start_streaming_output(&process, &context);
     let started_at = Instant::now();
     let process_started_alive = !process.has_exited() && process.exit_code().is_none();
     if process_started_alive {
@@ -690,6 +692,13 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyho
             Arc::clone(&allow_terminate),
         )
         .await?;
+        let context = UnifiedExecContext::new(
+            Arc::clone(&session),
+            crate::session::step_context::StepContext::for_test(Arc::clone(&turn)),
+            CancellationToken::new(),
+            "call".to_string(),
+        );
+        start_streaming_output(&process, &context);
         #[allow(deprecated)]
         let cwd = turn.cwd.clone();
         let last_used = Instant::now() - Duration::from_secs(1);
@@ -913,6 +922,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
 async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> {
     use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
     use crate::tools::sandboxing::ToolError;
+    use anyhow::Context;
     use codex_features::Feature;
     use codex_protocol::config_types::ApprovalsReviewer;
     use codex_protocol::protocol::AskForApproval;
@@ -957,13 +967,33 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
         entry.cwd = cwd.clone();
         Arc::clone(&entry.process)
     };
-    // Empty polling must complete without an approval response.
-    // The test deadline must allow the minimum empty-poll wait.
-    tokio::time::timeout(
-        Duration::from_millis(MIN_EMPTY_YIELD_TIME_MS) + Duration::from_secs(/*secs*/ 5),
+    // A queued write must acquire the terminal lock before reading active strict
+    // mode: code-mode calls can enable it while another interaction is draining.
+    {
+        let interaction = original.interaction_lock().lock_owned().await;
+        let _active_turn = session.active_turn.lock().await;
+        let mut queued = Box::pin(write_stdin(
+            &session, &turn, process_id, "queued\n", /*yield_time_ms*/ 250,
+        ));
+        let mut task_context = std::task::Context::from_waker(futures::task::noop_waker_ref());
+        assert!(queued.as_mut().poll(&mut task_context).is_pending());
+        drop(interaction);
+        assert!(queued.as_mut().poll(&mut task_context).is_pending());
+        assert!(original.interaction_lock().try_lock_owned().is_err());
+    }
+    // Empty polling must complete without an approval response. Its requested 250ms
+    // yield is clamped to the empty-poll minimum, so the watchdog must start beyond
+    // that intentional wait rather than racing the same five-second deadline.
+    let empty_poll_wait = Duration::from_millis(
+        manager.effective_write_stdin_yield_time_ms("", /*yield_time_ms*/ 250),
+    );
+    let polled = tokio::time::timeout(
+        empty_poll_wait + Duration::from_secs(/*secs*/ 5),
         write_stdin(&session, &turn, process_id, "", /*yield_time_ms*/ 250),
     )
-    .await??;
+    .await
+    .context("empty terminal poll did not complete after its effective yield deadline")??;
+    assert_eq!(polled.process_id, Some(process_id));
     let input = "rejected\n";
     let denied = write_stdin(
         &session, &turn, process_id, input, /*yield_time_ms*/ 250,

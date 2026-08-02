@@ -85,9 +85,9 @@ use crate::telemetry::ExecServerTelemetry;
 use crate::telemetry::ProcessMetricGuard;
 
 const RETAINED_OUTPUT_BYTES_PER_PROCESS: usize = 1024 * 1024;
-// Each process/read chunk needs four JSON values. Keep retained replay below the
+// Each process/read chunk needs five JSON values. Keep retained replay below the
 // shared 256K-value JSON-RPC decoder budget even when output arrives in tiny chunks.
-const RETAINED_OUTPUT_CHUNKS_PER_PROCESS: usize = 50_000;
+const RETAINED_OUTPUT_CHUNKS_PER_PROCESS: usize = 40_000;
 const NOTIFICATION_CHANNEL_CAPACITY: usize = 256;
 const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 256;
 const RETAINED_STDIN_WRITE_IDS_PER_PROCESS: usize = 4096;
@@ -105,6 +105,7 @@ struct RunningProcess {
     output: VecDeque<ProcessOutputChunk>,
     retained_bytes: usize,
     next_seq: u64,
+    next_output_offset: u64,
     exit_code: Option<i32>,
     wake_tx: watch::Sender<u64>,
     events: ExecProcessEventLog,
@@ -477,6 +478,7 @@ impl LocalProcess {
                     output: VecDeque::new(),
                     retained_bytes: 0,
                     next_seq: 1,
+                    next_output_offset: 0,
                     exit_code: None,
                     wake_tx: wake_tx.clone(),
                     events: events.clone(),
@@ -1009,9 +1011,24 @@ async fn stream_output(
             };
             let seq = process.next_seq;
             process.next_seq += 1;
-            process.retained_bytes += chunk.0.len();
-            let output = ProcessOutputChunk { seq, stream, chunk };
-            process.output.push_back(output.clone());
+            let output_offset = process.next_output_offset;
+            process.next_output_offset = process
+                .next_output_offset
+                .saturating_add(u64::try_from(chunk.0.len()).unwrap_or(u64::MAX));
+            let retained_start = chunk
+                .0
+                .len()
+                .saturating_sub(RETAINED_OUTPUT_BYTES_PER_PROCESS);
+            let retained_chunk = chunk.0[retained_start..].to_vec();
+            let retained_output_offset =
+                output_offset.saturating_add(u64::try_from(retained_start).unwrap_or(u64::MAX));
+            process.retained_bytes += retained_chunk.len();
+            process.output.push_back(ProcessOutputChunk {
+                seq,
+                output_offset: retained_output_offset,
+                stream,
+                chunk: retained_chunk.into(),
+            });
             while process.retained_bytes > RETAINED_OUTPUT_BYTES_PER_PROCESS
                 || process.output.len() > RETAINED_OUTPUT_CHUNKS_PER_PROCESS
             {
@@ -1022,12 +1039,19 @@ async fn stream_output(
                     process.retained_bytes.saturating_sub(evicted.chunk.0.len());
             }
             let _ = process.wake_tx.send(seq);
+            let output = ProcessOutputChunk {
+                seq,
+                output_offset,
+                stream,
+                chunk,
+            };
             process
                 .events
                 .publish(ExecProcessEvent::Output(output.clone()));
             ExecOutputDeltaNotification {
                 process_id: process_id.clone(),
                 seq,
+                output_offset,
                 stream,
                 chunk: output.chunk,
             }
@@ -1776,6 +1800,7 @@ mod tests {
             late_response.chunks,
             vec![ProcessOutputChunk {
                 seq: 2,
+                output_offset: 0,
                 stream: ExecOutputStream::Stdout,
                 chunk: b"late output after retention\n".to_vec().into(),
             }]
@@ -1819,12 +1844,14 @@ mod tests {
             running.output = (1..=retained_chunk_count)
                 .map(|seq| ProcessOutputChunk {
                     seq,
+                    output_offset: seq.saturating_sub(/*rhs*/ 1),
                     stream: ExecOutputStream::Stdout,
                     chunk: vec![b'x'].into(),
                 })
                 .collect();
             running.retained_bytes = RETAINED_OUTPUT_CHUNKS_PER_PROCESS;
             running.next_seq = retained_chunk_count + 1;
+            running.next_output_offset = retained_chunk_count;
         }
 
         process
@@ -1863,12 +1890,14 @@ mod tests {
         let mut expected_chunks = (2..=retained_chunk_count)
             .map(|seq| ProcessOutputChunk {
                 seq,
+                output_offset: seq.saturating_sub(/*rhs*/ 1),
                 stream: ExecOutputStream::Stdout,
                 chunk: vec![b'x'].into(),
             })
             .collect::<Vec<_>>();
         expected_chunks.push(ProcessOutputChunk {
             seq: retained_chunk_count + 1,
+            output_offset: retained_chunk_count,
             stream: ExecOutputStream::Stdout,
             chunk: vec![b'y'].into(),
         });
@@ -1894,6 +1923,34 @@ mod tests {
             .expect("retained process/read response should fit the JSON value budget");
         assert_eq!(decoded, message);
 
+        backend.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn process_read_retains_offset_bearing_tail_of_oversized_chunk() {
+        let backend = LocalProcess::default();
+        let process = spawn_test_process(&backend, "proc-oversized-output").await;
+        let prefix_len = 4usize;
+        let mut output = vec![b'x'; RETAINED_OUTPUT_BYTES_PER_PROCESS + prefix_len];
+        output[..prefix_len].copy_from_slice(b"drop");
+        process
+            .stdout_tx
+            .send(output)
+            .await
+            .expect("send oversized output");
+
+        let response =
+            read_process_until_change(&backend, &process.process_id, /*after_seq*/ None).await;
+
+        assert_eq!(
+            response.chunks,
+            vec![ProcessOutputChunk {
+                seq: 1,
+                output_offset: u64::try_from(prefix_len).expect("prefix length should fit in u64"),
+                stream: ExecOutputStream::Stdout,
+                chunk: vec![b'x'; RETAINED_OUTPUT_BYTES_PER_PROCESS].into(),
+            }]
+        );
         backend.shutdown().await;
     }
 
@@ -2100,6 +2157,7 @@ mod tests {
                 output: VecDeque::new(),
                 retained_bytes: 0,
                 next_seq: 1,
+                next_output_offset: 0,
                 exit_code: None,
                 wake_tx: wake_tx.clone(),
                 events: events.clone(),
