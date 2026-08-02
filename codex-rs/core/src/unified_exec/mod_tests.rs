@@ -10,6 +10,7 @@ use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::unified_exec::WriteStdinRequest;
+use crate::unified_exec::async_watcher::start_streaming_output;
 use crate::unified_exec::process::OutputHandles;
 use codex_exec_server::ExecProcess;
 use codex_exec_server::ExecProcessEventReceiver;
@@ -127,6 +128,7 @@ async fn exec_command_with_tty(
     );
     let context =
         UnifiedExecContext::new(Arc::clone(session), Arc::clone(turn), "call".to_string());
+    start_streaming_output(&process, &context);
     let started_at = Instant::now();
     let process_started_alive = !process.has_exited() && process.exit_code().is_none();
     if process_started_alive {
@@ -681,6 +683,9 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
         Arc::clone(&allow_terminate),
     )
     .await?;
+    let context =
+        UnifiedExecContext::new(Arc::clone(&session), Arc::clone(&turn), "call".to_string());
+    start_streaming_output(&process, &context);
     #[allow(deprecated)]
     let cwd = turn.cwd.clone();
     let last_used = Instant::now() - Duration::from_secs(1);
@@ -728,7 +733,7 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
     allow_terminate.notify_one();
     process.terminate_confirmed().await?;
 
-    let output = tokio::time::timeout(Duration::from_secs(2), poll_task)
+    let output = tokio::time::timeout(Duration::from_secs(3), poll_task)
         .await
         .expect("poll should finish")
         .expect("poll task should not panic")?;

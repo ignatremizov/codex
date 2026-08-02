@@ -44,6 +44,8 @@ pub(crate) struct AgentNavigationState {
     threads: HashMap<ThreadId, AgentPickerThreadEntry>,
     /// Stable first-seen traversal order for picker rows and keyboard cycling.
     order: Vec<ThreadId>,
+    /// Immediate parent for each spawned subagent thread.
+    parent_threads: HashMap<ThreadId, ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
@@ -184,6 +186,25 @@ impl AgentNavigationState {
         }
     }
 
+    pub(crate) fn set_parent_thread_id(
+        &mut self,
+        thread_id: ThreadId,
+        parent_thread_id: Option<ThreadId>,
+    ) {
+        match parent_thread_id {
+            Some(parent_thread_id) => {
+                self.parent_threads.insert(thread_id, parent_thread_id);
+            }
+            None => {
+                self.parent_threads.remove(&thread_id);
+            }
+        }
+    }
+
+    pub(crate) fn parent_thread_id(&self, thread_id: ThreadId) -> Option<ThreadId> {
+        self.parent_threads.get(&thread_id).copied()
+    }
+
     /// Marks a thread as closed without removing it from the traversal cache.
     ///
     /// Closed threads stay in the picker and in spawn order so users can still review them and so
@@ -209,6 +230,7 @@ impl AgentNavigationState {
     pub(crate) fn clear(&mut self) {
         self.threads.clear();
         self.order.clear();
+        self.parent_threads.clear();
         self.stopped_threads.clear();
         self.picker_refresh = None;
     }
@@ -221,6 +243,7 @@ impl AgentNavigationState {
     pub(crate) fn remove(&mut self, thread_id: ThreadId) {
         self.threads.remove(&thread_id);
         self.order.retain(|candidate| *candidate != thread_id);
+        self.parent_threads.remove(&thread_id);
         self.stopped_threads.remove(&thread_id);
     }
 
@@ -424,6 +447,27 @@ mod tests {
             state.ordered_thread_ids(),
             vec![main_thread_id, first_agent_id, second_agent_id]
         );
+    }
+
+    #[test]
+    fn parent_thread_id_tracks_immediate_parent_until_removal() {
+        let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
+
+        state.set_parent_thread_id(first_agent_id, Some(main_thread_id));
+        state.set_parent_thread_id(second_agent_id, Some(first_agent_id));
+
+        assert_eq!(
+            state.parent_thread_id(second_agent_id),
+            Some(first_agent_id)
+        );
+        state.remove(first_agent_id);
+        assert_eq!(state.parent_thread_id(first_agent_id), None);
+        assert_eq!(
+            state.parent_thread_id(second_agent_id),
+            Some(first_agent_id)
+        );
+        state.clear();
+        assert_eq!(state.parent_thread_id(second_agent_id), None);
     }
 
     #[test]

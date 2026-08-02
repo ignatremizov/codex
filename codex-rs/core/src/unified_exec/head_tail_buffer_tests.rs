@@ -1,4 +1,6 @@
 use super::HeadTailBuffer;
+use super::MAX_UPSTREAM_OMISSION_BOUNDARIES;
+use super::MAX_UPSTREAM_OMISSION_BOUNDARIES_PER_REGION;
 
 use pretty_assertions::assert_eq;
 
@@ -59,6 +61,131 @@ fn draining_resets_state_and_push_buffer_preserves_omissions() {
     assert_eq!(collected.to_bytes(), b"01234789ab".to_vec());
     assert_eq!(collected.omitted_bytes(), 2);
     assert_eq!(collected.total_bytes(), 12);
+}
+
+#[test]
+fn upstream_omission_stays_at_append_boundary() {
+    let mut buf = HeadTailBuffer::new(/*max_bytes*/ 128);
+    buf.push_chunk(b"before".to_vec());
+    buf.push_upstream_omission(/*omitted_bytes*/ 6);
+    buf.push_chunk(b"after".to_vec());
+
+    assert_eq!(
+        (
+            buf.to_bytes_with_omission_marker(),
+            buf.omitted_bytes(),
+            buf.total_bytes(),
+        ),
+        (b"before\n... 6 bytes omitted ...\nafter".to_vec(), 6, 17,)
+    );
+}
+
+#[test]
+fn truncated_upstream_boundary_does_not_count_marker_text_as_output() {
+    let mut buf = HeadTailBuffer::new(/*max_bytes*/ 10);
+    buf.push_chunk(b"abcdefgh".to_vec());
+    buf.push_upstream_omission(/*omitted_bytes*/ 6);
+    buf.push_chunk(b"0123456789".to_vec());
+
+    assert_eq!(
+        (
+            buf.to_bytes_with_omission_marker(),
+            buf.omitted_bytes(),
+            buf.total_bytes(),
+        ),
+        (b"abcde\n... 14 bytes omitted ...\n56789".to_vec(), 14, 24)
+    );
+    assert_eq!(buf.middle_upstream_omitted_bytes, 6);
+    assert!(buf.upstream_omissions.is_empty());
+}
+
+#[test]
+fn upstream_omissions_in_truncated_middle_are_aggregated() {
+    let omission_count = MAX_UPSTREAM_OMISSION_BOUNDARIES + 100;
+    let mut buf = HeadTailBuffer::new(/*max_bytes*/ 10);
+    for _ in 0..omission_count {
+        buf.push_chunk(b"x".to_vec());
+        buf.push_upstream_omission(/*omitted_bytes*/ 1);
+    }
+
+    assert_eq!(
+        (buf.retained_bytes(), buf.omitted_bytes(), buf.total_bytes()),
+        (10, omission_count * 2 - 10, omission_count * 2)
+    );
+    assert!(buf.middle_upstream_omitted_bytes > 0);
+    assert!(buf.upstream_omissions.len() <= MAX_UPSTREAM_OMISSION_BOUNDARIES);
+}
+
+#[test]
+fn upstream_omissions_at_same_boundary_are_coalesced() {
+    let omission_count = MAX_UPSTREAM_OMISSION_BOUNDARIES + 100;
+    let mut buf = HeadTailBuffer::new(/*max_bytes*/ 10);
+    buf.push_chunk(b"x".to_vec());
+    for _ in 0..omission_count {
+        buf.push_upstream_omission(/*omitted_bytes*/ 1);
+    }
+
+    assert_eq!(
+        (
+            buf.omitted_bytes(),
+            buf.upstream_omissions.len(),
+            buf.to_bytes_with_omission_marker(),
+        ),
+        (
+            omission_count,
+            1,
+            format!("x\n... {omission_count} bytes omitted ...\n").into_bytes(),
+        )
+    );
+}
+
+#[test]
+fn retained_upstream_omission_boundaries_are_bounded() {
+    let omission_count = MAX_UPSTREAM_OMISSION_BOUNDARIES_PER_REGION + 100;
+    let unpositioned_omission_count = omission_count - MAX_UPSTREAM_OMISSION_BOUNDARIES_PER_REGION;
+    let mut buf = HeadTailBuffer::new(/*max_bytes*/ omission_count * 2);
+    for _ in 0..omission_count {
+        buf.push_chunk(b"x".to_vec());
+        buf.push_upstream_omission(/*omitted_bytes*/ 1);
+    }
+
+    assert_eq!(
+        (
+            buf.retained_bytes(),
+            buf.omitted_bytes(),
+            buf.total_bytes(),
+            buf.upstream_omissions.len(),
+        ),
+        (
+            omission_count,
+            omission_count,
+            omission_count * 2,
+            MAX_UPSTREAM_OMISSION_BOUNDARIES_PER_REGION,
+        )
+    );
+    let rendered = buf.to_bytes_with_omission_marker();
+    let unpositioned_notice = format!(
+        "Warning: {unpositioned_omission_count} bytes were omitted at multiple locations in retained process output.\n"
+    );
+    assert_eq!(
+        (
+            buf.unpositioned_upstream_omitted_bytes,
+            buf.upstream_omissions
+                .first()
+                .map(|omission| omission.output_bytes_before),
+            String::from_utf8_lossy(&rendered).starts_with(unpositioned_notice.as_str()),
+            rendered
+                .windows(b"bytes omitted".len())
+                .filter(|window| *window == b"bytes omitted")
+                .count(),
+        ),
+        (
+            unpositioned_omission_count,
+            Some(unpositioned_omission_count + 1),
+            true,
+            MAX_UPSTREAM_OMISSION_BOUNDARIES_PER_REGION,
+        )
+    );
 }
 
 #[test]

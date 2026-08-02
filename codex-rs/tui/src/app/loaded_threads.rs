@@ -27,6 +27,7 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoadedSubagentThread {
     pub(crate) thread_id: ThreadId,
+    pub(crate) parent_thread_id: ThreadId,
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
     pub(crate) agent_path: Option<String>,
@@ -84,16 +85,17 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
     let mut loaded_threads: Vec<LoadedSubagentThread> = included
         .into_iter()
         .filter_map(|thread_id| {
-            threads_by_id
-                .remove(&thread_id)
-                .map(|thread| LoadedSubagentThread {
-                    is_running: matches!(&thread.status, ThreadStatus::Active { .. }),
-                    is_closed: matches!(&thread.status, ThreadStatus::NotLoaded),
-                    thread_id,
-                    agent_nickname: thread.agent_nickname,
-                    agent_role: thread.agent_role,
-                    agent_path: thread_spawn_agent_path(&thread.source),
-                })
+            let thread = threads_by_id.remove(&thread_id)?;
+            let parent_thread_id = thread_spawn_parent_thread_id(&thread.source)?;
+            Some(LoadedSubagentThread {
+                is_running: matches!(&thread.status, ThreadStatus::Active { .. }),
+                is_closed: matches!(&thread.status, ThreadStatus::NotLoaded),
+                thread_id,
+                parent_thread_id,
+                agent_nickname: thread.agent_nickname,
+                agent_role: thread.agent_role,
+                agent_path: thread_spawn_agent_path(&thread.source),
+            })
         })
         .collect();
     loaded_threads.sort_by_key(|thread| thread.thread_id.to_string());
@@ -229,6 +231,7 @@ mod tests {
             vec![
                 LoadedSubagentThread {
                     thread_id: child_thread_id,
+                    parent_thread_id: primary_thread_id,
                     agent_nickname: Some("Scout".to_string()),
                     agent_role: Some("explorer".to_string()),
                     agent_path: None,
@@ -237,6 +240,7 @@ mod tests {
                 },
                 LoadedSubagentThread {
                     thread_id: grandchild_thread_id,
+                    parent_thread_id: child_thread_id,
                     agent_nickname: Some("Atlas".to_string()),
                     agent_role: Some("worker".to_string()),
                     agent_path: None,

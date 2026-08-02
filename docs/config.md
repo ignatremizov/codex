@@ -202,6 +202,9 @@ unified_exec_write_stdin_yield_time_ms = 250 # write_stdin polling window
 
 If unset, Codex uses the built-in defaults (10,000 ms initial snapshot window for `exec_command`,
 250 ms polling window for `write_stdin`).
+Explicit initial `exec_command` yield windows below 5,000 ms are raised to 5,000 ms for POSIX
+execution targets. Windows execution targets have a 10,000 ms minimum, including when the target
+runs on a different host from Codex.
 
 Empty `write_stdin` calls are background terminal polls. By default, their `yield_time_ms` wait is
 not capped. To impose a maximum poll window:

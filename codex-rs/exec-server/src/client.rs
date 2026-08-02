@@ -197,6 +197,7 @@ struct NetworkPolicyDecisionController {
 #[derive(Default)]
 struct OrderedSessionEvents {
     last_published_seq: u64,
+    next_output_offset: u64,
     exit_published: bool,
     closed_published: bool,
     // Server-side output, exit, and closed notifications are emitted by
@@ -1218,6 +1219,21 @@ impl SessionState {
                 .pending_bytes
                 .saturating_sub(pending_process_event_bytes(&event));
             ordered_events.last_published_seq = next_seq;
+            if let ExecProcessEvent::Output(chunk) = &event {
+                let output_offset =
+                    if chunk.output_offset == 0 && ordered_events.next_output_offset > 0 {
+                        // Legacy servers omit outputOffset, so keep their chunks sequential.
+                        ordered_events.next_output_offset
+                    } else {
+                        chunk.output_offset
+                    };
+                ordered_events.next_output_offset =
+                    ordered_events
+                        .next_output_offset
+                        .max(output_offset.saturating_add(
+                            u64::try_from(chunk.chunk.0.len()).unwrap_or(u64::MAX),
+                        ));
+            }
             ordered_events.exit_published |= matches!(&event, ExecProcessEvent::Exited { .. });
             let is_closed = matches!(&event, ExecProcessEvent::Closed { .. });
             ordered_events.closed_published |= is_closed;
@@ -1542,6 +1558,7 @@ async fn handle_server_notification(
                 let result =
                     session.publish_ordered_event(ExecProcessEvent::Output(ProcessOutputChunk {
                         seq: params.seq,
+                        output_offset: params.output_offset,
                         stream: params.stream,
                         chunk: params.chunk,
                     }));
@@ -2142,6 +2159,7 @@ mod tests {
                     serde_json::to_value(ExecOutputDeltaNotification {
                         process_id: process_id.clone(),
                         seq: 1,
+                        output_offset: 0,
                         stream: ExecOutputStream::Stdout,
                         chunk: b"one".to_vec().into(),
                     })
@@ -2166,6 +2184,7 @@ mod tests {
                     serde_json::to_value(ExecOutputDeltaNotification {
                         process_id: process_id.clone(),
                         seq: 2,
+                        output_offset: 3,
                         stream: ExecOutputStream::Stderr,
                         chunk: b"two".to_vec().into(),
                     })
@@ -2194,11 +2213,13 @@ mod tests {
             vec![
                 ExecProcessEvent::Output(ProcessOutputChunk {
                     seq: 1,
+                    output_offset: 0,
                     stream: ExecOutputStream::Stdout,
                     chunk: b"one".to_vec().into(),
                 }),
                 ExecProcessEvent::Output(ProcessOutputChunk {
                     seq: 2,
+                    output_offset: 3,
                     stream: ExecOutputStream::Stderr,
                     chunk: b"two".to_vec().into(),
                 }),
@@ -2505,6 +2526,9 @@ mod tests {
                             serde_json::to_value(ExecOutputDeltaNotification {
                                 process_id: ProcessId::from("busy-process"),
                                 seq,
+                                output_offset: seq
+                                    .saturating_sub(/*rhs*/ 1)
+                                    .saturating_mul(/*rhs*/ 6),
                                 stream: ExecOutputStream::Stdout,
                                 chunk: b"output".to_vec().into(),
                             })
@@ -2815,6 +2839,7 @@ mod tests {
                         serde_json::to_value(ExecOutputDeltaNotification {
                             process_id: noisy_process_id.clone(),
                             seq,
+                            output_offset: seq.saturating_sub(/*rhs*/ 1),
                             stream: ExecOutputStream::Stdout,
                             chunk: b"x".to_vec().into(),
                         })

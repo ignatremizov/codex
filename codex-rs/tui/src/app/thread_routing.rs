@@ -7,7 +7,7 @@
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
 use crate::chatwidget::ThreadInputStateRestoreMode;
-use crate::session_resume::read_session_model;
+use crate::session_resume::read_saved_model_settings;
 use codex_app_server_protocol::ThreadRollbackResponse;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
@@ -1219,12 +1219,16 @@ impl App {
         session
             .set_cwd_retargeting_implicit_runtime_workspace_root(notification.thread.cwd.clone());
         let rollout_path = notification.thread.path.clone();
-        if let Some(model) =
-            read_session_model(self.state_db.as_deref(), thread_id, rollout_path.as_deref()).await
-        {
+        let saved_model_settings =
+            read_saved_model_settings(self.state_db.as_deref(), thread_id, rollout_path.as_deref())
+                .await;
+        if let Some(model) = saved_model_settings.model {
             session.model = model;
         } else if rollout_path.is_some() {
             session.model.clear();
+        }
+        if saved_model_settings.reasoning_effort.is_some() || rollout_path.is_some() {
+            session.reasoning_effort = saved_model_settings.reasoning_effort;
         }
         session.message_history = None;
         session.rollout_path = rollout_path;
@@ -1233,6 +1237,10 @@ impl App {
             notification.thread.agent_nickname.clone(),
             notification.thread.agent_role.clone(),
             /*is_closed*/ false,
+        );
+        self.agent_navigation.set_parent_thread_id(
+            thread_id,
+            crate::app_server_session::thread_parent_thread_id(&notification.thread),
         );
         Some(session)
     }
@@ -1459,7 +1467,30 @@ impl App {
         is_replay_only: bool,
         snapshot: &mut ThreadEventSnapshot,
     ) {
-        if !self.should_refresh_snapshot_session(thread_id, is_replay_only, snapshot) {
+        if !self.should_refresh_snapshot_session(thread_id, snapshot) {
+            return;
+        }
+
+        if is_replay_only {
+            match app_server
+                .thread_read(thread_id, /*include_turns*/ false)
+                .await
+            {
+                Ok(thread) => {
+                    let session = self.session_state_for_thread_read(thread_id, &thread).await;
+                    if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                        channel.store.lock().await.session = Some(session.clone());
+                    }
+                    snapshot.session = Some(session);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        thread_id = %thread_id,
+                        error = %err,
+                        "failed to refresh replay-only thread session before replay"
+                    );
+                }
+            }
             return;
         }
 
@@ -1484,13 +1515,13 @@ impl App {
     pub(super) fn should_refresh_snapshot_session(
         &self,
         thread_id: ThreadId,
-        is_replay_only: bool,
         snapshot: &ThreadEventSnapshot,
     ) -> bool {
-        !is_replay_only
-            && !self.side_threads.contains_key(&thread_id)
+        !self.side_threads.contains_key(&thread_id)
             && snapshot.session.as_ref().is_none_or(|session| {
-                session.model.trim().is_empty() || session.rollout_path.is_none()
+                session.model.trim().is_empty()
+                    || session.reasoning_effort.is_none()
+                    || session.rollout_path.is_none()
             })
     }
 
@@ -1637,10 +1668,24 @@ impl App {
         (active_thread_id != primary_thread_id).then_some((active_thread_id, primary_thread_id))
     }
 
+    #[cfg(test)]
     pub(super) fn replay_thread_snapshot(
         &mut self,
         snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
+    ) {
+        self.replay_thread_snapshot_with_in_flight_state(
+            snapshot,
+            resume_restored_queue,
+            /*preserve_in_flight_turn*/ true,
+        );
+    }
+
+    pub(super) fn replay_thread_snapshot_with_in_flight_state(
+        &mut self,
+        snapshot: ThreadEventSnapshot,
+        resume_restored_queue: bool,
+        preserve_in_flight_turn: bool,
     ) {
         self.refresh_mcp_startup_expected_servers_from_config();
         let should_buffer_replay = !snapshot.turns.is_empty() || !snapshot.events.is_empty();
@@ -1669,7 +1714,7 @@ impl App {
         self.chat_widget.restore_thread_input_state(
             snapshot.input_state,
             ThreadInputStateRestoreMode {
-                preserve_in_flight_turn: true,
+                preserve_in_flight_turn,
             },
         );
         if !snapshot.turns.is_empty() {

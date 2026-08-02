@@ -23,11 +23,11 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
     include_environment_id: bool,
     include_shell_parameter: bool,
 ) -> ToolSpec {
-    let yield_time_ms_description = if cfg!(windows) {
-        "Initial wait for exec_command before returning a session ID for a still-running command. Commands that finish sooner return immediately. Omit this parameter to use configured unified_exec_yield_time_ms (10000 ms when unset). Effective range on Windows is 10000-30000 ms. Later waits use write_stdin."
-    } else {
-        "Initial wait for exec_command before yielding output. Effective range is 250-30000 ms. Later waits use write_stdin."
-    };
+    let yield_time_ms_description = "Initial wait for exec_command before returning a session ID \
+        for a still-running command. Commands that finish sooner return immediately. Omit this \
+        parameter to use configured unified_exec_yield_time_ms (10000 ms when unset). Effective \
+        range is 5000-30000 ms for POSIX targets and 10000-30000 ms for Windows targets. Later \
+        waits use write_stdin.";
     let mut properties = BTreeMap::from([
         (
             "cmd".to_string(),
