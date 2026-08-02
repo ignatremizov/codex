@@ -552,5 +552,30 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
         .expect("exec output should serialize as text");
     assert!(text.contains("Original token count: 42000"));
     assert!(text.contains("Warning: truncated output (original token count: 42000)"));
-    assert_eq!(text.matches(&marker).count(), 1);
+    assert!(text.contains("Warning: 123456 bytes were omitted while collecting command output."));
+}
+
+#[test]
+fn exec_command_tool_output_does_not_duplicate_retained_omission_markers() {
+    let first_marker = format_output_omission_marker(/*omitted_bytes*/ 6);
+    let second_marker = format_output_omission_marker(/*omitted_bytes*/ 7);
+    let raw_output = format!("before\n{first_marker}\nbetween\n{second_marker}\nafter");
+    let response = ExecCommandToolOutput {
+        event_call_id: "call-omitted".to_string(),
+        chunk_id: "abc123".to_string(),
+        wall_time: std::time::Duration::from_millis(/*millis*/ 1250),
+        raw_output: CapturedStream {
+            text: raw_output.clone(),
+            omitted_bytes: 13,
+        },
+        truncation_policy: TruncationPolicy::Tokens(10_000),
+        max_output_tokens: Some(10_000),
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: Some(42_000),
+        hook_command: None,
+        tool_cwd: None,
+    };
+
+    assert_eq!(response.truncated_output(/*max_tokens*/ 10_000), raw_output);
 }
