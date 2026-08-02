@@ -127,7 +127,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                "Wait for an existing session. Independent of exec_command's initial wait. Omit yield_time_ms for default; provide it for long waits. yield_time_ms has no fixed cap; empty polls wait at least 5000 ms.".to_string(),
+                "Maximum time to wait for an existing session. Independent of exec_command's initial wait. A poll returns immediately when the process exits, even if yield_time_ms has not elapsed, so prefer longer waits over repeated short polls. Omit yield_time_ms for the default. yield_time_ms has no fixed cap; empty polls wait at least 5000 ms.".to_string(),
             )),
         ),
         (
@@ -141,8 +141,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "write_stdin".to_string(),
         description:
-            "Writes characters to an existing unified exec session and returns recent output."
-                .to_string(),
+            "Writes characters to an existing unified exec session and returns recent output. When waiting, the call returns immediately if the process exits; a long yield_time_ms is only a maximum wait, so prefer longer waits over frequent short polls.".to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
