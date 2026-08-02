@@ -197,7 +197,7 @@ async fn try_verify_apply_patch_args(
         .transpose()?
         .unwrap_or_else(|| cwd.clone());
     let mut changes = HashMap::new();
-    let mut original_update_contents = HashMap::new();
+    let mut original_update_contents: HashMap<PathUri, String> = HashMap::new();
     for hunk in hunks {
         let path = hunk.resolve_path(&effective_cwd)?;
         match hunk {
