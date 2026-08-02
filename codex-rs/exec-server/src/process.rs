@@ -279,6 +279,7 @@ mod tests {
 
         log.publish(ExecProcessEvent::Output(ProcessOutputChunk {
             seq: 1,
+            output_offset: 0,
             stream: ExecOutputStream::Stdout,
             chunk: b"large".to_vec().into(),
         }));

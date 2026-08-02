@@ -364,7 +364,8 @@ pub struct ExecCommandToolOutput {
     pub process_id: Option<i32>,
     pub exit_code: Option<i32>,
     pub original_token_count: Option<usize>,
-    /// Bytes omitted by the output collection cap before model-facing truncation.
+    /// Bytes omitted while collecting output, including replay gaps, before model-facing
+    /// truncation.
     pub output_omitted_bytes: Option<NonZeroUsize>,
     pub hook_command: Option<String>,
 }
@@ -474,26 +475,19 @@ impl ExecCommandToolOutput {
             return formatted_truncate_text(&text, policy);
         };
 
-        let marker = format_output_omission_marker(omitted_bytes.get());
         if text.len() <= policy.byte_budget() {
-            return if text.contains(&marker) {
-                text
-            } else {
-                format!("{marker}\n{text}")
-            };
+            return text;
         }
 
         let original_token_count = self
             .original_token_count
             .unwrap_or_else(|| approx_token_count(&text));
         let truncated = truncate_text(&text, policy);
-        let omission_notice = if truncated.contains(&marker) {
-            String::new()
-        } else {
-            format!("{marker}\n")
-        };
+        let omitted_bytes = omitted_bytes.get();
         format!(
-            "Warning: truncated output (original token count: {original_token_count})\n{omission_notice}\n{truncated}"
+            "Warning: truncated output (original token count: {original_token_count})\n\
+             Warning: {omitted_bytes} bytes were omitted while collecting command output.\n\n\
+             {truncated}"
         )
     }
 

@@ -501,6 +501,10 @@ impl CoreToolRuntime for ExecCommandHandler {
         matches!(payload, ToolPayload::Function { .. })
     }
 
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        true
+    }
+
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;

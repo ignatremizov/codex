@@ -343,6 +343,9 @@ pub struct ReadParams {
 #[serde(rename_all = "camelCase")]
 pub struct ProcessOutputChunk {
     pub seq: u64,
+    /// Zero-based byte offset of this chunk in the combined process output stream.
+    #[serde(default)]
+    pub output_offset: u64,
     pub stream: ExecOutputStream,
     pub chunk: ByteChunk,
 }
@@ -821,6 +824,9 @@ pub enum ExecOutputStream {
 pub struct ExecOutputDeltaNotification {
     pub process_id: ProcessId,
     pub seq: u64,
+    /// Zero-based byte offset of this chunk in the combined process output stream.
+    #[serde(default)]
+    pub output_offset: u64,
     pub stream: ExecOutputStream,
     pub chunk: ByteChunk,
 }
@@ -872,11 +878,14 @@ mod tests {
     use super::EnvironmentCapabilities;
     use super::EnvironmentInfo;
     use super::ExecExitedNotification;
+    use super::ExecOutputDeltaNotification;
+    use super::ExecOutputStream;
     use super::ExecParams;
     use super::ExecResponse;
     use super::FsReadFileParams;
     use super::HttpRequestParams;
     use super::ProcessId;
+    use super::ProcessOutputChunk;
     use super::ProcessSandboxType;
     use super::ShellInfo;
     use codex_file_system::FileSystemSandboxContext;
@@ -1093,6 +1102,33 @@ mod tests {
         let info = EnvironmentInfo::local();
         assert_eq!(info.temporary_directories, Some(vec![expected.clone()]));
         assert_eq!(info.temp_dir, Some(expected));
+    }
+
+    #[test]
+    fn process_output_offsets_default_for_legacy_messages() {
+        let chunk: ProcessOutputChunk = serde_json::from_value(serde_json::json!({
+            "seq": 1,
+            "stream": "stdout",
+            "chunk": "dGFpbA==",
+        }))
+        .expect("legacy read chunk should deserialize");
+        let notification: ExecOutputDeltaNotification = serde_json::from_value(serde_json::json!({
+            "processId": "process-1",
+            "seq": 1,
+            "stream": "stdout",
+            "chunk": "dGFpbA==",
+        }))
+        .expect("legacy output notification should deserialize");
+
+        assert_eq!(
+            (
+                chunk.output_offset,
+                chunk.stream,
+                notification.output_offset,
+                notification.stream,
+            ),
+            (0, ExecOutputStream::Stdout, 0, ExecOutputStream::Stdout)
+        );
     }
 
     #[test]

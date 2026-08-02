@@ -151,7 +151,11 @@ impl SessionState {
                     )));
                 }
                 let next_seq = ordered_events.last_published_seq.saturating_add(1);
-                if exited && !exit_known && chunk.seq > next_seq {
+                if exited
+                    && !exit_known
+                    && chunk.seq == next_seq.saturating_add(1)
+                    && chunk.output_offset <= ordered_events.next_output_offset
+                {
                     let exit_code = exit_code.ok_or_else(|| {
                         ExecServerError::Protocol(
                             "recovering exited process did not include its exit code".to_string(),
@@ -186,22 +190,9 @@ impl SessionState {
                     .map_err(ExecServerError::Protocol)?;
             }
 
-            let event_count = target_seq.saturating_sub(ordered_events.last_published_seq);
-            let first_unpublished_seq = ordered_events.last_published_seq.saturating_add(1);
-            let retained_count = if first_unpublished_seq <= target_seq {
-                ordered_events
-                    .pending
-                    .range(first_unpublished_seq..=target_seq)
-                    .count() as u64
-            } else {
-                0
-            };
-            let missing_count = event_count.saturating_sub(retained_count);
             if exited && !exit_known {
-                if missing_count != 1 {
-                    return Err(recovery_gap_error(target_seq));
-                }
-                let seq = first_missing_seq(&ordered_events, target_seq);
+                let seq = last_missing_seq(&ordered_events, target_seq)
+                    .ok_or_else(|| recovery_gap_error(target_seq))?;
                 let exit_code = exit_code.ok_or_else(|| {
                     ExecServerError::Protocol(
                         "recovering exited process did not include its exit code".to_string(),
@@ -214,8 +205,38 @@ impl SessionState {
                         sandbox_denied: Some(sandbox_denied),
                     })
                     .map_err(ExecServerError::Protocol)?;
-            } else if missing_count != 0 {
-                return Err(recovery_gap_error(target_seq));
+            }
+
+            while ordered_events.last_published_seq < target_seq {
+                published_closed |= self.publish_ready(&mut ordered_events);
+                if ordered_events.last_published_seq >= target_seq {
+                    break;
+                }
+
+                let first_unpublished_seq = ordered_events.last_published_seq.saturating_add(1);
+                let Some(next_pending_seq) = ordered_events
+                    .pending
+                    .range(first_unpublished_seq..=target_seq)
+                    .next()
+                    .map(|(seq, _)| *seq)
+                else {
+                    return Err(recovery_gap_error(target_seq));
+                };
+                let has_evicted_output = ordered_events
+                    .pending
+                    .range(next_pending_seq..=target_seq)
+                    .any(|(_, event)| {
+                        matches!(
+                            event,
+                            ExecProcessEvent::Output(chunk)
+                                if chunk.output_offset > ordered_events.next_output_offset
+                        )
+                    });
+                if !has_evicted_output {
+                    return Err(recovery_gap_error(target_seq));
+                }
+
+                ordered_events.last_published_seq = next_pending_seq.saturating_sub(1);
             }
             published_closed |= self.publish_ready(&mut ordered_events);
             published_closed
@@ -226,19 +247,25 @@ impl SessionState {
     }
 }
 
-fn first_missing_seq(events: &OrderedSessionEvents, target_seq: u64) -> u64 {
-    let mut expected = events.last_published_seq.saturating_add(1);
+fn last_missing_seq(events: &OrderedSessionEvents, target_seq: u64) -> Option<u64> {
+    let first_unpublished_seq = events.last_published_seq.saturating_add(1);
+    if first_unpublished_seq > target_seq {
+        return None;
+    }
+
+    let mut candidate = target_seq;
     for seq in events
         .pending
-        .range(expected..=target_seq)
+        .range(first_unpublished_seq..=target_seq)
+        .rev()
         .map(|(seq, _)| *seq)
     {
-        if seq != expected {
-            break;
+        if seq < candidate {
+            return Some(candidate);
         }
-        expected = expected.saturating_add(1);
+        candidate = candidate.saturating_sub(1);
     }
-    expected
+    (candidate >= first_unpublished_seq).then_some(candidate)
 }
 
 fn recovery_gap_error(target_seq: u64) -> ExecServerError {

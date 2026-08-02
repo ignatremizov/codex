@@ -2778,6 +2778,116 @@ async fn select_uncached_agent_thread_still_refreshes_liveness() -> Result<()> {
 }
 
 #[tokio::test]
+async fn closed_agent_return_shortcut_selects_immediate_parent() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await?;
+    let parent = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
+    let parent_thread_id = parent.session.thread_id;
+    let child_thread_id = ThreadId::new();
+
+    app.primary_thread_id = Some(parent_thread_id);
+    app.agent_navigation.upsert(
+        parent_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation.upsert(
+        child_thread_id,
+        Some("James".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ true,
+    );
+    app.agent_navigation
+        .set_parent_thread_id(child_thread_id, Some(parent_thread_id));
+    app.thread_event_channels.insert(
+        parent_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            parent.session,
+            parent.turns,
+        ),
+    );
+    app.thread_event_channels.insert(
+        child_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            test_thread_session(child_thread_id, test_path_buf("/tmp/child")),
+            Vec::new(),
+        ),
+    );
+    app.activate_thread_channel(child_thread_id).await;
+    app.chat_widget.handle_thread_session(test_thread_session(
+        child_thread_id,
+        test_path_buf("/tmp/child"),
+    ));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    app.handle_key_event(
+        &mut tui,
+        &mut app_server,
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    )
+    .await;
+
+    assert_eq!(app.current_displayed_thread_id(), Some(parent_thread_id));
+    assert!(side_return_shortcut_matches(KeyEvent::new(
+        KeyCode::Char('d'),
+        KeyModifiers::CONTROL
+    )));
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn closed_agent_return_shortcut_falls_through_when_parent_is_unavailable() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await?;
+    let parent_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+
+    app.agent_navigation.upsert(
+        child_thread_id,
+        Some("James".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ true,
+    );
+    app.agent_navigation
+        .set_parent_thread_id(child_thread_id, Some(parent_thread_id));
+    app.thread_event_channels.insert(
+        child_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            test_thread_session(child_thread_id, test_path_buf("/tmp/child")),
+            Vec::new(),
+        ),
+    );
+    app.activate_thread_channel(child_thread_id).await;
+    app.chat_widget.handle_thread_session(test_thread_session(
+        child_thread_id,
+        test_path_buf("/tmp/child"),
+    ));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    let consumed = app
+        .maybe_return_from_closed_agent(&mut tui, &mut app_server)
+        .await;
+
+    assert!(!consumed);
+    assert_eq!(app.current_displayed_thread_id(), Some(child_thread_id));
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
@@ -4872,11 +4982,7 @@ async fn side_thread_snapshot_does_not_refresh_from_fork_history() {
         input_state: None,
     };
 
-    assert!(!app.should_refresh_snapshot_session(
-        side_thread_id,
-        /*is_replay_only*/ false,
-        &snapshot
-    ));
+    assert!(!app.should_refresh_snapshot_session(side_thread_id, &snapshot));
 }
 
 #[tokio::test]

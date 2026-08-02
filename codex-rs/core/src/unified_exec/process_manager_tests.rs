@@ -1,6 +1,7 @@
 use super::*;
 use crate::unified_exec::clamp_yield_time;
 use codex_network_proxy::ManagedNetworkSandboxContext;
+use codex_utils_path_uri::PathConvention;
 use pretty_assertions::assert_eq;
 use tokio::sync::Notify;
 use tokio::time::Duration;
@@ -270,37 +271,45 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
     assert_ne!(first.process_id, second.process_id);
 }
 
-#[cfg(windows)]
 #[test]
-fn initial_exec_yield_time_uses_windows_floor() {
+fn initial_exec_yield_time_uses_target_windows_floor() {
     let above_max_yield_time_ms = crate::unified_exec::MAX_INITIAL_EXEC_YIELD_TIME_MS + 1;
 
     assert_eq!(
-        clamp_yield_time(/*yield_time_ms*/ 1_000),
+        clamp_yield_time(/*yield_time_ms*/ 1_000, PathConvention::Windows),
         crate::unified_exec::WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS
     );
     assert_eq!(
-        clamp_yield_time(/*yield_time_ms*/ 2_000),
+        clamp_yield_time(/*yield_time_ms*/ 2_000, PathConvention::Windows),
         crate::unified_exec::WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS
     );
     assert_eq!(
-        clamp_yield_time(/*yield_time_ms*/ 5_000),
+        clamp_yield_time(/*yield_time_ms*/ 5_000, PathConvention::Windows),
         crate::unified_exec::WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS
     );
-    assert_eq!(clamp_yield_time(/*yield_time_ms*/ 10_000), 10_000);
     assert_eq!(
-        clamp_yield_time(/*yield_time_ms*/ above_max_yield_time_ms),
+        clamp_yield_time(/*yield_time_ms*/ 10_000, PathConvention::Windows),
+        10_000
+    );
+    assert_eq!(
+        clamp_yield_time(above_max_yield_time_ms, PathConvention::Windows),
         crate::unified_exec::MAX_INITIAL_EXEC_YIELD_TIME_MS
     );
 }
 
-#[cfg(not(windows))]
 #[test]
-fn initial_exec_yield_time_has_no_platform_floor() {
-    assert_eq!(clamp_yield_time(/*yield_time_ms*/ 1_000), 1_000);
+fn initial_exec_yield_time_uses_target_posix_floor() {
     assert_eq!(
-        clamp_yield_time(/*yield_time_ms*/ 1),
-        crate::unified_exec::MIN_YIELD_TIME_MS
+        clamp_yield_time(/*yield_time_ms*/ 1_000, PathConvention::Posix),
+        crate::unified_exec::MIN_INITIAL_EXEC_YIELD_TIME_MS
+    );
+    assert_eq!(
+        clamp_yield_time(/*yield_time_ms*/ 5_000, PathConvention::Posix),
+        5_000
+    );
+    assert_eq!(
+        clamp_yield_time(/*yield_time_ms*/ 10_000, PathConvention::Posix),
+        10_000
     );
 }
 
@@ -358,10 +367,10 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
 #[tokio::test]
 async fn output_collection_preserves_omissions_from_drained_buffer() {
     let mut buffered_output = HeadTailBuffer::<10>::default();
-    buffered_output.push_chunk(&[b'a'; 10]);
+    buffered_output.push_chunk([b'a'; 10]);
     buffered_output.push_chunk(b"overflow");
     let mut expected = HeadTailBuffer::<10>::default();
-    expected.push_chunk(&[b'a'; 10]);
+    expected.push_chunk([b'a'; 10]);
     expected.push_chunk(b"overflow");
     let output_buffer = Arc::new(tokio::sync::Mutex::new(buffered_output));
     let output_notify = Arc::new(Notify::new());
@@ -417,7 +426,7 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
     let output_closed_notify = Arc::new(Notify::new());
     let cancellation_token = CancellationToken::new();
     cancellation_token.cancel();
-    let output = OutputHandles {
+    let output: OutputHandles = OutputHandles {
         output_buffer: Arc::clone(&output_buffer),
         output_notify: Arc::clone(&output_notify),
         output_closed: Arc::clone(&output_closed),
@@ -432,10 +441,7 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
         let output_closed_notify = Arc::clone(&output_closed_notify);
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            output_buffer
-                .lock()
-                .await
-                .push_chunk(b"late output".to_vec());
+            output_buffer.lock().await.push_chunk(b"late output");
             output_notify.notify_waiters();
             output_closed.store(true, Ordering::Release);
             output_closed_notify.notify_waiters();
@@ -450,7 +456,7 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
     .await;
 
     let mut expected = HeadTailBuffer::default();
-    expected.push_chunk(b"late output".to_vec());
+    expected.push_chunk(b"late output");
     assert_eq!(collected, expected);
 }
 
@@ -461,7 +467,7 @@ async fn collect_output_without_deadline_waits_until_output_closes() {
     let output_closed = Arc::new(AtomicBool::new(false));
     let output_closed_notify = Arc::new(Notify::new());
     let cancellation_token = CancellationToken::new();
-    let output = OutputHandles {
+    let output: OutputHandles = OutputHandles {
         output_buffer: Arc::clone(&output_buffer),
         output_notify: Arc::clone(&output_notify),
         output_closed: Arc::clone(&output_closed),
@@ -477,10 +483,7 @@ async fn collect_output_without_deadline_waits_until_output_closes() {
         let cancellation_token = cancellation_token.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            output_buffer
-                .lock()
-                .await
-                .push_chunk(b"unbounded output".to_vec());
+            output_buffer.lock().await.push_chunk(b"unbounded output");
             output_notify.notify_waiters();
             output_closed.store(true, Ordering::Release);
             output_closed_notify.notify_waiters();
@@ -494,7 +497,7 @@ async fn collect_output_without_deadline_waits_until_output_closes() {
     .await;
 
     let mut expected = HeadTailBuffer::default();
-    expected.push_chunk(b"unbounded output".to_vec());
+    expected.push_chunk(b"unbounded output");
     assert_eq!(collected, expected);
 }
 

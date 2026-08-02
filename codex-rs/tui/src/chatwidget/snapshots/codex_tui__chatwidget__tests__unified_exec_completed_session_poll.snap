@@ -1,5 +1,7 @@
 ---
-source: tui/src/chatwidget/tests.rs
+source: tui/src/chatwidget/tests/exec_flow.rs
 expression: combined
 ---
+• Ran gh run watch 29332067759
+  └ (no output)
 • Checked background terminal output · gh run watch 29332067759

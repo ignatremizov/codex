@@ -1,11 +1,9 @@
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tokio::time::Instant;
-use tokio::time::Sleep;
 
 use super::SharedPluginMetricsSidecar;
 use super::UnifiedExecContext;
@@ -30,7 +28,10 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecOutputStream;
 use codex_utils_path_uri::PathUri;
 
-pub(crate) const TRAILING_OUTPUT_GRACE: Duration = Duration::from_millis(100);
+pub(crate) const TRAILING_OUTPUT_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+pub(crate) const TRAILING_OUTPUT_HARD_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const INCOMPLETE_OUTPUT_WARNING: &[u8] =
+    b"\nWarning: the process output stream did not close; trailing output may be missing.\n";
 
 /// Upper bound for a single ExecCommandOutputDelta chunk emitted by unified exec.
 ///
@@ -39,6 +40,7 @@ pub(crate) const TRAILING_OUTPUT_GRACE: Duration = Duration::from_millis(100);
 /// downstream event consumers (especially app-server JSON-RPC) don't have to
 /// process arbitrarily large delta payloads.
 const UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES: usize = 8192;
+const OUTPUT_DELIVERY_YIELD_INTERVAL: usize = 64;
 
 struct Emitter {
     remaining_deltas: usize,
@@ -49,26 +51,30 @@ struct Emitter {
 
 struct Buffer<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES> {
     pending: Vec<u8>,
-    transcript: Arc<Mutex<HeadTailBuffer>>,
     emitter: Emitter,
 }
 
-/// Spawn a background task that continuously reads from the PTY, appends to the
-/// shared transcript, and emits ExecCommandOutputDelta events on UTF‑8
-/// boundaries.
+/// Spawn a background task that continuously reads from the PTY and emits
+/// ExecCommandOutputDelta events on UTF‑8 boundaries.
 pub(crate) fn start_streaming_output(
-    process: &UnifiedExecProcess,
+    process: &Arc<UnifiedExecProcess>,
     context: &UnifiedExecContext,
-    transcript: Arc<Mutex<HeadTailBuffer>>,
 ) {
-    let mut receiver = process.output_receiver();
-    let output_drained = process.output_drained_notify();
+    let output_stream_complete = process.output_stream_completion();
+    let Some(mut receiver) = process.take_output_receiver() else {
+        output_stream_complete.cancel();
+        return;
+    };
+    let output_task_abort_handle = process.output_task_abort_handle();
     let exit_token = process.cancellation_token();
     let OutputHandles {
+        output_buffer,
+        output_notify,
         output_closed,
         output_closed_notify,
         ..
     } = process.output_handles().clone();
+    let output_transcript = process.output_transcript();
 
     let emitter = Emitter {
         remaining_deltas: MAX_EXEC_OUTPUT_DELTAS_PER_CALL,
@@ -78,84 +84,155 @@ pub(crate) fn start_streaming_output(
     };
 
     tokio::spawn(async move {
-        use tokio::sync::broadcast::error::RecvError;
-
         let mut output: Buffer = Buffer {
             pending: Vec::new(),
-            transcript,
             emitter,
         };
+        let _output_stream_completion_guard = output_stream_complete.drop_guard();
 
-        let mut grace_sleep: Option<Pin<Box<Sleep>>> = None;
         let output_closed_notified = output_closed_notify.notified();
         tokio::pin!(output_closed_notified);
-        let mut output_complete = false;
+        let close_deadline = tokio::time::sleep(TRAILING_OUTPUT_CLOSE_TIMEOUT);
+        tokio::pin!(close_deadline);
+        let hard_close_deadline = tokio::time::sleep(TRAILING_OUTPUT_HARD_TIMEOUT);
+        tokio::pin!(hard_close_deadline);
+        let mut waiting_for_output_close = false;
+        let mut hard_close_at = None;
+        let mut output_incomplete = false;
 
         loop {
             // Register before checking the atomic so a close between the check
             // and the select cannot miss the notification.
             output_closed_notified.as_mut().enable();
-            if grace_sleep.is_some() && output_closed.load(Ordering::Acquire) {
-                output_complete = true;
+            if waiting_for_output_close && output_closed.load(Ordering::Acquire) {
                 break;
             }
 
             tokio::select! {
-                _ = exit_token.cancelled(), if grace_sleep.is_none() => {
-                    let deadline = Instant::now() + TRAILING_OUTPUT_GRACE;
-                    grace_sleep.replace(Box::pin(tokio::time::sleep_until(deadline)));
+                biased;
+
+                _ = exit_token.cancelled(), if !waiting_for_output_close => {
+                    waiting_for_output_close = true;
+                    let now = Instant::now();
+                    let hard_deadline = now + TRAILING_OUTPUT_HARD_TIMEOUT;
+                    hard_close_at = Some(hard_deadline);
+                    close_deadline.as_mut().reset(
+                        now + TRAILING_OUTPUT_CLOSE_TIMEOUT,
+                    );
+                    hard_close_deadline.as_mut().reset(hard_deadline);
                 }
 
-                _ = async {
-                    if let Some(sleep) = grace_sleep.as_mut() {
-                        sleep.as_mut().await;
-                    }
-                }, if grace_sleep.is_some() => {
+                _ = &mut hard_close_deadline, if waiting_for_output_close => {
+                    output_incomplete = !output_closed.load(Ordering::Acquire);
                     break;
                 }
 
-                _ = &mut output_closed_notified, if grace_sleep.is_some() => {
+                _ = &mut close_deadline, if waiting_for_output_close => {
+                    output_incomplete = !output_closed.load(Ordering::Acquire);
+                    break;
+                }
+
+                _ = &mut output_closed_notified, if waiting_for_output_close => {
                     output_closed_notified.set(output_closed_notify.notified());
                 }
 
                 received = receiver.recv() => {
-                    let chunk = match received {
-                        Ok(chunk) => chunk,
-                        Err(RecvError::Lagged(_)) => {
-                            continue;
-                        },
-                        Err(RecvError::Closed) => {
-                            output_complete = true;
-                            break;
-                        }
+                    let Some(chunk) = received else {
+                        break;
                     };
 
-                    output.push(chunk).await;
+                    let delivery = output.push(chunk);
+                    tokio::pin!(delivery);
+                    if waiting_for_output_close {
+                        close_deadline.as_mut().reset(
+                            Instant::now() + TRAILING_OUTPUT_CLOSE_TIMEOUT,
+                        );
+                        tokio::select! {
+                            biased;
+
+                            _ = &mut hard_close_deadline => {
+                                output_incomplete = !output_closed.load(Ordering::Acquire);
+                                break;
+                            }
+
+                            _ = &mut close_deadline => {
+                                output_incomplete = !output_closed.load(Ordering::Acquire);
+                                break;
+                            }
+
+                            _ = &mut delivery => {}
+                        }
+                    } else {
+                        tokio::select! {
+                            biased;
+
+                            _ = exit_token.cancelled() => {
+                                waiting_for_output_close = true;
+                                let now = Instant::now();
+                                let hard_deadline = now + TRAILING_OUTPUT_HARD_TIMEOUT;
+                                hard_close_at = Some(hard_deadline);
+                                close_deadline.as_mut().reset(
+                                    now + TRAILING_OUTPUT_CLOSE_TIMEOUT,
+                                );
+                                hard_close_deadline.as_mut().reset(hard_deadline);
+                            }
+
+                            _ = &mut delivery => {}
+                        }
+                    }
                 }
             }
         }
 
-        output_complete |= output_closed.load(Ordering::Acquire);
-        if output_complete {
-            // Output producers publish all chunks before setting output_closed
-            // with Release ordering, so the Acquire above makes this a final
-            // safe drain.
-            loop {
-                let chunk = match receiver.try_recv() {
-                    Ok(chunk) => chunk,
-                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
-                    Err(
-                        tokio::sync::broadcast::error::TryRecvError::Empty
-                        | tokio::sync::broadcast::error::TryRecvError::Closed,
-                    ) => break,
-                };
-
-                output.push(chunk).await;
+        if !output_incomplete {
+            // A closed producer can leave bounded chunks queued for live delta
+            // delivery. The transcript already contains those bytes, so stop
+            // flushing deltas at the absolute post-exit deadline rather than
+            // delaying the terminal event indefinitely.
+            while let Ok(chunk) = receiver.try_recv() {
+                let delivery = output.push(chunk);
+                match hard_close_at {
+                    Some(hard_close_at) => {
+                        if tokio::time::timeout_at(hard_close_at, delivery)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    None => delivery.await,
+                }
             }
         }
 
-        output.finish().await;
-        output_drained.notify_one();
+        let finish = output.finish();
+        match hard_close_at {
+            Some(hard_close_at) => {
+                let _ = tokio::time::timeout_at(hard_close_at, finish).await;
+            }
+            None => finish.await,
+        }
+
+        if output_incomplete {
+            if let Some(output_task_abort_handle) = output_task_abort_handle {
+                output_task_abort_handle.abort();
+                let output_closed_wait = output_closed_notify.notified();
+                tokio::pin!(output_closed_wait);
+                output_closed_wait.as_mut().enable();
+                if !output_closed.load(Ordering::Acquire) {
+                    let _ = tokio::time::timeout(Duration::from_secs(1), output_closed_wait).await;
+                }
+            }
+            output_buffer
+                .lock()
+                .await
+                .push_chunk(INCOMPLETE_OUTPUT_WARNING);
+            output_transcript
+                .lock()
+                .await
+                .push_chunk(INCOMPLETE_OUTPUT_WARNING);
+            output_notify.notify_waiters();
+        }
     });
 }
 
@@ -177,12 +254,12 @@ pub(crate) fn spawn_exit_watcher(
     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
 ) {
     let exit_token = process.cancellation_token();
-    let output_drained = process.output_drained_notify();
+    let output_stream_complete = process.output_stream_completion();
     let interaction_lock = process.interaction_lock();
 
     tokio::spawn(async move {
         exit_token.cancelled().await;
-        output_drained.notified().await;
+        output_stream_complete.cancelled().await;
         // Deferred network denial deliberately remains observable for a short
         // window after process exit. Do not classify the terminal event until
         // that monitor has settled, even when output closes immediately.
@@ -249,13 +326,7 @@ impl<const MAX_BYTES: usize> Buffer<MAX_BYTES> {
                 "a frame must fit one UTF-8 scalar"
             )
         };
-        let Self {
-            pending,
-            transcript,
-            emitter,
-        } = self;
-
-        transcript.lock().await.push_chunk(&bytes);
+        let Self { pending, emitter } = self;
 
         // Reuse a producer chunk when it fits, retaining only an incomplete
         // UTF-8 suffix for the next push.
@@ -284,13 +355,18 @@ impl<const MAX_BYTES: usize> Buffer<MAX_BYTES> {
             pending.extend(chunk.drain(complete..));
             chunk
         };
-        while emitter.emit(&mut next_chunk).await {}
+        let mut emitted_frames = 0;
+        while emitter.emit(&mut next_chunk).await {
+            emitted_frames += 1;
+            if emitted_frames % OUTPUT_DELIVERY_YIELD_INTERVAL == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
     }
 
     async fn finish(self) {
         let Self {
             pending,
-            transcript: _,
             mut emitter,
         } = self;
         debug_assert!(

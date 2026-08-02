@@ -130,6 +130,7 @@ impl ExecProcess for RetainedReadProcess {
 fn recovered_output(seq: u64, stream: ExecOutputStream, bytes: &[u8]) -> ProcessOutputChunk {
     ProcessOutputChunk {
         seq,
+        output_offset: 0,
         stream,
         chunk: bytes.to_vec().into(),
     }

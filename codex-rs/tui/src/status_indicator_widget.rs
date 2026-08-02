@@ -483,8 +483,10 @@ mod tests {
             /*animations_enabled*/ false,
         );
         w.update_countdown_deadline(Some(Instant::now() - Duration::from_secs(1)));
-        let mut timer = StatusTimer::default();
-        timer.elapsed_running = Duration::from_secs(7);
+        let mut timer = StatusTimer {
+            elapsed_running: Duration::from_secs(7),
+            ..Default::default()
+        };
         timer.pause_at(timer.last_resume_at);
 
         let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
