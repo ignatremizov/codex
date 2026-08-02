@@ -45,19 +45,34 @@ impl CapturedStream {
             None if self.omitted_bytes == 0 => return self.text.clone(),
             None => self.text.clone(),
         };
-        let marker = format_output_omission_marker(self.omitted_bytes);
-        let notice = if truncated.contains(&marker) {
-            String::new()
-        } else {
-            format!("{marker}\n")
-        };
         if policy.is_none_or(|policy| self.text.len() <= policy.byte_budget()) {
-            if notice.is_empty() {
+            // A retained transcript can contain several positioned gaps, each smaller
+            // than the total omission count. Do not invent a second aggregate gap.
+            let has_omission_notice = self.text.lines().any(|line| {
+                line.strip_prefix("... ")
+                    .and_then(|line| line.strip_suffix(" bytes omitted ..."))
+                    .or_else(|| {
+                        line.strip_prefix("Warning: ").and_then(|line| {
+                            line.strip_suffix(
+                                " bytes were omitted at multiple locations in retained process output.",
+                            )
+                        })
+                    })
+                    .is_some_and(|count| count.parse::<usize>().is_ok())
+            });
+            if has_omission_notice {
                 return truncated;
             }
-            return format!("{notice}{truncated}");
+            // Other producers can supply omission metadata without rendered markers.
+            let marker = format_output_omission_marker(self.omitted_bytes);
+            return format!("{marker}\n{truncated}");
         }
         let tokens = original_tokens.unwrap_or_else(|| approx_token_count(&self.text));
-        format!("Warning: truncated output (original token count: {tokens})\n{notice}\n{truncated}")
+        let omitted_bytes = self.omitted_bytes;
+        format!(
+            "Warning: truncated output (original token count: {tokens})\n\
+             Warning: {omitted_bytes} bytes were omitted while collecting command output.\n\n\
+             {truncated}"
+        )
     }
 }

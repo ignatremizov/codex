@@ -2,4 +2,6 @@
 source: tui/src/chatwidget/tests/exec_flow.rs
 expression: combined
 ---
+$ gh run watch 29332067759
+✓ • 5ms
 • Checked background terminal output · gh run watch 29332067759

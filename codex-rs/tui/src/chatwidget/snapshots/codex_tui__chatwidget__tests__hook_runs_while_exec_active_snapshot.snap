@@ -9,7 +9,7 @@ exec and hook running:
 "                                                                                "
 "• Running echo done                                                             "
 "                                                                                "
-"• Working (0s • esc to interrupt) · checking output policy                      "
+"• Checking output policy                                                        "
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
@@ -22,7 +22,7 @@ history after exec:
 
 hook running after exec:
 "                                                                                "
-"• Working (0s • esc to interrupt) · checking output policy                      "
+"• Checking output policy                                                        "
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
@@ -30,8 +30,6 @@ hook running after exec:
 "  gpt-5.6-sol default · /tmp/project                                            "
 "  ? for shortcuts                                                               "
 quiet hook completed:
-"                                                                                "
-"• Working (0s • esc to interrupt)                                               "
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
