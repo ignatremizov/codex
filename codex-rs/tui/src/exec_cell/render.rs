@@ -469,7 +469,7 @@ impl ExecCell {
         let is_interaction = call.is_unified_exec_interaction();
         let title = if is_interaction {
             ""
-        } else if self.is_active() {
+        } else if call.duration.is_none() {
             "Running"
         } else if call.is_user_shell_command() {
             "You ran"

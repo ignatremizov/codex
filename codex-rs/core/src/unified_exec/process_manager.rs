@@ -47,7 +47,7 @@ use crate::turn_timing::now_unix_timestamp_ms;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
-use crate::unified_exec::MIN_YIELD_TIME_MS;
+use crate::unified_exec::MIN_WRITE_STDIN_YIELD_TIME_MS;
 use crate::unified_exec::ProcessEntry;
 use crate::unified_exec::ProcessStore;
 use crate::unified_exec::UnifiedExecContext;
@@ -62,6 +62,7 @@ use crate::unified_exec::async_watcher::start_streaming_output;
 use crate::unified_exec::clamp_yield_time;
 use crate::unified_exec::generate_chunk_id;
 use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
+use crate::unified_exec::process::OutputBuffer;
 use crate::unified_exec::process::OutputHandles;
 use crate::unified_exec::process::SpawnLifecycleHandle;
 use crate::unified_exec::process::UnifiedExecProcess;
@@ -87,6 +88,7 @@ use codex_sandboxing::SandboxCommand;
 use codex_shell_command::is_dangerous_command::DangerousCommandPlatform;
 use codex_tools::ToolName;
 use codex_utils_output_truncation::approx_tokens_from_byte_count;
+use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
 
 const UNIFIED_EXEC_ENV: [(&str, &str); 10] = [
@@ -571,7 +573,7 @@ impl UnifiedExecProcessManager {
             )
         });
 
-        let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+        let transcript = process.output_transcript();
         let model_context = context.step_context.model_context();
         let mut event_ctx = ToolEventCtx::new(
             context.session.as_ref(),
@@ -600,7 +602,19 @@ impl UnifiedExecProcessManager {
                     .plugin_attribution_for_command(&request.command, &cwd)
             })
         };
-        let yield_time_ms = clamp_yield_time(request.yield_time_ms);
+        let target_path_convention =
+            request
+                .cwd
+                .infer_path_convention()
+                .unwrap_or(match request.shell_type {
+                    crate::shell::ShellType::PowerShell | crate::shell::ShellType::Cmd => {
+                        PathConvention::Windows
+                    }
+                    crate::shell::ShellType::Zsh
+                    | crate::shell::ShellType::Bash
+                    | crate::shell::ShellType::Sh => PathConvention::Posix,
+                });
+        let yield_time_ms = clamp_yield_time(request.yield_time_ms, target_path_convention);
         let wait = completion.as_ref().map_or_else(
             || Duration::from_millis(yield_time_ms),
             |completion| completion.timeout,
@@ -616,7 +630,7 @@ impl UnifiedExecProcessManager {
         );
         emitter.emit(event_ctx, ToolEventStage::Begin).await;
 
-        start_streaming_output(&process, context, Arc::clone(&transcript));
+        start_streaming_output(&process, context);
         let start = Instant::now();
         // Persist live sessions before the initial yield wait so interrupting the
         // turn cannot drop the last Arc and terminate the background process.
@@ -660,8 +674,9 @@ impl UnifiedExecProcessManager {
             Some(start.checked_add(wait).ok_or_else(|| {
                 UnifiedExecError::process_failed("timeout_ms is too large".into())
             })?);
+        let output = process.output_handles().clone();
         let collected_output = Self::collect_output_until_deadline(
-            process.output_handles(),
+            &output,
             Some(context.session.subscribe_elicitation_pause_state()),
             deadline,
         )
@@ -675,15 +690,22 @@ impl UnifiedExecProcessManager {
                 process.fail_and_terminate(err.to_string());
             }
         }
-        let wall_time = Instant::now().saturating_duration_since(start);
+        let mut collected_output = Self::finish_output_collection_after_exit(
+            process.as_ref(),
+            &output.output_buffer,
+            &output.cancellation_token,
+            collected_output,
+        )
+        .await;
+        let mut wall_time = Instant::now().saturating_duration_since(start);
 
-        let original_token_count = usize::try_from(approx_tokens_from_byte_count(
+        let mut original_token_count = usize::try_from(approx_tokens_from_byte_count(
             collected_output.total_bytes(),
         ))
         .unwrap_or(usize::MAX);
-        let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
-        let collected = collected_output.to_bytes_with_omission_marker();
-        let text = String::from_utf8_lossy(&collected).to_string();
+        let mut output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
+        let mut collected = collected_output.to_bytes_with_omission_marker();
+        let mut text = String::from_utf8_lossy(&collected).to_string();
         let chunk_id = generate_chunk_id();
         if deferred_network_approval
             .as_ref()
@@ -742,6 +764,21 @@ impl UnifiedExecProcessManager {
                     ..
                 } => (Some(process_id), exit_code),
                 ProcessStatus::Exited { exit_code, entry } => {
+                    collected_output = Self::finish_output_collection_after_exit(
+                        process.as_ref(),
+                        &output.output_buffer,
+                        &output.cancellation_token,
+                        collected_output,
+                    )
+                    .await;
+                    original_token_count = usize::try_from(approx_tokens_from_byte_count(
+                        collected_output.total_bytes(),
+                    ))
+                    .unwrap_or(usize::MAX);
+                    output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
+                    collected = collected_output.to_bytes_with_omission_marker();
+                    text = String::from_utf8_lossy(&collected).to_string();
+                    wall_time = Instant::now().saturating_duration_since(start);
                     if let Err(message) =
                         finish_deferred_network_approval_after_process_exit_for_session(
                             Some(&context.session),
@@ -1063,15 +1100,13 @@ impl UnifiedExecProcessManager {
             let deadline = deadline_after(start, yield_time_ms);
             let collected_output =
                 Self::collect_output_until_deadline(&output, pause_state, deadline).await;
-            let wall_time = Instant::now().saturating_duration_since(start);
-
-            let original_token_count = usize::try_from(approx_tokens_from_byte_count(
-                collected_output.total_bytes(),
-            ))
-            .unwrap_or(usize::MAX);
-            let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
-            let collected = collected_output.to_bytes_with_omission_marker();
-            let chunk_id = generate_chunk_id();
+            let mut collected_output = Self::finish_output_collection_after_exit(
+                process.as_ref(),
+                &output.output_buffer,
+                &output.cancellation_token,
+                collected_output,
+            )
+            .await;
             if network_approval
                 .as_ref()
                 .is_some_and(DeferredNetworkApproval::is_cancelled)
@@ -1104,6 +1139,17 @@ impl UnifiedExecProcessManager {
             } else {
                 self.refresh_process_state(process_id).await
             };
+            if matches!(&status, ProcessStatus::Exited { .. })
+                || (matches!(&status, ProcessStatus::Unknown) && process.has_exited())
+            {
+                collected_output = Self::finish_output_collection_after_exit(
+                    process.as_ref(),
+                    &output.output_buffer,
+                    &output.cancellation_token,
+                    collected_output,
+                )
+                .await;
+            }
             let (process_id, exit_code, event_call_id) = match status {
                 ProcessStatus::Alive {
                     exit_code,
@@ -1130,11 +1176,16 @@ impl UnifiedExecProcessManager {
                 }
             };
 
+            let original_token_count = usize::try_from(approx_tokens_from_byte_count(
+                collected_output.total_bytes(),
+            ))
+            .unwrap_or(usize::MAX);
+            let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
             let response = ExecCommandToolOutput {
                 event_call_id,
-                chunk_id,
-                wall_time,
-                raw_output: collected,
+                chunk_id: generate_chunk_id(),
+                wall_time: Instant::now().saturating_duration_since(start),
+                raw_output: collected_output.to_bytes_with_omission_marker(),
                 truncation_policy: request.truncation_policy,
                 max_output_tokens: request.max_output_tokens,
                 process_id,
@@ -1251,7 +1302,7 @@ impl UnifiedExecProcessManager {
         input: &str,
         yield_time_ms: u64,
     ) -> u64 {
-        let time_ms = yield_time_ms.max(MIN_YIELD_TIME_MS);
+        let time_ms = yield_time_ms.max(MIN_WRITE_STDIN_YIELD_TIME_MS);
         if input.is_empty() {
             let time_ms = time_ms.max(MIN_EMPTY_YIELD_TIME_MS);
             return self
@@ -1780,6 +1831,20 @@ impl UnifiedExecProcessManager {
         );
         span.record("output_closed", output_closed.load(Ordering::Acquire));
         span.record("outcome", "completed");
+        collected
+    }
+
+    async fn finish_output_collection_after_exit(
+        process: &UnifiedExecProcess,
+        output_buffer: &OutputBuffer,
+        cancellation_token: &CancellationToken,
+        mut collected: HeadTailBuffer,
+    ) -> HeadTailBuffer {
+        if cancellation_token.is_cancelled() || process.has_exited() {
+            let output_stream_completion = process.output_stream_completion();
+            output_stream_completion.cancelled().await;
+            collected.push_buffer(output_buffer.lock().await.drain());
+        }
         collected
     }
 
