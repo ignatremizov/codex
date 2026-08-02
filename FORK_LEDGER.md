@@ -153,6 +153,23 @@ completion provenance. Entry points are `tui/src/app/thread_resume.rs` and the s
 metadata renderers. Source-authored regression coverage is not executable qualification;
 formatting, generated artifacts, and remote validation remain pending.
 
+### Bounded process output and terminal replay
+
+Ownership anchor: `fix(unified-exec): retain bounded output across polling and terminal replay`.
+`core/src/unified_exec/process.rs`, `async_watcher.rs`, and `head_tail_buffer.rs` retain each
+received chunk in atomic polling/transcript buffers, independently of the exclusive live MPSC
+consumer. Exit, producer closure, output-drain completion, and stdin ownership remain separate.
+Post-exit draining has an inactivity timeout and absolute limit; incomplete capture is explicit,
+and terminal output/token estimates include the final acknowledged drain. Remote combined-byte
+offsets locate replay omissions without interpreting missing legacy offsets as gap evidence.
+`exec-server/src/local_process.rs` and `client_recovery.rs` preserve native retention/reconnect
+ordering, bounded chunk counts, sandbox attribution, and old peers' wire compatibility.
+Runtime cancellation can retain cleanup independently while returning one aborted tool outcome;
+previously claimed terminal results, timing, and one result-ready event remain authoritative.
+TUI command rendering and closed-child navigation retain full source, immediate parent identity,
+read-only hydration, cached permission choices, writer quarantine, and server model authority.
+Generated protocol output, complete fixture qualification, and execution tests remain pending.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.
