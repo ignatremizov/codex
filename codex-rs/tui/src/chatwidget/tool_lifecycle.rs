@@ -127,11 +127,23 @@ impl ChatWidget {
             tool,
             status,
             receiver_thread_ids,
+            receiver_agents,
             ..
         } = &item
         else {
             return;
         };
+        for receiver in receiver_agents {
+            let Some(thread_id) = multi_agents::parse_thread_id(&receiver.thread_id) else {
+                continue;
+            };
+            let previous = self.collab_agent_metadata(thread_id);
+            self.set_collab_agent_metadata(
+                thread_id,
+                receiver.agent_nickname.clone().or(previous.agent_nickname),
+                receiver.agent_role.clone().or(previous.agent_role),
+            );
+        }
         if matches!(tool, CollabAgentTool::SpawnAgent)
             && let Some(spawn_request) = multi_agents::spawn_request_summary(&item)
         {

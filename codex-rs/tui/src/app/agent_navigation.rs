@@ -35,9 +35,9 @@ use uuid::Uuid;
 /// spawn-order traversal, picker copy, and active-agent labels together and separately testable.
 ///
 /// The core invariant is that `order` records first-seen thread ids exactly once, while `threads`
-/// stores the latest metadata for those ids. Mutation is intentionally funneled through `upsert`,
-/// `mark_closed`, and `clear` so those two collections do not drift semantically even if they are
-/// temporarily out of sync during teardown races.
+/// stores the latest known metadata for those ids. Mutation is intentionally funneled through
+/// `upsert`, `mark_closed`, and `clear` so those two collections do not drift semantically even
+/// if they are temporarily out of sync during teardown races.
 #[derive(Debug, Default)]
 pub(crate) struct AgentNavigationState {
     /// Latest picker metadata for each tracked thread id.
@@ -102,6 +102,8 @@ impl AgentNavigationState {
     /// The key invariant of this module is enforced here: a thread id is appended to `order` only
     /// the first time it is seen. Later updates may change nickname, role, or closed state, but
     /// they must not move the thread in the cycle or keyboard navigation would feel unstable.
+    /// Missing nickname or role values mean the producer had no update, so they preserve any
+    /// identity learned from an earlier thread read or picker refresh.
     pub(crate) fn upsert(
         &mut self,
         thread_id: ThreadId,
@@ -112,16 +114,28 @@ impl AgentNavigationState {
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
         }
-        let (previous_agent_path, previous_is_running) = self
+        let (
+            previous_agent_nickname,
+            previous_agent_role,
+            previous_agent_path,
+            previous_is_running,
+        ) = self
             .threads
             .get(&thread_id)
-            .map(|entry| (entry.agent_path.clone(), entry.is_running))
-            .unwrap_or((None, false));
+            .map(|entry| {
+                (
+                    entry.agent_nickname.clone(),
+                    entry.agent_role.clone(),
+                    entry.agent_path.clone(),
+                    entry.is_running,
+                )
+            })
+            .unwrap_or((None, None, None, false));
         self.threads.insert(
             thread_id,
             AgentPickerThreadEntry {
-                agent_nickname,
-                agent_role,
+                agent_nickname: agent_nickname.or(previous_agent_nickname),
+                agent_role: agent_role.or(previous_agent_role),
                 agent_path: previous_agent_path,
                 is_running: previous_is_running && !is_closed,
                 is_closed,
@@ -468,6 +482,34 @@ mod tests {
         );
         state.clear();
         assert_eq!(state.parent_thread_id(second_agent_id), None);
+    }
+
+    #[test]
+    fn upsert_preserves_known_identity_when_update_omits_metadata() {
+        let mut state = AgentNavigationState::default();
+        let thread_id = ThreadId::new();
+        state.upsert(
+            thread_id,
+            Some("Herschel".to_string()),
+            Some("default".to_string()),
+            /*is_closed*/ true,
+        );
+
+        state.upsert(
+            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+            /*is_closed*/ false,
+        );
+
+        assert_eq!(
+            state.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: Some("Herschel".to_string()),
+                agent_role: Some("default".to_string()),
+                agent_path: None,
+                is_running: false,
+                is_closed: false,
+            })
+        );
     }
 
     #[test]

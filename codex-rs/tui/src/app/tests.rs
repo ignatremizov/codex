@@ -7263,6 +7263,78 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
 }
 
 #[tokio::test]
+async fn metadata_free_collab_notification_preserves_cached_agent_label() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let sender_thread_id = ThreadId::new();
+    let receiver_thread_id =
+        ThreadId::from_string("019fc1b4-78ea-7481-97ac-ff423900cc6a").expect("valid thread");
+    app.upsert_agent_picker_thread(
+        receiver_thread_id,
+        Some("Herschel".to_string()),
+        Some("default".to_string()),
+        /*is_closed*/ true,
+    );
+    let notification =
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            thread_id: sender_thread_id.to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: ThreadItem::CollabAgentToolCall {
+                id: "send-1".to_string(),
+                tool: codex_app_server_protocol::CollabAgentTool::SendInput,
+                status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
+                    thread_id: receiver_thread_id.to_string(),
+                    agent_nickname: None,
+                    agent_role: None,
+                }],
+                prompt: Some("Return the special word.".to_string()),
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    receiver_thread_id.to_string(),
+                    codex_app_server_protocol::CollabAgentState {
+                        status: codex_app_server_protocol::CollabAgentStatus::Running,
+                        message: None,
+                    },
+                )]),
+            },
+        });
+
+    app.cache_collab_receiver_threads_for_notification(&notification);
+    app.chat_widget
+        .handle_server_notification(notification, /*replay_kind*/ None);
+
+    assert_eq!(
+        app.agent_navigation.get(&receiver_thread_id),
+        Some(&AgentPickerThreadEntry {
+            agent_nickname: Some("Herschel".to_string()),
+            agent_role: Some("default".to_string()),
+            agent_path: None,
+            is_running: false,
+            is_closed: false,
+        })
+    );
+    let rendered = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 100)))
+            }
+            _ => None,
+        })
+        .expect("send_input history cell");
+    assert_snapshot!(
+        rendered,
+        @r"
+    • Sent input to Herschel [default]
+      └ Return the special word.
+    "
+    );
+}
+
+#[tokio::test]
 async fn refreshed_snapshot_session_persists_resumed_turns() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();

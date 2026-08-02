@@ -239,10 +239,12 @@ impl App {
         })
     }
 
-    /// Updates cached picker metadata and then mirrors any visible-label change into the footer.
+    /// Merges cached picker metadata and then mirrors any visible-label change into the footer.
     ///
     /// These two writes stay paired so the picker rows and contextual footer continue to describe
-    /// the same displayed thread after nickname or role updates.
+    /// the same displayed thread after nickname or role updates. A collab event may omit metadata
+    /// after a user-driven thread reopen; those omissions must not clear identity already learned
+    /// from the thread source.
     pub(super) fn upsert_agent_picker_thread(
         &mut self,
         thread_id: ThreadId,
@@ -253,13 +255,15 @@ impl App {
         if is_closed && let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             channel.mark_replay_only();
         }
-        self.chat_widget.set_collab_agent_metadata(
-            thread_id,
-            agent_nickname.clone(),
-            agent_role.clone(),
-        );
         self.agent_navigation
             .upsert(thread_id, agent_nickname, agent_role, is_closed);
+        if let Some(entry) = self.agent_navigation.get(&thread_id) {
+            self.chat_widget.set_collab_agent_metadata(
+                thread_id,
+                entry.agent_nickname.clone(),
+                entry.agent_role.clone(),
+            );
+        }
         self.sync_active_agent_label();
     }
 

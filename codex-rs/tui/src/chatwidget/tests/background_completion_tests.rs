@@ -109,3 +109,121 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
     let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
     assert_eq!(normalized.matches(response).count(), 2);
 }
+
+#[tokio::test]
+async fn background_completion_resolves_thread_id_from_cached_agent_metadata() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let receiver_thread_id =
+        ThreadId::from_string("019fc1b4-78ea-7481-97ac-ff423900cc6a").expect("valid thread");
+    chat.set_collab_agent_metadata(
+        receiver_thread_id,
+        Some("Herschel".to_string()),
+        Some("default".to_string()),
+    );
+    let (id, text) = completed_item(&receiver_thread_id.to_string(), "Cinnamon");
+
+    chat.handle_server_notification(
+        completion_notification(id, text, MessagePhase::Commentary),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert_snapshot!(
+        lines_to_single_string(&cells[0]),
+        @r"
+    • Agent finished
+      └ Herschel [default]: Completed - Cinnamon
+    "
+    );
+}
+
+#[tokio::test]
+async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completion() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let sender_thread_id = ThreadId::new();
+    let receiver_thread_id =
+        ThreadId::from_string("019fc1b4-78ea-7481-97ac-ff423900cc6a").expect("valid thread");
+    let (completion_id, completion_text) =
+        completed_item(&receiver_thread_id.to_string(), "Cinnamon");
+
+    chat.replay_thread_item(
+        AppServerThreadItem::CollabAgentToolCall {
+            id: "spawn-1".to_string(),
+            tool: AppServerCollabAgentTool::SpawnAgent,
+            status: AppServerCollabAgentToolCallStatus::Completed,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: vec![receiver_thread_id.to_string()],
+            receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
+                thread_id: receiver_thread_id.to_string(),
+                agent_nickname: Some("Herschel".to_string()),
+                agent_role: Some("default".to_string()),
+            }],
+            prompt: Some("Review the metadata presentation change.".to_string()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::from([(
+                receiver_thread_id.to_string(),
+                AppServerCollabAgentState {
+                    status: AppServerCollabAgentStatus::PendingInit,
+                    message: None,
+                },
+            )]),
+        },
+        "turn-1".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+    chat.replay_thread_item(
+        AppServerThreadItem::CollabAgentToolCall {
+            id: "send-1".to_string(),
+            tool: AppServerCollabAgentTool::SendInput,
+            status: AppServerCollabAgentToolCallStatus::Completed,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: vec![receiver_thread_id.to_string()],
+            receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
+                thread_id: receiver_thread_id.to_string(),
+                agent_nickname: None,
+                agent_role: None,
+            }],
+            prompt: Some("Give me one random ingredient.".to_string()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::from([(
+                receiver_thread_id.to_string(),
+                AppServerCollabAgentState {
+                    status: AppServerCollabAgentStatus::Running,
+                    message: None,
+                },
+            )]),
+        },
+        "turn-2".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+    chat.replay_thread_item(
+        AppServerThreadItem::AgentMessage {
+            id: completion_id,
+            text: completion_text,
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+        },
+        "turn-3".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!(
+        rendered,
+        @r"
+    • Spawned Herschel [default]
+      └ Review the metadata presentation change.
+    • Sent input to Herschel [default]
+      └ Give me one random ingredient.
+    • Agent finished
+      └ Herschel [default]: Completed - Cinnamon
+    "
+    );
+}
