@@ -85,6 +85,12 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         )
     }
 
+    /// Whether cancellation should let the handler finish teardown before the
+    /// host returns an aborted tool response.
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        false
+    }
+
     fn telemetry_tags(&self, _invocation: &ToolInvocation) -> ToolTelemetryTags {
         Vec::new()
     }
@@ -488,6 +494,11 @@ impl ToolRegistry {
         Some(tool.exposure != ToolExposure::Hidden && tool.runtime.supports_parallel_tool_calls())
     }
 
+    pub(crate) fn waits_for_runtime_cancellation(&self, name: &ToolName) -> Option<bool> {
+        let tool = self.tool(name)?;
+        Some(tool.waits_for_runtime_cancellation())
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "tool dispatch must keep active-turn accounting atomic"
@@ -583,6 +594,7 @@ impl ToolRegistry {
                     dispatch_trace.record_failed(&err);
                     notify_tool_finish_if_unclaimed(
                         &invocation,
+                        tool.as_ref(),
                         terminal_outcome_reached.as_deref(),
                         ToolCallOutcome::Blocked,
                     )
@@ -603,6 +615,7 @@ impl ToolRegistry {
                         dispatch_trace.record_failed(&err);
                         notify_tool_finish_if_unclaimed(
                             &invocation,
+                            tool.as_ref(),
                             terminal_outcome_reached.as_deref(),
                             ToolCallOutcome::Failed {
                                 handler_executed: false,
@@ -713,6 +726,7 @@ impl ToolRegistry {
         };
         notify_tool_finish_if_unclaimed(
             &invocation,
+            tool.as_ref(),
             terminal_outcome_reached.as_deref(),
             lifecycle_outcome,
         )
@@ -758,9 +772,20 @@ impl ToolRegistry {
 
 async fn notify_tool_finish_if_unclaimed(
     invocation: &ToolInvocation,
+    tool: &dyn CoreToolRuntime,
     terminal_outcome_reached: Option<&AtomicBool>,
     outcome: ToolCallOutcome,
 ) -> bool {
+    // A runtime that owns cancellation cleanup may return an ordinary tool result after the turn
+    // has already been cancelled. Leave the terminal claim to ToolCallRuntime in that case so the
+    // model receives the canonical abort result rather than the cleanup result. A terminal outcome
+    // claimed before cancellation remains authoritative.
+    if terminal_outcome_reached.is_some()
+        && tool.waits_for_runtime_cancellation()
+        && invocation.cancellation_token.is_cancelled()
+    {
+        return false;
+    }
     if terminal_outcome_reached.is_some_and(|reached| reached.swap(true, Ordering::AcqRel)) {
         return false;
     }

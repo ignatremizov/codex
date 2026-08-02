@@ -64,6 +64,7 @@ In the codex-rs folder where the rust code lives:
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
 - When running Rust commands (e.g. `just fix` or `just test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
 - For large GitHub Actions artifacts, prefer downloading the artifact ZIP directly with `gh api repos/<owner>/<repo>/actions/artifacts/<artifact_id>/zip > artifact.zip`. `gh run download` can stay quiet for 20+ minutes while still making progress, so do not assume it is stuck or kill it solely because there is no terminal output.
+- When monitoring long-running manual CI workflows or artifact transfers, use long poll intervals (up to an hour). A process poll returns immediately when the process exits, so avoid midpoint status checks that do not affect the outcome.
 - In shell cleanup, use anchored, validated destructive commands instead of glob expansion.
 - In zsh, avoid bare glob expansion in destructive commands.
 

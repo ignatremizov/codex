@@ -3171,6 +3171,145 @@ async fn replay_only_user_turn_resumes_before_starting_exact_prompt() -> Result<
     Ok(())
 }
 
+#[tokio::test]
+async fn closed_child_selection_restores_model_and_effort_from_rollout() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let root_thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            codex_home.path(),
+            "2026-01-01T00-00-00",
+            "2026-01-01T00:00:00Z",
+            "Saved root message",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create root rollout"),
+    )?;
+    let child_timestamp = "2026-01-01T00-00-01";
+    let child_thread_id = ThreadId::from_string(
+        &create_fake_parented_rollout_with_source(
+            codex_home.path(),
+            child_timestamp,
+            "2026-01-01T00:00:01Z",
+            "Saved child message",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: Some(AgentPath::try_from("/root/worker").expect("valid agent path")),
+                agent_nickname: Some("worker".to_string()),
+                agent_role: Some("worker".to_string()),
+            }),
+            root_thread_id.into(),
+            root_thread_id,
+        )
+        .expect("create child rollout"),
+    )?;
+    let child_rollout_path = rollout_path(
+        codex_home.path(),
+        child_timestamp,
+        &child_thread_id.to_string(),
+    );
+    let mut child_rollout = std::fs::read_to_string(&child_rollout_path)?;
+    child_rollout.push_str(&format!(
+        "{}\n",
+        serde_json::json!({
+            "timestamp": "2026-01-01T00:00:02Z",
+            "type": "turn_context",
+            "payload": {
+                "cwd": app.config.cwd.as_path(),
+                "approval_policy": "never",
+                "sandbox_policy": {"type": "danger-full-access"},
+                "model": "gpt-5.6-sol",
+                "effort": "low",
+                "summary": "auto",
+            },
+        })
+    ));
+    std::fs::write(&child_rollout_path, child_rollout)?;
+
+    let (mut app_server, _requests, proxy) = start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    let root = app_server
+        .resume_thread(
+            app.config.clone(),
+            root_thread_id,
+            app.resume_model_settings(),
+        )
+        .await?;
+    app.enqueue_primary_thread_session(root.session, root.turns)
+        .await?;
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.thread_event_channels.insert(
+        child_thread_id,
+        ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY),
+    );
+    app.upsert_agent_picker_thread(
+        child_thread_id,
+        Some("worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ true,
+    );
+    app.agent_navigation
+        .set_parent_thread_id(child_thread_id, Some(root_thread_id));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+        .await?;
+
+    assert_eq!(app.chat_widget.current_model(), "gpt-5.6-sol");
+    assert_eq!(
+        app.chat_widget.current_reasoning_effort(),
+        Some(ReasoningEffortConfig::Low)
+    );
+    let session_model_line = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell),
+            _ => None,
+        })
+        .flat_map(|cell| cell.display_lines(/*width*/ 100))
+        .map(|line| lines_to_single_string(&[line]))
+        .find(|line| line.contains("model:"))
+        .expect("restored session header model line");
+    let session_model_line = session_model_line
+        .trim_matches(|character: char| character == '│' || character.is_whitespace())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let footer = render_bottom_popup(&app.chat_widget, /*width*/ 120);
+    let footer_model_line = footer
+        .lines()
+        .find(|line| line.contains("gpt-5.6-sol"))
+        .expect("restored footer model line");
+    let footer_model = footer_model_line[footer_model_line
+        .find("gpt-5.6-sol")
+        .expect("footer model position")..]
+        .split_whitespace()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    insta::assert_snapshot!(
+        format!("session header: {session_model_line}\nfooter: {footer_model}"),
+        @r"
+    session header: model: gpt-5.6-sol low /model to change
+    footer: gpt-5.6-sol low
+    "
+    );
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
 #[test]
 fn fresh_session_applies_requested_name() -> Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;

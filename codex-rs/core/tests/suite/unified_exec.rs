@@ -867,12 +867,13 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
 
     let call_id = "uexec-end-event";
     let args = json!({
-        "cmd": "/bin/echo END-EVENT".to_string(),
+        "cmd": "read -r _; /bin/echo END-EVENT".to_string(),
         "yield_time_ms": 250,
+        "tty": true,
     });
     let poll_call_id = "uexec-end-event-poll";
     let poll_args = json!({
-        "chars": "",
+        "chars": "\n",
         "session_id": 1000,
         "yield_time_ms": 250,
     });
@@ -1046,9 +1047,9 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-full-lifecycle";
-    // This timing force the long-standing PTY
+    // Keep the process alive beyond the minimum initial yield so completion is backgrounded.
     let args = json!({
-        "cmd": "sleep 0.5; printf 'HELLO-FULL-LIFECYCLE'",
+        "cmd": "sleep 6; printf 'HELLO-FULL-LIFECYCLE'",
         "yield_time_ms": 1000,
     });
 
@@ -1519,13 +1520,12 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
 
     let open_call_id = "uexec-delayed-open";
     let open_args = json!({
-        "cmd": "sleep 3 && echo MARKER1 && sleep 3 && echo MARKER2",
+        "cmd": "read -r -n 1 _; echo MARKER1; read -r -n 1 _; echo MARKER2; read -r -n 1 _",
         "yield_time_ms": 10,
         "tty": true,
     });
 
-    // Poll stdin three times: first for no output, second after the first marker,
-    // and a final long poll to capture the second marker.
+    // Write stdin three times to release both delayed markers and then exit.
     let first_poll_call_id = "uexec-delayed-poll-1";
     let first_poll_args = json!({
         "chars": "x",
@@ -1695,7 +1695,7 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
     let open_call_id = "uexec-open-session";
     let open_args = json!({
         "shell": "bash".to_string(),
-        "cmd": "sleep 0.1".to_string(),
+        "cmd": "sleep 6".to_string(),
         "yield_time_ms": 10,
     });
 
@@ -1777,14 +1777,16 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
         1,
         "expected end event for the write_stdin call"
     );
-    assert!(
-        terminal_interactions.is_empty(),
-        "completed empty polls should not emit terminal interactions: {terminal_interactions:?}"
-    );
+    let [poll_started] = terminal_interactions.as_slice() else {
+        panic!("expected one terminal interaction for the empty poll: {terminal_interactions:?}");
+    };
+    assert_eq!(poll_started.process_id, "1000");
+    assert!(poll_started.stdin.is_empty());
+    assert!(poll_started.deadline_at_ms.is_some());
 
     let open_event = &begin_events[0];
 
-    assert_command(&open_event.command, "-lc", "sleep 0.1");
+    assert_command(&open_event.command, "-lc", "sleep 6");
 
     assert!(
         open_event.interaction_input.is_none(),
@@ -3070,21 +3072,16 @@ async fn unified_exec_streams_after_lagged_output() -> Result<()> {
 
     let script = r#"python3 - <<'PY'
 import sys
-import time
 
-chunk = b'long content here to trigger truncation' * (1 << 10)
-for _ in range(4):
+sys.stdout.write("EARLY-MARKER\n")
+sys.stdout.flush()
+chunk = b'x' * (1 << 14)
+for _ in range(96):
     sys.stdout.buffer.write(chunk)
     sys.stdout.flush()
-
-time.sleep(0.2)
-for _ in range(5):
-    sys.stdout.write("TAIL-MARKER\n")
-    sys.stdout.flush()
-    time.sleep(0.05)
-
-time.sleep(0.2)
 PY
+read -r _
+printf 'TAIL-MARKER\n'
 "#;
 
     let first_call_id = "uexec-lag-start";
@@ -3096,7 +3093,7 @@ PY
 
     let second_call_id = "uexec-lag-poll";
     let second_args = serde_json::json!({
-        "chars": "",
+        "chars": "\n",
         "session_id": 1000,
         "yield_time_ms": 2_000,
     });
@@ -3130,12 +3127,32 @@ PY
     submit_unified_exec_turn(&test, "exercise lag handling", PermissionProfile::Disabled).await?;
     // This is a worst case scenario for the truncate logic, and CI can spend a
     // while draining the lagged tail before the follow-up tool call completes.
-    wait_for_event_with_timeout(
-        &test.codex,
-        |event| matches!(event, EventMsg::TurnComplete(_)),
-        UNIFIED_EXEC_LAGGED_OUTPUT_TIMEOUT,
-    )
-    .await;
+    let (end_event, streamed_output) =
+        tokio::time::timeout(UNIFIED_EXEC_LAGGED_OUTPUT_TIMEOUT, async {
+            let mut end_event = None;
+            let mut streamed_output = String::new();
+            let mut turn_completed = false;
+            loop {
+                let event = test.codex.next_event().await.expect("event");
+                match event.msg {
+                    EventMsg::ExecCommandOutputDelta(event) if event.call_id == first_call_id => {
+                        streamed_output.push_str(&String::from_utf8_lossy(&event.chunk));
+                    }
+                    EventMsg::ExecCommandEnd(event) if event.call_id == first_call_id => {
+                        end_event = Some(event);
+                    }
+                    EventMsg::TurnComplete(_) => {
+                        turn_completed = true;
+                    }
+                    _ => {}
+                }
+                if turn_completed && let Some(end_event) = end_event {
+                    break (end_event, streamed_output);
+                }
+            }
+        })
+        .await
+        .expect("lagged output turn should complete");
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -3154,6 +3171,15 @@ PY
         !process_id.is_empty(),
         "expected session id from initial unified_exec response"
     );
+    assert_eq!(
+        start_output.output.matches("EARLY-MARKER").count(),
+        1,
+        "initial response should drain the early marker exactly once"
+    );
+    assert!(
+        !start_output.output.contains("TAIL-MARKER"),
+        "tail marker should only be produced after write_stdin"
+    );
 
     let poll_output = outputs
         .get(second_call_id)
@@ -3163,6 +3189,18 @@ PY
         poll_text.contains("TAIL-MARKER"),
         "expected poll output to contain tail marker, got {poll_text:?}"
     );
+    for marker in ["EARLY-MARKER", "TAIL-MARKER"] {
+        assert_eq!(
+            end_event.aggregated_output.matches(marker).count(),
+            1,
+            "final aggregate should contain {marker} exactly once"
+        );
+        assert_eq!(
+            streamed_output.matches(marker).count(),
+            1,
+            "live deltas should contain {marker} exactly once"
+        );
+    }
 
     Ok(())
 }
@@ -3181,13 +3219,14 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
 
     let first_call_id = "uexec-timeout";
     let first_args = serde_json::json!({
-        "cmd": "sleep 0.5; echo ready",
+        "cmd": "read -r _; echo ready",
         "yield_time_ms": 10,
+        "tty": true,
     });
 
     let second_call_id = "uexec-poll";
     let second_args = serde_json::json!({
-        "chars": "",
+        "chars": "\n",
         "session_id": 1000,
         "yield_time_ms": 800,
     });
@@ -3462,7 +3501,10 @@ PY
     assert!(output_text.starts_with(&format!(
         "Warning: truncated output (original token count: {expected_original_token_count})\n"
     )));
-    assert_regex_match(r"\.\.\. \d+ bytes omitted \.\.\.", &output_text);
+    assert_regex_match(
+        r"Warning: \d+ bytes were omitted while collecting command output\.",
+        &output_text,
+    );
     assert!(output_text.contains("HEAD\n"));
     assert!(output_text.contains("TAIL\n"));
     assert_eq!(

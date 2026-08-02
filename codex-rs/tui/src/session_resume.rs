@@ -16,6 +16,7 @@ use crate::resume_picker::SessionTarget;
 use crate::tui::Tui;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::ThreadId;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_rollout::open_rollout_line_reader;
 use codex_state::StateRuntime;
 use codex_utils_path as path_utils;
@@ -27,6 +28,7 @@ struct RolloutResumeState {
     thread_id: Option<ThreadId>,
     cwd: Option<PathBuf>,
     model: Option<String>,
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Deserialize)]
@@ -39,6 +41,7 @@ struct SessionMetadata {
 struct TurnContextResumeState {
     cwd: PathBuf,
     model: String,
+    effort: Option<ReasoningEffort>,
 }
 
 #[derive(Deserialize)]
@@ -87,23 +90,38 @@ pub(crate) async fn resolve_session_thread_id(
     }
 }
 
-pub(crate) async fn read_session_model(
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct SavedModelSettings {
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<ReasoningEffort>,
+}
+
+pub(crate) async fn read_saved_model_settings(
     state_db_ctx: Option<&StateRuntime>,
     thread_id: ThreadId,
     path: Option<&Path>,
-) -> Option<String> {
+) -> SavedModelSettings {
+    let mut settings = SavedModelSettings::default();
     if let Some(state_db_ctx) = state_db_ctx
         && let Ok(Some(metadata)) = state_db_ctx.get_thread(thread_id).await
-        && let Some(model) = metadata.model
     {
-        return Some(model);
+        settings.model = metadata.model;
+        settings.reasoning_effort = metadata.reasoning_effort;
     }
 
-    let path = path?;
-    read_rollout_resume_state(path)
-        .await
-        .ok()
-        .and_then(|state| state.model)
+    if (settings.model.is_none() || settings.reasoning_effort.is_none())
+        && let Some(path) = path
+        && let Ok(rollout_state) = read_rollout_resume_state(path).await
+    {
+        if settings.model.is_none() {
+            settings.model = rollout_state.model;
+        }
+        if settings.reasoning_effort.is_none() {
+            settings.reasoning_effort = rollout_state.reasoning_effort;
+        }
+    }
+
+    settings
 }
 
 pub(crate) async fn resolve_cwd_for_resume_or_fork(
@@ -226,6 +244,7 @@ async fn read_rollout_resume_state(path: &Path) -> io::Result<RolloutResumeState
                 {
                     state.cwd = Some(turn_context.cwd);
                     state.model = Some(turn_context.model);
+                    state.reasoning_effort = turn_context.effort;
                 }
             }
             _ => {}
@@ -293,12 +312,20 @@ mod tests {
                 rollout_line(
                     "t1",
                     "turn_context",
-                    serde_json::json!({ "cwd": temp_dir.path().join("middle"), "model": "middle" }),
+                    serde_json::json!({
+                        "cwd": temp_dir.path().join("middle"),
+                        "model": "middle",
+                        "effort": "medium",
+                    }),
                 ),
                 rollout_line(
                     "t2",
                     "turn_context",
-                    serde_json::json!({ "cwd": latest.clone(), "model": "latest" }),
+                    serde_json::json!({
+                        "cwd": latest.clone(),
+                        "model": "latest",
+                        "effort": "low",
+                    }),
                 ),
             ],
         )?;
@@ -308,6 +335,7 @@ mod tests {
         assert_eq!(state.thread_id, Some(thread_id));
         assert_eq!(state.cwd, Some(latest));
         assert_eq!(state.model, Some("latest".to_string()));
+        assert_eq!(state.reasoning_effort, Some(ReasoningEffort::Low));
         Ok(())
     }
 
@@ -336,6 +364,7 @@ mod tests {
         assert_eq!(state.thread_id, Some(thread_id));
         assert_eq!(state.cwd, Some(cwd));
         assert_eq!(state.model, None);
+        assert_eq!(state.reasoning_effort, None);
         Ok(())
     }
 
@@ -396,7 +425,11 @@ mod tests {
                 rollout_line(
                     "t2",
                     "turn_context",
-                    serde_json::json!({ "cwd": child_cwd.clone(), "model": "child-model" }),
+                    serde_json::json!({
+                        "cwd": child_cwd.clone(),
+                        "model": "child-model",
+                        "effort": "high",
+                    }),
                 ),
             ],
         )?;
@@ -406,6 +439,7 @@ mod tests {
         assert_eq!(state.thread_id, Some(thread_id));
         assert_eq!(state.cwd, Some(child_cwd));
         assert_eq!(state.model.as_deref(), Some("child-model"));
+        assert_eq!(state.reasoning_effort, Some(ReasoningEffort::High));
         Ok(())
     }
 

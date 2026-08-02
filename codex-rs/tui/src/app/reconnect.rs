@@ -318,7 +318,12 @@ impl App {
             self.active_thread_rx = Some(receiver);
             self.recap.seed_from_turns(&snapshot.turns, Instant::now());
             self.render_thread_snapshot(
-                tui, app_server, id, snapshot, /*resume_restored_queue*/ false,
+                tui,
+                app_server,
+                id,
+                snapshot,
+                /*resume_restored_queue*/ false,
+                /*preserve_in_flight_turn*/ true,
             )?;
             self.config = self.chat_widget.config_ref().clone();
             self.refresh_pending_thread_approvals().await;

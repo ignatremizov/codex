@@ -12,6 +12,7 @@ use super::app_server_event_targets::server_notification_thread_target;
 use super::app_server_event_targets::server_request_thread_id;
 use super::*;
 use crate::app_server_session::source_agent_path;
+use crate::app_server_session::thread_parent_thread_id;
 use codex_config::types::ResumeCwdMode;
 use std::collections::HashSet;
 
@@ -303,6 +304,7 @@ impl App {
                     codex_app_server_protocol::ThreadStatus::NotLoaded
                 );
                 let agent_path = source_agent_path(&thread.source);
+                let parent_thread_id = thread_parent_thread_id(&thread);
                 self.upsert_agent_picker_thread(
                     thread_id,
                     thread.agent_nickname.or_else(|| {
@@ -318,6 +320,8 @@ impl App {
                     is_closed,
                 );
                 self.agent_navigation.set_agent_path(thread_id, agent_path);
+                self.agent_navigation
+                    .set_parent_thread_id(thread_id, parent_thread_id);
                 if is_running {
                     self.agent_navigation.mark_running(thread_id);
                 } else {
@@ -620,7 +624,14 @@ impl App {
         self.recap.seed_from_progress(recap_progress, now);
         self.schedule_recap_check(thread_id, now);
 
-        self.render_thread_snapshot(tui, app_server, thread_id, snapshot, !is_replay_only)?;
+        self.render_thread_snapshot(
+            tui,
+            app_server,
+            thread_id,
+            snapshot,
+            /*resume_restored_queue*/ !is_replay_only,
+            /*preserve_in_flight_turn*/ !is_replay_only,
+        )?;
         if is_replay_only {
             self.chat_widget.pause_unavailable_thread();
             let message = if attached_replay_only {
@@ -644,6 +655,7 @@ impl App {
         thread_id: ThreadId,
         snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
+        preserve_in_flight_turn: bool,
     ) -> Result<()> {
         let init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,
@@ -656,8 +668,47 @@ impl App {
         self.chat_widget
             .note_rendered_width(tui.terminal.last_known_screen_size.width);
         self.reset_for_thread_switch(tui)?;
-        self.replay_thread_snapshot(snapshot, resume_restored_queue);
+        self.replay_thread_snapshot_with_in_flight_state(
+            snapshot,
+            resume_restored_queue,
+            preserve_in_flight_turn,
+        );
         Ok(())
+    }
+
+    pub(super) async fn maybe_return_from_closed_agent(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+    ) -> bool {
+        if self.overlay.is_some()
+            || !self.chat_widget.no_modal_or_popup_active()
+            || !self.chat_widget.composer_is_empty()
+        {
+            return false;
+        }
+        let Some(thread_id) = self.current_displayed_thread_id() else {
+            return false;
+        };
+        if !self
+            .agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed)
+        {
+            return false;
+        }
+        let Some(parent_thread_id) = self.agent_navigation.parent_thread_id(thread_id) else {
+            return false;
+        };
+
+        if self
+            .select_agent_thread_and_discard_side(tui, app_server, parent_thread_id)
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        self.current_displayed_thread_id() == Some(parent_thread_id)
     }
 
     pub(super) fn should_attach_live_thread_for_selection(&self, thread_id: ThreadId) -> bool {
@@ -988,6 +1039,7 @@ impl App {
         let mut refreshed_thread_ids = HashSet::new();
         for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
             let agent_path = thread.agent_path;
+            let parent_thread_id = thread.parent_thread_id;
             let has_live_channel = self
                 .thread_event_channels
                 .get(&thread.thread_id)
@@ -1001,6 +1053,8 @@ impl App {
             );
             self.agent_navigation
                 .set_agent_path(thread.thread_id, agent_path);
+            self.agent_navigation
+                .set_parent_thread_id(thread.thread_id, Some(parent_thread_id));
             // A live channel can have an empty store after a successful spawn. Only apply server
             // status for channels that would otherwise need another liveness read.
             if !has_live_channel {

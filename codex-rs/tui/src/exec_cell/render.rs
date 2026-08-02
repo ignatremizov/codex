@@ -426,6 +426,10 @@ impl ExecCell {
         let [call] = &self.calls.as_slice() else {
             panic!("Expected exactly one call in a command display cell");
         };
+        self.command_call_display_lines(width, call)
+    }
+
+    fn command_call_display_lines(&self, width: u16, call: &ExecCall) -> Vec<Line<'static>> {
         let layout = EXEC_DISPLAY_LAYOUT;
         let success = call
             .duration
@@ -438,7 +442,7 @@ impl ExecCell {
         let is_interaction = call.is_unified_exec_interaction();
         let title = if is_interaction {
             ""
-        } else if self.is_active() {
+        } else if call.duration.is_none() {
             "Running"
         } else if call.is_user_shell_command() {
             "You ran"

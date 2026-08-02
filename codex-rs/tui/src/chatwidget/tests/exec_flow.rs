@@ -10,41 +10,29 @@ fn future_deadline_at_ms(offset_ms: u128) -> i64 {
 }
 
 #[tokio::test]
-async fn grouped_command_activity_shows_successes_and_preserves_full_transcript() {
+async fn completed_command_activity_shows_each_success() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();
 
     let first = begin_exec(&mut chat, "call-first", "printf first");
     end_exec(&mut chat, first, "first\n", "", /*exit_code*/ 0);
+    let first = drain_insert_history(&mut rx);
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        lines_to_single_string(&first[0]),
+        "• Ran printf first\n  └ first\n"
+    );
 
     let second = begin_exec(&mut chat, "call-second", "printf second");
-    insta::assert_snapshot!(active_blob(&chat), @r"• Ran printf first
-  └ first
-• Running printf second
-");
+    assert_eq!(active_blob(&chat), "• Running printf second\n");
     end_exec(&mut chat, second, "second\n", "", /*exit_code*/ 0);
-
-    assert!(drain_insert_history(&mut rx).is_empty());
-    insta::assert_snapshot!(active_blob(&chat), @r"• Ran printf first
-  └ first
-• Ran printf second
-  └ second
-");
-
-    let transcript = chat
-        .active_cell_transcript_lines(/*width*/ 80)
-        .expect("active transcript");
-    let transcript = lines_to_single_string(&transcript);
-    assert!(transcript.contains("$ printf first\nfirst\n"));
-    assert!(transcript.contains("$ printf second\nsecond\n"));
-
-    chat.on_agent_message_delta("Finished\n".to_string());
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 2);
+    let second = drain_insert_history(&mut rx);
+    assert_eq!(second.len(), 1);
     assert_eq!(
-        lines_to_single_string(&cells[0]),
-        "• Ran printf first\n  └ first\n• Ran printf second\n  └ second\n"
+        lines_to_single_string(&second[0]),
+        "• Ran printf second\n  └ second\n"
     );
+    assert!(chat.transcript.active_cell.is_none());
 }
 
 #[tokio::test]
@@ -81,12 +69,15 @@ async fn grouped_command_activity_shows_unified_exec_startup_commands() {
         begin_unified_exec_startup(&mut chat, "call-second", "proc-second", "printf second");
     end_exec(&mut chat, second, "second\n", "", /*exit_code*/ 0);
 
-    assert!(drain_insert_history(&mut rx).is_empty());
-    insta::assert_snapshot!(active_blob(&chat), @r"• Ran printf first
-  └ first
-• Ran printf second
-  └ second
-");
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 2);
+    let history = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert!(history.contains("• Ran printf first\n  └ first"));
+    assert!(history.contains("• Ran printf second\n  └ second"));
+    assert!(chat.transcript.active_cell.is_none());
 }
 
 #[tokio::test]
@@ -167,6 +158,12 @@ async fn grouped_command_activity_preserves_overlapping_reads_after_success() {
     chat.on_task_started();
     let prefix = begin_exec(&mut chat, "call-prefix", "printf before");
     end_exec(&mut chat, prefix, "before\n", "", /*exit_code*/ 0);
+    let prefix = drain_insert_history(&mut rx);
+    assert_eq!(prefix.len(), 1);
+    assert_eq!(
+        lines_to_single_string(&prefix[0]),
+        "• Ran printf before\n  └ before\n"
+    );
     let first = begin_exec(&mut chat, "call-first-read", "cat first.txt");
     let second = begin_exec(&mut chat, "call-second-read", "cat second.txt");
 
@@ -182,14 +179,13 @@ async fn grouped_command_activity_preserves_overlapping_reads_after_success() {
     );
     end_exec(&mut chat, first, "first\n", "", /*exit_code*/ 0);
     end_exec(&mut chat, second, "second\n", "", /*exit_code*/ 0);
-    assert!(drain_insert_history(&mut rx).is_empty());
-    insta::assert_snapshot!(active_blob(&chat), @r"• Ran printf before
-  └ before
-• Ran cat first.txt
-  └ first
-• Ran cat second.txt
-  └ second
-");
+    chat.flush_completed_command_activity();
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let reads = lines_to_single_string(&cells[0]);
+    assert!(reads.contains("• Ran cat first.txt\n  └ first"));
+    assert!(reads.contains("• Ran cat second.txt\n  └ second"));
+    assert!(chat.transcript.active_cell.is_none());
 }
 
 #[tokio::test]
@@ -212,13 +208,13 @@ async fn grouped_command_activity_keeps_failures_and_manual_shell_commands_visib
     }
     handle_exec_end(&mut chat, failed);
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1);
-    let failed_history = lines_to_single_string(&cells[0]);
-    insta::assert_snapshot!(failed_history, @r"• Ran printf first
-  └ first
-• Ran printf broken
-  └ broken
-");
+    assert_eq!(cells.len(), 2);
+    let failed_history = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert!(failed_history.contains("• Ran printf first\n  └ first"));
+    assert!(failed_history.contains("• Ran printf broken\n  └ broken"));
 
     let manual = begin_exec_with_source(
         &mut chat,
@@ -258,6 +254,7 @@ async fn grouped_command_activity_keeps_failures_and_manual_shell_commands_visib
         assert!(transcript.contains("foo.txt"));
         assert!(transcript.contains("bar.txt"));
         end_exec(&mut chat, second, "content\n", "", /*exit_code*/ 0);
+        chat.flush_completed_command_activity();
         let cells = drain_insert_history(&mut rx);
         assert_eq!(cells.len(), 1);
         assert!(lines_to_single_string(&cells[0]).contains("bar.txt"));
@@ -403,8 +400,11 @@ async fn grouped_command_activity_bounds_cells_without_hiding_completed_calls() 
     }
 
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1);
-    let completed_group = lines_to_single_string(&cells[0]);
+    assert_eq!(cells.len(), 32);
+    let completed_group = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
     assert_eq!(completed_group.matches("• Ran printf bounded").count(), 32);
     assert_eq!(completed_group.matches("  └ bounded").count(), 32);
     assert!(!completed_group.contains("Ran 32 commands"));
@@ -419,6 +419,7 @@ async fn grouped_command_activity_bounds_cells_without_hiding_completed_calls() 
         end_exec(&mut chat, command, "content\n", "", /*exit_code*/ 0);
     }
 
+    chat.flush_completed_command_activity();
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1);
     let completed_group = lines_to_single_string(&cells[0]);
@@ -446,16 +447,17 @@ async fn grouped_command_activity_flushes_before_user_attention() {
         auto_resolution_ms: None,
     });
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1);
-    let completed_group = lines_to_single_string(&cells[0]);
+    assert_eq!(cells.len(), 2);
+    let completed_group = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
     assert!(completed_group.contains("Ran printf attention"));
     assert!(completed_group.contains("Ran printf followup"));
     assert!(!completed_group.contains("Ran 2 commands"));
 
     let later = begin_exec(&mut chat, "call-after-request", "printf later");
     end_exec(&mut chat, later, "later\n", "", /*exit_code*/ 0);
-    assert!(drain_insert_history(&mut rx).is_empty());
-    chat.pre_draw_tick();
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1);
     assert!(lines_to_single_string(&cells[0]).contains("Ran printf later"));
@@ -916,18 +918,21 @@ async fn exec_end_without_begin_flushes_completed_unrelated_exploring_cell() {
 
     let begin_ls = begin_exec(&mut chat, "call-ls", "ls -la");
     end_exec(&mut chat, begin_ls, "", "", /*exit_code*/ 0);
-    assert!(drain_insert_history(&mut rx).is_empty());
-    assert!(active_blob(&chat).contains("ls -la"));
+    chat.flush_completed_command_activity();
+    let completed = drain_insert_history(&mut rx);
+    assert_eq!(completed.len(), 1);
+    assert!(lines_to_single_string(&completed[0]).contains("ls -la"));
 
     let orphan = begin_unified_exec_startup(&mut chat, "call-after", "proc-1", "echo after");
     end_exec(&mut chat, orphan, "after\n", "", /*exit_code*/ 0);
 
-    assert!(drain_insert_history(&mut rx).is_empty());
-    insta::assert_snapshot!(active_blob(&chat), @r"• Ran ls -la
-  └ (no output)
-• Ran echo after
-  └ after
-");
+    let orphan = drain_insert_history(&mut rx);
+    assert_eq!(orphan.len(), 1);
+    assert_eq!(
+        lines_to_single_string(&orphan[0]),
+        "• Ran echo after\n  └ after\n"
+    );
+    assert!(chat.transcript.active_cell.is_none());
 }
 
 #[tokio::test]
@@ -1113,7 +1118,7 @@ async fn unified_exec_completed_session_poll_snapshot() {
         "gh run watch 29332067759",
     );
     end_exec(&mut chat, completed, "", "", /*exit_code*/ 0);
-    drain_insert_history(&mut rx);
+    let mut cells = drain_insert_history(&mut rx);
     chat.on_terminal_interaction(
         "completed-proc".to_string(),
         String::new(),
@@ -1121,7 +1126,7 @@ async fn unified_exec_completed_session_poll_snapshot() {
     );
     terminal_interaction(&mut chat, "call-poll", "completed-proc", "");
 
-    let cells = drain_insert_history(&mut rx);
+    cells.extend(drain_insert_history(&mut rx));
     let combined = cells
         .iter()
         .map(|lines| lines_to_single_string(lines))
@@ -1188,6 +1193,8 @@ async fn final_worked_for_uses_cumulative_turn_duration_snapshot() {
 
         chat.bottom_pane
             .reset_status_timer(Duration::from_secs(/*secs*/ 125));
+        chat.turn_lifecycle
+            .restore_running_since(Instant::now() - Duration::from_secs(/*secs*/ 125));
         handle_agent_message_delta(&mut chat, "Final response.\n");
         chat.on_commit_tick();
         assert!(!chat.bottom_pane.status_indicator_visible());

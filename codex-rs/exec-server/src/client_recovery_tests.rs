@@ -90,6 +90,7 @@ fn process_event_reorder_rejects_oversized_output() {
     let error = state
         .publish_ordered_event(ExecProcessEvent::Output(ProcessOutputChunk {
             seq: 1,
+            output_offset: 0,
             stream: ExecOutputStream::Stdout,
             chunk: vec![0; super::super::MAX_PENDING_PROCESS_EVENT_BYTES + 1].into(),
         }))
@@ -110,6 +111,7 @@ fn process_event_reorder_accepts_gap_closing_event_at_limits() {
             !state
                 .publish_ordered_event(ExecProcessEvent::Output(ProcessOutputChunk {
                     seq,
+                    output_offset: 0,
                     stream: ExecOutputStream::Stdout,
                     chunk: vec![0; chunk_size].into(),
                 }))
@@ -120,6 +122,7 @@ fn process_event_reorder_accepts_gap_closing_event_at_limits() {
         !state
             .publish_ordered_event(ExecProcessEvent::Output(ProcessOutputChunk {
                 seq: 1,
+                output_offset: 0,
                 stream: ExecOutputStream::Stdout,
                 chunk: b"x".to_vec().into(),
             }))
@@ -149,6 +152,7 @@ fn recovery_handles_dense_tail_output_and_newer_notification() {
         !state
             .publish_ordered_event(ExecProcessEvent::Output(ProcessOutputChunk {
                 seq: live_seq,
+                output_offset: 0,
                 stream: ExecOutputStream::Stdout,
                 chunk: b"live".to_vec().into(),
             }))
@@ -157,6 +161,7 @@ fn recovery_handles_dense_tail_output_and_newer_notification() {
     let chunks = (2..=last_seq)
         .map(|seq| ProcessOutputChunk {
             seq,
+            output_offset: 0,
             stream: ExecOutputStream::Stdout,
             chunk: b"x".to_vec().into(),
         })
@@ -190,6 +195,102 @@ fn recovery_handles_dense_tail_output_and_newer_notification() {
     );
 }
 
+#[tokio::test]
+async fn recovery_skips_evicted_output_sequences_with_offset_evidence() {
+    let state = SessionState::new(/*recoverable*/ true);
+    let mut events = state.subscribe_events();
+
+    assert!(
+        !state
+            .recover_events(ReadResponse {
+                chunks: vec![
+                    ProcessOutputChunk {
+                        seq: 101,
+                        output_offset: 100,
+                        stream: ExecOutputStream::Stdout,
+                        chunk: b"x".to_vec().into(),
+                    },
+                    ProcessOutputChunk {
+                        seq: 102,
+                        output_offset: 101,
+                        stream: ExecOutputStream::Stdout,
+                        chunk: b"y".to_vec().into(),
+                    },
+                ],
+                next_seq: 104,
+                exited: true,
+                exit_code: Some(7),
+                closed: false,
+                failure: None,
+                sandbox_denied: false,
+            })
+            .expect("retained output offsets should make an evicted prefix recoverable")
+    );
+
+    let recovered_cursor = {
+        let recovered_state = state
+            .ordered_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            recovered_state.last_published_seq,
+            recovered_state.next_output_offset,
+        )
+    };
+    assert_eq!(
+        (
+            events.recv().await,
+            events.recv().await,
+            events.recv().await,
+            recovered_cursor,
+        ),
+        (
+            Ok(ExecProcessEvent::Output(ProcessOutputChunk {
+                seq: 101,
+                output_offset: 100,
+                stream: ExecOutputStream::Stdout,
+                chunk: b"x".to_vec().into(),
+            })),
+            Ok(ExecProcessEvent::Output(ProcessOutputChunk {
+                seq: 102,
+                output_offset: 101,
+                stream: ExecOutputStream::Stdout,
+                chunk: b"y".to_vec().into(),
+            })),
+            Ok(ExecProcessEvent::Exited {
+                seq: 103,
+                exit_code: 7,
+                sandbox_denied: Some(false),
+            }),
+            (103, 102),
+        )
+    );
+}
+
+#[test]
+fn recovery_rejects_sequence_gap_without_output_offset_evidence() {
+    let state = SessionState::new(/*recoverable*/ true);
+
+    let error = state
+        .recover_events(ReadResponse {
+            chunks: vec![ProcessOutputChunk {
+                seq: 2,
+                output_offset: 0,
+                stream: ExecOutputStream::Stdout,
+                chunk: b"x".to_vec().into(),
+            }],
+            next_seq: 3,
+            exited: false,
+            exit_code: None,
+            closed: false,
+            failure: None,
+            sandbox_denied: false,
+        })
+        .expect_err("legacy offsets should not authorize skipping unknown events");
+
+    assert!(error.to_string().contains("no longer retained"));
+}
+
 #[test]
 fn recovery_rejects_output_at_closed_sequence() {
     let state = SessionState::new(/*recoverable*/ true);
@@ -198,6 +299,7 @@ fn recovery_rejects_output_at_closed_sequence() {
         .recover_events(ReadResponse {
             chunks: vec![ProcessOutputChunk {
                 seq: 1,
+                output_offset: 0,
                 stream: ExecOutputStream::Stdout,
                 chunk: b"output".to_vec().into(),
             }],
@@ -234,6 +336,7 @@ async fn recovery_adds_sandbox_denial_to_pending_exit_event() {
         .recover_events(ReadResponse {
             chunks: vec![ProcessOutputChunk {
                 seq: 1,
+                output_offset: 0,
                 stream: ExecOutputStream::Stderr,
                 chunk: b"sandbox denied".to_vec().into(),
             }],

@@ -32,6 +32,7 @@ use codex_network_proxy::NetworkProxy;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_tools::UnifiedExecShellMode;
 use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
 use rand::Rng;
 use rand::rng;
@@ -70,7 +71,8 @@ pub(crate) use process::UnifiedExecProcess;
 pub(crate) use stdin_approval::TerminalPermissions;
 pub(crate) use stdin_approval::TerminalSandboxSource;
 
-pub(crate) const MIN_YIELD_TIME_MS: u64 = 250;
+pub(crate) const MIN_WRITE_STDIN_YIELD_TIME_MS: u64 = 250;
+pub(crate) const MIN_INITIAL_EXEC_YIELD_TIME_MS: u64 = 5_000;
 pub(crate) const WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS: u64 = 10_000;
 pub(crate) const DEFAULT_UNIFIED_EXEC_YIELD_TIME_MS: u64 = 10_000;
 pub(crate) const DEFAULT_UNIFIED_EXEC_WRITE_STDIN_YIELD_TIME_MS: u64 = 250;
@@ -208,13 +210,12 @@ fn take_plugin_metrics_sidecar(
         .take()
 }
 
-pub(crate) fn clamp_yield_time(yield_time_ms: u64) -> u64 {
-    let yield_time_ms = if cfg!(windows) {
-        yield_time_ms.max(WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS)
-    } else {
-        yield_time_ms
+pub(crate) fn clamp_yield_time(yield_time_ms: u64, target_path_convention: PathConvention) -> u64 {
+    let min_yield_time_ms = match target_path_convention {
+        PathConvention::Posix => MIN_INITIAL_EXEC_YIELD_TIME_MS,
+        PathConvention::Windows => WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS,
     };
-    yield_time_ms.clamp(MIN_YIELD_TIME_MS, MAX_INITIAL_EXEC_YIELD_TIME_MS)
+    yield_time_ms.clamp(min_yield_time_ms, MAX_INITIAL_EXEC_YIELD_TIME_MS)
 }
 
 pub(crate) fn resolve_max_tokens(max_tokens: Option<usize>) -> usize {

@@ -791,6 +791,9 @@ impl Session {
         let (current_date, timezone) = local_time_context();
         let extension_data = Arc::new(codex_extension_api::ExtensionData::new(sub_id.clone()));
         extension_data.insert(skills_snapshot);
+        let unified_exec_yield_time_ms = per_turn_config.unified_exec_yield_time_ms;
+        let unified_exec_write_stdin_yield_time_ms =
+            per_turn_config.unified_exec_write_stdin_yield_time_ms;
         TurnContext {
             sub_id,
             trace_id: current_span_trace_id(),
@@ -820,9 +823,8 @@ impl Session {
             windows_sandbox_level: session_configuration.windows_sandbox_level,
             available_models,
             unified_exec_shell_mode,
-            unified_exec_yield_time_ms: per_turn_config.unified_exec_yield_time_ms,
-            unified_exec_write_stdin_yield_time_ms: per_turn_config
-                .unified_exec_write_stdin_yield_time_ms,
+            unified_exec_yield_time_ms,
+            unified_exec_write_stdin_yield_time_ms,
             final_output_json_schema: None,
             dynamic_tools: session_configuration.dynamic_tools.clone(),
             turn_metadata_state,

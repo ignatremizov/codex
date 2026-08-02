@@ -1,6 +1,7 @@
 #![allow(clippy::module_inception)]
 
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
@@ -58,6 +59,8 @@ pub(crate) struct NoopSpawnLifecycle;
 
 impl SpawnLifecycle for NoopSpawnLifecycle {}
 
+pub(crate) type OutputBuffer = Arc<Mutex<HeadTailBuffer>>;
+
 /// Shared output state exposed to polling and streaming consumers.
 #[derive(Clone)]
 pub(crate) struct OutputHandles<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
@@ -90,9 +93,12 @@ enum ProcessHandle {
 /// processes.
 pub(crate) struct UnifiedExecProcess {
     process_handle: ProcessHandle,
-    output_tx: broadcast::Sender<Vec<u8>>,
+    output_tx: mpsc::Sender<Vec<u8>>,
+    output_rx: StdMutex<Option<mpsc::Receiver<Vec<u8>>>>,
     output: OutputHandles,
-    output_drained: Arc<Notify>,
+    // Unlike output_buffer, this bounded transcript is never drained by tool responses.
+    output_transcript: OutputBuffer,
+    output_stream_complete: CancellationToken,
     interaction_lock: Arc<Mutex<()>>,
     state_tx: watch::Sender<ProcessState>,
     state_rx: watch::Receiver<ProcessState>,
@@ -125,15 +131,18 @@ impl UnifiedExecProcess {
             output_closed_notify: Arc::new(Notify::new()),
             cancellation_token: CancellationToken::new(),
         };
-        let output_drained = Arc::new(Notify::new());
-        let (output_tx, _) = broadcast::channel(64);
+        let output_transcript = Arc::new(Mutex::new(HeadTailBuffer::default()));
+        let output_stream_complete = CancellationToken::new();
+        let (output_tx, output_rx) = mpsc::channel(/*buffer*/ 64);
         let (state_tx, state_rx) = watch::channel(ProcessState::default());
 
         Self {
             process_handle,
             output_tx,
+            output_rx: StdMutex::new(Some(output_rx)),
             output,
-            output_drained,
+            output_transcript,
+            output_stream_complete,
             interaction_lock: Arc::new(Mutex::new(())),
             state_tx,
             state_rx,
@@ -173,16 +182,27 @@ impl UnifiedExecProcess {
         &self.output
     }
 
-    pub(super) fn output_receiver(&self) -> tokio::sync::broadcast::Receiver<Vec<u8>> {
-        self.output_tx.subscribe()
+    pub(super) fn take_output_receiver(&self) -> Option<mpsc::Receiver<Vec<u8>>> {
+        self.output_rx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    pub(super) fn output_transcript(&self) -> OutputBuffer {
+        Arc::clone(&self.output_transcript)
     }
 
     pub(super) fn cancellation_token(&self) -> CancellationToken {
         self.output.cancellation_token.clone()
     }
 
-    pub(super) fn output_drained_notify(&self) -> Arc<Notify> {
-        Arc::clone(&self.output_drained)
+    pub(super) fn output_stream_completion(&self) -> CancellationToken {
+        self.output_stream_complete.clone()
+    }
+
+    pub(super) fn output_task_abort_handle(&self) -> Option<tokio::task::AbortHandle> {
+        self.output_task.as_ref().map(JoinHandle::abort_handle)
     }
 
     pub(super) fn interaction_lock(&self) -> Arc<Mutex<()>> {
@@ -220,9 +240,6 @@ impl UnifiedExecProcess {
 
     fn finish_termination(&self) {
         self.output.cancellation_token.cancel();
-        if let Some(output_task) = &self.output_task {
-            output_task.abort();
-        }
     }
 
     pub(super) fn terminate(&self) {
@@ -353,10 +370,12 @@ impl UnifiedExecProcess {
             sandbox_type,
             Some(spawn_lifecycle),
         );
+        let output_handles = managed.output_handles().clone();
         managed.output_task = Some(Self::spawn_local_output_task(
             stdout_rx,
             stderr_rx,
-            managed.output_handles().clone(),
+            output_handles,
+            Arc::clone(&managed.output_transcript),
             managed.output_tx.clone(),
         ));
 
@@ -406,6 +425,7 @@ impl UnifiedExecProcess {
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,
             output_handles,
+            Arc::clone(&managed.output_transcript),
             managed.output_tx.clone(),
             managed.state_tx.clone(),
         ));
@@ -434,7 +454,8 @@ impl UnifiedExecProcess {
     fn spawn_exec_server_output_task(
         started: StartedExecProcess,
         output_handles: OutputHandles,
-        output_tx: broadcast::Sender<Vec<u8>>,
+        output_transcript: OutputBuffer,
+        output_tx: mpsc::Sender<Vec<u8>>,
         state_tx: watch::Sender<ProcessState>,
     ) -> JoinHandle<()> {
         let OutputHandles {
@@ -452,6 +473,7 @@ impl UnifiedExecProcess {
                 output_closed_notify: Arc::clone(&output_closed_notify),
             };
             let mut last_seq: u64 = 0;
+            let mut next_output_offset: u64 = 0;
             loop {
                 let event = match events.recv().await {
                     Ok(event) => Some(event),
@@ -513,12 +535,15 @@ impl UnifiedExecProcess {
                         sandbox_denied,
                     } = response;
                     for chunk in chunks.into_iter().filter(|chunk| chunk.seq > last_seq) {
-                        let bytes = chunk.chunk.into_inner();
-                        let mut guard = output_buffer.lock().await;
-                        guard.push_chunk(&bytes);
-                        drop(guard);
-                        let _ = output_tx.send(bytes);
-                        output_notify.notify_waiters();
+                        record_exec_server_output_chunk(
+                            &output_buffer,
+                            &output_transcript,
+                            &output_tx,
+                            &output_notify,
+                            &mut next_output_offset,
+                            chunk,
+                        )
+                        .await;
                     }
                     last_seq = last_seq.max(next_seq.saturating_sub(1));
                     if let Some(message) = failure {
@@ -537,6 +562,9 @@ impl UnifiedExecProcess {
                         } else {
                             state
                         });
+                        if exited {
+                            cancellation_token.cancel();
+                        }
                     }
                     if closed {
                         output_closed.store(true, Ordering::Release);
@@ -556,12 +584,15 @@ impl UnifiedExecProcess {
                             continue;
                         }
                         last_seq = chunk.seq;
-                        let bytes = chunk.chunk.into_inner();
-                        let mut guard = output_buffer.lock().await;
-                        guard.push_chunk(&bytes);
-                        drop(guard);
-                        let _ = output_tx.send(bytes);
-                        output_notify.notify_waiters();
+                        record_exec_server_output_chunk(
+                            &output_buffer,
+                            &output_transcript,
+                            &output_tx,
+                            &output_notify,
+                            &mut next_output_offset,
+                            chunk,
+                        )
+                        .await;
                     }
                     ExecProcessEvent::Exited {
                         seq,
@@ -575,6 +606,7 @@ impl UnifiedExecProcess {
                         let mut state = state_tx.borrow().clone();
                         state.sandbox_denied |= sandbox_denied.unwrap_or(false);
                         let _ = state_tx.send_replace(state.exited(Some(exit_code)));
+                        cancellation_token.cancel();
                     }
                     ExecProcessEvent::Closed { seq } => {
                         if seq <= last_seq {
@@ -602,7 +634,8 @@ impl UnifiedExecProcess {
         mut stdout_rx: mpsc::Receiver<Vec<u8>>,
         mut stderr_rx: mpsc::Receiver<Vec<u8>>,
         output_handles: OutputHandles,
-        output_tx: broadcast::Sender<Vec<u8>>,
+        output_transcript: OutputBuffer,
+        output_tx: mpsc::Sender<Vec<u8>>,
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -638,11 +671,14 @@ impl UnifiedExecProcess {
                 };
 
                 if let Some(chunk) = chunk {
-                    let mut guard = output_buffer.lock().await;
-                    guard.push_chunk(chunk.clone());
-                    drop(guard);
-                    let _ = output_tx.send(chunk);
-                    output_notify.notify_waiters();
+                    record_output_chunk(
+                        &output_buffer,
+                        &output_transcript,
+                        &output_tx,
+                        &output_notify,
+                        chunk,
+                    )
+                    .await;
                 }
             }
         })
@@ -655,8 +691,71 @@ impl UnifiedExecProcess {
     }
 }
 
+async fn record_output_chunk(
+    output_buffer: &OutputBuffer,
+    output_transcript: &OutputBuffer,
+    output_tx: &mpsc::Sender<Vec<u8>>,
+    output_notify: &Arc<Notify>,
+    chunk: Vec<u8>,
+) {
+    output_buffer.lock().await.push_chunk(chunk.clone());
+    output_transcript.lock().await.push_chunk(chunk.clone());
+    let _ = output_tx.send(chunk).await;
+    output_notify.notify_waiters();
+}
+
+pub(super) async fn record_exec_server_output_chunk(
+    output_buffer: &OutputBuffer,
+    output_transcript: &OutputBuffer,
+    output_tx: &mpsc::Sender<Vec<u8>>,
+    output_notify: &Arc<Notify>,
+    next_output_offset: &mut u64,
+    chunk: codex_exec_server::ProcessOutputChunk,
+) {
+    let chunk_offset = if chunk.output_offset == 0 && *next_output_offset > 0 {
+        // Older exec servers omit output_offset. Preserve their sequential
+        // behavior while accounting for replay gaps from newer servers.
+        *next_output_offset
+    } else {
+        chunk.output_offset
+    };
+    let omitted_bytes = chunk_offset.saturating_sub(*next_output_offset);
+    if omitted_bytes > 0 {
+        let omitted_bytes = usize::try_from(omitted_bytes).unwrap_or(usize::MAX);
+        let omission_marker = format!(
+            "\n{}\n",
+            super::format_output_omission_marker(omitted_bytes)
+        )
+        .into_bytes();
+        output_buffer
+            .lock()
+            .await
+            .push_upstream_omission(omitted_bytes);
+        output_transcript
+            .lock()
+            .await
+            .push_upstream_omission(omitted_bytes);
+        let _ = output_tx.send(omission_marker).await;
+    }
+
+    let bytes = chunk.chunk.into_inner();
+    *next_output_offset = (*next_output_offset)
+        .max(chunk_offset.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX)));
+    record_output_chunk(
+        output_buffer,
+        output_transcript,
+        output_tx,
+        output_notify,
+        bytes,
+    )
+    .await;
+}
+
 impl Drop for UnifiedExecProcess {
     fn drop(&mut self) {
         self.terminate();
+        if let Some(output_task) = &self.output_task {
+            output_task.abort();
+        }
     }
 }
