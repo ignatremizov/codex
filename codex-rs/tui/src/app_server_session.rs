@@ -2579,6 +2579,19 @@ mod workspace_roots_tests;
 #[path = "app_server_session/prompt_history_tests.rs"]
 mod prompt_history_tests;
 
+pub(crate) fn thread_parent_thread_id(thread: &Thread) -> Option<ThreadId> {
+    thread
+        .parent_thread_id
+        .as_deref()
+        .and_then(|thread_id| ThreadId::from_string(thread_id).ok())
+        .or(match &thread.source {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }) => Some(*parent_thread_id),
+            _ => None,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

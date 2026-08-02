@@ -1,4 +1,6 @@
 use super::App;
+use super::AppServerSession;
+use super::ThreadEventAttachment;
 use crate::session_state::ThreadSessionState;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::Thread;
@@ -7,6 +9,60 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
 
 impl App {
+    /// Refresh closed-thread presentation through read-only app-server APIs.
+    ///
+    /// Existing history windows and permission choices stay owned by their cached thread.
+    /// Missing history is hydrated by app-server so remote paths and cursors never become
+    /// local rollout reads. This does not attach a live listener or clear a recovery guard.
+    pub(super) async fn refresh_closed_thread_session(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        thread: &mut Thread,
+    ) -> color_eyre::Result<()> {
+        if self.history_recovery_required.contains(&thread_id) {
+            return Ok(());
+        }
+        let (cached, needs_history) =
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                if channel.attachment() == ThreadEventAttachment::ExternalWriter {
+                    return Ok(());
+                }
+                let store = channel.store.lock().await;
+                (store.session.clone(), store.turns.is_empty())
+            } else {
+                (None, true)
+            };
+        if needs_history {
+            app_server
+                .hydrate_initial_thread_history(
+                    thread,
+                    /*turn_cursor*/ None,
+                    /*item_cursor*/ None,
+                    Some(&self.config),
+                    Some(&self.local_settings),
+                    crate::app_server_session::HistoryHydrationScope::Initial,
+                )
+                .await?;
+        }
+        let mut session = self.session_state_for_thread_read(thread_id, thread).await;
+        if let Some(cached) = cached {
+            session.approval_policy = cached.approval_policy;
+            session.approvals_reviewer = cached.approvals_reviewer;
+            session.permission_profile = cached.permission_profile;
+            session.active_permission_profile = cached.active_permission_profile;
+        }
+        let channel = self.ensure_thread_channel(thread_id);
+        channel.mark_replay_only();
+        let mut store = channel.store.lock().await;
+        store.session = Some(session);
+        if needs_history {
+            store.set_turns(std::mem::take(&mut thread.turns));
+            store.rebase_buffer_after_session_refresh();
+        }
+        Ok(())
+    }
+
     pub(super) async fn sync_active_thread_service_tier_to_cached_session(&mut self) {
         let Some(active_thread_id) = self.active_thread_id else {
             return;
@@ -127,6 +183,9 @@ impl App {
         } else if thread.path.is_some() {
             session.model.clear();
         }
+        // The server owns persisted metadata, including remote rollout paths. An unset
+        // effort must not inherit the model settings of the currently displayed parent.
+        session.reasoning_effort = thread.reasoning_effort;
         session.message_history = None;
         session
     }
@@ -162,6 +221,7 @@ mod tests {
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
     use codex_protocol::models::ManagedFileSystemPermissions;
     use codex_protocol::models::PermissionProfile;
+    use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
     use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -410,7 +470,7 @@ mod tests {
             permission_profile: PermissionProfile::workspace_write(),
             ..test_thread_session(primary_thread_id, test_path_buf("/tmp/primary"))
         };
-        let read_thread = Thread {
+        let mut read_thread = Thread {
             originator: None,
             environments: None,
             id: read_thread_id.to_string(),
@@ -465,5 +525,21 @@ mod tests {
             "thread/read fallback must use the active widget permissions rather than stale app \
              config defaults"
         );
+        for effort in [Some(ReasoningEffort::Low), None] {
+            // API metadata is authoritative even when a local/remote rollout path is absent.
+            app.primary_session_configured
+                .as_mut()
+                .expect("cached primary")
+                .reasoning_effort = Some(ReasoningEffort::High);
+            read_thread.model = Some("closed-child-model".into());
+            read_thread.reasoning_effort = effort;
+            let session = app
+                .session_state_for_thread_read(read_thread_id, &read_thread)
+                .await;
+            assert_eq!(
+                (session.model, session.reasoning_effort),
+                ("closed-child-model".into(), effort)
+            );
+        }
     }
 }
