@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::sync::LazyLock;
 
 use codex_exec_server::ExecutorFileSystem;
@@ -16,10 +15,12 @@ use crate::ApplyPatchFileChange;
 use crate::ApplyPatchFileUpdate;
 use crate::IoError;
 use crate::MaybeApplyPatchVerified;
+use crate::derive_new_contents_from_chunks_for_content;
 use crate::parser::Hunk;
 use crate::parser::ParseError;
 use crate::parser::parse_patch;
 use crate::unified_diff_from_chunks;
+use crate::unified_diff_from_contents;
 use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
 use std::str::Utf8Error;
@@ -196,6 +197,7 @@ async fn try_verify_apply_patch_args(
         .transpose()?
         .unwrap_or_else(|| cwd.clone());
     let mut changes = HashMap::new();
+    let mut original_update_contents = HashMap::new();
     for hunk in hunks {
         let path = hunk.resolve_path(&effective_cwd)?;
         match hunk {
@@ -214,40 +216,44 @@ async fn try_verify_apply_patch_args(
             Hunk::UpdateFile {
                 move_path, chunks, ..
             } => {
-                let ApplyPatchFileUpdate {
-                    unified_diff,
-                    content: contents,
-                    ..
-                } = unified_diff_from_chunks(&path, &chunks, fs, sandbox).await?;
                 let move_path = move_path
                     .map(|path| effective_cwd.join(&path.to_string_lossy()))
                     .transpose()?;
-                match changes.entry(path) {
-                    Entry::Occupied(mut entry) => match entry.get_mut() {
-                        ApplyPatchFileChange::Update {
-                            unified_diff: existing_diff,
-                            move_path: None,
-                            new_content,
-                        } if move_path.is_none() => {
-                            existing_diff.push_str(&unified_diff);
-                            *new_content = contents;
-                        }
-                        existing => {
-                            *existing = ApplyPatchFileChange::Update {
-                                unified_diff,
-                                move_path,
-                                new_content: contents,
-                            };
-                        }
-                    },
-                    Entry::Vacant(entry) => {
-                        entry.insert(ApplyPatchFileChange::Update {
-                            unified_diff,
-                            move_path,
-                            new_content: contents,
-                        });
-                    }
+                // Repeated updates execute sequentially, so derive one canonical change from the
+                // original file to the accumulated content instead of concatenating diff hunks.
+                if move_path.is_none()
+                    && let Some(original_content) = original_update_contents.get(&path)
+                    && let Some(ApplyPatchFileChange::Update {
+                        unified_diff,
+                        move_path: None,
+                        new_content,
+                    }) = changes.get_mut(&path)
+                {
+                    let contents =
+                        derive_new_contents_from_chunks_for_content(&path, new_content, &chunks)?;
+                    *unified_diff =
+                        unified_diff_from_contents(original_content, &contents, /*context*/ 1);
+                    *new_content = contents;
+                    continue;
                 }
+                let ApplyPatchFileUpdate {
+                    unified_diff,
+                    original_content,
+                    content: contents,
+                } = unified_diff_from_chunks(&path, &chunks, fs, sandbox).await?;
+                if move_path.is_none() {
+                    original_update_contents.insert(path.clone(), original_content);
+                } else {
+                    original_update_contents.remove(&path);
+                }
+                changes.insert(
+                    path,
+                    ApplyPatchFileChange::Update {
+                        unified_diff,
+                        move_path,
+                        new_content: contents,
+                    },
+                );
             }
         }
     }
@@ -884,7 +890,7 @@ PATCH"#,
     }
 
     #[tokio::test]
-    async fn repeated_update_sections_preserve_every_diff_hunk() {
+    async fn repeated_update_sections_emit_one_canonical_full_file_change() {
         let session_dir = tempdir().unwrap();
         let relative_path = "source.txt";
         fs::write(session_dir.path().join(relative_path), "one\ntwo\nthree\n").unwrap();
@@ -915,14 +921,13 @@ PATCH"#,
         };
         let path = PathUri::from_host_native_path(session_dir.path().join(relative_path))
             .expect("absolute test path");
-        let Some(ApplyPatchFileChange::Update { unified_diff, .. }) = action.changes().get(&path)
-        else {
-            panic!("expected an update");
-        };
-
         assert_eq!(
-            unified_diff,
-            "@@ -2,2 +2,2 @@\n two\n-three\n+THREE\n@@ -1,2 +1,2 @@\n-one\n+ONE\n two\n"
+            action.changes().get(&path),
+            Some(&ApplyPatchFileChange::Update {
+                unified_diff: "@@ -1,3 +1,3 @@\n-one\n+ONE\n two\n-three\n+THREE\n".to_string(),
+                move_path: None,
+                new_content: "ONE\ntwo\nTHREE\n".to_string(),
+            })
         );
     }
 
