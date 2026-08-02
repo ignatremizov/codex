@@ -217,11 +217,15 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
         .join("\n");
     assert_snapshot!(
         rendered,
-        @r"
+    @r"
     • Spawned Herschel [default]
       └ Review the metadata presentation change.
+
+
     • Sent input to Herschel [default]
       └ Give me one random ingredient.
+
+
     • Agent finished
       └ Herschel [default]: Completed - Cinnamon
     "
