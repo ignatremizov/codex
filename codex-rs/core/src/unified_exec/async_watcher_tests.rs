@@ -2,14 +2,18 @@ use std::sync::Arc;
 
 use super::Buffer;
 use super::Emitter;
-use super::TRAILING_OUTPUT_GRACE;
+use super::INCOMPLETE_OUTPUT_WARNING;
+use super::TRAILING_OUTPUT_CLOSE_TIMEOUT;
+use super::TRAILING_OUTPUT_HARD_TIMEOUT;
 use super::emit_exec_end_for_unified_exec;
+use super::emit_failed_exec_end_for_unified_exec;
 use super::resolve_aggregated_output;
 use super::spawn_exit_watcher;
 use super::start_streaming_output;
 use super::utf8_boundary;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::unified_exec::UnifiedExecContext;
+use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
 use crate::unified_exec::process::OutputBuffers;
 use crate::unified_exec::process::UnifiedExecProcess;
 use codex_protocol::items::CommandExecutionStatus;
@@ -38,7 +42,7 @@ async fn initial_completion_preserves_collected_output_over_a_partial_stream() {
     let (session, turn, rx_event) = make_session_and_context_with_rx().await;
     let step = crate::session::step_context::StepContext::for_test(Arc::clone(&turn));
     let output_buffer = Arc::new(tokio::sync::Mutex::new(OutputBuffers::default()));
-    output_buffer.lock().await.transcript.push_chunk(b"partial");
+    output_buffer.lock().await.push_chunk(b"partial");
     #[allow(deprecated)]
     let cwd = turn.cwd.clone().into();
     emit_exec_end_for_unified_exec(
@@ -51,7 +55,7 @@ async fn initial_completion_preserves_collected_output_over_a_partial_stream() {
         cwd,
         /*process_id*/ None,
         /*plugin_attribution*/ None,
-        output_buffer,
+        Arc::clone(&output_buffer),
         "complete é\n".to_string(),
         /*exit_code*/ 0,
         Duration::from_millis(50),
@@ -76,16 +80,69 @@ async fn initial_completion_preserves_collected_output_over_a_partial_stream() {
             Some(0)
         ),
     );
+    let buffers = output_buffer.lock().await;
+    assert_eq!(buffers.pending.to_bytes(), b"partial");
+    assert_eq!(buffers.transcript, HeadTailBuffer::default());
+}
+
+#[test_case::test_case("", "partial\nfailed"; "transcript_output")]
+#[test_case::test_case("collected é\n", "collected é\n\nfailed"; "collected_output")]
+#[tokio::test]
+async fn failed_completion_releases_transcript_and_preserves_pending_output(
+    fallback: &str,
+    expected_output: &str,
+) -> anyhow::Result<()> {
+    let (session, turn, rx_event) = make_session_and_context_with_rx().await;
+    let step = crate::session::step_context::StepContext::for_test(Arc::clone(&turn));
+    let output_buffer = Arc::new(tokio::sync::Mutex::new(OutputBuffers::default()));
+    output_buffer.lock().await.push_chunk(b"partial");
+    #[allow(deprecated)]
+    let cwd = turn.cwd.clone().into();
+    emit_failed_exec_end_for_unified_exec(
+        /*sandbox_type*/ None,
+        session,
+        turn,
+        Arc::clone(&step.settings.model_info),
+        "failed-completion".to_string(),
+        vec!["run".to_string()],
+        cwd,
+        /*process_id*/ None,
+        /*plugin_attribution*/ None,
+        Arc::clone(&output_buffer),
+        fallback.to_string(),
+        "failed".to_string(),
+        Duration::from_millis(/*millis*/ 50),
+    )
+    .await;
+    let event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), rx_event.recv()).await??;
+    let EventMsg::ItemCompleted(completed) = event.msg else {
+        anyhow::bail!("expected ItemCompleted");
+    };
+    let TurnItem::CommandExecution(item) = completed.item else {
+        anyhow::bail!("expected CommandExecution");
+    };
+    assert_eq!(
+        (item.status, item.aggregated_output, item.exit_code),
+        (
+            CommandExecutionStatus::Failed,
+            Some(expected_output.to_string()),
+            Some(-1)
+        ),
+    );
+    let buffers = output_buffer.lock().await;
+    assert_eq!(buffers.pending.to_bytes(), b"partial");
+    assert_eq!(buffers.transcript, HeadTailBuffer::default());
+    Ok(())
 }
 
 #[tokio::test]
 async fn background_completion_preserves_stream_omission_markers_and_unicode() {
     let mut buffers = OutputBuffers::default();
-    let buffer = &mut buffers.transcript;
-    buffer.push_chunk(
+    buffers.push_chunk(
         "é".repeat(crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES)
             .as_bytes(),
     );
+    let buffer = &buffers.transcript;
     assert!(buffer.omitted_bytes() > 0);
     let expected = String::from_utf8_lossy(&buffer.to_bytes_with_omission_marker()).into_owned();
     let transcript = Arc::new(tokio::sync::Mutex::new(buffers));
@@ -93,13 +150,23 @@ async fn background_completion_preserves_stream_omission_markers_and_unicode() {
         resolve_aggregated_output(&transcript, String::new()).await,
         expected
     );
+    {
+        let buffers = transcript.lock().await;
+        assert_eq!(
+            buffers.pending.to_bytes_with_omission_marker(),
+            expected.as_bytes()
+        );
+        assert_eq!(buffers.transcript, HeadTailBuffer::default());
+    }
     assert_eq!(
         resolve_aggregated_output(&transcript, "collected é\n".to_string()).await,
         "collected é\n",
     );
 }
 
-async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
+async fn streaming_output_harness(
+    initial_output: Option<&[u8]>,
+) -> anyhow::Result<StreamingOutputHarness> {
     let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
     let (stdout_tx, stdout_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(8);
     let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<i32>();
@@ -122,7 +189,20 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
         tokio_util::sync::CancellationToken::new(),
         "streaming-output-test".to_string(),
     );
+    if let Some(initial_output) = initial_output {
+        let output_handles = process.output_handles();
+        let output_notified = output_handles.output_notify.notified();
+        tokio::pin!(output_notified);
+        output_notified.as_mut().enable();
+        stdout_tx
+            .send(initial_output.to_vec())
+            .expect("send initial output");
+        tokio::time::timeout(Duration::from_secs(1), output_notified)
+            .await
+            .expect("initial output should be recorded");
+    }
     let output_buffer = Arc::clone(&process.output_handles().output_buffer);
+    start_streaming_output(&process, &context);
 
     Ok(StreamingOutputHarness {
         process,
@@ -147,13 +227,7 @@ async fn completed_output_preserves_bytes_before_subscription(
         output_buffer,
         context,
         rx_event,
-    } = streaming_output_harness().await?;
-
-    let collected = process.output_handles().output_notify.notified();
-    tokio::pin!(collected);
-    collected.as_mut().enable();
-    stdout_tx.send(b"early\n".to_vec())?;
-    collected.await;
+    } = streaming_output_harness(Some(b"early\n")).await?;
 
     let model_output = UnifiedExecProcessManager::collect_output_until_deadline(
         process.output_handles(),
@@ -162,8 +236,6 @@ async fn completed_output_preserves_bytes_before_subscription(
     )
     .await;
     assert_eq!(model_output.to_bytes(), b"early\n");
-
-    start_streaming_output(&process, &context);
     #[allow(deprecated)]
     let cwd = context.step_context.turn.cwd.clone().into();
     spawn_exit_watcher(
@@ -173,7 +245,7 @@ async fn completed_output_preserves_bytes_before_subscription(
         cwd,
         /*process_id*/ 123,
         /*plugin_attribution*/ None,
-        output_buffer,
+        Arc::clone(&output_buffer),
         Instant::now(),
         /*network_denial_monitor*/ None,
         /*plugin_metrics_sidecar*/ None,
@@ -201,6 +273,18 @@ async fn completed_output_preserves_bytes_before_subscription(
             Some(expected_output)
         )
     );
+    assert_eq!(
+        output_buffer.lock().await.transcript,
+        HeadTailBuffer::default()
+    );
+    let late_poll = super::super::output_collection::collect_output_until_deadline(
+        process.output_handles(),
+        /*pause_state*/ None,
+        Some(Instant::now()),
+        /*interrupts*/ None,
+    )
+    .await;
+    assert_eq!(late_poll.collected.to_bytes(), late_output);
     Ok(())
 }
 
@@ -212,12 +296,9 @@ async fn streaming_output_preserves_multibyte_characters_across_chunks() -> anyh
         exit_tx,
         output_buffer,
         rx_event,
-        context,
-    } = streaming_output_harness().await?;
-    start_streaming_output(&process, &context);
-    let output_drained = process.output_drained_notify();
-    let drained = output_drained.notified();
-    tokio::pin!(drained);
+        ..
+    } = streaming_output_harness(/*initial_output*/ None).await?;
+    let output_stream_complete = process.output_stream_completion();
 
     stdout_tx.send(vec![0xc3]).expect("send UTF-8 lead byte");
     stdout_tx
@@ -225,7 +306,7 @@ async fn streaming_output_preserves_multibyte_characters_across_chunks() -> anyh
         .expect("send UTF-8 continuation byte");
     drop(stdout_tx);
     exit_tx.send(0).expect("send exit");
-    (&mut drained).await;
+    output_stream_complete.cancelled().await;
 
     let event = rx_event.recv().await.expect("receive output delta");
     let EventMsg::ExecCommandOutputDelta(delta) = event.msg else {
@@ -253,19 +334,135 @@ async fn streaming_output_preserves_multibyte_characters_across_chunks() -> anyh
 }
 
 #[tokio::test]
-async fn streaming_output_finishes_on_close_without_waiting_for_grace() -> anyhow::Result<()> {
+async fn exit_during_chunk_delivery_preserves_remaining_live_deltas() -> anyhow::Result<()> {
+    let StreamingOutputHarness {
+        process,
+        stdout_tx,
+        exit_tx,
+        context,
+        rx_event,
+        ..
+    } = streaming_output_harness(/*initial_output*/ None).await?;
+    // A second start must not signal completion for the existing consumer.
+    start_streaming_output(&process, &context);
+    assert!(!process.output_stream_completion().is_cancelled());
+    let bytes = vec![b'x'; super::UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES * 128];
+    stdout_tx.send(bytes.clone())?;
+    let first = tokio::time::timeout(Duration::from_secs(2), rx_event.recv()).await??;
+    let EventMsg::ExecCommandOutputDelta(first) = first.msg else {
+        panic!("expected first output delta");
+    };
+    exit_tx.send(0).expect("send exit during delivery");
+    drop(stdout_tx);
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        process.output_stream_completion().cancelled(),
+    )
+    .await?;
+    let mut streamed = first.chunk;
+    while let Ok(event) = rx_event.try_recv() {
+        let EventMsg::ExecCommandOutputDelta(delta) = event.msg else {
+            panic!("expected output delta");
+        };
+        streamed.extend(delta.chunk);
+    }
+    assert_eq!(streamed, bytes);
+    Ok(())
+}
+
+#[tokio::test]
+async fn exit_watcher_includes_output_emitted_before_streaming_started() -> anyhow::Result<()> {
+    let initial_output = b"EARLY-OUTPUT-MARKER";
     let StreamingOutputHarness {
         process,
         stdout_tx,
         exit_tx,
         output_buffer,
         context,
+        rx_event,
+    } = streaming_output_harness(Some(initial_output)).await?;
+
+    #[allow(deprecated)]
+    let cwd = context.step_context.turn.cwd.clone().into();
+    spawn_exit_watcher(
+        Arc::clone(&process),
+        &context,
+        vec!["proof".to_string()],
+        cwd,
+        /*process_id*/ 123,
+        /*plugin_attribution*/ None,
+        output_buffer,
+        Instant::now(),
+        /*network_denial_monitor*/ None,
+        /*plugin_metrics_sidecar*/ None,
+    );
+
+    exit_tx.send(0).expect("send exit");
+    drop(stdout_tx);
+
+    let mut streamed_output = String::new();
+    let completed = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let event = rx_event.recv().await.expect("command event");
+            match event.msg {
+                EventMsg::ExecCommandOutputDelta(delta) => {
+                    streamed_output.push_str(&String::from_utf8_lossy(&delta.chunk));
+                }
+                EventMsg::ItemCompleted(completed) => break completed,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("command should complete");
+    let TurnItem::CommandExecution(item) = completed.item else {
+        panic!("expected CommandExecution");
+    };
+    assert_eq!(
+        (
+            item.status,
+            item.exit_code,
+            item.aggregated_output.as_deref()
+        ),
+        (
+            CommandExecutionStatus::Completed,
+            Some(0),
+            Some("EARLY-OUTPUT-MARKER")
+        )
+    );
+    assert_eq!(streamed_output, "EARLY-OUTPUT-MARKER");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_output_does_not_keep_unstored_process_alive() -> anyhow::Result<()> {
+    let StreamingOutputHarness {
+        process,
+        stdout_tx,
+        exit_tx,
         ..
-    } = streaming_output_harness().await?;
-    start_streaming_output(&process, &context);
-    let output_drained = process.output_drained_notify();
-    let drained = output_drained.notified();
-    tokio::pin!(drained);
+    } = streaming_output_harness(/*initial_output*/ None).await?;
+    let weak_process = Arc::downgrade(&process);
+
+    drop(process);
+
+    assert!(weak_process.upgrade().is_none());
+    drop(stdout_tx);
+    drop(exit_tx);
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_output_finishes_on_close_without_waiting_for_grace() -> anyhow::Result<()> {
+    let StreamingOutputHarness {
+        process,
+        stdout_tx,
+        exit_tx,
+        output_buffer,
+        ..
+    } = streaming_output_harness(/*initial_output*/ None).await?;
+    let output_stream_complete = process.output_stream_completion();
 
     tokio::time::pause();
     let exited_at = Instant::now();
@@ -277,13 +474,15 @@ async fn streaming_output_finishes_on_close_without_waiting_for_grace() -> anyho
             .expect("send late output");
     });
 
-    (&mut drained).await;
+    tokio::time::timeout(Duration::from_secs(1), output_stream_complete.cancelled())
+        .await
+        .expect("output should drain");
     let elapsed = Instant::now().saturating_duration_since(exited_at);
     tokio::time::resume();
 
     assert!(
-        elapsed >= Duration::from_millis(50) && elapsed < TRAILING_OUTPUT_GRACE,
-        "output close should finish before the grace fallback: {elapsed:?}"
+        elapsed >= Duration::from_millis(50) && elapsed < TRAILING_OUTPUT_CLOSE_TIMEOUT,
+        "output close should finish before the close-timeout fallback: {elapsed:?}"
     );
     assert_eq!(
         output_buffer
@@ -298,32 +497,38 @@ async fn streaming_output_finishes_on_close_without_waiting_for_grace() -> anyho
 }
 
 #[tokio::test]
-async fn streaming_output_keeps_grace_as_fallback_without_close() -> anyhow::Result<()> {
+async fn streaming_output_close_timeout_resets_while_output_is_active() -> anyhow::Result<()> {
     let StreamingOutputHarness {
         process,
         stdout_tx,
         exit_tx,
         output_buffer,
-        rx_event,
-        context,
-    } = streaming_output_harness().await?;
-    start_streaming_output(&process, &context);
-    let output_drained = process.output_drained_notify();
-    let drained = output_drained.notified();
-    tokio::pin!(drained);
+        ..
+    } = streaming_output_harness(/*initial_output*/ None).await?;
+    let output_stream_complete = process.output_stream_completion();
 
     tokio::time::pause();
     let exited_at = Instant::now();
-    stdout_tx.send(vec![0xc3]).expect("send UTF-8 lead byte");
     exit_tx.send(0).expect("send exit");
-    (&mut drained).await;
+    tokio::spawn(async move {
+        for marker in [b"A", b"B"] {
+            tokio::time::sleep(Duration::from_millis(750)).await;
+            stdout_tx
+                .send(marker.to_vec())
+                .expect("send active trailing output");
+        }
+        tokio::time::sleep(Duration::from_millis(750)).await;
+    });
+
+    tokio::time::timeout(Duration::from_secs(3), output_stream_complete.cancelled())
+        .await
+        .expect("active output should drain");
     let elapsed = Instant::now().saturating_duration_since(exited_at);
     tokio::time::resume();
 
     assert!(
-        elapsed >= TRAILING_OUTPUT_GRACE
-            && elapsed <= TRAILING_OUTPUT_GRACE + Duration::from_millis(10),
-        "missing output close should use the grace fallback: {elapsed:?}"
+        elapsed >= Duration::from_millis(2_250) && elapsed < Duration::from_millis(2_500),
+        "active output should extend the close timeout: {elapsed:?}"
     );
     assert_eq!(
         output_buffer
@@ -331,7 +536,108 @@ async fn streaming_output_keeps_grace_as_fallback_without_close() -> anyhow::Res
             .await
             .transcript
             .to_bytes_with_omission_marker(),
-        vec![0xc3]
+        b"AB"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_output_has_absolute_post_exit_deadline() -> anyhow::Result<()> {
+    let StreamingOutputHarness {
+        process,
+        stdout_tx,
+        exit_tx,
+        ..
+    } = streaming_output_harness(/*initial_output*/ None).await?;
+    let output_stream_complete = process.output_stream_completion();
+
+    tokio::time::pause();
+    let exited_at = Instant::now();
+    exit_tx.send(0).expect("send exit");
+    tokio::spawn(async move {
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if stdout_tx.send(b"x".to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+
+    tokio::time::timeout(
+        TRAILING_OUTPUT_HARD_TIMEOUT + Duration::from_secs(2),
+        output_stream_complete.cancelled(),
+    )
+    .await
+    .expect("absolute output close timeout should finish");
+    let elapsed = Instant::now().saturating_duration_since(exited_at);
+    tokio::time::resume();
+
+    assert!(
+        elapsed >= TRAILING_OUTPUT_HARD_TIMEOUT
+            && elapsed <= TRAILING_OUTPUT_HARD_TIMEOUT + Duration::from_millis(10),
+        "active inherited output should not extend the hard close timeout: {elapsed:?}"
+    );
+    assert!(
+        process
+            .output_handles()
+            .output_buffer
+            .lock()
+            .await
+            .transcript
+            .to_bytes_with_omission_marker()
+            .ends_with(INCOMPLETE_OUTPUT_WARNING)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_output_marks_incomplete_output_when_close_times_out() -> anyhow::Result<()> {
+    let StreamingOutputHarness {
+        process,
+        stdout_tx,
+        exit_tx,
+        output_buffer,
+        rx_event,
+        ..
+    } = streaming_output_harness(/*initial_output*/ None).await?;
+    let output_stream_complete = process.output_stream_completion();
+
+    tokio::time::pause();
+    let exited_at = Instant::now();
+    stdout_tx.send(vec![0xc3]).expect("send UTF-8 lead byte");
+    exit_tx.send(0).expect("send exit");
+    tokio::time::timeout(Duration::from_secs(2), output_stream_complete.cancelled())
+        .await
+        .expect("output close timeout should finish");
+    let elapsed = Instant::now().saturating_duration_since(exited_at);
+    tokio::time::resume();
+
+    assert!(
+        elapsed >= TRAILING_OUTPUT_CLOSE_TIMEOUT
+            && elapsed <= TRAILING_OUTPUT_CLOSE_TIMEOUT + Duration::from_millis(10),
+        "missing output close should use the close-timeout fallback: {elapsed:?}"
+    );
+    let mut expected_output = vec![0xc3];
+    expected_output.extend_from_slice(INCOMPLETE_OUTPUT_WARNING);
+    assert_eq!(
+        process
+            .output_handles()
+            .output_buffer
+            .lock()
+            .await
+            .transcript
+            .to_bytes_with_omission_marker(),
+        expected_output
+    );
+    assert_eq!(
+        output_buffer
+            .lock()
+            .await
+            .pending
+            .to_bytes_with_omission_marker(),
+        expected_output
     );
     let event = rx_event.try_recv().expect("receive final output delta");
     let EventMsg::ExecCommandOutputDelta(delta) = event.msg else {
@@ -359,8 +665,7 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         output_buffer,
         mut context,
         rx_event,
-    } = streaming_output_harness().await?;
-    start_streaming_output(&process, &context);
+    } = streaming_output_harness(/*initial_output*/ None).await?;
 
     tokio::time::pause();
     let process_for_late_denial = Arc::clone(&process);
@@ -372,7 +677,10 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         sleep.await;
         process_for_late_denial.fail_and_terminate("LATE_DENIAL".to_string());
     });
-    late_denial_armed_rx.await.expect("late denial armed");
+    tokio::time::timeout(Duration::from_secs(1), late_denial_armed_rx)
+        .await
+        .expect("late denial should arm")
+        .expect("late denial armed");
 
     #[allow(deprecated)]
     let cwd = context.step_context.turn.cwd.clone().into();
@@ -399,7 +707,10 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
     exit_tx.send(0).expect("send exit");
     drop(stdout_tx);
 
-    let event = rx_event.recv().await.expect("command end event");
+    let event = tokio::time::timeout(Duration::from_secs(1), rx_event.recv())
+        .await
+        .expect("command should complete")
+        .expect("command end event");
     let elapsed = Instant::now().saturating_duration_since(exited_at);
     tokio::time::resume();
     let EventMsg::ItemCompleted(completed) = event.msg else {
@@ -421,8 +732,8 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         )
     );
     assert!(
-        elapsed >= Duration::from_millis(10) && elapsed < TRAILING_OUTPUT_GRACE,
-        "completion should wait for denial without falling back to the output grace: {elapsed:?}"
+        elapsed >= Duration::from_millis(10) && elapsed < TRAILING_OUTPUT_CLOSE_TIMEOUT,
+        "completion should wait for denial without falling back to the output close timeout: {elapsed:?}"
     );
 
     Ok(())

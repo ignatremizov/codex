@@ -2,21 +2,64 @@ use crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use crate::unified_exec::format_output_omission_marker;
 use std::collections::VecDeque;
 
+// Exact replay-gap boundaries are useful only while their surrounding output remains retained.
+// Keep their memory and rendering cost bounded independently of the output byte cap.
+const MAX_UPSTREAM_OMISSION_BOUNDARIES: usize = 1024;
+const MAX_UPSTREAM_OMISSION_BOUNDARIES_PER_REGION: usize = MAX_UPSTREAM_OMISSION_BOUNDARIES / 2;
+
+#[derive(Debug)]
+#[cfg_attr(test, derive(Eq, PartialEq))]
+struct UpstreamOmission {
+    output_bytes_before: usize,
+    omitted_bytes: usize,
+}
+
 /// A capped buffer that preserves a stable prefix ("head") and suffix ("tail"),
 /// dropping the middle once it exceeds the configured maximum. The buffer is
 /// symmetric meaning 50% of the capacity is allocated to the head and 50% is
 /// allocated to the tail.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
 pub(crate) struct HeadTailBuffer<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
+    max_bytes: usize,
+    head_budget: usize,
+    tail_budget: usize,
     head: Vec<u8>,
     tail: VecDeque<u8>,
-    omitted_bytes: usize,
+    truncated_bytes: usize,
+    total_output_bytes: usize,
+    middle_upstream_omitted_bytes: usize,
+    unpositioned_upstream_omitted_bytes: usize,
+    upstream_omissions: Vec<UpstreamOmission>,
+}
+
+impl<const MAX_BYTES: usize> Default for HeadTailBuffer<MAX_BYTES> {
+    fn default() -> Self {
+        Self::new(MAX_BYTES)
+    }
 }
 
 impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
-    const HEAD_BUDGET: usize = MAX_BYTES / 2;
-    const TAIL_BUDGET: usize = MAX_BYTES.saturating_sub(Self::HEAD_BUDGET);
+    /// Create a new buffer that retains at most `max_bytes` of output.
+    ///
+    /// The retained output is split across a prefix ("head") and suffix ("tail")
+    /// budget, dropping bytes from the middle once the limit is exceeded.
+    pub(crate) fn new(max_bytes: usize) -> Self {
+        let head_budget = max_bytes / 2;
+        let tail_budget = max_bytes.saturating_sub(head_budget);
+        Self {
+            max_bytes,
+            head_budget,
+            tail_budget,
+            head: Vec::new(),
+            tail: VecDeque::new(),
+            truncated_bytes: 0,
+            total_output_bytes: 0,
+            middle_upstream_omitted_bytes: 0,
+            unpositioned_upstream_omitted_bytes: 0,
+            upstream_omissions: Vec::new(),
+        }
+    }
 
     // Used for tests.
     #[allow(dead_code)]
@@ -27,14 +70,16 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
 
     // Used for tests.
     #[allow(dead_code)]
-    /// Total bytes that were dropped from the middle due to the size cap.
+    /// Total bytes omitted by the size cap or an upstream replay gap.
     pub(crate) fn omitted_bytes(&self) -> usize {
-        self.omitted_bytes
+        self.truncated_bytes
+            .saturating_add(self.upstream_omitted_bytes())
     }
 
     /// Total bytes observed by the buffer, including bytes omitted by the cap.
     pub(crate) fn total_bytes(&self) -> usize {
-        self.retained_bytes().saturating_add(self.omitted_bytes)
+        self.total_output_bytes
+            .saturating_add(self.upstream_omitted_bytes())
     }
 
     /// Append a chunk of bytes to the buffer.
@@ -42,52 +87,44 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
     /// Bytes are first added to the head until the head budget is full; any
     /// remaining bytes are added to the tail, with older tail bytes being
     /// dropped to preserve the tail budget.
-    pub(crate) fn push_chunk(&mut self, chunk: &[u8]) {
-        let chunk = self.fill_head(chunk);
-        self.push_tail(chunk);
+    pub(crate) fn push_chunk(&mut self, chunk: impl AsRef<[u8]>) {
+        let chunk = chunk.as_ref();
+        if chunk.is_empty() {
+            return;
+        }
+        self.total_output_bytes = self.total_output_bytes.saturating_add(chunk.len());
+        if self.max_bytes == 0 {
+            self.truncated_bytes = self.truncated_bytes.saturating_add(chunk.len());
+            self.compact_middle_upstream_omissions();
+            return;
+        }
+
+        // Fill the head budget first, then keep a capped tail.
+        let remaining_head = self.head_budget.saturating_sub(self.head.len());
+        let head_len = remaining_head.min(chunk.len());
+        if head_len > 0 {
+            self.head.extend_from_slice(&chunk[..head_len]);
+        }
+        self.push_to_tail(&chunk[head_len..]);
+        self.compact_middle_upstream_omissions();
     }
 
-    /// Fill the stable prefix and return the bytes that did not fit.
-    fn fill_head<'a>(&mut self, chunk: &'a [u8]) -> &'a [u8] {
-        let Self {
-            head,
-            tail: _,
-            omitted_bytes: _,
-        } = self;
-
-        let remaining_head = Self::HEAD_BUDGET.saturating_sub(head.len());
-        // A shorter chunk fits entirely in the head.
-        let (chunk_head, chunk_tail) = chunk
-            .split_at_checked(remaining_head)
-            .unwrap_or((chunk, &[]));
-        head.extend_from_slice(chunk_head);
-        chunk_tail
-    }
-
-    /// Append bytes known not to belong in the head, keeping the newest tail bytes.
-    fn push_tail(&mut self, chunk: &[u8]) {
-        let Self {
-            head: _,
-            tail,
+    /// Record an upstream replay gap at the current append boundary.
+    pub(crate) fn push_upstream_omission(&mut self, omitted_bytes: usize) {
+        if omitted_bytes == 0 {
+            return;
+        }
+        if let Some(last) = self.upstream_omissions.last_mut()
+            && last.output_bytes_before == self.total_output_bytes
+        {
+            last.omitted_bytes = last.omitted_bytes.saturating_add(omitted_bytes);
+            return;
+        }
+        self.upstream_omissions.push(UpstreamOmission {
+            output_bytes_before: self.total_output_bytes,
             omitted_bytes,
-        } = self;
-
-        let remaining_tail = Self::TAIL_BUDGET.saturating_sub(tail.len());
-        let excess_tail = chunk.len().saturating_sub(remaining_tail);
-        *omitted_bytes = omitted_bytes.saturating_add(excess_tail);
-
-        // Discard old tail bytes first, then skip any excess incoming bytes.
-        let chunk = match excess_tail.checked_sub(tail.len()) {
-            None => {
-                tail.drain(..excess_tail);
-                chunk
-            }
-            Some(skip) => {
-                tail.clear();
-                &chunk[skip..]
-            }
-        };
-        tail.extend(chunk);
+        });
+        self.compact_upstream_omissions();
     }
 
     /// Return the retained output as a single byte vector.
@@ -101,67 +138,253 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
         out
     }
 
-    /// Return the retained output with an explicit marker between the head and
-    /// tail when bytes were omitted.
+    /// Return retained output with an explicit marker for bytes truncated by
+    /// this buffer. Upstream gap markers are inserted at their append boundary.
     pub(crate) fn to_bytes_with_omission_marker(&self) -> Vec<u8> {
-        if self.omitted_bytes == 0 {
+        if self.truncated_bytes == 0
+            && self.middle_upstream_omitted_bytes == 0
+            && self.unpositioned_upstream_omitted_bytes == 0
+            && self.upstream_omissions.is_empty()
+        {
             return self.to_bytes();
         }
 
-        let marker = format_output_omission_marker(self.omitted_bytes);
-        let marker_delimiter_bytes = 2;
-        let mut out = Vec::with_capacity(
-            self.retained_bytes()
-                .saturating_add(marker.len())
-                .saturating_add(marker_delimiter_bytes),
-        );
-        out.extend_from_slice(&self.head);
-        out.push(b'\n');
-        out.extend_from_slice(marker.as_bytes());
-        out.push(b'\n');
-        out.extend(self.tail.iter().copied());
+        let tail = self.tail.iter().copied().collect::<Vec<_>>();
+        let tail_start = self.total_output_bytes.saturating_sub(tail.len());
+        let head_end = self.head.len();
+        let mut head_omissions = Vec::new();
+        let mut tail_omissions = Vec::new();
+        let mut middle_omitted_bytes = self
+            .truncated_bytes
+            .saturating_add(self.middle_upstream_omitted_bytes);
+
+        for omission in &self.upstream_omissions {
+            if omission.output_bytes_before <= head_end {
+                head_omissions.push((omission.output_bytes_before, omission.omitted_bytes));
+            } else if self.truncated_bytes > 0 && omission.output_bytes_before < tail_start {
+                middle_omitted_bytes = middle_omitted_bytes.saturating_add(omission.omitted_bytes);
+            } else {
+                tail_omissions.push((
+                    omission.output_bytes_before.saturating_sub(tail_start),
+                    omission.omitted_bytes,
+                ));
+            }
+        }
+
+        let mut out = Vec::with_capacity(self.retained_bytes());
+        if self.unpositioned_upstream_omitted_bytes > 0 {
+            append_unpositioned_omission_notice(&mut out, self.unpositioned_upstream_omitted_bytes);
+        }
+        append_bytes_with_omissions(&mut out, &self.head, &head_omissions);
+        if middle_omitted_bytes > 0 {
+            append_omission_marker(&mut out, middle_omitted_bytes);
+        }
+        append_bytes_with_omissions(&mut out, &tail, &tail_omissions);
         out
     }
 
-    /// Append a later buffer with the same budget. This preserves the summary
-    /// of the original concatenated output, including its omission count.
-    pub(crate) fn push_buffer(&mut self, buffer: Self) {
-        let Self {
-            head,
-            tail,
-            omitted_bytes,
-        } = buffer;
-
-        self.omitted_bytes = self.omitted_bytes.saturating_add(omitted_bytes);
-
-        // Preserve an existing prefix; otherwise reuse the source head.
-        let overflow = if self.head.is_empty() {
-            self.head = head;
-            &[]
-        } else {
-            self.fill_head(&head)
-        };
-
-        // A full source tail displaces both the old tail and the unused source head.
-        if tail.len() == Self::TAIL_BUDGET {
-            self.omitted_bytes = self
-                .omitted_bytes
-                .saturating_add(self.tail.len())
-                .saturating_add(overflow.len());
-            self.tail = tail;
-        } else {
-            self.push_tail(overflow);
-            // An empty destination can take a partial source tail without copying it.
-            if self.tail.is_empty() {
-                self.tail = tail;
-            } else {
-                // A nonempty source tail means its head, and now ours, is full.
-                let (first, second) = tail.as_slices();
-                self.push_tail(first);
-                self.push_tail(second);
-            }
+    /// Drain the retained output and omission metadata, resetting this buffer's
+    /// contents while preserving its configured capacity.
+    pub(crate) fn drain(&mut self) -> Self {
+        Self {
+            max_bytes: self.max_bytes,
+            head_budget: self.head_budget,
+            tail_budget: self.tail_budget,
+            head: std::mem::take(&mut self.head),
+            tail: std::mem::take(&mut self.tail),
+            truncated_bytes: std::mem::take(&mut self.truncated_bytes),
+            total_output_bytes: std::mem::take(&mut self.total_output_bytes),
+            middle_upstream_omitted_bytes: std::mem::take(&mut self.middle_upstream_omitted_bytes),
+            unpositioned_upstream_omitted_bytes: std::mem::take(
+                &mut self.unpositioned_upstream_omitted_bytes,
+            ),
+            upstream_omissions: std::mem::take(&mut self.upstream_omissions),
         }
     }
+
+    /// Append retained output from another buffer and preserve any omissions it
+    /// already recorded.
+    pub(crate) fn push_buffer(&mut self, mut buffer: Self) {
+        let output_offset = self.total_output_bytes;
+        let buffer_truncated_bytes = buffer.truncated_bytes;
+        let buffer_total_output_bytes = buffer.total_output_bytes;
+        self.push_chunk(std::mem::take(&mut buffer.head));
+        self.push_chunk(buffer.tail.drain(..).collect::<Vec<_>>());
+        self.truncated_bytes = self.truncated_bytes.saturating_add(buffer_truncated_bytes);
+        self.total_output_bytes = output_offset.saturating_add(buffer_total_output_bytes);
+        self.middle_upstream_omitted_bytes = self
+            .middle_upstream_omitted_bytes
+            .saturating_add(buffer.middle_upstream_omitted_bytes);
+        self.unpositioned_upstream_omitted_bytes = self
+            .unpositioned_upstream_omitted_bytes
+            .saturating_add(buffer.unpositioned_upstream_omitted_bytes);
+        for omission in buffer.upstream_omissions.drain(..) {
+            let output_bytes_before = output_offset.saturating_add(omission.output_bytes_before);
+            if let Some(last) = self.upstream_omissions.last_mut()
+                && last.output_bytes_before == output_bytes_before
+            {
+                last.omitted_bytes = last.omitted_bytes.saturating_add(omission.omitted_bytes);
+            } else {
+                self.upstream_omissions.push(UpstreamOmission {
+                    output_bytes_before,
+                    omitted_bytes: omission.omitted_bytes,
+                });
+            }
+        }
+        self.compact_upstream_omissions();
+    }
+
+    fn push_to_tail(&mut self, chunk: &[u8]) {
+        if chunk.is_empty() {
+            return;
+        }
+        if self.tail_budget == 0 {
+            self.truncated_bytes = self.truncated_bytes.saturating_add(chunk.len());
+            return;
+        }
+
+        if chunk.len() >= self.tail_budget {
+            // This single chunk is larger than the whole tail budget. Keep only the last
+            // tail_budget bytes and drop everything else.
+            let start = chunk.len().saturating_sub(self.tail_budget);
+            let kept = &chunk[start..];
+            let dropped = chunk.len().saturating_sub(kept.len());
+            self.truncated_bytes = self
+                .truncated_bytes
+                .saturating_add(self.tail.len())
+                .saturating_add(dropped);
+            self.tail.clear();
+            self.tail.extend(kept);
+            return;
+        }
+
+        self.tail.extend(chunk);
+        self.trim_tail_to_budget();
+    }
+
+    fn trim_tail_to_budget(&mut self) {
+        let excess = self.tail.len().saturating_sub(self.tail_budget);
+        if excess > 0 {
+            drop(self.tail.drain(..excess));
+            self.truncated_bytes = self.truncated_bytes.saturating_add(excess);
+        }
+    }
+
+    fn upstream_omitted_bytes(&self) -> usize {
+        self.upstream_omissions.iter().fold(
+            self.middle_upstream_omitted_bytes
+                .saturating_add(self.unpositioned_upstream_omitted_bytes),
+            |total, omission| total.saturating_add(omission.omitted_bytes),
+        )
+    }
+
+    fn compact_upstream_omissions(&mut self) {
+        if self.upstream_omissions.is_empty() {
+            return;
+        }
+
+        self.compact_middle_upstream_omissions();
+        let head_end = self.head.len();
+        let head_omission_count = self
+            .upstream_omissions
+            .partition_point(|omission| omission.output_bytes_before <= head_end);
+        let unpositioned_head_bytes = discard_excess_retained_omissions(
+            &mut self.upstream_omissions,
+            /*start*/ 0,
+            head_omission_count,
+            MAX_UPSTREAM_OMISSION_BOUNDARIES_PER_REGION,
+        );
+        self.unpositioned_upstream_omitted_bytes = self
+            .unpositioned_upstream_omitted_bytes
+            .saturating_add(unpositioned_head_bytes);
+
+        let head_omission_count = self
+            .upstream_omissions
+            .partition_point(|omission| omission.output_bytes_before <= head_end);
+        let omission_count = self.upstream_omissions.len();
+        let unpositioned_tail_bytes = discard_excess_retained_omissions(
+            &mut self.upstream_omissions,
+            head_omission_count,
+            omission_count,
+            MAX_UPSTREAM_OMISSION_BOUNDARIES_PER_REGION,
+        );
+        self.unpositioned_upstream_omitted_bytes = self
+            .unpositioned_upstream_omitted_bytes
+            .saturating_add(unpositioned_tail_bytes);
+    }
+
+    fn compact_middle_upstream_omissions(&mut self) {
+        if self.truncated_bytes == 0 || self.upstream_omissions.is_empty() {
+            return;
+        }
+
+        let head_end = self.head.len();
+        let tail_start = self.total_output_bytes.saturating_sub(self.tail.len());
+        let middle_start = self
+            .upstream_omissions
+            .partition_point(|omission| omission.output_bytes_before <= head_end);
+        let middle_end = self
+            .upstream_omissions
+            .partition_point(|omission| omission.output_bytes_before < tail_start);
+        if middle_start == middle_end {
+            return;
+        }
+
+        let newly_compacted_bytes = self
+            .upstream_omissions
+            .drain(middle_start..middle_end)
+            .fold(0usize, |total, omission| {
+                total.saturating_add(omission.omitted_bytes)
+            });
+        self.middle_upstream_omitted_bytes = self
+            .middle_upstream_omitted_bytes
+            .saturating_add(newly_compacted_bytes);
+    }
+}
+
+fn discard_excess_retained_omissions(
+    omissions: &mut Vec<UpstreamOmission>,
+    start: usize,
+    end: usize,
+    max_boundaries: usize,
+) -> usize {
+    let region_len = end.saturating_sub(start);
+    if region_len <= max_boundaries {
+        return 0;
+    }
+
+    let discard_end = start.saturating_add(region_len.saturating_sub(max_boundaries));
+    omissions
+        .drain(start..discard_end)
+        .fold(0usize, |total, omission| {
+            total.saturating_add(omission.omitted_bytes)
+        })
+}
+
+fn append_bytes_with_omissions(output: &mut Vec<u8>, bytes: &[u8], omissions: &[(usize, usize)]) {
+    let mut copied = 0;
+    for (position, omitted_bytes) in omissions {
+        let position = (*position).min(bytes.len());
+        output.extend_from_slice(&bytes[copied..position]);
+        append_omission_marker(output, *omitted_bytes);
+        copied = position;
+    }
+    output.extend_from_slice(&bytes[copied..]);
+}
+
+fn append_omission_marker(output: &mut Vec<u8>, omitted_bytes: usize) {
+    output.push(b'\n');
+    output.extend_from_slice(format_output_omission_marker(omitted_bytes).as_bytes());
+    output.push(b'\n');
+}
+
+fn append_unpositioned_omission_notice(output: &mut Vec<u8>, omitted_bytes: usize) {
+    output.extend_from_slice(
+        format!(
+            "Warning: {omitted_bytes} bytes were omitted at multiple locations in retained process output.\n"
+        )
+        .as_bytes(),
+    );
 }
 
 #[cfg(test)]

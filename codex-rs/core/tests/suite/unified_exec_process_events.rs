@@ -1452,9 +1452,16 @@ timeout = 900
         }
     }
     if wait_for_end {
+        let expected_output = if (cancel_after_exit && !resumable_cancel) || terminate_after_exit {
+            format!(
+                "{COMPLETE_OUTPUT}\nWarning: the process output stream did not close; trailing output may be missing.\n"
+            )
+        } else {
+            COMPLETE_OUTPUT.to_string()
+        };
         assert_eq!(
             command_end.map(|end| (end.exit_code, end.aggregated_output)),
-            Some((0, COMPLETE_OUTPUT.to_string()))
+            Some((0, expected_output))
         );
         assert!(test.codex.list_background_terminals().await.is_empty());
     }

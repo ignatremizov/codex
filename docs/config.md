@@ -76,7 +76,7 @@ unified_exec_write_stdin_yield_time_ms = 250
 
 Omitting either setting, or setting it to zero, uses the built-in default shown above. A per-call `yield_time_ms` takes precedence over the corresponding configured default, including an explicit zero; the existing platform and minimum-yield clamps still apply. These are output-yield windows, not process deadlines, and do not change command execution timeouts.
 
-Initial `exec_command` waits remain bounded to 250–30000 ms, or 10000–30000 ms when Codex runs on Windows. Subsequent `write_stdin` calls have a 5000 ms minimum for empty polls and a 250 ms minimum for non-empty writes. Both can request longer waits without an upper cap by default; process exit can return sooner, and interrupting a poll does not terminate its process.
+Initial `exec_command` waits remain bounded to 5000–30000 ms for a POSIX target, or 10000–30000 ms for a Windows target. The selected executor’s path convention and shell determine the floor, not the operating system hosting the client. Subsequent `write_stdin` calls have a 5000 ms minimum for empty polls and a 250 ms minimum for non-empty writes. Both can request longer waits without an upper cap by default; process exit can return sooner, and interrupting a poll does not terminate its process.
 
 The optional `background_terminal_max_timeout` setting caps **empty polls only**, in milliseconds:
 
@@ -282,6 +282,10 @@ history use the same local limits, even when the connected server has different
 configuration values.
 
 Set either value to `0` to display all retained output. These are client-local presentation settings: they do not change command execution, captured output, or the existing bounded live-output storage. The detailed transcript retains all available output and reports any storage-level omissions separately from omitted display rows.
+
+Unified exec releases its redundant completion transcript buffer when a successful or
+failed terminal result takes ownership of that output. Uncollected output remains
+available to later `write_stdin` polls, and completed command output remains in history.
 
 Subagent prompt and response previews are configured independently:
 
