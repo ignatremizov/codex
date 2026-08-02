@@ -128,6 +128,12 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         )
     }
 
+    /// Whether cancellation retains the handler in an independently owned cleanup task.
+    /// The host may return its aborted response before that teardown completes.
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        false
+    }
+
     fn telemetry_tags(&self, _invocation: &ToolInvocation) -> ToolTelemetryTags {
         Vec::new()
     }
@@ -797,6 +803,7 @@ impl ToolRegistry {
             dispatch_trace.record_failed(&err);
             notify_tool_finish_if_unclaimed(
                 invocation,
+                tool.as_ref(),
                 call_state.as_deref(),
                 ToolCallOutcome::Failed {
                     handler_executed: false,
@@ -834,6 +841,7 @@ impl ToolRegistry {
                     dispatch_trace.record_failed(&err);
                     notify_tool_finish_if_unclaimed(
                         &invocation,
+                        tool.as_ref(),
                         call_state.as_deref(),
                         ToolCallOutcome::Blocked,
                     )
@@ -962,8 +970,13 @@ impl ToolRegistry {
                 handler_executed: true,
             },
         };
-        notify_tool_finish_if_unclaimed(&invocation, call_state.as_deref(), lifecycle_outcome)
-            .await;
+        notify_tool_finish_if_unclaimed(
+            &invocation,
+            tool.as_ref(),
+            call_state.as_deref(),
+            lifecycle_outcome,
+        )
+        .await;
 
         match result {
             Ok(mut result) => {
@@ -1005,9 +1018,20 @@ impl ToolRegistry {
 
 async fn notify_tool_finish_if_unclaimed(
     invocation: &ToolInvocation,
+    tool: &dyn CoreToolRuntime,
     call_state: Option<&ToolCallState>,
     outcome: ToolCallOutcome,
 ) -> bool {
+    // A runtime that owns cancellation cleanup may return an ordinary tool result after the turn
+    // has already been cancelled. Leave the terminal claim to ToolCallRuntime in that case so the
+    // model receives the canonical abort result rather than the cleanup result. A terminal outcome
+    // claimed before cancellation remains authoritative.
+    if tool.waits_for_runtime_cancellation()
+        && invocation.cancellation_token.is_cancelled()
+        && call_state.is_some()
+    {
+        return false;
+    }
     if call_state.is_some_and(|state| state.terminal_outcome_reached.swap(true, Ordering::AcqRel)) {
         return false;
     }
