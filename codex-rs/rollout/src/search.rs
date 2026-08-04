@@ -287,6 +287,7 @@ fn conversation_text_from_item(item: &RolloutItem) -> Option<String> {
         | RolloutItem::ResponseItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::Compacted(_)
         | RolloutItem::WorldState(_) => None,
     }

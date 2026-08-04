@@ -462,6 +462,7 @@ impl ThreadHistoryBuilder {
                 self.handle_response_item(&communication.to_model_input_item());
             }
             RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::TurnContext(_)
             | RolloutItem::WorldState(_)
             | RolloutItem::SessionMeta(_) => {}

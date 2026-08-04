@@ -232,6 +232,7 @@ fn rollout_item_type(item: &RolloutItem) -> String {
         RolloutItem::InterAgentCommunicationMetadata { .. } => {
             "inter_agent_communication_metadata".to_string()
         }
+        RolloutItem::AgentResponseObservation(_) => "agent_response_observation".to_string(),
         RolloutItem::Compacted(_) => "compacted".to_string(),
         RolloutItem::TurnContext(_) => "turn_context".to_string(),
         RolloutItem::WorldState(_) => "world_state".to_string(),

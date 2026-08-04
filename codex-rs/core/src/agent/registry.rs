@@ -37,7 +37,7 @@ struct ActiveAgents {
     nickname_reset_count: usize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AgentMetadata {
     pub(crate) agent_id: Option<ThreadId>,
     pub(crate) agent_path: Option<AgentPath>,
@@ -104,15 +104,43 @@ impl AgentRegistry {
     }
 
     pub(crate) fn release_spawned_thread(&self, thread_id: ThreadId) {
+        let _ = self.release_spawned_thread_metadata_matching(thread_id, /*expected*/ None);
+        self.remove_mailbox_submission_semaphore(thread_id);
+    }
+
+    pub(crate) fn release_spawned_thread_if_current(
+        &self,
+        thread_id: ThreadId,
+        expected: &AgentMetadata,
+    ) -> bool {
+        if !self.release_spawned_thread_metadata_matching(thread_id, Some(expected)) {
+            return false;
+        }
+        self.remove_mailbox_submission_semaphore(thread_id);
+        true
+    }
+
+    fn release_spawned_thread_metadata_matching(
+        &self,
+        thread_id: ThreadId,
+        expected: Option<&AgentMetadata>,
+    ) -> bool {
         let removed_counted_agent = {
             let mut active_agents = self
                 .active_agents
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(key) = active_agents.thread_paths.get(&thread_id).cloned() else {
+                return false;
+            };
+            let current_metadata = active_agents.agent_tree.get(&key);
+            if expected.is_some_and(|expected| current_metadata != Some(expected)) {
+                return false;
+            }
+            active_agents.thread_paths.remove(&thread_id);
             active_agents
-                .thread_paths
-                .remove(&thread_id)
-                .and_then(|key| active_agents.agent_tree.remove(key.as_str()))
+                .agent_tree
+                .remove(key.as_str())
                 .is_some_and(|metadata| {
                     !metadata.agent_path.as_ref().is_some_and(AgentPath::is_root)
                 })
@@ -120,6 +148,10 @@ impl AgentRegistry {
         if removed_counted_agent {
             self.total_count.fetch_sub(1, Ordering::AcqRel);
         }
+        true
+    }
+
+    fn remove_mailbox_submission_semaphore(&self, thread_id: ThreadId) {
         self.mailbox_submission_semaphores
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -443,6 +475,14 @@ pub(crate) struct AgentMetadataReplacement {
 
 impl AgentMetadataReplacement {
     pub(crate) fn commit(mut self) -> Result<()> {
+        self.commit_inner(/*expected*/ None).map(drop)
+    }
+
+    pub(crate) fn commit_if_current(mut self, expected: &AgentMetadata) -> Result<bool> {
+        self.commit_inner(Some(expected))
+    }
+
+    fn commit_inner(&mut self, expected: Option<&AgentMetadata>) -> Result<bool> {
         let mut active_agents = self
             .state
             .active_agents
@@ -468,6 +508,9 @@ impl AgentMetadataReplacement {
             .and_then(|current_key| active_agents.agent_tree.get(current_key))
             .filter(|metadata| metadata.agent_id == Some(self.thread_id))
             .cloned();
+        if expected.is_some_and(|expected| current_metadata.as_ref() != Some(expected)) {
+            return Ok(false);
+        }
         if let Some(current_nickname) = current_metadata
             .as_ref()
             .and_then(|metadata| metadata.agent_nickname.as_ref())
@@ -513,7 +556,7 @@ impl AgentMetadataReplacement {
             (false, false) | (true, true) => {}
         }
         self.active = false;
-        Ok(())
+        Ok(true)
     }
 }
 

@@ -1,30 +1,35 @@
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::AgentStatus;
 
 use super::ContextualUserFragment;
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct SubagentNotification {
-    pub(crate) agent_reference: String,
-    pub(crate) agent_id: ThreadId,
-    pub(crate) status: AgentStatus,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubagentCommentary {
+    agent_reference: String,
+    agent_id: ThreadId,
+    turn_id: String,
+    item_id: String,
+    message: String,
 }
 
-impl SubagentNotification {
+impl SubagentCommentary {
     pub(crate) fn new(
         agent_reference: impl Into<String>,
         agent_id: ThreadId,
-        status: AgentStatus,
+        turn_id: impl Into<String>,
+        item_id: impl Into<String>,
+        message: impl Into<String>,
     ) -> Self {
         Self {
             agent_reference: agent_reference.into(),
             agent_id,
-            status,
+            turn_id: turn_id.into(),
+            item_id: item_id.into(),
+            message: message.into(),
         }
     }
 }
 
-impl ContextualUserFragment for SubagentNotification {
+impl ContextualUserFragment for SubagentCommentary {
     fn role(&self) -> &'static str {
         "user"
     }
@@ -34,7 +39,7 @@ impl ContextualUserFragment for SubagentNotification {
     }
 
     fn type_markers() -> (&'static str, &'static str) {
-        ("<subagent_notification>", "</subagent_notification>")
+        ("<subagent_commentary>", "</subagent_commentary>")
     }
 
     fn body(&self) -> String {
@@ -43,7 +48,9 @@ impl ContextualUserFragment for SubagentNotification {
             serde_json::json!({
                 "agent_path": &self.agent_reference,
                 "agent_id": self.agent_id,
-                "status": &self.status,
+                "turn_id": &self.turn_id,
+                "item_id": &self.item_id,
+                "message": &self.message,
             })
         )
     }

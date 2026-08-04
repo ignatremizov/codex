@@ -19,6 +19,7 @@ const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
     "Model override for the new agent. Omit unless an explicit override is needed.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
+const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional wake/event-handling state for responses from the observed agent turn. c wakes on the first complete commentary reply; f wakes on the final reply; x adds no final subscription. Combine flags as cf or cx. fx equals omitted w, and cfx equals c; prefer the shorter form. A prior f for the same observer and agent turn remains active. Omit w for normal passive final delivery. Pending observations do not carry across cold resume or fork.";
 const MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION: usize = 5;
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
 
@@ -176,6 +177,7 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
                     .to_string(),
             )),
         ),
+        ("w".to_string(), response_observation_schema()),
     ]);
 
     ToolSpec::Namespace(ResponsesApiNamespace {
@@ -276,10 +278,13 @@ pub fn create_followup_task_tool(message_delivery: MultiAgentMessageDelivery) ->
 }
 
 pub fn create_resume_agent_tool() -> ToolSpec {
-    let properties = BTreeMap::from([(
-        "id".to_string(),
-        JsonSchema::string(Some("Agent id to resume.".to_string())),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "id".to_string(),
+            JsonSchema::string(Some("Agent id to resume.".to_string())),
+        ),
+        ("w".to_string(), response_observation_schema()),
+    ]);
 
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: MULTI_AGENT_V1_NAMESPACE.to_string(),
@@ -660,7 +665,18 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
                 SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
+        ("w".to_string(), response_observation_schema()),
     ])
+}
+
+fn response_observation_schema() -> JsonSchema {
+    JsonSchema::string_enum(
+        ["c", "f", "cf", "x", "cx", "fx", "cfx"]
+            .into_iter()
+            .map(serde_json::Value::from)
+            .collect(),
+        Some(RESPONSE_OBSERVATION_DESCRIPTION.to_string()),
+    )
 }
 
 fn spawn_agent_common_properties_v2(

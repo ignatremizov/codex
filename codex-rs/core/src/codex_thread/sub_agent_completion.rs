@@ -1,7 +1,8 @@
+use codex_protocol::ResponseItemId;
 use codex_protocol::items::TurnItem;
+use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_item;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,6 +10,7 @@ use std::time::Duration;
 use super::CodexThread;
 use crate::session::AcceptedCompletionDelivery;
 use crate::session::CompletionSubmissionAdmission;
+use crate::session::CompletionSubmissionAdmissionMode;
 use crate::session::SessionLoopTermination;
 
 impl CodexThread {
@@ -132,39 +134,27 @@ impl CodexThread {
         &self,
         message: String,
         admission: CompletionSubmissionAdmission,
+        response_item_id: ResponseItemId,
+        committed_observations: Vec<AgentResponseObservation>,
     ) -> bool {
         let session = Arc::clone(&self.session);
-        let session_loop_termination = self.io.session_loop_termination.clone();
-        let response_item_id = new_sub_agent_completion_context_response_item_id();
-        let mut attempt = 1;
-        loop {
-            let result = tokio::select! {
-                _ = session_loop_termination.clone() => return false,
-                result = session.record_sub_agent_notification_with_admission(
-                    message.clone(),
-                    response_item_id.clone(),
-                    admission,
-                ) => result,
-            };
-            match result {
-                Ok(()) => return true,
-                Err(err) => {
-                    if !session
-                        .wait_for_completion_submission_admission(admission)
-                        .await
-                    {
-                        tracing::warn!(
-                            "failed to record subagent notification and parent admission is closed: {err}"
-                        );
-                        return false;
-                    }
-                    tracing::warn!(
-                        "failed to record subagent notification; retrying while the parent session is active: {err}"
-                    );
-                }
-            }
-            if !wait_for_completion_retry(&session_loop_termination, &mut attempt).await {
-                return false;
+        let result = tokio::select! {
+            _ = self.io.session_loop_termination.clone() => return false,
+            result = session.record_sub_agent_notification_with_observation_commit(
+                message,
+                response_item_id,
+                admission,
+                committed_observations,
+                CompletionSubmissionAdmissionMode::Try,
+            ) => result,
+        };
+        match result {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to record observed subagent notification; watcher will retry: {err}"
+                );
+                false
             }
         }
     }

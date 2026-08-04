@@ -26,6 +26,7 @@ use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
 use codex_app_server_protocol::materialized_rollback_start;
+use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -205,9 +206,13 @@ pub(super) async fn user_input_or_turn_inner(
     };
     updates.final_output_json_schema = Some(final_output_json_schema);
 
-    let Ok(current_context) = sess.new_turn_with_sub_id(sub_id.clone(), updates).await else {
-        // new_turn_with_sub_id already emits the error event.
-        return;
+    let current_context = match sess.new_turn_with_sub_id(sub_id.clone(), updates).await {
+        Ok(current_context) => current_context,
+        Err(err) => {
+            // new_turn_with_sub_id already emits the error event.
+            sess.reject_input_turn_admission(&sub_id, err);
+            return;
+        }
     };
     if emit_thread_settings_applied {
         sess.send_event_raw_without_materializing_rollout(Event {
@@ -219,7 +224,7 @@ pub(super) async fn user_input_or_turn_inner(
     sess.maybe_emit_model_warnings_for_turn(current_context.as_ref())
         .await;
     match sess
-        .steer_input(
+        .steer_input_with_response_observation_boundary(
             items.clone(),
             additional_context.clone(),
             /*expected_turn_id*/ None,
@@ -228,10 +233,13 @@ pub(super) async fn user_input_or_turn_inner(
         )
         .await
     {
-        Ok(_) => {
+        Ok(admission_resolution) => {
+            sess.resolve_input_turn_admission(&sub_id, admission_resolution);
             current_context.session_telemetry.user_prompt(&items);
         }
         Err(SteerInputError::NoActiveTurn(items)) => {
+            let admission_resolution = sess.capture_input_turn_admission_resolution(sub_id.clone());
+            sess.resolve_input_turn_admission(&sub_id, admission_resolution);
             if let Some(id) = parent_turn_id {
                 current_context.turn_metadata_state.set_parent_turn_id(id);
             }
@@ -264,6 +272,10 @@ pub(super) async fn user_input_or_turn_inner(
             .await;
         }
         Err(err) => {
+            sess.reject_input_turn_admission(
+                &sub_id,
+                CodexErr::InvalidRequest(err.to_error_event().message),
+            );
             sess.send_event_raw(Event {
                 id: sub_id,
                 msg: EventMsg::Error(err.to_error_event()),
@@ -616,6 +628,11 @@ async fn thread_rollback_target(
         return ThreadRollbackDisposition::Continue;
     }
 
+    let _response_observation_transaction = sess
+        .services
+        .agent_control
+        .acquire_response_observation_transaction(sess.presentation_id())
+        .await;
     let Ok(_durable_context_permit) = sess.acquire_durable_context_permit().await else {
         send_thread_rollback_error(
             sess,
@@ -927,6 +944,26 @@ async fn thread_rollback_target(
         && let Err(err) = sess.persist_reconstruction_repair_with_policy(repair).await
     {
         warn!(%err, "failed to persist compacted-media repair after rollback");
+    }
+    let response_observations = sess
+        .services
+        .agent_control
+        .response_observation_snapshots_for_parent(sess.presentation_id());
+    if !sess
+        .persist_agent_response_observations_locked(&response_observations)
+        .await
+    {
+        sess.submission_admission.rollback_requires_reload();
+        send_thread_rollback_error_with_info(
+            sess,
+            turn_context.sub_id.clone(),
+            "rollback committed, but response observation state could not be re-persisted; refresh the thread before continuing"
+                .to_string(),
+            CodexErrorInfo::ThreadRollbackCommitUnknown,
+            ThreadRollbackErrorDelivery::Ephemeral,
+        )
+        .await;
+        return ThreadRollbackDisposition::ReloadRequired;
     }
 
     // Admit ordinary follow-up submissions while keeping completion delivery behind the rollback

@@ -1,0 +1,9 @@
+---
+source: tui/src/chatwidget/tests/app_server.rs
+expression: rendered
+---
+• Agent message from /root/reviewer:
+
+  <subagent_commentary>
+  {"agent_id":"019faa07-aa3d-78d3-9eca-66cd8626adad","agent_path":"/root/reviewer","item_id":"commentary-1","message":"Acknowledged.","turn_id":"turn-child"}
+  </subagent_commentary>

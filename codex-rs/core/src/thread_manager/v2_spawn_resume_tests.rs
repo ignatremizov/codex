@@ -1,8 +1,12 @@
 use super::*;
+use crate::config::test_config;
 use codex_agent_graph_store::AgentGraphStoreFuture;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
+use core_test_support::PathExt;
+use pretty_assertions::assert_eq;
+use tempfile::tempdir;
 
 struct EmptyAgentGraphStore;
 
@@ -232,4 +236,105 @@ async fn arbitrary_v2_history_without_graph_keeps_generic_resume_semantics() {
         .expect("arbitrary V2 history should remain eligible for generic resume");
 
     assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn failed_v2_validation_preserves_an_adopted_runtime_and_restores_its_metadata() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(EnvironmentManager::default_for_tests()),
+    );
+    let running = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start runtime owned by the first resume caller");
+    let owner = manager.agent_control();
+    let original_metadata = crate::agent::AgentMetadata {
+        agent_id: Some(running.thread_id),
+        agent_nickname: Some("original".to_string()),
+        agent_role: Some("worker".to_string()),
+        ..Default::default()
+    };
+    owner
+        .restore_agent_metadata(running.thread_id, original_metadata.clone())
+        .expect("register original metadata");
+    let attempt_metadata = crate::agent::AgentMetadata {
+        agent_id: Some(running.thread_id),
+        agent_nickname: Some("temporary".to_string()),
+        agent_role: Some("reviewer".to_string()),
+        ..Default::default()
+    };
+    owner
+        .restore_agent_metadata(running.thread_id, attempt_metadata.clone())
+        .expect("simulate metadata changed by the adopting resume");
+
+    // A second resume caller can discover this already-running thread, then fail a later
+    // validation step. Its rollback owns only the metadata mutation above, not the runtime
+    // created by the first caller.
+    let error = cleanup_failed_v2_spawn_resume(
+        &manager.state,
+        &owner,
+        &running.thread,
+        ThreadRuntimeOrigin::Existing,
+        Some(&original_metadata),
+        Some(&attempt_metadata),
+        /*edge_restore*/ None,
+        CodexErr::InvalidRequest("simulated post-adoption validation failure".to_string()),
+    )
+    .await;
+
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(message)
+            if message == "simulated post-adoption validation failure"
+    ));
+    let retained = manager
+        .get_thread(running.thread_id)
+        .await
+        .expect("failed adopting resume must preserve the first caller's runtime");
+    assert!(Arc::ptr_eq(&retained, &running.thread));
+    assert_eq!(
+        owner.get_agent_metadata(running.thread_id),
+        Some(original_metadata.clone())
+    );
+
+    owner
+        .restore_agent_metadata(running.thread_id, attempt_metadata.clone())
+        .expect("restore attempt metadata for lost-update coverage");
+    let concurrent_metadata = crate::agent::AgentMetadata {
+        agent_id: Some(running.thread_id),
+        agent_nickname: Some("newer".to_string()),
+        agent_role: Some("worker".to_string()),
+        last_task_message: Some("new task from a concurrent sender".to_string()),
+        ..Default::default()
+    };
+    owner
+        .restore_agent_metadata(running.thread_id, concurrent_metadata.clone())
+        .expect("simulate a concurrent authoritative metadata update");
+    let _ = cleanup_failed_v2_spawn_resume(
+        &manager.state,
+        &owner,
+        &running.thread,
+        ThreadRuntimeOrigin::Existing,
+        Some(&original_metadata),
+        Some(&attempt_metadata),
+        /*edge_restore*/ None,
+        CodexErr::InvalidRequest("simulated validation failure after newer update".to_string()),
+    )
+    .await;
+    assert_eq!(
+        owner.get_agent_metadata(running.thread_id),
+        Some(concurrent_metadata)
+    );
+
+    let _ = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
 }

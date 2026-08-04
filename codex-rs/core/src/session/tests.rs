@@ -2631,6 +2631,100 @@ async fn completion_communication_commit_survives_caller_cancellation() {
 }
 
 #[tokio::test]
+async fn passive_observed_completion_retry_reconciles_an_append_after_commit_failure() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let store = attach_in_memory_thread_store(&mut session).await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let response_item_id = new_sub_agent_completion_context_response_item_id();
+    let child_thread_id = ThreadId::new();
+    let observation = codex_protocol::protocol::AgentResponseObservation {
+        observer_thread_id: session.thread_id,
+        target_thread_id: child_thread_id,
+        target_turn_id: Some("child-turn".to_string()),
+        pending_commentary: false,
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::Passive,
+        final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
+        final_delivery_response_item_id: Some(response_item_id.clone()),
+        committed_delivery_response_item_ids: vec![response_item_id.clone()],
+    };
+    let item = ResponseItem::Message {
+        id: Some(response_item_id.clone()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "child done".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    store
+        .fail_agent_response_observation_flushes_after(
+            /*successful_flushes*/ 0, /*failed_flushes*/ 1,
+        )
+        .await;
+
+    session
+        .record_durable_context_items_with_rollout_suffix(
+            Arc::clone(&turn_context),
+            vec![item.clone()],
+            /*acknowledgement*/ None,
+            vec![RolloutItem::AgentResponseObservation(observation.clone())],
+        )
+        .await
+        .expect_err("first append should report its injected post-commit failure");
+    session
+        .record_durable_context_items_with_rollout_suffix(
+            turn_context,
+            vec![item.clone()],
+            /*acknowledgement*/ None,
+            vec![RolloutItem::AgentResponseObservation(observation.clone())],
+        )
+        .await
+        .expect("retry should reconcile the committed delivery");
+
+    assert_eq!(session.clone_history().await.raw_items(), &[item]);
+    let history = session
+        .services
+        .thread_store
+        .load_rollback_history(codex_thread_store::LoadThreadHistoryParams {
+            thread_id: session.thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("load canonical history");
+    let history = codex_protocol::rollout::rollout_without_exact_rollback_ranges(&history.items);
+    assert_eq!(
+        history
+            .iter()
+            .filter(|rollout_item| {
+                matches!(
+                    rollout_item,
+                    RolloutItem::ResponseItem(response_item)
+                        if response_item.id() == Some(&response_item_id)
+                )
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        history
+            .iter()
+            .filter(|rollout_item| {
+                matches!(
+                    rollout_item,
+                    RolloutItem::AgentResponseObservation(persisted)
+                        if persisted == &observation
+                )
+            })
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn record_inter_agent_communication_normalizes_untrusted_completion_context_id() {
     let (session, turn_context) = make_session_and_context().await;
     let session = Arc::new(session);
@@ -4186,6 +4280,7 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
         | RolloutItem::ResponseItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
         | RolloutItem::EventMsg(_) => None,
@@ -4243,6 +4338,7 @@ async fn record_initial_history_assigns_and_persists_id_for_forked_response_item
         RolloutItem::SessionMeta(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
@@ -7169,10 +7265,12 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
+        agent_status_turn_id: std::sync::Mutex::new(None),
         terminal_status_subscribers: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
         next_terminal_status_subscriber_id: std::sync::atomic::AtomicU64::new(/*v*/ 0),
+        response_observation_state: Default::default(),
         terminal_status_suppressed: std::sync::atomic::AtomicBool::new(/*v*/ false),
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -7189,7 +7287,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         mcp_prewarm_task: std::sync::Mutex::new(None),
         spawn_parent_thread_id: None,
         terminal_publication_lock: std::sync::Mutex::new(()),
-        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
+        thread_removal_started: std::sync::atomic::AtomicBool::new(/*v*/ false),
+        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(/*v*/ true),
         session_start_mcp_servers: HashMap::new(),
         session_start_mcp_tools: Mutex::new(HashMap::new()),
         session_start_direct_mcp_servers: std::sync::Mutex::new(None),
@@ -7204,7 +7303,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,
         submission_admission: Arc::new(SubmissionAdmission::default()),
-        next_internal_sub_id: AtomicU64::new(0),
+        next_internal_sub_id: AtomicU64::new(/*v*/ 0),
     };
 
     session.mark_mcp_runtime_dirty();
@@ -8262,6 +8361,26 @@ async fn completion_submission_stops_waiting_when_rollback_requires_reload() {
     assert!(!wait.await);
 }
 
+#[test]
+fn response_observation_retry_distinguishes_accepted_shutdown_work_from_ordinary_work() {
+    let admission = SubmissionAdmission::default();
+
+    assert!(admission.response_observation_delivery_can_retry());
+    assert!(admission.response_observation_accepted_delivery_can_retry());
+
+    admission
+        .shutdown_pending
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    assert!(!admission.response_observation_delivery_can_retry());
+    assert!(admission.response_observation_accepted_delivery_can_retry());
+
+    admission.rollback_requires_reload();
+
+    assert!(!admission.response_observation_delivery_can_retry());
+    assert!(!admission.response_observation_accepted_delivery_can_retry());
+}
+
 #[tokio::test]
 async fn shutdown_queues_after_a_preaccepted_completion_delivery() {
     let (tx_sub, rx_sub) = async_channel::bounded(2);
@@ -9061,6 +9180,38 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
         },
         store.calls().await
     );
+}
+
+#[tokio::test]
+async fn codex_exec_mailbox_delivery_does_not_start_a_turn_after_primary_completion() {
+    let (session, _turn_context) = make_session_and_context().await;
+    session
+        .set_app_server_client_info(
+            Some("codex_exec".to_string()),
+            /*app_server_client_version*/ None,
+            /*mcp_elicitations_auto_deny*/ false,
+        )
+        .await
+        .expect("set codex exec client identity");
+    let session = Arc::new(session);
+    let communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "late child result".to_string(),
+        /*trigger_turn*/ true,
+    );
+    session
+        .input_queue
+        .enqueue_mailbox_communication(communication, /*parent_turn_id*/ None)
+        .await;
+
+    session
+        .maybe_start_turn_for_pending_work_with_sub_id("late-wake".to_string())
+        .await;
+
+    assert!(session.active_turn.lock().await.is_none());
+    assert!(session.input_queue.has_pending_mailbox_items().await);
 }
 
 #[tokio::test]
@@ -9869,10 +10020,12 @@ where
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
+        agent_status_turn_id: std::sync::Mutex::new(None),
         terminal_status_subscribers: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
         next_terminal_status_subscriber_id: std::sync::atomic::AtomicU64::new(/*v*/ 0),
+        response_observation_state: Default::default(),
         terminal_status_suppressed: std::sync::atomic::AtomicBool::new(/*v*/ false),
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -9889,7 +10042,8 @@ where
         mcp_prewarm_task: std::sync::Mutex::new(None),
         spawn_parent_thread_id: None,
         terminal_publication_lock: std::sync::Mutex::new(()),
-        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
+        thread_removal_started: std::sync::atomic::AtomicBool::new(/*v*/ false),
+        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(/*v*/ true),
         session_start_mcp_servers: HashMap::new(),
         session_start_mcp_tools: Mutex::new(HashMap::new()),
         session_start_direct_mcp_servers: std::sync::Mutex::new(None),
@@ -9904,7 +10058,7 @@ where
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,
         submission_admission: Arc::new(SubmissionAdmission::default()),
-        next_internal_sub_id: AtomicU64::new(0),
+        next_internal_sub_id: AtomicU64::new(/*v*/ 0),
     });
 
     session.mark_mcp_runtime_dirty();
@@ -12584,6 +12738,60 @@ async fn steer_input_returns_active_turn_id() {
         .expect("steering with matching expected turn id should succeed");
 
     assert_eq!(turn_id, tc.sub_id);
+    assert!(sess.input_queue.has_pending_input(&sess.active_turn).await);
+}
+
+#[tokio::test]
+async fn steer_input_returns_the_response_boundary_captured_during_admission() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+    sess.publish_agent_response_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: sess.thread_id,
+        turn_id: tc.sub_id.clone(),
+        item: TurnItem::AgentMessage(AgentMessageItem {
+            id: "commentary-before-steer".to_string(),
+            content: vec![AgentMessageContent::Text {
+                text: "Working on the earlier instruction.".to_string(),
+            }],
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+            sub_agent_completion: None,
+        }),
+        started_at_ms: Some(0),
+        completed_at_ms: 1,
+    }));
+    let (snapshot, _subscription) = sess.subscribe_agent_responses();
+
+    let resolution = sess
+        .steer_input_with_response_observation_boundary(
+            vec![UserInput::Text {
+                text: "new instruction".to_string(),
+                text_elements: Vec::new(),
+            }],
+            /*additional_context*/ Default::default(),
+            Some(&tc.sub_id),
+            /*client_user_message_id*/ None,
+            /*responsesapi_client_metadata*/ None,
+        )
+        .await
+        .expect("steer should be admitted");
+
+    assert_eq!(
+        resolution,
+        InputTurnAdmissionResolution {
+            target_turn_id: tc.sub_id.clone(),
+            minimum_event_sequence: snapshot.next_event_sequence,
+            after_item_id: snapshot.last_commentary_item_id,
+        }
+    );
     assert!(sess.input_queue.has_pending_input(&sess.active_turn).await);
 }
 

@@ -7,6 +7,8 @@ use crate::items::TurnItem;
 use crate::models::AgentMessageInputContent;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
+use crate::protocol::AgentResponseFinalDelivery;
+use crate::protocol::AgentResponseObservation;
 use crate::protocol::AgentStatus;
 use crate::protocol::ItemCompletedEvent;
 use crate::protocol::ThreadRolledBackEvent;
@@ -263,5 +265,50 @@ fn exact_rollback_preserves_accepted_sub_agent_completion_artifacts() {
             completion_wait,
         ])
         .expect("serialize expected rollout")
+    );
+}
+
+#[test]
+fn exact_rollback_preserves_committed_observed_agent_responses() {
+    let observer_thread_id = crate::ThreadId::new();
+    let target_thread_id = crate::ThreadId::new();
+    let response_item_id = crate::ResponseItemId::new("amsg");
+    let metadata = RolloutItem::InterAgentCommunicationMetadata { trigger_turn: true };
+    let response = RolloutItem::ResponseItem(ResponseItem::AgentMessage {
+        id: Some(response_item_id.clone()),
+        author: "/root/worker".to_string(),
+        recipient: "/root".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "observed response".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    });
+    let observation = RolloutItem::AgentResponseObservation(AgentResponseObservation {
+        observer_thread_id,
+        target_thread_id,
+        target_turn_id: Some("target-turn".to_string()),
+        pending_commentary: false,
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        baseline_final_delivery: AgentResponseFinalDelivery::Passive,
+        final_delivery: AgentResponseFinalDelivery::Wake,
+        final_delivery_response_item_id: Some(response_item_id.clone()),
+        committed_delivery_response_item_ids: vec![response_item_id],
+    });
+    let items = vec![
+        turn_started("turn-1"),
+        message("rolled back prompt"),
+        metadata.clone(),
+        response.clone(),
+        observation.clone(),
+        exact_rollback(0),
+    ];
+
+    assert_eq!(
+        serde_json::to_value(rollout_without_exact_rollback_ranges(&items))
+            .expect("serialize normalized rollout"),
+        serde_json::to_value(vec![metadata, response, observation])
+            .expect("serialize expected rollout")
     );
 }

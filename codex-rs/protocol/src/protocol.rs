@@ -3068,6 +3068,7 @@ fn multi_agent_version_from_items(
             | RolloutItem::ResponseItem(_)
             | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::Compacted(_)
             | RolloutItem::WorldState(_)
             | RolloutItem::EventMsg(_) => None,
@@ -3250,10 +3251,55 @@ pub enum RolloutItem {
     InterAgentCommunicationMetadata {
         trigger_turn: bool,
     },
+    /// Durable, model-hidden response-observation state for one observer/target pair.
+    AgentResponseObservation(AgentResponseObservation),
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
     WorldState(WorldStateItem),
     EventMsg(EventMsg),
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum AgentResponseFinalDelivery {
+    None,
+    #[default]
+    Passive,
+    Wake,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponseObservation {
+    pub observer_thread_id: ThreadId,
+    pub target_thread_id: ThreadId,
+    pub target_turn_id: Option<String>,
+    pub pending_commentary: bool,
+    #[serde(default)]
+    pub commentary_after_sequences: Vec<u64>,
+    #[serde(default)]
+    pub commentary_admissions: Vec<AgentResponseCommentaryAdmission>,
+    pub commentary_delivery: Option<AgentResponseCommentaryDelivery>,
+    pub baseline_final_delivery: AgentResponseFinalDelivery,
+    pub final_delivery: AgentResponseFinalDelivery,
+    pub final_delivery_response_item_id: Option<ResponseItemId>,
+    #[serde(default)]
+    pub committed_delivery_response_item_ids: Vec<ResponseItemId>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponseCommentaryAdmission {
+    pub minimum_event_sequence: u64,
+    pub after_item_id: Option<String>,
+    #[serde(default)]
+    pub canonical_boundary: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponseCommentaryDelivery {
+    pub source_item_id: String,
+    pub text: String,
+    pub response_item_id: ResponseItemId,
 }
 
 /// Persisted comparison state used to resume model-visible world-state diffing.

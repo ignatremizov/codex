@@ -338,6 +338,9 @@ impl Session {
         let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
         let span_name = task.span_name();
+        if !self.begin_agent_response_turn(&turn_context.sub_id) {
+            return;
+        }
         let started_at = Instant::now();
         let turn_started_at_unix_ms = turn_context
             .turn_timing_state
@@ -502,6 +505,20 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) {
+        // codex exec is a one-shot host: its client leaves when the primary turn completes.
+        // Mail may still steer that active turn, but must not synthesize a later idle turn during
+        // the narrow interval before exec consumes the primary TurnCompleted notification.
+        if self
+            .state
+            .lock()
+            .await
+            .session_configuration
+            .app_server_client_name
+            .as_deref()
+            == Some("codex_exec")
+        {
+            return;
+        }
         if !self.input_queue.has_pending_mailbox_items().await
             || (!self.input_queue.has_trigger_turn_mailbox_items().await
                 && !self.has_outstanding_durable_sleep())

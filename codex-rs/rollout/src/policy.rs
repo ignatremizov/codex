@@ -10,7 +10,8 @@ pub fn is_persisted_rollout_item(item: &RolloutItem, history_mode: ThreadHistory
     match item {
         RolloutItem::ResponseItem(item) => should_persist_response_item(item),
         RolloutItem::InterAgentCommunication(_)
-        | RolloutItem::InterAgentCommunicationMetadata { .. } => true,
+        | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_) => true,
         RolloutItem::EventMsg(ev) => should_persist_event_msg(ev, history_mode),
         // Persist Codex executive markers so we can analyze flows (e.g., compaction, API turns).
         RolloutItem::Compacted(_)

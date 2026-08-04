@@ -161,6 +161,7 @@ pub(crate) fn fork_turn_positions_in_rollout(items: &[RolloutItem]) -> Vec<usize
                     fork_turn_positions.push(idx);
                 }
             }
+            RolloutItem::AgentResponseObservation(_) => {}
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
                 if rollback.rollback_start_index.is_some() {
                     continue;

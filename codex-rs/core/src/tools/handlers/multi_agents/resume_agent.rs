@@ -1,5 +1,7 @@
 use super::*;
 use crate::agent::next_thread_spawn_depth;
+use crate::agent::response_observation::FinalResponseObservation;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::create_resume_agent_tool;
@@ -71,14 +73,23 @@ async fn handle_resume_agent(
         .await;
     let was_not_found = matches!(status, AgentStatus::NotFound);
     let mut live_adoption_error = None;
-    if !was_not_found
-        && let Err(err) = session
+    if !was_not_found {
+        match session
             .services
             .agent_control
-            .ensure_v1_completion_watcher(receiver_thread_id, resumed_session_source.clone())
+            .ensure_v1_completion_watcher(
+                receiver_thread_id,
+                resumed_session_source.clone(),
+                args.w,
+                status.clone(),
+            )
             .await
-    {
-        live_adoption_error = Some(collab_agent_error(receiver_thread_id, err));
+        {
+            Ok(adopted_status) => status = adopted_status,
+            Err(err) => {
+                live_adoption_error = Some(collab_agent_error(receiver_thread_id, err));
+            }
+        }
     }
 
     session
@@ -141,16 +152,21 @@ async fn handle_resume_agent(
     } else {
         (receiver_agent, live_adoption_error)
     };
-    if error.is_none()
-        && was_not_found
-        && !matches!(status, AgentStatus::NotFound)
-        && let Err(err) = session
+    if error.is_none() && was_not_found && !matches!(status, AgentStatus::NotFound) {
+        match session
             .services
             .agent_control
-            .ensure_v1_completion_watcher(receiver_thread_id, resumed_session_source)
+            .ensure_v1_completion_watcher(
+                receiver_thread_id,
+                resumed_session_source,
+                args.w,
+                status.clone(),
+            )
             .await
-    {
-        error = Some(collab_agent_error(receiver_thread_id, err));
+        {
+            Ok(adopted_status) => status = adopted_status,
+            Err(err) => error = Some(collab_agent_error(receiver_thread_id, err)),
+        }
     }
     session
         .emit_turn_item_completed(
@@ -194,6 +210,8 @@ impl CoreToolRuntime for Handler {
 #[derive(Debug, Deserialize)]
 struct ResumeAgentArgs {
     id: String,
+    #[serde(default)]
+    w: ResponseObservationPolicy,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -226,11 +244,22 @@ async fn try_resume_closed_agent(
     session_source: SessionSource,
 ) -> Result<(), FunctionCallError> {
     let config = build_agent_resume_config(turn.as_ref())?;
-    Box::pin(session.services.agent_control.resume_agent_from_rollout(
-        config,
-        receiver_thread_id,
-        session_source,
-    ))
+    Box::pin(
+        session
+            .services
+            .agent_control
+            .resume_agent_from_rollout_observing_response(
+                config,
+                receiver_thread_id,
+                session_source,
+                // The handler's post-resume adoption pass applies the requested policy once,
+                // including for standalone rollouts whose persisted source has no parent.
+                ResponseObservationPolicy::from_parts(
+                    /*commentary*/ false,
+                    FinalResponseObservation::None,
+                ),
+            ),
+    )
     .await
     .map(|_| ())
     .map_err(|err| collab_agent_error(receiver_thread_id, err))

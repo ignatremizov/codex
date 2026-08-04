@@ -3200,6 +3200,7 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
             child_thread_id.to_string().as_str(),
+            child_thread_id,
             &AgentStatus::Completed(Some("child done".to_string())),
         )]
     );
@@ -3227,14 +3228,94 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
         vec![
             format_subagent_notification_message(
                 child_thread_id.to_string().as_str(),
+                child_thread_id,
                 &AgentStatus::Completed(Some("child done".to_string())),
             ),
             format_subagent_notification_message(
                 child_thread_id.to_string().as_str(),
+                child_thread_id,
                 &AgentStatus::NotFound,
             ),
         ]
     );
+}
+
+#[tokio::test]
+async fn resume_agent_live_adoption_prefers_a_new_active_turn_over_historical_completion() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("parent thread should start");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("independently resumed child thread should be live");
+    let historical_turn = child
+        .thread
+        .session
+        .new_default_turn_with_sub_id("historical-turn".to_string())
+        .await;
+    let active_turn = child
+        .thread
+        .session
+        .new_default_turn_with_sub_id("active-turn".to_string())
+        .await;
+    publish_agent_turn_started(child.thread.as_ref(), historical_turn.as_ref()).await;
+    publish_agent_turn_started(child.thread.as_ref(), active_turn.as_ref()).await;
+    child
+        .thread
+        .session
+        .send_event(
+            historical_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: historical_turn.sub_id.clone(),
+                last_agent_message: Some("historical result".to_string()),
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    let (snapshot, response_subscription) = child.thread.session.subscribe_agent_responses();
+    drop(response_subscription);
+    assert_eq!(
+        (
+            snapshot.active_turn_id,
+            snapshot.last_terminal,
+            snapshot.status,
+        ),
+        (
+            Some(active_turn.sub_id.clone()),
+            Some((
+                historical_turn.sub_id.clone(),
+                AgentStatus::Completed(Some("historical result".to_string())),
+            )),
+            AgentStatus::Running,
+        )
+    );
+
+    let output = ResumeAgentHandler
+        .handle(invocation(
+            Arc::clone(&parent.thread.session),
+            parent.thread.session.new_default_turn().await,
+            "resume_agent",
+            function_payload(json!({
+                "id": child.thread_id.to_string(),
+                "w": "f",
+            })),
+        ))
+        .await
+        .expect("resume_agent should adopt the live thread");
+    let (content, success) = expect_text_output(output);
+    let result: resume_agent::ResumeAgentResult =
+        serde_json::from_str(&content).expect("resume_agent result should be json");
+
+    assert_eq!((result.status, success), (AgentStatus::Running, Some(true)));
 }
 
 #[tokio::test]
@@ -3359,6 +3440,7 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
             agent_id.to_string().as_str(),
+            agent_id,
             &AgentStatus::Completed(Some("standalone done".to_string())),
         )]
     );
@@ -3368,6 +3450,258 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         .shutdown_live_agent(agent_id)
         .await
         .expect("shutdown resumed agent");
+}
+
+#[tokio::test]
+async fn live_adoption_reconciles_terminal_that_raced_observed_running_status() {
+    let (_, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start child thread");
+    let child_turn = child.thread.session.new_default_turn().await;
+    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+    child
+        .thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("completed during adoption".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let adopted_status = manager
+        .agent_control()
+        .ensure_v1_completion_watcher(
+            child.thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            crate::agent::response_observation::ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                crate::agent::response_observation::FinalResponseObservation::Wake,
+            ),
+            AgentStatus::Running,
+        )
+        .await
+        .expect("adopt completed child");
+    assert_eq!(
+        adopted_status,
+        AgentStatus::Completed(Some("completed during adoption".to_string()))
+    );
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if subagent_notification_texts(parent.thread.session.as_ref())
+                .await
+                .len()
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("racing terminal should reach adopting parent");
+    assert_eq!(
+        subagent_notification_texts(parent.thread.session.as_ref()).await,
+        vec![format_subagent_notification_message(
+            child.thread_id.to_string().as_str(),
+            child.thread_id,
+            &AgentStatus::Completed(Some("completed during adoption".to_string())),
+        )]
+    );
+}
+
+#[tokio::test]
+async fn live_adoption_synthesizes_terminal_from_final_snapshot_status() {
+    let (_, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start child thread");
+    let child_turn = child.thread.session.new_default_turn().await;
+    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+    child
+        .thread
+        .session
+        .send_event(child_turn.as_ref(), EventMsg::ShutdownComplete)
+        .await;
+
+    let adopted_status = manager
+        .agent_control()
+        .ensure_v1_completion_watcher(
+            child.thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            crate::agent::response_observation::ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                crate::agent::response_observation::FinalResponseObservation::Wake,
+            ),
+            AgentStatus::Running,
+        )
+        .await
+        .expect("adopt shutdown child");
+    assert_eq!(adopted_status, AgentStatus::Shutdown);
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if subagent_notification_texts(parent.thread.session.as_ref())
+                .await
+                .len()
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("synthetic terminal should reach adopting parent");
+    assert_eq!(
+        subagent_notification_texts(parent.thread.session.as_ref()).await,
+        vec![format_subagent_notification_message(
+            child.thread_id.to_string().as_str(),
+            child.thread_id,
+            &AgentStatus::Shutdown,
+        )]
+    );
+}
+
+#[tokio::test]
+async fn ordinary_thread_start_publishes_thread_created() {
+    let (_, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut thread_created = manager.subscribe_thread_created();
+
+    let thread = manager
+        .start_thread(StartThreadOptions::new(turn.config.as_ref().clone()))
+        .await
+        .expect("start ordinary thread");
+
+    assert_eq!(
+        timeout(Duration::from_secs(5), thread_created.recv())
+            .await
+            .expect("thread-created notification timeout")
+            .expect("thread-created sender"),
+        thread.thread_id
+    );
+}
+
+#[tokio::test]
+async fn resume_agent_x_returns_status_and_persists_audit_without_subscribing() {
+    let manager = thread_manager();
+    let (_, turn) = make_session_and_context().await;
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start target thread");
+    let session = Arc::clone(&parent.thread.session);
+    let turn = session.new_default_turn().await;
+
+    let output = ResumeAgentHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            turn,
+            "resume_agent",
+            function_payload(json!({
+                "id": child.thread_id.to_string(),
+                "w": "x",
+            })),
+        ))
+        .await
+        .expect("resume_agent x should return the live target status");
+    let (content, success) = expect_text_output(output);
+    let result: resume_agent::ResumeAgentResult =
+        serde_json::from_str(&content).expect("resume_agent result should be json");
+
+    assert_eq!(result.status, child.thread.agent_status().await);
+    assert_eq!(success, Some(true));
+    assert!(
+        manager
+            .agent_control()
+            .response_observation_snapshots(
+                session.presentation_id(),
+                child.thread.session.presentation_id(),
+            )
+            .is_empty(),
+        "x must not create a runtime response watcher relationship"
+    );
+    parent
+        .thread
+        .flush_rollout()
+        .await
+        .expect("flush parent audit record");
+    let stored = parent
+        .thread
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
+        .await
+        .expect("read parent rollout");
+    let observation = stored
+        .history
+        .expect("parent history")
+        .items
+        .into_iter()
+        .find_map(|item| match item {
+            RolloutItem::AgentResponseObservation(observation)
+                if observation.target_thread_id == child.thread_id =>
+            {
+                Some(observation)
+            }
+            _ => None,
+        })
+        .expect("resolved x audit observation");
+    assert_eq!(
+        (
+            observation.observer_thread_id,
+            observation.target_thread_id,
+            observation.pending_commentary,
+            observation.final_delivery,
+        ),
+        (
+            parent.thread_id,
+            child.thread_id,
+            false,
+            codex_protocol::protocol::AgentResponseFinalDelivery::None,
+        )
+    );
 }
 
 #[tokio::test]

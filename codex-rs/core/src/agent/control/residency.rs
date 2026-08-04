@@ -124,6 +124,17 @@ impl V2Residency {
             let Some(candidate_thread_id) = self.pop_lru_candidate(protected_thread_id) else {
                 return false;
             };
+            // Lifecycle operations promise that the selected runtime remains live while their
+            // guard is held. Never wait here: a loader can already own an unloadable parent's
+            // guard while reserving space for its child, so blocking on that candidate would
+            // deadlock. A busy candidate returns to the LRU queue for a later reservation.
+            let Ok(_candidate_lifecycle_guard) = manager
+                .agent_lifecycle_lock(candidate_thread_id)
+                .try_lock_owned()
+            else {
+                self.touch(candidate_thread_id);
+                continue;
+            };
             let Some(candidate_thread) = manager
                 .get_thread(candidate_thread_id)
                 .await

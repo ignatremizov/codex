@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::control::render_input_preview;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
@@ -88,7 +89,13 @@ impl Handler {
             .await;
         let agent_control = session.services.agent_control.clone();
         let result = agent_control
-            .send_input(receiver_thread_id, input_items, Some(turn.sub_id.clone()))
+            .send_input_observing_response(
+                receiver_thread_id,
+                input_items,
+                Some(turn.sub_id.clone()),
+                session.presentation_id(),
+                args.w,
+            )
             .await
             .map_err(|err| collab_agent_error(receiver_thread_id, err));
         let status = session
@@ -138,6 +145,8 @@ struct SendInputArgs {
     items: Option<Vec<UserInput>>,
     #[serde(default)]
     interrupt: bool,
+    #[serde(default)]
+    w: ResponseObservationPolicy,
 }
 
 #[derive(Debug, Serialize)]

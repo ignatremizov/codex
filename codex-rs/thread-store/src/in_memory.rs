@@ -493,6 +493,8 @@ pub enum InMemoryThreadStoreFailure {
     ThreadRollbackVerificationRead,
     ThreadRollbackResponseRead,
     SubAgentCompletionPresentationFlush,
+    AgentResponseObservationFlush,
+    AgentResponseObservationHistoryRead,
     ThreadMetadataUpdate,
 }
 
@@ -506,6 +508,8 @@ impl InMemoryThreadStoreFailure {
             Self::ThreadRollbackVerificationRead => "thread rollback verification read",
             Self::ThreadRollbackResponseRead => "thread rollback response read",
             Self::SubAgentCompletionPresentationFlush => "subagent completion presentation flush",
+            Self::AgentResponseObservationFlush => "agent response observation flush",
+            Self::AgentResponseObservationHistoryRead => "agent response observation history read",
             Self::ThreadMetadataUpdate => "thread metadata update",
         }
     }
@@ -539,6 +543,8 @@ struct InMemoryThreadStoreState {
     names: HashMap<ThreadId, Option<String>>,
     rollout_paths: HashMap<PathBuf, ThreadId>,
     fail_next_operation: Option<InMemoryThreadStoreFailure>,
+    agent_response_observation_flush_successes_remaining: usize,
+    agent_response_observation_flush_failures_remaining: usize,
     fail_next_sub_agent_completion_append: bool,
     sub_agent_completion_retry_gate: Option<Arc<tokio::sync::Semaphore>>,
     sub_agent_completion_append_attempt_ids: Vec<String>,
@@ -571,6 +577,17 @@ impl InMemoryThreadStore {
     /// Makes the next matching operation return an injected internal error.
     pub async fn fail_next_operation(&self, operation: InMemoryThreadStoreFailure) {
         self.state.lock().await.fail_next_operation = Some(operation);
+    }
+
+    /// Makes response-observation durability barriers fail after skipping successful barriers.
+    pub async fn fail_agent_response_observation_flushes_after(
+        &self,
+        successful_flushes: usize,
+        failed_flushes: usize,
+    ) {
+        let mut state = self.state.lock().await;
+        state.agent_response_observation_flush_successes_remaining = successful_flushes;
+        state.agent_response_observation_flush_failures_remaining = failed_flushes;
     }
 
     /// Makes the next canonical subagent-completion append fail and pauses its retry.
@@ -755,6 +772,18 @@ impl InMemoryThreadStore {
         params: LoadThreadHistoryParams,
     ) -> ThreadStoreResult<StoredThreadHistory> {
         let mut state = self.state.lock().await;
+        if matches!(
+            state.fail_next_operation,
+            Some(InMemoryThreadStoreFailure::AgentResponseObservationHistoryRead)
+        ) {
+            state.fail_next_operation = None;
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "injected in-memory thread-store {} failure",
+                    InMemoryThreadStoreFailure::AgentResponseObservationHistoryRead.operation()
+                ),
+            });
+        }
         if state.fail_next_rollback_verification_read {
             state.fail_next_rollback_verification_read = false;
             return Err(ThreadStoreError::Internal {
@@ -1063,89 +1092,120 @@ fn append_persisted_items_to_state(
                 if event.item.is_sub_agent_completion_presentation()
         )
     });
-    let fail_after_commit = match state.fail_next_operation {
-        Some(InMemoryThreadStoreFailure::CompactedMediaRepairAppend)
-            if appends_compacted_media_repair =>
-        {
-            state.fail_next_operation = None;
-            return Err(ThreadStoreError::Internal {
-                message: format!(
-                    "injected in-memory thread-store {} failure",
-                    InMemoryThreadStoreFailure::CompactedMediaRepairAppend.operation()
-                ),
-            });
+    let appends_agent_response_observation = persisted_items
+        .iter()
+        .any(|item| matches!(item, RolloutItem::AgentResponseObservation(_)));
+    let planned_agent_response_observation_flush_failure = if appends_agent_response_observation
+        && matches!(durability, InMemoryAppendDurability::Flushed)
+        && state.agent_response_observation_flush_failures_remaining > 0
+    {
+        if state.agent_response_observation_flush_successes_remaining > 0 {
+            state.agent_response_observation_flush_successes_remaining -= 1;
+            false
+        } else {
+            state.agent_response_observation_flush_failures_remaining -= 1;
+            true
         }
-        Some(InMemoryThreadStoreFailure::CompactedMediaRepairFlush)
-            if appends_compacted_media_repair =>
-        {
-            match durability {
-                InMemoryAppendDurability::Queued => {
-                    let history_len = state.histories.get(&thread_id).map_or(0, Vec::len);
-                    state.compacted_media_repair_flush_rollback = Some((thread_id, history_len));
-                }
-                InMemoryAppendDurability::Flushed => {
-                    state.calls.flush_thread += 1;
-                    state.fail_next_operation = None;
-                    return Err(ThreadStoreError::Internal {
-                        message: format!(
-                            "injected in-memory thread-store {} failure",
-                            InMemoryThreadStoreFailure::CompactedMediaRepairFlush.operation()
-                        ),
-                    });
-                }
+    } else {
+        false
+    };
+    let fail_after_commit = if planned_agent_response_observation_flush_failure {
+        Some(InMemoryThreadStoreFailure::AgentResponseObservationFlush)
+    } else {
+        match state.fail_next_operation {
+            Some(InMemoryThreadStoreFailure::CompactedMediaRepairAppend)
+                if appends_compacted_media_repair =>
+            {
+                state.fail_next_operation = None;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::CompactedMediaRepairAppend.operation()
+                    ),
+                });
             }
-            None
-        }
-        Some(InMemoryThreadStoreFailure::ThreadRollbackAppend) if appends_thread_rollback => {
-            state.fail_next_operation = None;
-            return Err(ThreadStoreError::Internal {
-                message: format!(
-                    "injected in-memory thread-store {} failure",
-                    InMemoryThreadStoreFailure::ThreadRollbackAppend.operation()
-                ),
-            });
-        }
-        Some(InMemoryThreadStoreFailure::ThreadRollbackFlush)
-            if appends_thread_rollback
-                && matches!(durability, InMemoryAppendDurability::Flushed) =>
-        {
-            state.fail_next_operation = None;
+            Some(InMemoryThreadStoreFailure::CompactedMediaRepairFlush)
+                if appends_compacted_media_repair =>
+            {
+                match durability {
+                    InMemoryAppendDurability::Queued => {
+                        let history_len = state.histories.get(&thread_id).map_or(0, Vec::len);
+                        state.compacted_media_repair_flush_rollback =
+                            Some((thread_id, history_len));
+                    }
+                    InMemoryAppendDurability::Flushed => {
+                        state.calls.flush_thread += 1;
+                        state.fail_next_operation = None;
+                        return Err(ThreadStoreError::Internal {
+                            message: format!(
+                                "injected in-memory thread-store {} failure",
+                                InMemoryThreadStoreFailure::CompactedMediaRepairFlush.operation()
+                            ),
+                        });
+                    }
+                }
+                None
+            }
+            Some(InMemoryThreadStoreFailure::ThreadRollbackAppend) if appends_thread_rollback => {
+                state.fail_next_operation = None;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::ThreadRollbackAppend.operation()
+                    ),
+                });
+            }
             Some(InMemoryThreadStoreFailure::ThreadRollbackFlush)
-        }
-        Some(InMemoryThreadStoreFailure::ThreadRollbackVerificationRead)
-            if appends_thread_rollback
-                && matches!(durability, InMemoryAppendDurability::Flushed) =>
-        {
-            state.fail_next_operation = None;
-            state.fail_next_rollback_verification_read = true;
+                if appends_thread_rollback
+                    && matches!(durability, InMemoryAppendDurability::Flushed) =>
+            {
+                state.fail_next_operation = None;
+                Some(InMemoryThreadStoreFailure::ThreadRollbackFlush)
+            }
             Some(InMemoryThreadStoreFailure::ThreadRollbackVerificationRead)
-        }
-        Some(InMemoryThreadStoreFailure::ThreadRollbackResponseRead)
-            if appends_thread_rollback
-                && matches!(durability, InMemoryAppendDurability::Flushed) =>
-        {
-            state.fail_next_operation = None;
-            state.fail_next_rollback_response_read = true;
-            None
-        }
-        Some(InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush)
-            if appends_sub_agent_completion_presentation
-                && matches!(durability, InMemoryAppendDurability::Flushed) =>
-        {
-            state.fail_next_operation = None;
+                if appends_thread_rollback
+                    && matches!(durability, InMemoryAppendDurability::Flushed) =>
+            {
+                state.fail_next_operation = None;
+                state.fail_next_rollback_verification_read = true;
+                Some(InMemoryThreadStoreFailure::ThreadRollbackVerificationRead)
+            }
+            Some(InMemoryThreadStoreFailure::ThreadRollbackResponseRead)
+                if appends_thread_rollback
+                    && matches!(durability, InMemoryAppendDurability::Flushed) =>
+            {
+                state.fail_next_operation = None;
+                state.fail_next_rollback_response_read = true;
+                None
+            }
             Some(InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush)
+                if appends_sub_agent_completion_presentation
+                    && matches!(durability, InMemoryAppendDurability::Flushed) =>
+            {
+                state.fail_next_operation = None;
+                Some(InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush)
+            }
+            Some(InMemoryThreadStoreFailure::AgentResponseObservationFlush)
+                if appends_agent_response_observation
+                    && matches!(durability, InMemoryAppendDurability::Flushed) =>
+            {
+                state.fail_next_operation = None;
+                Some(InMemoryThreadStoreFailure::AgentResponseObservationFlush)
+            }
+            Some(
+                InMemoryThreadStoreFailure::CompactedMediaRepairAppend
+                | InMemoryThreadStoreFailure::CompactedMediaRepairFlush
+                | InMemoryThreadStoreFailure::ThreadRollbackAppend
+                | InMemoryThreadStoreFailure::ThreadRollbackFlush
+                | InMemoryThreadStoreFailure::ThreadRollbackVerificationRead
+                | InMemoryThreadStoreFailure::ThreadRollbackResponseRead
+                | InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush
+                | InMemoryThreadStoreFailure::AgentResponseObservationFlush
+                | InMemoryThreadStoreFailure::AgentResponseObservationHistoryRead
+                | InMemoryThreadStoreFailure::ThreadMetadataUpdate,
+            )
+            | None => None,
         }
-        Some(
-            InMemoryThreadStoreFailure::CompactedMediaRepairAppend
-            | InMemoryThreadStoreFailure::CompactedMediaRepairFlush
-            | InMemoryThreadStoreFailure::ThreadRollbackAppend
-            | InMemoryThreadStoreFailure::ThreadRollbackFlush
-            | InMemoryThreadStoreFailure::ThreadRollbackVerificationRead
-            | InMemoryThreadStoreFailure::ThreadRollbackResponseRead
-            | InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush
-            | InMemoryThreadStoreFailure::ThreadMetadataUpdate,
-        )
-        | None => None,
     };
     if matches!(durability, InMemoryAppendDurability::Flushed) {
         state.calls.flush_thread += 1;

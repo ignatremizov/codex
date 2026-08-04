@@ -81,6 +81,7 @@ use codex_thread_store::ReadThreadByRolloutPathParams;
 use codex_thread_store::ReadThreadParams;
 use codex_thread_store::StoredModelContext;
 use codex_thread_store::StoredThread;
+use codex_thread_store::StoredThreadHistory;
 use codex_thread_store::ThreadMetadataPatch;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreError;
@@ -95,6 +96,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tracing::instrument;
@@ -153,6 +155,33 @@ pub struct NewThread {
     pub session_configured: SessionConfiguredEvent,
 }
 
+/// Internal spawn/resume result that records whether this call installed the runtime.
+///
+/// Setup rollback may tear down a `Created` runtime. An `Existing` runtime belongs to an earlier
+/// caller, so rollback must preserve it and undo only state registered by the adopting attempt.
+pub(crate) struct ThreadSpawnResult {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) thread: Arc<CodexThread>,
+    pub(crate) session_configured: SessionConfiguredEvent,
+    pub(crate) runtime_origin: ThreadRuntimeOrigin,
+}
+
+impl ThreadSpawnResult {
+    fn into_new_thread(self) -> NewThread {
+        NewThread {
+            thread_id: self.thread_id,
+            thread: self.thread,
+            session_configured: self.session_configured,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ThreadRuntimeOrigin {
+    Created,
+    Existing,
+}
+
 // TODO(ccunningham): Add an explicit non-interrupting live-turn snapshot once
 // core can represent sampling boundaries directly instead of relying on
 // whichever items happened to be persisted mid-turn.
@@ -209,6 +238,12 @@ enum ShutdownOutcome {
     Complete,
     SubmitFailed,
     TimedOut,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThreadCreatedNotificationMode {
+    Immediate,
+    Deferred,
 }
 
 /// [`ThreadManager`] is responsible for creating threads and maintaining
@@ -315,8 +350,12 @@ pub(crate) struct ThreadManagerState {
     session_source: SessionSource,
     installation_id: String,
     analytics_events_client: Option<AnalyticsEventsClient>,
-    v2_spawn_resume_locks:
+    agent_lifecycle_locks:
         std::sync::Mutex<HashMap<ThreadId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    /// Invalidates every response observer installed before an explicit close, including
+    /// observers owned by a different `AgentControl` attached to the same live thread.
+    agent_lifecycle_generations: std::sync::Mutex<HashMap<ThreadId, u64>>,
+    agent_lifecycle_changed: Arc<Notify>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
 }
@@ -432,7 +471,9 @@ impl ThreadManager {
                 session_source,
                 installation_id,
                 analytics_events_client,
-                v2_spawn_resume_locks: std::sync::Mutex::new(HashMap::new()),
+                agent_lifecycle_locks: std::sync::Mutex::new(HashMap::new()),
+                agent_lifecycle_generations: std::sync::Mutex::new(HashMap::new()),
+                agent_lifecycle_changed: Arc::new(Notify::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -571,7 +612,9 @@ impl ThreadManager {
                 session_source: SessionSource::Exec,
                 installation_id,
                 analytics_events_client: None,
-                v2_spawn_resume_locks: std::sync::Mutex::new(HashMap::new()),
+                agent_lifecycle_locks: std::sync::Mutex::new(HashMap::new()),
+                agent_lifecycle_generations: std::sync::Mutex::new(HashMap::new()),
+                agent_lifecycle_changed: Arc::new(Notify::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -695,7 +738,7 @@ impl ThreadManager {
     }
 
     pub fn subscribe_thread_created(&self) -> broadcast::Receiver<ThreadId> {
-        self.state.thread_created_tx.subscribe()
+        self.state.subscribe_thread_created()
     }
 
     pub async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
@@ -847,8 +890,10 @@ impl ThreadManager {
             options.thread_extension_init,
             options.supports_openai_form_elicitation,
             /*user_shell_override*/ None,
+            ThreadCreatedNotificationMode::Immediate,
         ))
         .await
+        .map(ThreadSpawnResult::into_new_thread)
     }
 
     // TODO(jif) merge with fork_agent
@@ -926,6 +971,13 @@ impl ThreadManager {
         {
             return Ok(restored_thread);
         }
+        let _lifecycle_guard = match &initial_history {
+            InitialHistory::Resumed(resumed) => {
+                let lifecycle_lock = self.state.agent_lifecycle_lock(resumed.conversation_id);
+                Some(lifecycle_lock.lock_owned().await)
+            }
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
+        };
 
         let agent_control = self.agent_control_for_config(&config);
         let environments = default_thread_environment_selections(
@@ -965,8 +1017,10 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ None,
+            ThreadCreatedNotificationMode::Immediate,
         ))
         .await
+        .map(ThreadSpawnResult::into_new_thread)
     }
 
     pub(crate) async fn start_thread_with_user_shell_override_for_tests(
@@ -1040,8 +1094,10 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ Some(user_shell_override),
+            ThreadCreatedNotificationMode::Immediate,
         ))
         .await
+        .map(ThreadSpawnResult::into_new_thread)
     }
 
     /// Removes the thread from the manager's internal map, though the thread is stored
@@ -1329,6 +1385,71 @@ impl ThreadManager {
 }
 
 impl ThreadManagerState {
+    pub(crate) fn agent_lifecycle_lock(&self, thread_id: ThreadId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .agent_lifecycle_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(&thread_id).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(thread_id, Arc::downgrade(&lock));
+        lock
+    }
+
+    /// Join the lifecycle boundary for a thread that must remain live while the guard is held.
+    ///
+    /// Child publication and reopening acquire the direct parent's guard before the child's
+    /// guard. Explicit subtree close acquires the same parent boundary before taking its
+    /// descendant snapshot, so membership cannot appear beneath a parent after close wins.
+    pub(crate) async fn acquire_live_agent_lifecycle(
+        &self,
+        thread_id: ThreadId,
+    ) -> CodexResult<tokio::sync::OwnedMutexGuard<()>> {
+        let guard = self.agent_lifecycle_lock(thread_id).lock_owned().await;
+        self.get_thread(thread_id).await?;
+        Ok(guard)
+    }
+
+    pub(crate) fn agent_lifecycle_generation(&self, thread_id: ThreadId) -> u64 {
+        self.agent_lifecycle_generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&thread_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn advance_agent_lifecycle_generation(&self, thread_id: ThreadId) {
+        {
+            let mut generations = self
+                .agent_lifecycle_generations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let generation = generations.entry(thread_id).or_default();
+            *generation = generation.wrapping_add(1);
+        }
+        self.agent_lifecycle_changed.notify_waiters();
+    }
+
+    pub(crate) fn agent_lifecycle_generation_is_current(
+        &self,
+        thread_id: ThreadId,
+        generation: u64,
+    ) -> bool {
+        self.agent_lifecycle_generation(thread_id) == generation
+    }
+
+    pub(crate) fn wait_for_agent_lifecycle_change(&self) -> tokio::sync::futures::OwnedNotified {
+        Arc::clone(&self.agent_lifecycle_changed).notified_owned()
+    }
+
+    pub(crate) fn subscribe_thread_created(&self) -> broadcast::Receiver<ThreadId> {
+        self.thread_created_tx.subscribe()
+    }
+
     pub(crate) fn agent_graph_store(&self) -> Option<Arc<dyn AgentGraphStore>> {
         self.agent_graph_store.clone()
     }
@@ -1417,6 +1538,24 @@ impl ThreadManagerState {
             })
     }
 
+    pub(crate) async fn load_canonical_thread_history(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> CodexResult<StoredThreadHistory> {
+        let thread_id = params.thread_id;
+        self.thread_store
+            .load_rollback_history(params)
+            .await
+            .map_err(|err| match err {
+                ThreadStoreError::ThreadNotFound { thread_id } => {
+                    CodexErr::ThreadNotFound(thread_id)
+                }
+                err => CodexErr::Fatal(format!(
+                    "failed to load canonical history for thread {thread_id}: {err}"
+                )),
+            })
+    }
+
     /// Send an operation to an already retained thread instance.
     pub(crate) async fn send_op_to_thread(
         &self,
@@ -1433,6 +1572,25 @@ impl ThreadManagerState {
         thread
             .io
             .submit_with_trace(op, /*trace*/ None, parent_turn_id)
+            .await
+    }
+
+    pub(crate) async fn send_user_input_to_thread(
+        &self,
+        thread: &Arc<CodexThread>,
+        op: Op,
+        parent_turn_id: Option<String>,
+    ) -> CodexResult<(String, crate::session::InputTurnAdmissionResolution)> {
+        debug_assert!(matches!(op, Op::UserInput { .. }));
+        let thread_id = thread.session.thread_id();
+        if let Some(ops_log) = &self.ops_log
+            && let Ok(mut log) = ops_log.lock()
+        {
+            log.push((thread_id, op.clone()));
+        }
+        thread
+            .io
+            .submit_user_input_with_turn_admission(thread.session.as_ref(), op, parent_turn_id)
             .await
     }
 
@@ -1457,11 +1615,19 @@ impl ThreadManagerState {
 
     /// Remove a thread from the manager by ID, returning it when present.
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
-        let thread = self.threads.write().await.remove(thread_id);
+        let mut threads = self.threads.write().await;
+        let thread = threads.get(thread_id).cloned();
         if let Some(thread) = thread.as_ref() {
+            // Publish final lifecycle status and final-outcome presentations while readers must
+            // still observe this exact runtime. A wait cannot therefore observe map absence
+            // before NotFound exists.
             thread.session.prepare_for_thread_removal();
         }
-        thread
+        let removed = threads.remove(thread_id);
+        if let Some(thread) = removed.as_ref() {
+            thread.session.finish_thread_removal();
+        }
+        removed
     }
 
     /// Remove `thread` only while it remains the manager's current instance for its thread ID.
@@ -1478,11 +1644,12 @@ impl ThreadManagerState {
         if !is_current {
             return None;
         }
+        thread.session.prepare_for_thread_removal();
         let removed = threads.remove(&thread_id);
-        if let Some(removed) = removed.as_ref() {
-            removed.session.prepare_for_thread_removal();
-            on_removed();
+        if let Some(thread) = removed.as_ref() {
+            thread.session.finish_thread_removal();
         }
+        on_removed();
         removed
     }
 
@@ -1755,14 +1922,16 @@ impl ThreadManagerState {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            ThreadCreatedNotificationMode::Deferred,
         ))
         .await
+        .map(ThreadSpawnResult::into_new_thread)
     }
 
     pub(crate) async fn resume_thread_with_history_with_source(
         &self,
         options: ResumeThreadWithHistoryOptions,
-    ) -> CodexResult<NewThread> {
+    ) -> CodexResult<ThreadSpawnResult> {
         let ResumeThreadWithHistoryOptions {
             config,
             initial_history,
@@ -1799,6 +1968,7 @@ impl ThreadManagerState {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            ThreadCreatedNotificationMode::Deferred,
         ))
         .await
     }
@@ -1847,8 +2017,10 @@ impl ThreadManagerState {
             thread_extension_init,
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            ThreadCreatedNotificationMode::Deferred,
         ))
         .await
+        .map(ThreadSpawnResult::into_new_thread)
     }
 
     /// Spawn a new thread with optional history and register it with the manager.
@@ -1892,12 +2064,14 @@ impl ThreadManagerState {
             thread_extension_init,
             supports_openai_form_elicitation,
             user_shell_override,
+            ThreadCreatedNotificationMode::Immediate,
         ))
         .await
+        .map(ThreadSpawnResult::into_new_thread)
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn spawn_thread_with_source(
+    async fn spawn_thread_with_source(
         &self,
         config: Config,
         initial_history: InitialHistory,
@@ -1919,7 +2093,8 @@ impl ThreadManagerState {
         mut thread_extension_init: ExtensionDataInit,
         supports_openai_form_elicitation: bool,
         user_shell_override: Option<crate::shell::Shell>,
-    ) -> CodexResult<NewThread> {
+        thread_created_notification: ThreadCreatedNotificationMode,
+    ) -> CodexResult<ThreadSpawnResult> {
         let source_changed_during_startup = Arc::new(AtomicBool::new(false));
         {
             let mut starting = self
@@ -1930,7 +2105,7 @@ impl ThreadManagerState {
             starting.push(Arc::downgrade(&source_changed_during_startup));
         }
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
-        let replaced_thread = if let InitialHistory::Resumed(resumed) = &initial_history {
+        if let InitialHistory::Resumed(resumed) = &initial_history {
             let mut threads = self.threads.write().await;
             if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
                 if thread.is_running() {
@@ -1942,21 +2117,21 @@ impl ThreadManagerState {
                             resumed.conversation_id
                         )));
                     }
-                    return Ok(NewThread {
+                    return Ok(ThreadSpawnResult {
                         thread_id: resumed.conversation_id,
                         session_configured: thread.session_configured(),
                         thread,
+                        runtime_origin: ThreadRuntimeOrigin::Existing,
                     });
                 }
-                threads.remove(&resumed.conversation_id)
-            } else {
-                None
+                // Keep the stale runtime discoverable until its fallback final outcome is
+                // published. Readers then either subscribe to that final-status notification or
+                // observe the replacement.
+                thread.session.prepare_for_thread_removal();
+                if let Some(thread) = threads.remove(&resumed.conversation_id) {
+                    thread.session.finish_thread_removal();
+                }
             }
-        } else {
-            None
-        };
-        if let Some(thread) = replaced_thread {
-            thread.session.prepare_for_thread_removal();
         }
         if matches!(
             &initial_history,
@@ -1974,6 +2149,7 @@ impl ThreadManagerState {
                     RolloutItem::SessionMeta(_)
                     | RolloutItem::InterAgentCommunication(_)
                     | RolloutItem::InterAgentCommunicationMetadata { .. }
+                    | RolloutItem::AgentResponseObservation(_)
                     | RolloutItem::TurnContext(_)
                     | RolloutItem::WorldState(_)
                     | RolloutItem::EventMsg(_) => {}
@@ -2058,7 +2234,12 @@ impl ThreadManagerState {
         }))
         .await?;
         let new_thread = self
-            .finalize_thread_spawn(session, io, tracked_session_source)
+            .finalize_thread_spawn(
+                session,
+                io,
+                tracked_session_source,
+                thread_created_notification,
+            )
             .await?;
         if source_changed_during_startup.load(Ordering::Acquire) {
             new_thread.thread.session.request_mcp_runtime_refresh();
@@ -2074,7 +2255,8 @@ impl ThreadManagerState {
         session: Arc<Session>,
         io: SessionIo,
         session_source: SessionSource,
-    ) -> CodexResult<NewThread> {
+        thread_created_notification: ThreadCreatedNotificationMode,
+    ) -> CodexResult<ThreadSpawnResult> {
         let thread_id = session.thread_id();
         let event = io.next_event().await?;
         let session_configured = match event {
@@ -2087,7 +2269,7 @@ impl ThreadManagerState {
             }
         };
 
-        {
+        let new_thread = {
             let mut threads = self.threads.write().await;
             if let std::collections::hash_map::Entry::Vacant(e) = threads.entry(thread_id) {
                 let thread = Arc::new(CodexThread::new(
@@ -2098,12 +2280,21 @@ impl ThreadManagerState {
                     session_source,
                 ));
                 e.insert(thread.clone());
-                return Ok(NewThread {
+                Some(ThreadSpawnResult {
                     thread_id,
                     thread,
                     session_configured,
-                });
+                    runtime_origin: ThreadRuntimeOrigin::Created,
+                })
+            } else {
+                None
             }
+        };
+        if let Some(new_thread) = new_thread {
+            if thread_created_notification == ThreadCreatedNotificationMode::Immediate {
+                self.notify_thread_created(new_thread.thread_id);
+            }
+            return Ok(new_thread);
         }
 
         if let Err(err) = io.shutdown_and_wait().await {

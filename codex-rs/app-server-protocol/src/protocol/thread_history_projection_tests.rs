@@ -7,6 +7,8 @@ use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
+use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
@@ -240,9 +242,25 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
         window_id: None,
         ..Default::default()
     }));
+    let response_observation = project(RolloutItem::AgentResponseObservation(
+        AgentResponseObservation {
+            observer_thread_id: ThreadId::new(),
+            target_thread_id: ThreadId::new(),
+            target_turn_id: Some("target-turn".to_string()),
+            pending_commentary: true,
+            commentary_after_sequences: vec![0],
+            commentary_admissions: Vec::new(),
+            commentary_delivery: None,
+            baseline_final_delivery: AgentResponseFinalDelivery::Passive,
+            final_delivery: AgentResponseFinalDelivery::Wake,
+            final_delivery_response_item_id: None,
+            committed_delivery_response_item_ids: Vec::new(),
+        },
+    ));
 
     assert!(aborted.is_empty());
     assert!(compacted.is_empty());
+    assert!(response_observation.is_empty());
 }
 
 #[test]

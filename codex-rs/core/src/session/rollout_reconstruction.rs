@@ -455,7 +455,8 @@ impl Session {
                 }
                 RolloutItem::EventMsg(_)
                 | RolloutItem::SessionMeta(_)
-                | RolloutItem::InterAgentCommunicationMetadata { .. } => {}
+                | RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::AgentResponseObservation(_) => {}
             }
 
             if replay_state.base_compacted_item.is_some()
@@ -693,6 +694,7 @@ impl Session {
                 | RolloutItem::ResponseItem(_)
                 | RolloutItem::InterAgentCommunication(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::AgentResponseObservation(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::EventMsg(_) => {
                     unreachable!("only world-state replay items are collected")

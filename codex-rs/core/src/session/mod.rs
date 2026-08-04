@@ -231,6 +231,7 @@ mod mcp_prewarm;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
+mod response_observation;
 mod review;
 mod rollout_budget;
 mod rollout_reconstruction;
@@ -238,6 +239,7 @@ mod rollout_reconstruction;
 pub(crate) mod session;
 pub(crate) mod step_context;
 mod sub_agent_completion;
+pub(crate) use sub_agent_completion::TerminalStatusEvent;
 pub(crate) use sub_agent_completion::TerminalStatusSubscription;
 pub(crate) mod time_reminder;
 mod token_budget;
@@ -253,11 +255,16 @@ use self::handlers::submission_loop;
 pub(crate) use self::input_queue::InputQueueActivity;
 pub(crate) use self::input_queue::TurnInput;
 pub(crate) use self::input_queue::TurnInputQueue;
+pub(crate) use self::response_observation::AgentResponseEvent;
+pub(crate) use self::response_observation::AgentResponseSubscription;
+pub(crate) use self::response_observation::InputTurnAdmissionResolution;
+pub(crate) use self::response_observation::agent_response_events_from_rollout;
 use self::review::spawn_review_thread;
 use self::session::AppServerClientMetadata;
 use self::session::Session;
 use self::session::SessionConfiguration;
 pub(crate) use self::session::SessionSettingsUpdate;
+pub(crate) use self::sub_agent_completion::CompletionSubmissionAdmissionMode;
 #[cfg(test)]
 use self::turn::AssistantMessageStreamParsers;
 use self::turn::agent_message_text;
@@ -274,6 +281,23 @@ enum EventPersistence {
     Skip,
     Queued,
     Flushed,
+}
+
+#[derive(Clone, Copy)]
+enum AgentResponseEventPublication {
+    Skip,
+    Publish,
+}
+
+struct RawEventDelivery {
+    persisted: bool,
+    delivered: bool,
+}
+
+impl RawEventDelivery {
+    fn committed(&self) -> bool {
+        self.persisted && self.delivered
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -516,6 +540,26 @@ impl SubmissionAdmission {
             }
             changed.as_mut().await;
         }
+    }
+
+    pub(crate) fn response_observation_delivery_can_retry(&self) -> bool {
+        self.response_observation_accepted_delivery_can_retry()
+            && !self
+                .shutdown_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+            && !self
+                .completion_delivery_admission_closed
+                .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn response_observation_accepted_delivery_can_retry(&self) -> bool {
+        // An accepted completion reserved admission before shutdown closed new deliveries. Its
+        // admission counter intentionally keeps shutdown waiting, so only reload quarantine makes
+        // the retry ineligible; session-loop termination is checked by AgentControl.
+        !matches!(
+            *self.state.lock().unwrap_or_else(PoisonError::into_inner),
+            SubmissionAdmissionState::ReloadRequired
+        )
     }
 
     pub(crate) fn try_accept_completion_delivery(
@@ -1172,6 +1216,34 @@ impl SessionIo {
         };
         self.submit_with_id(sub).await?;
         Ok(id)
+    }
+
+    pub(crate) async fn submit_user_input_with_turn_admission(
+        &self,
+        session: &Session,
+        op: Op,
+        parent_turn_id: Option<String>,
+    ) -> CodexResult<(String, InputTurnAdmissionResolution)> {
+        debug_assert!(matches!(op, Op::UserInput { .. }));
+        let id = new_submission_id();
+        let admission = session.register_input_turn_admission(id.clone());
+        self.submit_with_id(Submission {
+            id: id.clone(),
+            op,
+            client_user_message_id: None,
+            trace: None,
+            parent_turn_id,
+        })
+        .await?;
+        let resolution = tokio::select! {
+            admission = admission.recv() => {
+                admission.ok_or(CodexErr::InternalAgentDied)??
+            },
+            () = self.session_loop_termination.clone() => {
+                return Err(CodexErr::InternalAgentDied);
+            }
+        };
+        Ok((id, resolution))
     }
 
     /// Use sparingly: prefer `submit()` so submission IDs are generated consistently.
@@ -2860,6 +2932,26 @@ impl Session {
     ) where
         F: FnOnce() + Send,
     {
+        self.send_event_with_primary_delivery_and_rollout_suffix(
+            turn_context,
+            msg,
+            persistence,
+            Vec::new(),
+            on_primary_delivery,
+        )
+        .await;
+    }
+
+    async fn send_event_with_primary_delivery_and_rollout_suffix<F>(
+        &self,
+        turn_context: &TurnContext,
+        msg: EventMsg,
+        persistence: EventPersistence,
+        rollout_suffix: Vec<RolloutItem>,
+        on_primary_delivery: F,
+    ) where
+        F: FnOnce() + Send,
+    {
         let legacy_source = msg.clone();
         let terminal_presentation = self
             .prepare_sub_agent_terminal_presentation(turn_context, &legacy_source)
@@ -2883,32 +2975,42 @@ impl Session {
             id: turn_context.sub_id.clone(),
             msg,
         };
-        let primary_delivered = self.send_event_raw_prepared(event, persistence).await;
-        let primary_committed = if primary_delivered {
-            true
-        } else if let EventMsg::ItemCompleted(event) = &legacy_source
-            && event.item.is_sub_agent_completion_presentation()
-        {
-            let item_id = event.item.id();
-            match self
-                .persisted_sub_agent_completion_presentation(&item_id, &event.turn_id)
-                .await
+        let has_rollout_suffix = !rollout_suffix.is_empty();
+        let primary_delivery = self
+            .send_event_raw_prepared_with_rollout_suffix(event, persistence, rollout_suffix)
+            .await;
+        let primary_committed =
+            if primary_delivery.persisted && (primary_delivery.delivered || has_rollout_suffix) {
+                true
+            } else if let EventMsg::ItemCompleted(event) = &legacy_source
+                && event.item.is_sub_agent_completion_presentation()
             {
-                Ok(presentation) => presentation
-                    .item_completed
-                    .is_some_and(|persisted| persisted.turn_id == event.turn_id),
-                Err(err) => {
-                    warn!(
-                        item_id = %item_id,
-                        turn_id = %event.turn_id,
-                        "failed to reconcile subagent completion presentation: {err}"
-                    );
-                    false
+                // This lookup intentionally covers completed `wait_agent` items as well as
+                // standalone completion messages: both own subagent presentation through
+                // `is_sub_agent_completion_presentation`. If a flush reports an error after the
+                // canonical batch committed, its stable item and turn IDs let the wait retain
+                // final-outcome presentation ownership instead of releasing it to duplicate
+                // automatic delivery.
+                let item_id = event.item.id();
+                match self
+                    .persisted_sub_agent_completion_presentation(&item_id, &event.turn_id)
+                    .await
+                {
+                    Ok(presentation) => presentation
+                        .item_completed
+                        .is_some_and(|persisted| persisted.turn_id == event.turn_id),
+                    Err(err) => {
+                        warn!(
+                            item_id = %item_id,
+                            turn_id = %event.turn_id,
+                            "failed to reconcile subagent completion presentation: {err}"
+                        );
+                        false
+                    }
                 }
-            }
-        } else {
-            false
-        };
+            } else {
+                false
+            };
         if primary_committed {
             on_primary_delivery();
         }
@@ -3176,15 +3278,31 @@ impl Session {
     }
 
     async fn send_event_raw_prepared(&self, event: Event, persistence: EventPersistence) -> bool {
+        self.send_event_raw_prepared_with_rollout_suffix(event, persistence, Vec::new())
+            .await
+            .committed()
+    }
+
+    async fn send_event_raw_prepared_with_rollout_suffix(
+        &self,
+        event: Event,
+        persistence: EventPersistence,
+        rollout_suffix: Vec<RolloutItem>,
+    ) -> RawEventDelivery {
+        debug_assert!(
+            rollout_suffix.is_empty() || matches!(persistence, EventPersistence::Flushed)
+        );
         // Persist the event into rollout storage; the store applies its persistence policy.
         let persistence_result = match persistence {
             EventPersistence::Skip => Ok(()),
             EventPersistence::Queued => {
+                debug_assert!(rollout_suffix.is_empty());
                 self.try_persist_rollout_items(&[RolloutItem::EventMsg(event.msg.clone())])
                     .await
             }
             EventPersistence::Flushed => {
-                let rollout_items = [RolloutItem::EventMsg(event.msg.clone())];
+                let mut rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
+                rollout_items.extend(rollout_suffix);
                 match self.live_thread() {
                     Some(live_thread) => {
                         live_thread
@@ -3202,19 +3320,56 @@ impl Session {
                 false
             }
         };
+        // Commentary is observable only after its source item is durable. A final turn outcome is
+        // different: the live child status becomes final even when its rollout append fails, so
+        // suppressing the response event would strand separately owned V1 observers forever.
+        // Let those observers attempt their own durable parent-side delivery; canonical recovery
+        // from the child remains unavailable until the child rollout can be repaired.
+        let live_terminal = agent_status_from_event(&event.msg).is_some_and(|status| {
+            is_final(&status)
+                && matches!(
+                    &event.msg,
+                    EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+                )
+        });
+        let response_event_publication = if persisted || live_terminal {
+            AgentResponseEventPublication::Publish
+        } else {
+            AgentResponseEventPublication::Skip
+        };
         self.services
             .rollout_thread_trace
             .record_protocol_event(&event.msg);
-        self.deliver_event_raw_prepared(event).await && persisted
+        let delivered = self
+            .deliver_event_raw_prepared(event, response_event_publication)
+            .await;
+        RawEventDelivery {
+            persisted,
+            delivered,
+        }
     }
 
     async fn deliver_event_raw(&self, event: Event) {
         self.prepare_raw_sub_agent_terminal_presentation(&event);
-        let _ = self.deliver_event_raw_prepared(event).await;
+        let _ = self
+            .deliver_event_raw_prepared(event, AgentResponseEventPublication::Skip)
+            .await;
     }
 
-    async fn deliver_event_raw_prepared(&self, event: Event) -> bool {
-        self.publish_agent_status_from_event(&event.msg);
+    async fn deliver_event_raw_prepared(
+        &self,
+        event: Event,
+        response_event_publication: AgentResponseEventPublication,
+    ) -> bool {
+        let publish_event = match response_event_publication {
+            AgentResponseEventPublication::Skip => self.publish_agent_envelope_status(&event),
+            AgentResponseEventPublication::Publish => {
+                self.publish_agent_response_event_and_status(&event)
+            }
+        };
+        if !publish_event {
+            return false;
+        }
         if let Err(e) = self.tx_event.send(event).await {
             debug!("dropping event because channel is closed: {e}");
             return false;
@@ -3312,6 +3467,32 @@ impl Session {
                 completed_at_ms: now_unix_timestamp_ms(),
             }),
             EventPersistence::Flushed,
+            on_primary_delivery,
+        )
+        .await;
+    }
+
+    pub(crate) async fn emit_turn_item_completed_with_primary_delivery_and_rollout_suffix<F>(
+        &self,
+        turn_context: &TurnContext,
+        item: TurnItem,
+        rollout_suffix: Vec<RolloutItem>,
+        on_primary_delivery: F,
+    ) where
+        F: FnOnce() + Send,
+    {
+        record_turn_ttfm_metric(turn_context, &item).await;
+        self.send_event_with_primary_delivery_and_rollout_suffix(
+            turn_context,
+            EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: self.thread_id,
+                turn_id: turn_context.sub_id.clone(),
+                item,
+                started_at_ms: None,
+                completed_at_ms: now_unix_timestamp_ms(),
+            }),
+            EventPersistence::Flushed,
+            rollout_suffix,
             on_primary_delivery,
         )
         .await;
@@ -4415,6 +4596,22 @@ impl Session {
         items: Vec<ResponseItem>,
         acknowledgement: Option<TurnInputContributionAcknowledgement>,
     ) -> Result<(), ThreadStoreError> {
+        self.record_durable_context_items_with_rollout_suffix(
+            turn_context,
+            items,
+            acknowledgement,
+            Vec::new(),
+        )
+        .await
+    }
+
+    pub(crate) async fn record_durable_context_items_with_rollout_suffix(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        items: Vec<ResponseItem>,
+        acknowledgement: Option<TurnInputContributionAcknowledgement>,
+        rollout_suffix: Vec<RolloutItem>,
+    ) -> Result<(), ThreadStoreError> {
         let mut items = self
             .prepare_conversation_items_for_history(turn_context.as_ref(), &items)
             .into_owned();
@@ -4437,35 +4634,81 @@ impl Session {
                 }
                 rollout_items.push(RolloutItem::ResponseItem(item.clone()));
             }
-            let persisted_completion_item = match items.as_slice() {
-                [item] => match item.id() {
-                    Some(response_item_id)
-                        if is_sub_agent_completion_context_response_item_id(
-                            response_item_id.as_str(),
-                        ) =>
-                    {
-                        sess.persisted_sub_agent_completion_context_item(response_item_id)
-                            .await?
-                    }
-                    Some(_) | None => None,
+            rollout_items.extend(rollout_suffix.iter().cloned());
+            let response_delivery_id = match items.as_slice() {
+                [item] if !rollout_suffix.is_empty() => item.id().cloned(),
+                [] | [_] | [_, _, ..] => None,
+            };
+            let persisted_delivery = match response_delivery_id.as_ref() {
+                Some(response_item_id) => Some(
+                    sess.persisted_response_observation_delivery(response_item_id)
+                        .await?,
+                ),
+                None => None,
+            };
+            // Observation delivery appends the response and its committed-state suffix as one
+            // canonical batch. A post-commit store error can hide that success from the watcher,
+            // so retry repairs only a missing suffix and reuses the persisted response item.
+            let persisted_completion_item = match persisted_delivery.as_ref() {
+                Some(delivery) => delivery.response_item.clone(),
+                None => match items.as_slice() {
+                    [item] => match item.id() {
+                        Some(response_item_id)
+                            if is_sub_agent_completion_context_response_item_id(
+                                response_item_id.as_str(),
+                            ) =>
+                        {
+                            sess.persisted_sub_agent_completion_context_item(response_item_id)
+                                .await?
+                        }
+                        Some(_) | None => None,
+                    },
+                    [] | [_, _, ..] => None,
                 },
-                _ => None,
             };
             if let Some(persisted_completion_item) = persisted_completion_item {
                 items = vec![persisted_completion_item];
+                if !rollout_suffix.is_empty()
+                    && !persisted_delivery
+                        .as_ref()
+                        .is_some_and(|delivery| delivery.committed)
+                    && let Some(live_thread) = sess.live_thread()
+                {
+                    live_thread
+                        .append_items_and_flush_canonical(&rollout_suffix)
+                        .await?;
+                }
+            } else if !rollout_suffix.is_empty()
+                && let Some(live_thread) = sess.live_thread()
+            {
+                live_thread
+                    .append_items_and_flush_canonical(&rollout_items)
+                    .await?;
             } else {
                 sess.try_persist_rollout_items(&rollout_items).await?;
             }
-            {
+            let response_already_recorded = {
                 let mut state = sess.state.lock().await;
-                state.current_time_reminder.note_recorded_items(&items);
-                state.record_items(
-                    items.iter(),
-                    turn_context.model_info.truncation_policy.into(),
-                );
+                let already_recorded = response_delivery_id.as_ref().is_some_and(|id| {
+                    state
+                        .history
+                        .raw_items()
+                        .iter()
+                        .any(|item| item.id() == Some(id))
+                });
+                if !already_recorded {
+                    state.current_time_reminder.note_recorded_items(&items);
+                    state.record_items(
+                        items.iter(),
+                        turn_context.model_info.truncation_policy.into(),
+                    );
+                }
+                already_recorded
+            };
+            if !response_already_recorded {
+                sess.send_raw_response_items(turn_context.as_ref(), &items)
+                    .await;
             }
-            sess.send_raw_response_items(turn_context.as_ref(), &items)
-                .await;
             if let Some(acknowledgement) = acknowledgement {
                 acknowledgement.acknowledge();
             }
@@ -4693,6 +4936,11 @@ impl Session {
     ) -> CodexResult<Vec<ResponseItem>> {
         let sess = Arc::clone(self);
         tokio::spawn(async move {
+            let _response_observation_transaction = sess
+                .services
+                .agent_control
+                .acquire_response_observation_transaction(sess.presentation_id())
+                .await;
             let _permit = sess.durable_context_lock.acquire().await.map_err(|err| {
                 CodexErr::Fatal(format!(
                     "failed to lock compacted history installation: {err}"
@@ -4757,8 +5005,16 @@ impl Session {
             };
 
             if let Some(live_thread) = sess.live_thread() {
+                let mut rollout_items = vec![RolloutItem::Compacted(compacted_item)];
+                rollout_items.extend(
+                    sess.services
+                        .agent_control
+                        .response_observation_snapshots_for_parent(sess.presentation_id())
+                        .into_iter()
+                        .map(RolloutItem::AgentResponseObservation),
+                );
                 live_thread
-                    .append_items_and_flush_canonical(&[RolloutItem::Compacted(compacted_item)])
+                    .append_items_and_flush_canonical(&rollout_items)
                     .await
                     .map_err(|err| {
                         CodexErr::Fatal(format!("failed to persist compacted history: {err}"))
@@ -5541,10 +5797,6 @@ impl Session {
     /// Inject additional user input into the currently active turn.
     ///
     /// Returns the active turn id when accepted.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "active turn checks and turn state updates must remain atomic"
-    )]
     pub async fn steer_input(
         &self,
         input: Vec<UserInput>,
@@ -5553,6 +5805,34 @@ impl Session {
         client_user_message_id: Option<String>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<String, SteerInputError> {
+        self.steer_input_with_response_observation_boundary(
+            input,
+            additional_context,
+            expected_turn_id,
+            client_user_message_id,
+            responsesapi_client_metadata,
+        )
+        .await
+        .map(|resolution| resolution.target_turn_id)
+    }
+
+    /// Inject additional user input and capture its response-observation boundary atomically with
+    /// active-turn admission.
+    ///
+    /// The boundary is sampled before the input becomes visible to the active task, so a fast
+    /// first commentary response cannot race ahead of observation registration.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
+    pub(crate) async fn steer_input_with_response_observation_boundary(
+        &self,
+        input: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        expected_turn_id: Option<&str>,
+        client_user_message_id: Option<String>,
+        responsesapi_client_metadata: Option<HashMap<String, String>>,
+    ) -> Result<InputTurnAdmissionResolution, SteerInputError> {
         let mut active = self.active_turn.lock().await;
         let Some(active_turn) = active.as_mut() else {
             return Err(SteerInputError::NoActiveTurn(input));
@@ -5617,7 +5897,9 @@ impl Session {
                 pending_input,
             )
             .await;
-        Ok(active_turn_id.clone())
+        // `active` remains locked until this method returns, so the target cannot drain the newly
+        // queued input before this exact response-event boundary is captured.
+        Ok(self.capture_input_turn_admission_resolution(active_turn_id.clone()))
     }
 
     pub(crate) async fn record_memory_citation_for_turn(&self, sub_id: &str) {

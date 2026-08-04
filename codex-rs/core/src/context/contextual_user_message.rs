@@ -12,6 +12,7 @@ use super::LegacyUnifiedExecProcessLimitWarning;
 use super::McpServerUseInstructions;
 use super::RecommendedPluginsInstructions;
 use super::SkillInstructions;
+use super::SubagentCommentary;
 use super::SubagentNotification;
 use super::TurnAborted;
 use super::UserInstructions;
@@ -31,6 +32,8 @@ static MCP_SERVER_USE_REGISTRATION: FragmentRegistrationProxy<McpServerUseInstru
 static USER_SHELL_COMMAND_REGISTRATION: FragmentRegistrationProxy<UserShellCommand> =
     FragmentRegistrationProxy::new();
 static TURN_ABORTED_REGISTRATION: FragmentRegistrationProxy<TurnAborted> =
+    FragmentRegistrationProxy::new();
+static SUBAGENT_COMMENTARY_REGISTRATION: FragmentRegistrationProxy<SubagentCommentary> =
     FragmentRegistrationProxy::new();
 static SUBAGENT_NOTIFICATION_REGISTRATION: FragmentRegistrationProxy<SubagentNotification> =
     FragmentRegistrationProxy::new();
@@ -57,6 +60,7 @@ static CONTEXTUAL_USER_FRAGMENTS: &[&dyn FragmentRegistration] = &[
     &MCP_SERVER_USE_REGISTRATION,
     &USER_SHELL_COMMAND_REGISTRATION,
     &TURN_ABORTED_REGISTRATION,
+    &SUBAGENT_COMMENTARY_REGISTRATION,
     &SUBAGENT_NOTIFICATION_REGISTRATION,
     &INTERNAL_MODEL_CONTEXT_REGISTRATION,
     &RECOMMENDED_PLUGINS_REGISTRATION,

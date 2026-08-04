@@ -12,5 +12,6 @@ Codex maintains a context (history of messages) that is sent to the model in inf
 5. Highlight new individual items that can cross >1k tokens as P0. These need an additional manual review.
 6. All injected fragments must be defined as structs in `core/context` and implement ContextualUserFragment trait
 
-Product-reviewed exceptions, including compaction summaries and complete subagent final answers,
+Product-reviewed exceptions, including compaction summaries, complete subagent final answers, and
+the first complete commentary item explicitly requested through multi-agent response observation,
 may intentionally exceed these limits.

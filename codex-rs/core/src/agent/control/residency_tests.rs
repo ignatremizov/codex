@@ -70,6 +70,67 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
 }
 
 #[tokio::test]
+async fn residency_does_not_evict_an_agent_with_an_owned_lifecycle_boundary() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root thread");
+    let control = manager.agent_control();
+    let state = control.upgrade().expect("thread manager should be live");
+    let first_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("first resident slot");
+    let first =
+        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker-1").await;
+    first_slot.commit(first.thread_id);
+    mark_thread_completed(first.thread.as_ref()).await;
+    let lifecycle_guard = state
+        .agent_lifecycle_lock(first.thread_id)
+        .lock_owned()
+        .await;
+
+    let reservation = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await;
+    let Err(err) = reservation else {
+        panic!("busy lifecycle boundary should prevent eviction");
+    };
+    assert_matches::assert_matches!(err.details(), CodexErrorDetails::AgentLimitReached { .. });
+    let still_loaded = manager
+        .get_thread(first.thread_id)
+        .await
+        .expect("busy resident should remain loaded");
+    assert!(Arc::ptr_eq(&still_loaded, &first.thread));
+
+    drop(lifecycle_guard);
+    let replacement_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("released resident should become evictable");
+    drop(replacement_slot);
+    let Err(err) = manager.get_thread(first.thread_id).await else {
+        panic!("released resident should be evicted");
+    };
+    assert_matches::assert_matches!(
+        err.details(),
+        CodexErrorDetails::ThreadNotFound(thread_id) if *thread_id == first.thread_id
+    );
+}
+
+#[tokio::test]
 async fn interrupted_v2_agent_reloads_after_residency_eviction() {
     let mut config = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
@@ -188,8 +249,11 @@ async fn interrupted_v2_residency_eviction_does_not_notify_parent() {
             child_path.to_string(),
             Some(child_path),
             MultiAgentVersion::V2,
+            ResponseObservationPolicy::default(),
+            InitialTerminalObservation::FutureTurnsOnly,
         )
-        .await;
+        .await
+        .expect("start completion watcher");
     first_slot.commit(first.thread_id);
     mark_thread_interrupted(first.thread.as_ref()).await;
 
@@ -212,6 +276,127 @@ async fn interrupted_v2_residency_eviction_does_not_notify_parent() {
         })
         .await;
     assert!(unexpected_notification.is_err());
+}
+
+#[tokio::test]
+async fn retained_v2_eviction_rebinds_foreign_v1_watcher_after_reload() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root thread");
+    let child_owner = manager.agent_control();
+    let foreign_observer = manager.agent_control();
+    let state = child_owner
+        .upgrade()
+        .expect("thread manager should be live");
+    let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(AgentPath::root().join("worker_1").expect("child path")),
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let first_slot = child_owner
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("first resident slot");
+    let first = state
+        .spawn_new_thread_with_source(
+            config.clone(),
+            child_owner.clone(),
+            child_source.clone(),
+            /*history_mode*/ None,
+            Some(root.thread_id),
+            /*forked_from_thread_id*/ None,
+            Some(ThreadSource::Subagent),
+            /*metrics_service_name*/ None,
+            /*inherited_environments*/ None,
+            /*inherited_exec_policy*/ None,
+            /*environments*/ None,
+        )
+        .await
+        .expect("spawn independently controlled V2 child");
+    first_slot.commit(first.thread_id);
+    let retained_first = Arc::clone(&first.thread);
+    let root_presentation = root.thread.session.presentation_id();
+    let first_presentation = first.thread.session.presentation_id();
+    foreign_observer
+        .ensure_v1_completion_watcher(
+            first.thread_id,
+            child_source,
+            ResponseObservationPolicy::default(),
+            first.thread.agent_status().await,
+        )
+        .await
+        .expect("foreign V1 watcher should attach");
+    assert!(
+        !Arc::ptr_eq(
+            &child_owner.wait_agent_presentations,
+            &foreign_observer.wait_agent_presentations,
+        ),
+        "test requires distinct owner and observer presentation registries"
+    );
+    mark_thread_completed(first.thread.as_ref()).await;
+    assert!(foreign_observer.has_completion_watcher(root_presentation, first_presentation));
+
+    let pending_slot = child_owner
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("second slot should unload the completed child");
+    drop(pending_slot);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while foreign_observer.has_completion_watcher(root_presentation, first_presentation) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("foreign watcher should leave the retained runtime");
+    assert_eq!(
+        retained_first.agent_status().await,
+        AgentStatus::Completed(Some("done".to_string()))
+    );
+
+    child_owner
+        .ensure_v2_agent_loaded(config, first.thread_id)
+        .await
+        .expect("evicted child should reload");
+    let reloaded = manager
+        .get_thread(first.thread_id)
+        .await
+        .expect("reloaded child should be live");
+    let reloaded_presentation = reloaded.session.presentation_id();
+    assert_ne!(reloaded_presentation, first_presentation);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !foreign_observer.has_completion_watcher(root_presentation, reloaded_presentation) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("foreign watcher should rebind to the reloaded runtime");
+    assert!(
+        foreign_observer
+            .response_observation_snapshots(root_presentation, first_presentation)
+            .is_empty(),
+        "rebind should remove observation state for the evicted presentation"
+    );
+    assert!(
+        !foreign_observer
+            .response_observation_snapshots(root_presentation, reloaded_presentation)
+            .is_empty(),
+        "rebind should retain observation state on the reloaded presentation"
+    );
 }
 
 async fn spawn_v2_subagent(

@@ -17,6 +17,9 @@ async fn cleanup_failed_v2_spawn_resume(
     state: &Arc<ThreadManagerState>,
     owner: &AgentControl,
     child_thread: &Arc<CodexThread>,
+    runtime_origin: ThreadRuntimeOrigin,
+    previous_metadata: Option<&crate::agent::AgentMetadata>,
+    attempt_metadata: Option<&crate::agent::AgentMetadata>,
     edge_restore: Option<(&Arc<dyn AgentGraphStore>, ThreadSpawnEdgeStatus)>,
     resume_error: CodexErr,
 ) -> CodexErr {
@@ -25,7 +28,8 @@ async fn cleanup_failed_v2_spawn_resume(
         Some((_, ThreadSpawnEdgeStatus::Open)) => LiveAgentMetadataDisposition::Preserve,
         Some((_, ThreadSpawnEdgeStatus::Closed)) | None => LiveAgentMetadataDisposition::Release,
     };
-    let terminal_presentation_disarm = child_thread.session.disarm_terminal_presentation();
+    let terminal_presentation_disarm = (runtime_origin == ThreadRuntimeOrigin::Created)
+        .then(|| child_thread.session.disarm_terminal_presentation());
     let edge_restore_result = match edge_restore {
         Some((agent_graph_store, edge_status)) => {
             let child_is_current = {
@@ -49,32 +53,66 @@ async fn cleanup_failed_v2_spawn_resume(
         }
         None => Ok(()),
     };
-    let shutdown_result = owner
-        .shutdown_live_agent_instance(child_thread, metadata_disposition)
-        .await;
-    let forced_cleanup_result = match &shutdown_result {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            owner
-                .discard_live_agent_instance(child_thread, metadata_disposition)
-                .await
+    let (shutdown_result, forced_cleanup_result) = match runtime_origin {
+        ThreadRuntimeOrigin::Created => {
+            let shutdown_result = owner
+                .shutdown_live_agent_instance(child_thread, metadata_disposition)
+                .await;
+            let forced_cleanup_result = match &shutdown_result {
+                Ok(_) => None,
+                Err(_) => Some(
+                    owner
+                        .discard_live_agent_instance(child_thread, metadata_disposition)
+                        .await,
+                ),
+            };
+            (Some(shutdown_result), forced_cleanup_result)
         }
+        // Another caller installed this runtime before the resume attempt reached the live-thread
+        // lookup. This attempt owns its metadata/edge mutations, but never the runtime itself.
+        ThreadRuntimeOrigin::Existing => (None, None),
     };
-    terminal_presentation_disarm.commit();
+    let metadata_restore_result = match runtime_origin {
+        ThreadRuntimeOrigin::Created => Ok(()),
+        // Metadata remains independently mutable while an adopted runtime is live. Restore the
+        // pre-attempt snapshot only while the registry still contains the exact value installed
+        // by this attempt; an explicit close or newer task update is authoritative.
+        ThreadRuntimeOrigin::Existing => match (attempt_metadata, previous_metadata) {
+            (Some(attempt_metadata), Some(previous_metadata)) => owner
+                .restore_agent_metadata_if_current(
+                    child_thread_id,
+                    attempt_metadata,
+                    previous_metadata.clone(),
+                )
+                .map(drop)
+                .map_err(|err| format!("failed to restore preexisting agent metadata: {err}")),
+            (Some(attempt_metadata), None) => {
+                let _ = owner.clear_agent_metadata_if_current(child_thread_id, attempt_metadata);
+                Ok(())
+            }
+            (None, Some(_) | None) => Ok(()),
+        },
+    };
+    if let Some(terminal_presentation_disarm) = terminal_presentation_disarm {
+        terminal_presentation_disarm.commit();
+    }
 
     let mut cleanup_errors = Vec::new();
     if let Err(edge_restore_error) = edge_restore_result {
         cleanup_errors.push(edge_restore_error);
     }
-    if let Err(shutdown_error) = shutdown_result {
+    if let Some(Err(shutdown_error)) = shutdown_result {
         cleanup_errors.push(format!(
             "graceful runtime shutdown failed: {shutdown_error}"
         ));
     }
-    if let Err(forced_cleanup_error) = forced_cleanup_result {
+    if let Some(Err(forced_cleanup_error)) = forced_cleanup_result {
         cleanup_errors.push(format!(
             "forced runtime discard also failed: {forced_cleanup_error}"
         ));
+    }
+    if let Err(metadata_restore_error) = metadata_restore_result {
+        cleanup_errors.push(metadata_restore_error);
     }
     if cleanup_errors.is_empty() {
         resume_error
@@ -107,9 +145,13 @@ impl ThreadManager {
         else {
             return Ok(None);
         };
+        let parent_resume_lock = self
+            .state
+            .agent_lifecycle_lock(initial_resume.parent_thread_id);
+        let _parent_resume_guard = parent_resume_lock.lock_owned().await;
         let resume_lock = self
             .state
-            .v2_spawn_resume_lock(initial_resume.child_thread_id);
+            .agent_lifecycle_lock(initial_resume.child_thread_id);
         let _resume_guard = resume_lock.lock_owned().await;
         let Some(resume) = self
             .state
@@ -151,7 +193,8 @@ impl ThreadManager {
             )));
         }
 
-        let restored_thread = match resume.edge_status {
+        let previous_child_metadata = owner.get_agent_metadata(resume.child_thread_id);
+        let restored = match resume.edge_status {
             ThreadSpawnEdgeStatus::Open => {
                 // Open descendants are normally restored with their root metadata. Re-run the
                 // idempotent metadata pass so an explicitly unloaded child can still be resumed.
@@ -178,12 +221,18 @@ impl ThreadManager {
                     .await?
             }
         };
+        let runtime_origin = restored.runtime_origin;
+        let restored_thread = restored.thread;
+        let restored_child_metadata = owner.get_agent_metadata(resume.child_thread_id);
         let restored_thread_id = restored_thread.session.thread_id();
         if restored_thread_id != resume.child_thread_id {
             return Err(cleanup_failed_v2_spawn_resume(
                 &self.state,
                 &owner,
                 &restored_thread,
+                runtime_origin,
+                previous_child_metadata.as_ref(),
+                restored_child_metadata.as_ref(),
                 /*edge_restore*/ None,
                 CodexErr::Fatal(format!(
                     "restored spawned V2 child {} as unexpected thread {restored_thread_id}",
@@ -204,6 +253,9 @@ impl ThreadManager {
                     &self.state,
                     &owner,
                     &restored_thread,
+                    runtime_origin,
+                    previous_child_metadata.as_ref(),
+                    restored_child_metadata.as_ref(),
                     Some((&resume.agent_graph_store, resume.edge_status)),
                     CodexErr::InvalidRequest(format!(
                         "cannot resume spawned V2 child {} because its direct parent {} stopped while restoration was in progress; resume the parent and retry",
@@ -225,6 +277,9 @@ impl ThreadManager {
                     &self.state,
                     &owner,
                     &restored_thread,
+                    runtime_origin,
+                    previous_child_metadata.as_ref(),
+                    restored_child_metadata.as_ref(),
                     Some((&resume.agent_graph_store, resume.edge_status)),
                     CodexErr::Fatal(format!(
                         "failed to verify reopened thread-spawn edge for {}: {err}",
@@ -239,6 +294,9 @@ impl ThreadManager {
                 &self.state,
                 &owner,
                 &restored_thread,
+                runtime_origin,
+                previous_child_metadata.as_ref(),
+                restored_child_metadata.as_ref(),
                 Some((&resume.agent_graph_store, resume.edge_status)),
                 CodexErr::Fatal(format!(
                     "restored spawned V2 child {} without reopening its persisted edge",
@@ -259,6 +317,9 @@ impl ThreadManager {
                     &self.state,
                     &owner,
                     &restored_thread,
+                    runtime_origin,
+                    previous_child_metadata.as_ref(),
+                    restored_child_metadata.as_ref(),
                     Some((&resume.agent_graph_store, resume.edge_status)),
                     CodexErr::InvalidRequest(format!(
                         "cannot resume spawned V2 child {} because its runtime was replaced while restoration was in progress; retry against the current runtime",
@@ -277,6 +338,9 @@ impl ThreadManager {
                     &self.state,
                     &owner,
                     &restored_thread,
+                    runtime_origin,
+                    previous_child_metadata.as_ref(),
+                    restored_child_metadata.as_ref(),
                     Some((&resume.agent_graph_store, resume.edge_status)),
                     CodexErr::Fatal(format!(
                         "failed to update OpenAI form elicitation support for restored spawned V2 child {}: {err}",
@@ -285,6 +349,9 @@ impl ThreadManager {
                 )
                 .await,
             );
+        }
+        if runtime_origin == ThreadRuntimeOrigin::Created {
+            self.state.notify_thread_created(resume.child_thread_id);
         }
         Ok(Some(NewThread {
             thread_id: resume.child_thread_id,
@@ -295,20 +362,6 @@ impl ThreadManager {
 }
 
 impl ThreadManagerState {
-    pub(crate) fn v2_spawn_resume_lock(&self, thread_id: ThreadId) -> Arc<tokio::sync::Mutex<()>> {
-        let mut locks = self
-            .v2_spawn_resume_locks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        locks.retain(|_, lock| lock.strong_count() > 0);
-        if let Some(lock) = locks.get(&thread_id).and_then(std::sync::Weak::upgrade) {
-            return lock;
-        }
-        let lock = Arc::new(tokio::sync::Mutex::new(()));
-        locks.insert(thread_id, Arc::downgrade(&lock));
-        lock
-    }
-
     async fn persisted_v2_spawn_resume(
         &self,
         initial_history: &InitialHistory,
@@ -335,6 +388,7 @@ async fn resolve_persisted_v2_spawn_resume(
         | RolloutItem::ResponseItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
