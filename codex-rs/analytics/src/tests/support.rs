@@ -647,6 +647,7 @@ pub(super) fn sample_command_execution_item_with_id(
     duration_ms: Option<i64>,
 ) -> ThreadItem {
     ThreadItem::CommandExecution {
+        user_shell_response_handling: None,
         model_context: None,
         sandbox_type: None,
         id: id.to_string(),

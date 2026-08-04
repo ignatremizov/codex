@@ -105,11 +105,14 @@ pub(crate) fn completion_source_items(items: &[ResponseItem]) -> Vec<ResponseIte
     items
         .iter()
         .filter(|item| {
-            item.id().is_some_and(|id| {
-                codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
-                    id.as_str(),
-                )
-            })
+            // This is only a request inventory, not provenance. Checkpoint publication
+            // intersects it with exact acknowledged envelopes before allowing a summary.
+            matches!(item, ResponseItem::AgentMessage { id: Some(_), .. })
+                || item.id().is_some_and(|id| {
+                    codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
+                        id.as_str(),
+                    )
+                })
         })
         .cloned()
         .collect()

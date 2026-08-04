@@ -6,7 +6,7 @@ use crate::codex_thread::CodexThread;
 
 impl LocalAgentControl {
     /// Explicitly adopts only future live V1 completions; no cold status is a receipt.
-    pub(crate) async fn ensure_v1_completion_watcher(
+    pub(crate) async fn ensure_native_v1_completion_watcher(
         &self,
         child_thread_id: ThreadId,
         requested_source: SessionSource,
@@ -24,7 +24,10 @@ impl LocalAgentControl {
                 "an agent cannot adopt itself".to_string(),
             ));
         }
-        if !Arc::ptr_eq(&self.runtime.registry, &parent.session.services.local_agent_runtime.registry) {
+        if !Arc::ptr_eq(
+            &self.runtime.registry,
+            &parent.session.services.local_agent_runtime.registry,
+        ) {
             return Err(CodexErr::InvalidRequest(
                 "completion parent belongs to another control".to_string(),
             ));
@@ -46,7 +49,11 @@ impl LocalAgentControl {
                 .ok_or_else(|| {
                     CodexErr::InvalidRequest("original completion parent is closing".to_string())
                 })?;
-            let owner = child.session.services.local_agent_runtime.control(child.session.session_id());
+            let owner = child
+                .session
+                .services
+                .local_agent_runtime
+                .control(child.session.session_id());
             let metadata = owner
                 .get_agent_metadata(child_thread_id)
                 .unwrap_or_default();

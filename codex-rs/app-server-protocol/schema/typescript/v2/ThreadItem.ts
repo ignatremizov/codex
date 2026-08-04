@@ -101,6 +101,14 @@ tool: CollabAgentTool,
  */
 status: CollabAgentToolCallStatus,
 /**
+ * Whether commentary from the receiver is requested.
+ */
+observeCommentary?: boolean,
+/**
+ * Whether the receiver's terminal response should wake the sender.
+ */
+wakeOnCompletion?: boolean,
+/**
  * Thread ID of the agent issuing the collab request.
  */
 senderThreadId: string,

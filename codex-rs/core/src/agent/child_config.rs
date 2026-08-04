@@ -30,6 +30,7 @@ pub(crate) struct SpawnConfigOptions<'a> {
     pub(crate) fork_mode: Option<&'a SpawnAgentForkMode>,
     pub(crate) role_name: Option<&'a str>,
     pub(crate) model: Option<&'a str>,
+    pub(crate) service_tier: Option<&'a str>,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
 }
 
@@ -72,7 +73,7 @@ pub(crate) async fn prepare_agent_spawn_config(
             .developer_instructions
             .clone_from(&turn.developer_instructions);
     }
-    apply_spawn_agent_service_tier(session, &mut config).await?;
+    apply_spawn_agent_service_tier(session, &mut config, options.service_tier).await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     // Remember an applied configured default so cold reload reapplies its restrictions.
@@ -235,28 +236,40 @@ async fn apply_requested_spawn_agent_model_overrides(
 pub(crate) async fn apply_spawn_agent_service_tier(
     session: &Session,
     config: &mut Config,
+    requested_service_tier: Option<&str>,
 ) -> Result<(), String> {
-    let Some(service_tier) = session.services.agent_control.service_tier() else {
+    let candidates = [
+        requested_service_tier.map(str::to_string),
+        config.service_tier.clone(),
+        session.services.agent_control.service_tier(),
+    ];
+    if candidates.iter().all(Option::is_none) {
         config.service_tier = None;
         return Ok(());
-    };
-    if service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE {
-        config.service_tier = Some(service_tier);
-        return Ok(());
     }
-
     let model = config.model.clone().ok_or_else(|| {
         "spawn_agent could not resolve the child model for service tier validation".to_string()
     })?;
-    let model_info = session
-        .services
-        .models_manager
-        .get_model_info(model.as_str(), &config.to_models_manager_config())
-        .await;
-
-    config.service_tier = model_info
-        .supports_service_tier(service_tier.as_str())
-        .then_some(service_tier);
+    let model_info = session.services.models_manager
+        .get_model_info(&model, &config.to_models_manager_config()).await;
+    if let Some(requested) = requested_service_tier
+        && requested != SERVICE_TIER_DEFAULT_REQUEST_VALUE
+        && !model_info.supports_service_tier(requested)
+    {
+        let supported = if model_info.service_tiers.is_empty() {
+            "none".to_string()
+        } else {
+            model_info.service_tiers.iter().map(|tier| tier.id.as_str())
+                .collect::<Vec<_>>().join(", ")
+        };
+        return Err(format!(
+            "Service tier `{requested}` is not supported for model `{model}`. Supported service tiers: {supported}"
+        ));
+    }
+    config.service_tier = candidates.into_iter().flatten().find(|candidate| {
+        candidate == SERVICE_TIER_DEFAULT_REQUEST_VALUE
+            || model_info.supports_service_tier(candidate)
+    });
     Ok(())
 }
 

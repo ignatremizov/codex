@@ -35,12 +35,14 @@ pub(crate) struct AgentStatusObservations {
 /// Owns only an observation lease; it never owns canonical completion presentation.
 pub(crate) struct AgentStatusSubscription {
     id: Uuid,
+    #[cfg(test)]
     initial_status: AgentStatus,
     subscribers: Weak<Mutex<Subscribers>>,
     receiver: mpsc::UnboundedReceiver<AgentStatus>,
 }
 
 impl AgentStatusSubscription {
+    #[cfg(test)]
     pub(crate) fn initial_status(&self) -> &AgentStatus {
         &self.initial_status
     }
@@ -82,27 +84,30 @@ impl Drop for AgentStatusObservationSuppressionGuard<'_> {
 }
 
 impl AgentStatusObservations {
-    fn subscribe(&self, mut initial_status: AgentStatus) -> AgentStatusSubscription {
+    pub(super) fn is_suppressed(&self) -> bool {
+        self.suppressed.load(Ordering::Acquire)
+    }
+
+    fn subscribe(&self, initial_status: AgentStatus) -> AgentStatusSubscription {
         let id = Uuid::now_v7();
         let (sender, receiver) = mpsc::unbounded_channel();
         let mut subscribers = self
             .subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if subscribers.closed || self.suppressed.load(Ordering::Acquire) {
-            initial_status = subscribers
-                .visible_status
-                .clone()
-                .unwrap_or(AgentStatus::PendingInit);
-        } else {
-            subscribers.visible_status = Some(initial_status.clone());
+        if !subscribers.closed && !self.suppressed.load(Ordering::Acquire) {
+            subscribers.visible_status = Some(initial_status);
         }
         if !subscribers.closed {
             subscribers.senders.insert(id, sender);
         }
         AgentStatusSubscription {
             id,
-            initial_status,
+            #[cfg(test)]
+            initial_status: subscribers
+                .visible_status
+                .clone()
+                .unwrap_or(AgentStatus::PendingInit),
             subscribers: Arc::downgrade(&self.subscribers),
             receiver,
         }
@@ -163,6 +168,9 @@ impl Session {
             .terminal_publication_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        if self.thread_removal_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
         match reason {
             AgentStatusRetirement::ExplicitRemoval => {
                 if !self
@@ -170,6 +178,19 @@ impl Session {
                     .suppressed
                     .load(Ordering::Acquire)
                 {
+                    let turn_id = self
+                        .response_observation_state
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .live_turn_id
+                        .clone();
+                    if let Some(turn_id) = turn_id {
+                        self.record_agent_response_terminal_observers(
+                            &turn_id,
+                            AgentStatus::NotFound,
+                        );
+                        self.publish_agent_response_terminal(turn_id, AgentStatus::NotFound);
+                    }
                     self.capture_adopted_terminal_locked(&AgentStatus::NotFound);
                     self.replace_agent_status_locked(AgentStatus::NotFound);
                 }
@@ -177,6 +198,7 @@ impl Session {
             AgentStatusRetirement::ResidencyEviction | AgentStatusRetirement::RestoreRollback => {}
         }
         self.agent_status_observations.close();
+        self.close_agent_response_subscriptions();
     }
 }
 

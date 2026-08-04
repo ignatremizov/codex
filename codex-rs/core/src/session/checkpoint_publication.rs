@@ -23,9 +23,15 @@ impl Session {
                     .await,
             );
         }
+        let _observation = self
+            .services
+            .local_agent_runtime
+            .control(self.session_id())
+            .acquire_response_observation_transaction(self.presentation_id())
+            .await;
         let permit = thread_settings::acquire_persistence_lock(self).await;
         self.check_history_publication()?;
-        let (compacted_item, world_state_snapshot, mcp_revision) = {
+        let (compacted_item, world_state_snapshot, observation_artifacts, mcp_revision) = {
             let state = self.state.lock().await;
             let source = state.history.annotated_items();
             let source_mcp = source
@@ -135,6 +141,44 @@ impl Session {
                     .map(|completion| completion.item.clone()),
             );
             let canonical_has_pending = canonical_items.len() != items.len();
+            let observations = self
+                .services
+                .local_agent_runtime.control(self.session_id())
+                .response_observation_snapshots_for_parent(self.presentation_id());
+            let mut observation_artifacts = Vec::new();
+            for completion in &state.acknowledged_completion_contexts {
+                let Some(id) = completion.item.id() else {
+                    continue;
+                };
+                if !canonical_items.contains(&completion.item) {
+                    continue;
+                }
+                let committed = observations
+                    .iter()
+                    .filter(|observation| {
+                        observation
+                            .committed_delivery_response_item_ids
+                            .contains(id)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !committed.is_empty() {
+                    observation_artifacts.push(RolloutItem::InterAgentCommunicationMetadata {
+                        trigger_turn: false,
+                    });
+                    observation_artifacts.push(RolloutItem::ResponseItem(completion.item.clone()));
+                    observation_artifacts.extend(
+                        committed
+                            .into_iter()
+                            .map(RolloutItem::AgentResponseObservation),
+                    );
+                }
+            }
+            observation_artifacts.extend(
+                observations
+                    .into_iter()
+                    .map(RolloutItem::AgentResponseObservation),
+            );
             let mut projected = state.history.clone();
             projected.replace_compacted(
                 canonical_items.clone(),
@@ -182,7 +226,12 @@ impl Session {
                     }
                     (!retained.is_empty()).then(|| WorldStateSnapshot::from(&retained))
                 });
-            (compacted_item, world_state_snapshot, mcp_revision)
+            (
+                compacted_item,
+                world_state_snapshot,
+                observation_artifacts,
+                mcp_revision,
+            )
         };
         let mut rollout_items = vec![RolloutItem::Compacted(compacted_item)];
         if let Some(snapshot) = &world_state_snapshot {
@@ -196,6 +245,7 @@ impl Session {
         rollout_items.push(RolloutItem::EventMsg(
             thread_settings::applied_event(self).await,
         ));
+        rollout_items.extend(observation_artifacts);
         let executed_tool_calls = self.services.executed_tool_calls.clone();
         let receiver = self.dispatch_history_publication(
             permit,

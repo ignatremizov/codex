@@ -220,6 +220,7 @@ fn source_model_items(items: &[RolloutItem]) -> Option<Vec<SourceModelItem<'_>>>
             RolloutItem::SessionMeta(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::TokenUsageRecord(_)
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::RealtimeItem(_) => {}
             RolloutItem::ResponseItem(response_item) => {
                 model_items.push(SourceModelItem {
@@ -262,6 +263,7 @@ fn history_model_items(items: &[RolloutItem]) -> Option<Vec<&ResponseItem>> {
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::RealtimeItem(_)
             | RolloutItem::RetainedContext(_)
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::SecurityRiskScore(_) => {}
             RolloutItem::ResponseItem(response_item) => model_items.push(&response_item.item),
             RolloutItem::EventMsg(

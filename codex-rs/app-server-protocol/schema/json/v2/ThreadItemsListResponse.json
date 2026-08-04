@@ -1361,6 +1361,14 @@
                 "null"
               ]
             },
+            "observeCommentary": {
+              "default": null,
+              "description": "Whether commentary from the receiver is requested.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "prompt": {
               "description": "Prompt text sent as part of the collab tool call, when available.",
               "type": [
@@ -1420,6 +1428,14 @@
               ],
               "title": "CollabAgentToolCallThreadItemType",
               "type": "string"
+            },
+            "wakeOnCompletion": {
+              "default": null,
+              "description": "Whether the receiver's terminal response should wake the sender.",
+              "type": [
+                "boolean",
+                "null"
+              ]
             }
           },
           "required": [

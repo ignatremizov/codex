@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::next_thread_spawn_depth;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::tools::handlers::multi_agents_spec::create_resume_agent_tool;
 use codex_tools::ToolSpec;
 
@@ -45,6 +46,11 @@ async fn handle_resume_agent(
     let receiver_thread_id = ThreadId::from_string(&args.id).map_err(|err| {
         FunctionCallError::RespondToModel(format!("invalid agent id {}: {err:?}", args.id))
     })?;
+    if receiver_thread_id == session.thread_id {
+        return Err(FunctionCallError::RespondToModel(
+            "an agent cannot resume itself; continue the current turn directly".to_string(),
+        ));
+    }
     let local_agent_control = session
         .services
         .local_agent_runtime
@@ -70,11 +76,21 @@ async fn handle_resume_agent(
         .await;
     let was_not_found = matches!(status, AgentStatus::NotFound);
     let mut live_adoption_error = None;
-    if !was_not_found
-        && let Err(err) = local_agent_control.ensure_v1_completion_watcher(receiver_thread_id, resumed_session_source.clone())
+    if !was_not_found {
+        match local_agent_control
+            .ensure_v1_completion_watcher(
+                receiver_thread_id,
+                resumed_session_source.clone(),
+                args.w,
+                status.clone(),
+            )
             .await
-    {
-        live_adoption_error = Some(collab_agent_error(receiver_thread_id, err));
+        {
+            Ok(adopted_status) => status = adopted_status,
+            Err(err) => {
+                live_adoption_error = Some(collab_agent_error(receiver_thread_id, err));
+            }
+        }
     }
 
     session
@@ -84,6 +100,8 @@ async fn handle_resume_agent(
                 id: call_id.clone(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::InProgress,
+                observe_commentary: Some(args.w.commentary()),
+                wake_on_completion: args.w.wake_on_completion_item_value(),
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![receiver_thread_id],
@@ -121,13 +139,19 @@ async fn handle_resume_agent(
     } else {
         (receiver_agent, live_adoption_error)
     };
-    if error.is_none()
-        && was_not_found
-        && !matches!(status, AgentStatus::NotFound)
-        && let Err(err) = local_agent_control.ensure_v1_completion_watcher(receiver_thread_id, resumed_session_source)
+    if error.is_none() && was_not_found && !matches!(status, AgentStatus::NotFound) {
+        match local_agent_control
+            .ensure_v1_completion_watcher(
+                receiver_thread_id,
+                resumed_session_source,
+                args.w,
+                status.clone(),
+            )
             .await
-    {
-        error = Some(collab_agent_error(receiver_thread_id, err));
+        {
+            Ok(adopted_status) => status = adopted_status,
+            Err(err) => error = Some(collab_agent_error(receiver_thread_id, err)),
+        }
     }
     session
         .emit_turn_item_completed(
@@ -136,6 +160,8 @@ async fn handle_resume_agent(
                 id: call_id,
                 tool: CollabAgentTool::ResumeAgent,
                 status: collab_tool_call_status(&status, Some(receiver_thread_id)),
+                observe_commentary: Some(args.w.commentary()),
+                wake_on_completion: args.w.wake_on_completion_item_value(),
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id(),
                 receiver_thread_ids: vec![receiver_thread_id],
@@ -171,6 +197,8 @@ impl CoreToolRuntime for Handler {
 #[derive(Debug, Deserialize)]
 struct ResumeAgentArgs {
     id: String,
+    #[serde(default)]
+    w: ResponseObservationPolicy,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]

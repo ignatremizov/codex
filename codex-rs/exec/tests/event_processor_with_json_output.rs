@@ -915,6 +915,8 @@ fn collab_spawn_begin_and_end_emit_item_events() {
     let started =
         processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
             item: ThreadItem::CollabAgentToolCall {
+                observe_commentary: None,
+                wake_on_completion: None,
                 id: "collab-1".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: ApiCollabAgentToolCallStatus::InProgress,
@@ -933,6 +935,8 @@ fn collab_spawn_begin_and_end_emit_item_events() {
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
             item: ThreadItem::CollabAgentToolCall {
+                observe_commentary: None,
+                wake_on_completion: None,
                 id: "collab-1".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: ApiCollabAgentToolCallStatus::Completed,

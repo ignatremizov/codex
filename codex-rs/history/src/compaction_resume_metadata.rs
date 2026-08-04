@@ -43,6 +43,7 @@ pub fn resume_multi_agent_version(item: &RolloutItem) -> Option<MultiAgentVersio
         | RolloutItem::ResponseItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::WorldState(_)
         | RolloutItem::RetainedContext(_)

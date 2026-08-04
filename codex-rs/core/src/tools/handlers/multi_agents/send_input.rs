@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::api::AgentTarget;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::control::render_input_preview;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
@@ -84,6 +85,8 @@ impl Handler {
                     id: call_id.clone(),
                     tool: CollabAgentTool::SendInput,
                     status: CollabAgentToolCallStatus::InProgress,
+                    observe_commentary: Some(args.w.commentary()),
+                    wake_on_completion: args.w.wake_on_completion_item_value(),
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: vec![receiver_thread_id],
@@ -97,7 +100,7 @@ impl Handler {
             )
             .await;
         let result = local_agent_control
-            .send_input(
+            .send_input_observing_response(
                 receiver_thread_id,
                 input_items,
                 crate::TurnStartOptions {
@@ -107,6 +110,8 @@ impl Handler {
                     cyber_access_program: turn.cyber_access_program,
                     ..Default::default()
                 },
+                session.presentation_id(),
+                args.w,
             )
             .await
             .map_err(|err| collab_agent_error(receiver_thread_id, err));
@@ -118,6 +123,8 @@ impl Handler {
                     id: call_id,
                     tool: CollabAgentTool::SendInput,
                     status: collab_tool_call_status(&status, Some(receiver_thread_id)),
+                    observe_commentary: Some(args.w.commentary()),
+                    wake_on_completion: args.w.wake_on_completion_item_value(),
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: vec![receiver_thread_id],
@@ -153,6 +160,8 @@ struct SendInputArgs {
     items: Option<Vec<UserInput>>,
     #[serde(default)]
     interrupt: bool,
+    #[serde(default)]
+    w: ResponseObservationPolicy,
 }
 
 #[derive(Debug, Serialize)]

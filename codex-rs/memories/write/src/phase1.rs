@@ -406,6 +406,7 @@ mod job {
                 }
                 RolloutItem::SessionMeta(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::AgentResponseObservation(_)
                 | RolloutItem::Compacted(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::TokenUsageRecord(_)

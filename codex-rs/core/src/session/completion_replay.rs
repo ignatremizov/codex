@@ -24,16 +24,24 @@ pub(super) fn trusted_contexts(
         else {
             continue;
         };
-        let Some(id) = item
-            .id()
-            .filter(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
-        else {
+        let Some(id) = item.id().filter(|id| {
+            is_sub_agent_completion_context_response_item_id(id.as_str())
+                || codex_history::is_committed_observed_response(items, index + 1)
+        }) else {
             continue;
         };
         if trusted.get(id).is_some_and(|previous| previous != item) {
             conflicting.insert(id.clone());
         } else {
             trusted.insert(id.clone(), item.clone());
+        }
+    }
+    for item in items {
+        if let RolloutItem::ResponseItem(item) = item
+            && let Some(id) = item.id()
+            && trusted.get(id).is_some_and(|previous| previous != item)
+        {
+            conflicting.insert(id.clone());
         }
     }
     trusted.retain(|id, _| !conflicting.contains(id));
@@ -48,7 +56,6 @@ pub(super) fn context_ids(
         .iter()
         .filter(|item| item.id().and_then(|id| trusted.get(id)) == Some(*item))
         .filter_map(|item| item.id())
-        .filter(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
         .cloned()
         .collect()
 }

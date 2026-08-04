@@ -3595,6 +3595,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     let sender_thread_id = codex_protocol::ThreadId::default();
     let receiver_thread_id = codex_protocol::ThreadId::default();
     let collab_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        observe_commentary: None,
+        wake_on_completion: None,
         id: "collab-1".to_string(),
         tool: CoreCollabAgentTool::SendInput,
         status: CoreCollabAgentToolCallStatus::Completed,
@@ -3617,6 +3619,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             id: "collab-1".to_string(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::Completed,
+            observe_commentary: None,
+            wake_on_completion: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![],

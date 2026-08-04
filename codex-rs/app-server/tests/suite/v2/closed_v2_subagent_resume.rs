@@ -28,8 +28,10 @@ use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::SubAgentCompletionStatus;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_state::SqliteConfig;
@@ -845,6 +847,10 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner(
         }
     })
     .await??;
+    assert_eq!(
+        sub_agent_completion_model_visibility_from_response_item_id(completion_item.id()),
+        Some(SubAgentCompletionModelVisibility::Visible),
+    );
     assert_eq!(
         completion_item,
         ThreadItem::AgentMessage {
