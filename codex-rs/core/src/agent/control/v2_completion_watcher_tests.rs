@@ -108,12 +108,35 @@ impl CompletionFixture {
                 self.tester
                     .session
                     .send_event_raw(Event {
-                        id: turn_id,
+                        id: turn_id.clone(),
                         msg: event,
                     })
                     .await;
             }
             CompletionRoute::Direct => self.tester.session.send_event(&turn, event).await,
+        }
+        if guardian_interruption {
+            let (snapshot, _subscription) = self.tester.session.subscribe_agent_responses();
+            assert_eq!(
+                snapshot.last_terminal,
+                Some((
+                    turn_id.clone(),
+                    TerminalPresentationOutcome {
+                        status: status.clone(),
+                        error_info: Some(CodexErrorInfo::TooManyDenials),
+                    },
+                )),
+                "response observation retains the same typed Guardian terminal as native delivery",
+            );
+            let (terminal, _subscription) = self.tester.session.subscribe_terminal_status_events();
+            assert_eq!(
+                terminal,
+                crate::session::TerminalStatusEvent {
+                    turn_id: Some(turn_id),
+                    status: status.clone(),
+                },
+                "a wait started after the safety stop retains its terminal result",
+            );
         }
         let ids = timeout(Duration::from_secs(/*secs*/ 5), async {
             loop {

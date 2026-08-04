@@ -36,6 +36,7 @@ pub(crate) struct ThreadSpawnRequest {
     pub fork_mode: Option<SpawnAgentForkMode>,
     pub agent_type: Option<String>,
     pub model: Option<String>,
+    pub service_tier: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
@@ -68,6 +69,7 @@ pub(crate) async fn spawn(
         fork_mode,
         agent_type,
         model,
+        service_tier,
         reasoning_effort,
     } = request;
     let message_text = match &message {
@@ -93,6 +95,7 @@ pub(crate) async fn spawn(
             fork_mode: fork_mode.as_ref(),
             role_name,
             model: model.as_deref(),
+            service_tier: service_tier.as_deref(),
             reasoning_effort,
         },
     )
@@ -158,6 +161,7 @@ pub(crate) async fn spawn(
                 environments: Some(step_context.inherited_environments.clone()),
                 disabled_plugin_ids: Some(turn.disabled_plugin_ids.clone()),
                 multi_agent_v2_usage_hints,
+                response_observation: Default::default(),
                 cyber_access_program: turn.cyber_access_program,
             },
         })

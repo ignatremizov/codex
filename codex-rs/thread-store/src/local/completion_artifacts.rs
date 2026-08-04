@@ -28,7 +28,7 @@ pub(super) async fn load_presentation(
     crate::completion_artifacts::presentation(&items, &params.item_id, &params.turn_id)
 }
 
-async fn load_canonical_items(
+pub(super) async fn load_canonical_items(
     store: &LocalThreadStore,
     thread_id: codex_protocol::ThreadId,
     include_archived: bool,
