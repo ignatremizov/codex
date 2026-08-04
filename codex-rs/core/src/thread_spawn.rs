@@ -33,6 +33,7 @@ pub struct ThreadCreateRequest {
     pub fork_mode: Option<SpawnAgentForkMode>,
     pub agent_type: Option<String>,
     pub model: Option<String>,
+    pub service_tier: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
@@ -44,6 +45,7 @@ pub(crate) struct ThreadSpawnRequest {
     pub fork_mode: Option<SpawnAgentForkMode>,
     pub agent_type: Option<String>,
     pub model: Option<String>,
+    pub service_tier: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
@@ -68,6 +70,7 @@ impl ThreadSpawnRequest {
                 fork_mode: self.fork_mode,
                 agent_type: self.agent_type,
                 model: self.model,
+                service_tier: self.service_tier,
                 reasoning_effort: self.reasoning_effort,
             },
             self.message,
@@ -136,6 +139,7 @@ pub(crate) async fn prepare(
         fork_mode,
         agent_type,
         model,
+        service_tier,
         reasoning_effort,
     } = request;
     let role_name = agent_type
@@ -150,6 +154,7 @@ pub(crate) async fn prepare(
             fork_mode: fork_mode.as_ref(),
             role_name,
             model: model.as_deref(),
+            service_tier: service_tier.as_deref(),
             reasoning_effort,
         },
     )
@@ -208,9 +213,34 @@ pub(crate) async fn prepare(
                 environments: Some(step_context.inherited_environments.clone()),
                 disabled_plugin_ids: Some(turn.disabled_plugin_ids.clone()),
                 multi_agent_v2_usage_hints,
+                response_observation: Default::default(),
                 cyber_access_program: turn.cyber_access_program,
             },
         },
         task_name,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ThreadSpawnRequest;
+    use crate::agent::types::AgentMessage;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn into_parts_preserves_explicit_service_tier() {
+        let request = ThreadSpawnRequest {
+            task_name: "worker".to_string(),
+            message: AgentMessage::Plaintext("hello".to_string()),
+            fork_mode: None,
+            agent_type: None,
+            model: None,
+            service_tier: Some("priority".to_string()),
+            reasoning_effort: None,
+        };
+
+        let (request, _) = request.into_parts().expect("valid spawn request");
+
+        assert_eq!(request.service_tier.as_deref(), Some("priority"));
+    }
 }

@@ -27,8 +27,8 @@ use super::SessionTaskResult;
 
 /// The last answer and the MCP requirements needed if a steer reopens sampling.
 pub(crate) struct RegularTaskOutput {
-    pub(super) last_agent_message: Option<String>,
-    pub(super) mcp_startup_requirements: McpStartupRequirements,
+    pub(crate) last_agent_message: Option<String>,
+    pub(crate) mcp_startup_requirements: McpStartupRequirements,
 }
 
 #[derive(Default)]
@@ -134,6 +134,27 @@ impl SessionTask for RegularTask {
             input,
             McpStartupRequirements::default(),
             prewarmed_client_session,
+            cancellation_token,
+        )
+        .await
+    }
+    fn supports_pending_input_continuation(&self) -> bool {
+        true
+    }
+
+    async fn run_pending_input_continuation(
+        self: Arc<Self>,
+        sess: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        mcp_startup_requirements: McpStartupRequirements,
+        cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        Self::run_turns(
+            sess,
+            ctx,
+            Vec::new(),
+            mcp_startup_requirements,
+            /*prewarmed_client_session*/ None,
             cancellation_token,
         )
         .await

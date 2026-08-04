@@ -59,10 +59,12 @@ impl ExactRollbackProjection {
                     {
                         RolloutItem::EventMsg(EventMsg::ItemCompleted(completed))
                     }
-                    item @ RolloutItem::InterAgentCommunicationMetadata { .. } => item,
+                    item @ (RolloutItem::AgentResponseObservation(_)
+                    | RolloutItem::InterAgentCommunicationMetadata { .. }) => item,
                     RolloutItem::ResponseItem(envelope)
                         if envelope.id().is_some_and(|id| {
-                            is_sub_agent_completion_context_response_item_id(id.as_str())
+                            id.as_str().starts_with("amsg_")
+                                || is_sub_agent_completion_context_response_item_id(id.as_str())
                         }) =>
                     {
                         RolloutItem::ResponseItem(envelope)

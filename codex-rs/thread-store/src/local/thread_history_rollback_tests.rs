@@ -500,3 +500,106 @@ fn exact_projection_preserves_deliveries_without_manufacturing_metadata_adjacenc
         (true, expected),
     );
 }
+
+#[test]
+fn exact_projection_preserves_only_adjacent_committed_observations() {
+    use codex_protocol::models::AgentMessageInputContent;
+    use codex_protocol::protocol::AgentResponseFinalDelivery;
+    use codex_protocol::protocol::AgentResponseObservation;
+
+    for (gap_before, gap_after) in [(false, false), (true, false), (false, true)] {
+        for committed in [false, true] {
+            let id = codex_protocol::ResponseItemId::new("amsg");
+            let response = RolloutItem::ResponseItem(
+                codex_protocol::models::ResponseItem::AgentMessage {
+                    id: Some(id.clone()),
+                    author: "/root/worker".into(),
+                    recipient: "/root".into(),
+                    content: vec![AgentMessageInputContent::InputText {
+                        text: "observed answer".into(),
+                    }],
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            );
+            let observation = RolloutItem::AgentResponseObservation(AgentResponseObservation {
+                observer_thread_id: ThreadId::new(),
+                target_thread_id: ThreadId::new(),
+                target_turn_id: Some("target-turn".into()),
+                task_preview: None,
+                promoted_task_context: None,
+                pending_commentary: false,
+                commentary_after_sequences: Vec::new(),
+                commentary_admissions: Vec::new(),
+                commentary_delivery: None,
+                target_messages: false,
+                queue_delivery: false,
+                message_wake_turn_id: None,
+                baseline_final_delivery: AgentResponseFinalDelivery::Passive,
+                final_delivery: AgentResponseFinalDelivery::Wake,
+                final_delivery_response_item_id: Some(id.clone()),
+                committed_delivery_response_item_ids: if committed { vec![id] } else { Vec::new() },
+            });
+            let mut items = vec![
+                turn_started("retained"),
+                RolloutItem::InterAgentCommunicationMetadata { trigger_turn: true },
+            ];
+            if gap_before {
+                items.push(user_message("must not become metadata"));
+            }
+            let response_index = items.len();
+            items.push(response);
+            if gap_after {
+                items.push(user_message("must not become an observation"));
+            }
+            let observation_index = items.len();
+            items.push(observation);
+            let terminal_index = items.len();
+            items.push(turn_completed("retained"));
+            items.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+                ThreadRolledBackEvent {
+                    num_turns: 1,
+                    materialized_turns: None,
+                    rollback_start_index: Some(1),
+                },
+            )));
+            let mut bytes = Vec::new();
+            let mut offsets = Vec::new();
+            for item in &items {
+                offsets.push(u64::try_from(bytes.len()).expect("record offset"));
+                serde_json::to_writer(
+                    &mut bytes,
+                    &RolloutLine {
+                        timestamp: "2026-11-15T00:00:00Z".into(),
+                        ordinal: None,
+                        item: item.clone(),
+                    },
+                )
+                .expect("canonical record");
+                bytes.push(b'\n');
+            }
+            let projection = super::super::rollback::ExactRollbackProjection::read(
+                &mut std::io::Cursor::new(bytes),
+                /*start_offset*/ 0,
+                || false,
+            )
+            .expect("exact projection");
+            let trusted = committed && !gap_before && !gap_after;
+            let expected = offsets
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, offset)| {
+                    let keep = index == 0
+                        || index == observation_index
+                        || index == terminal_index
+                        || (trusted && (index == 1 || index == response_index));
+                    (!keep).then_some(offset)
+                })
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(
+                (projection.contains_exact_marker, projection.removed_offsets),
+                (true, expected)
+            );
+        }
+    }
+}

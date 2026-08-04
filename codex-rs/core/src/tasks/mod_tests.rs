@@ -48,6 +48,10 @@ impl SessionTask for PendingTask {
         TaskKind::Regular
     }
 
+    fn supports_pending_input_continuation(&self) -> bool {
+        true
+    }
+
     fn span_name(&self) -> &'static str {
         "session_task.pending"
     }

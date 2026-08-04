@@ -69,6 +69,7 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 pub(crate) use compact::CompactTask;
 pub(crate) use regular::RegularTask;
+pub(crate) use regular::RegularTaskOutput;
 pub(crate) use review::ReviewTask;
 pub(crate) use user_shell::UserShellCommandMode;
 pub(crate) use user_shell::UserShellCommandTask;
@@ -78,7 +79,7 @@ pub(crate) const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
 const TASK_COMPACT_METRIC: &str = "codex.task.compact";
 static ACTIVE_TURNS: Gauge = Gauge::new("core.turns.active");
 
-pub(crate) type SessionTaskResult = CodexResult<Option<regular::RegularTaskOutput>>;
+pub(crate) type SessionTaskResult = CodexResult<Option<RegularTaskOutput>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InterruptedTurnHistoryMarker {
@@ -209,6 +210,31 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = SessionTaskResult> + Send;
 
+    /// Whether late input can keep this exact turn alive across finalization.
+    fn supports_pending_input_continuation(&self) -> bool {
+        false
+    }
+
+    /// Continues sampling without repeating the turn-start lifecycle.
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        mcp_startup_requirements: McpStartupRequirements,
+        cancellation_token: CancellationToken,
+    ) -> impl std::future::Future<Output = SessionTaskResult> + Send {
+        async move {
+            let _ = (
+                self,
+                session,
+                ctx,
+                mcp_startup_requirements,
+                cancellation_token,
+            );
+            unreachable!("task does not support pending input continuation")
+        }
+    }
+
     /// Gives the task a chance to perform cleanup after an abort.
     ///
     /// The default implementation is a no-op; override this if additional
@@ -225,6 +251,7 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
     }
 }
 
+/// Object-safe adapter preserving each task implementation's continuation contract.
 pub(crate) trait AnySessionTask: Send + Sync + 'static {
     fn kind(&self) -> TaskKind;
 
@@ -235,6 +262,16 @@ pub(crate) trait AnySessionTask: Send + Sync + 'static {
         session: Arc<Session>,
         ctx: Arc<TurnContext>,
         input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, SessionTaskResult>;
+
+    fn supports_pending_input_continuation(&self) -> bool;
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        mcp_startup_requirements: McpStartupRequirements,
         cancellation_token: CancellationToken,
     ) -> BoxFuture<'static, SessionTaskResult>;
 
@@ -265,6 +302,26 @@ where
             session,
             ctx,
             input,
+            cancellation_token,
+        ))
+    }
+
+    fn supports_pending_input_continuation(&self) -> bool {
+        SessionTask::supports_pending_input_continuation(self)
+    }
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        mcp_startup_requirements: McpStartupRequirements,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, SessionTaskResult> {
+        Box::pin(SessionTask::run_pending_input_continuation(
+            self,
+            session,
+            ctx,
+            mcp_startup_requirements,
             cancellation_token,
         ))
     }
@@ -322,6 +379,9 @@ impl Session {
             &turn_context.turn_timing_state,
         )
         .await;
+        if !self.begin_agent_response_turn(&turn_context.sub_id) {
+            return;
+        }
         let started_at = Instant::now();
         let turn_started_at_unix_ms = turn_context
             .turn_timing_state
@@ -426,7 +486,7 @@ impl Session {
                     ).await?,
                     None => task_input,
                 };
-                task_for_run
+                Arc::clone(&task_for_run)
                     .run(
                         Arc::clone(&session),
                         ctx,
@@ -436,7 +496,15 @@ impl Session {
                     .instrument(trace_span!("session_task.run"))
                     .await
             }.await;
+            let mut last_agent_message = None;
             loop {
+                if let Ok(Some(output)) = &mut task_result {
+                    if let Some(message) = &output.last_agent_message {
+                        last_agent_message = Some(message.clone());
+                    } else {
+                        output.last_agent_message.clone_from(&last_agent_message);
+                    }
+                }
                 // Private reviewers save their transcript together with the terminal event.
                 // Errors and cancellation retain their existing save path.
                 if (!session.is_private_guardian_reviewer().await
@@ -464,12 +532,10 @@ impl Session {
                 else {
                     break;
                 };
-                task_result = RegularTask::run_turns(
+                task_result = Arc::clone(&task_for_run).run_pending_input_continuation(
                     Arc::clone(&session),
                     Arc::clone(&ctx_for_finish),
-                    Vec::new(),
                     requirements,
-                    /*prewarmed_client_session*/ None,
                     task_cancellation_token.child_token(),
                 )
                 .await;
@@ -534,6 +600,16 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) {
+        if self
+            .app_server_client_metadata()
+            .await
+            .client_name
+            .as_deref()
+            == Some("codex_exec")
+            || self.submission_admission.requires_reload()
+        {
+            return;
+        }
         if !self.input_queue.has_queued_turn_trigger().await
             && !self.input_queue.has_pending_mailbox_items().await
         {
@@ -797,8 +873,9 @@ impl Session {
                 (None, None, Some(err))
             }
         };
-        let can_continue =
-            regular_output.is_some() && turn_context.terminal_error.lock().await.is_none();
+        let can_continue = regular_output.is_some()
+            && turn_context.terminal_error.lock().await.is_none()
+            && !self.submission_admission.requires_reload();
         let finishing = CancellationToken::new();
         let finish_recording = finishing.clone().drop_guard();
         let (turn_state, unadmitted_task, mut pending_input, outcome_handoff) = {
@@ -807,7 +884,13 @@ impl Session {
             if !Arc::ptr_eq(&active_turn.task.as_ref()?.turn_context, &turn_context) {
                 return None;
             }
-            if can_continue {
+            if can_continue
+                && active_turn
+                    .task
+                    .as_ref()?
+                    .task
+                    .supports_pending_input_continuation()
+            {
                 let state = active_turn.turn_state.lock().await;
                 if state.accepts_mailbox_delivery_for_current_turn()
                     && state

@@ -32,11 +32,27 @@ impl From<&codex_config::types::Tui> for AgentPreviewLineLimits {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct CollabAgentHistoryCell {
     pub(super) title: Line<'static>,
     details: Vec<CollabDetail>,
     pub(super) tool_label: Option<String>,
+    agent_title: Option<CollabAgentTitle>,
+}
+
+#[derive(Clone, Debug)]
+struct CollabAgentTitle {
+    thread_id: ThreadId,
+    metadata: AgentMetadata,
+    suffix: Vec<Span<'static>>,
+}
+
+impl CollabAgentTitle {
+    fn render(&self) -> Line<'static> {
+        let mut title = agent_label_spans(agent_label(self.thread_id, &self.metadata));
+        title.extend(self.suffix.clone());
+        title_spans_line(title)
+    }
 }
 
 impl CollabAgentHistoryCell {
@@ -45,7 +61,48 @@ impl CollabAgentHistoryCell {
             title,
             details,
             tool_label: None,
+            agent_title: None,
         }
+    }
+
+    pub(super) fn new_agent_labeled(
+        thread_id: ThreadId,
+        metadata: &AgentMetadata,
+        suffix: Vec<Span<'static>>,
+        details: Vec<CollabDetail>,
+    ) -> Self {
+        let agent_title = CollabAgentTitle {
+            thread_id,
+            metadata: metadata.clone(),
+            suffix,
+        };
+        Self {
+            tool_label: None,
+            title: agent_title.render(),
+            details,
+            agent_title: Some(agent_title),
+        }
+    }
+
+    pub(crate) fn with_refreshed_agent_metadata(
+        &self,
+        mut agent_metadata: impl FnMut(ThreadId) -> Option<AgentMetadata>,
+    ) -> Option<Self> {
+        let mut agent_title = self.agent_title.clone()?;
+        let metadata = agent_metadata(agent_title.thread_id)?;
+        if metadata.agent_nickname.is_some() {
+            agent_title.metadata.agent_nickname = metadata.agent_nickname;
+        }
+        if metadata.agent_role.is_some() {
+            agent_title.metadata.agent_role = metadata.agent_role;
+        }
+        let title = agent_title.render();
+        (title != self.title).then(|| Self {
+            tool_label: self.tool_label.clone(),
+            title,
+            details: self.details.clone(),
+            agent_title: Some(agent_title),
+        })
     }
 }
 

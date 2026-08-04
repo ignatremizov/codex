@@ -328,6 +328,7 @@ fn review_original(mut item: RolloutItem) -> anyhow::Result<Option<RolloutItem>>
         | RolloutItem::DynamicToolsUpdated { .. }
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::TokenUsageRecord(_)
