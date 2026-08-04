@@ -170,6 +170,33 @@ TUI command rendering and closed-child navigation retain full source, immediate 
 read-only hydration, cached permission choices, writer quarantine, and server model authority.
 Generated protocol output, complete fixture qualification, and execution tests remain pending.
 
+### Exact-turn response observation
+
+Ownership anchor: `feat(multi-agent): bind response observation to exact admitted turns`.
+The V1 lifecycle tools share the compact `w` policy, with explicitly requested complete
+commentary, passive or waking finals, and transcript-only finals kept distinct. Native
+`LocalAgentRuntime` observation state remains separate from the shared controller operations.
+Initial spawn and later input retain exact parent/target instances, residency, admission
+boundaries, current configuration ownership, and the original provisional cleanup path.
+`core/src/agent/control/response_*` and `presentation/response_observation/` own independent
+observer policy, exact-turn binding, accepted receipt ownership, and monotonic aggregation.
+
+`core/src/session/response_observation/delivery/publication.rs` uses the current canonical
+publication owner, retained-source envelopes, Code Mode ordering, MCP attribution, and live
+transcript events. Only the exact finishing input recorder may consume against its own taskless
+terminal reservation; unrelated background delivery waits. Wait publication shares upstream
+item timing and lifecycle hooks. Dropped receipt waiters do not cancel owned work, and lost
+workers fail closed. Canonical audit survives supported rollback and compaction without
+recreating cold subscriptions or manufacturing an accepted receipt from history text.
+
+The public collab fields are nullable observation metadata, not new client authority. Legacy
+event mirrors cannot erase newer canonical policy fields, while later canonical items can clear
+them. The TUI renders routed commentary and observer-relative final visibility through shared
+source-preserving previews; wake indicators never activate subscriptions or revive runtimes.
+Full first-commentary delivery remains the explicitly requested, product-reviewed size exception.
+Remote compilation, tests, schemas, complete snapshots, and final owning-commit formatting remain
+outstanding; source review and authored regression cases are not executable qualification.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.

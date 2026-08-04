@@ -41,6 +41,11 @@ async fn handle_close_agent(
     let arguments = function_arguments(payload)?;
     let args: CloseAgentArgs = parse_arguments(&arguments)?;
     let agent_id = parse_agent_id_target(&args.target)?;
+    if agent_id == session.thread_id {
+        return Err(FunctionCallError::RespondToModel(
+            "an agent cannot close itself; return your result instead".to_string(),
+        ));
+    }
     let local_agent_control = session
         .services
         .local_agent_runtime
@@ -54,6 +59,8 @@ async fn handle_close_agent(
                 id: call_id.clone(),
                 tool: CollabAgentTool::CloseAgent,
                 status: CollabAgentToolCallStatus::InProgress,
+                observe_commentary: None,
+                wake_on_completion: None,
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![agent_id],
@@ -83,6 +90,8 @@ async fn handle_close_agent(
                 id: call_id,
                 tool: CollabAgentTool::CloseAgent,
                 status: collab_tool_call_status(&status, Some(agent_id)),
+                observe_commentary: None,
+                wake_on_completion: None,
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![agent_id],

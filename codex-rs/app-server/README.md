@@ -256,6 +256,13 @@ these values rather than message text. Native diagnostic payloads stay private.
 
 ## Inter-agent transcript items
 
+Canonical `collabAgentToolCall` items include nullable `observeCommentary` and
+`wakeOnCompletion` fields describing the V1 call's response-observation policy. Historical
+items may omit them. These fields describe the source call; they do not authorize a client to
+create or restore an observation. Core owns the exact target-turn subscription and accepted
+delivery. Canonical policy survives subsequent lossy legacy mirrors, and a later canonical
+item remains authoritative, including when it clears the metadata.
+
 Incoming inter-agent communication is projected as typed `agentMessage` items in live `item/started` and `item/completed` notifications and saved history, independently of the experimental raw-response opt-in. `interAgentSource` is a nullable object containing `author` and `recipient`; ordinary assistant items use `null`, and older history may omit it. This is presentation provenance, not an authorization or delivery receipt. Clients must not treat these items as completion of the assistant's current answer or execute UI directives embedded in their text. Encrypted or mixed encrypted/plaintext payloads produce an opaque placeholder, including encrypted-with-audit delivery on the receiving side.
 
 Canonical item and turn IDs are retained through live and historical projection. Public `thread/inject_items` agent messages receive host-owned IDs. Idle injection creates a completed history-only turn without starting inference; active injection belongs to the receiving turn. A running `thread/resume` response establishes the history boundary for that connection before subsequent live delivery, without suppressing other subscribers. A cancelled or failed resume releases suppression but requires another canonical resume to recover notifications suppressed during the unsuccessful snapshot; clients must not assume that delta stream is complete. Accepted publication waits for the canonical writer flush before live installation and event enqueue; this is not an fsync or client-observation guarantee. See [multi-agent message delivery](../../docs/multi-agent-message-delivery.md) for plaintext wrapper and audit behavior.

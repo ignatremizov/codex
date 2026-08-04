@@ -95,6 +95,34 @@ impl LocalAgentControl {
         child_path: Option<AgentPath>,
         trace: &ThreadTraceContext,
     ) {
+        let control = self.clone();
+        let reference = reference.to_string();
+        let trace = trace.clone();
+        tokio::spawn(async move {
+            if control
+                .await_response_observation_event_match(
+                    terminal.parent(),
+                    terminal.child(),
+                    &outcome.turn_id,
+                )
+                .await
+            {
+                return;
+            }
+            control.deliver_native_terminal_completion(
+                outcome, terminal, &reference, child_path, &trace,
+            );
+        });
+    }
+
+    fn deliver_native_terminal_completion(
+        &self,
+        outcome: AgentTurnOutcome,
+        terminal: super::AgentTerminalPresentation,
+        reference: &str,
+        child_path: Option<AgentPath>,
+        trace: &ThreadTraceContext,
+    ) {
         let Some(parent) = terminal.take_parent_thread() else {
             return;
         };
@@ -137,6 +165,7 @@ impl LocalAgentControl {
                         content: vec![codex_protocol::models::ContentItem::InputText {
                             text: crate::session_prefix::format_subagent_notification_message(
                                 &reference,
+                                outcome.thread_id,
                                 &outcome.status,
                             ),
                         }],
@@ -181,6 +210,7 @@ impl LocalAgentControl {
                             child_agent_path: &reference,
                             message: &crate::session_prefix::format_subagent_notification_message(
                                 &reference,
+                                outcome.thread_id,
                                 &outcome.status,
                             ),
                             status: &outcome.status,

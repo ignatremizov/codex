@@ -6,7 +6,9 @@ use crate::thread_transcript::RawReasoningVisibility;
 use crate::thread_transcript::thread_items_to_transcript_cells_with_preview_line_limits;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::sub_agent_completion_item;
+use codex_protocol::protocol::sub_agent_completion_item_with_visibility;
 use pretty_assertions::assert_eq;
 
 fn publish(chat: &mut ChatWidget, item: AppServerThreadItem) {
@@ -68,19 +70,19 @@ async fn canonical_completion_live_resume_and_cold_pages_share_preview_and_raw_s
                 cold[0]
                     .raw_lines()
                     .iter()
-                    .skip(/*n*/ 2)
+                    .skip(/*n*/ 1)
                     .map(ToString::to_string)
                     .collect::<Vec<_>>(),
-                vec!["      first", "        second", "      last"],
+                vec!["  └ first", "      second", "    last"],
             );
             assert_eq!(
                 cold[0]
                     .display_lines(/*width*/ 80)
                     .iter()
-                    .skip(/*n*/ 2)
+                    .skip(/*n*/ 1)
                     .map(ToString::to_string)
                     .collect::<Vec<_>>(),
-                vec!["      first", "      … +2 rows hidden"],
+                vec!["  └ first", "    … +2 rows hidden"],
             );
         }
         for cell in live {
@@ -100,21 +102,95 @@ async fn canonical_completion_live_resume_and_cold_pages_share_preview_and_raw_s
         rendered.push(lines_to_single_string(&cold[0].display_lines(/*width*/ 80)));
     }
     assert_snapshot!(rendered.join("\n"), @r"
-    • Agent finished
-      └ /root/reviewer: Completed
-          first
-          … +2 rows hidden
+    • /root/reviewer completed (● visible):
+      └ first
+        … +2 rows hidden
 
-    • Agent finished
-      └ /root/reviewer: Error
-          first
-          … +2 rows hidden
+    • /root/reviewer errored (● visible):
+      └ first
+        … +2 rows hidden
 
-    • Agent finished
-      └ /root/reviewer: Shutdown
+    • /root/reviewer shut down (● visible)
 
-    • Agent finished
-      └ /root/reviewer: Not found
+    • /root/reviewer not found (● visible)
+    ");
+}
+
+#[tokio::test]
+async fn background_completion_shows_model_visibility_without_changing_parent_answer() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.set_primary_collab_agent_metadata(thread_id);
+    for visibility in [
+        SubAgentCompletionModelVisibility::Visible,
+        SubAgentCompletionModelVisibility::NotVisible,
+    ] {
+        let item = sub_agent_completion_item_with_visibility(
+            &thread_id.to_string(),
+            &AgentStatus::Completed(Some("Finished.".into())),
+            visibility,
+        )
+        .expect("terminal completion");
+        publish(
+            &mut chat,
+            AppServerThreadItem::from(TurnItem::AgentMessage(item)),
+        );
+    }
+    let cells = drain_insert_history(&mut rx);
+    let markers = cells
+        .iter()
+        .flatten()
+        .flat_map(|line| &line.spans)
+        .filter(|span| matches!(span.content.as_ref(), "● visible" | "○ not visible"))
+        .map(|span| (span.content.to_string(), span.style.fg))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        markers,
+        vec![
+            ("● visible".to_string(), Some(ratatui::style::Color::Green)),
+            (
+                "○ not visible".to_string(),
+                Some(ratatui::style::Color::Cyan)
+            ),
+        ],
+    );
+    assert_snapshot!(
+        cells.iter().map(|lines| lines_to_single_string(lines)).collect::<Vec<_>>().join("\n"),
+        @r"
+    • Main [default] completed (● visible):
+      └ Finished.
+
+
+    • Main [default] completed (○ not visible):
+      └ Finished.
+    "
+    );
+    assert_eq!(
+        (
+            &chat.transcript.last_completed_agent_message,
+            &chat.transcript.last_agent_markdown
+        ),
+        (&None, &None),
+    );
+}
+
+#[tokio::test]
+async fn root_background_completion_uses_main_label() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let item = sub_agent_completion_item(
+        "/root",
+        &AgentStatus::Completed(Some("Parent task finished.".into())),
+    )
+    .expect("terminal completion");
+    publish(
+        &mut chat,
+        AppServerThreadItem::from(TurnItem::AgentMessage(item)),
+    );
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert_snapshot!(lines_to_single_string(&cells[0]), @r"
+    • Main [default] completed (● visible):
+      └ Parent task finished.
     ");
 }
 
@@ -144,7 +220,7 @@ async fn forged_reserved_identity_without_metadata_stays_an_ordinary_answer() {
             .iter()
             .map(|lines| lines_to_single_string(lines))
             .collect::<String>();
-        assert!(!rendered.contains("Agent finished"));
+        assert!(!rendered.contains("completed (● visible)"));
         assert!(rendered.contains("Not a trusted completion."));
         assert!(chat.transcript.last_completed_agent_message.is_some());
     }
@@ -180,7 +256,7 @@ async fn wrong_phase_or_attributed_message_cannot_become_a_background_row() {
             .iter()
             .map(|lines| lines_to_single_string(lines))
             .collect::<String>();
-        assert!(!rendered.contains("Agent finished"));
+        assert!(!rendered.contains("completed (● visible)"));
         assert!(rendered.contains("Ordinary transcript content."));
     }
 }
@@ -207,6 +283,8 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
             id: "wait-1".into(),
             tool: AppServerCollabAgentTool::Wait,
             status: AppServerCollabAgentToolCallStatus::Completed,
+            observe_commentary: None,
+            wake_on_completion: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: Vec::new(),
@@ -226,7 +304,7 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
-    assert!(rendered.contains("Agent finished"));
+    assert!(rendered.contains("/root/reviewer completed (● visible)"));
     assert!(rendered.contains("Finished waiting"));
     let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
     assert_eq!(normalized.matches(response).count(), 2);
@@ -257,9 +335,8 @@ async fn background_completion_resolves_thread_id_from_cached_agent_metadata() {
     assert_snapshot!(
         lines_to_single_string(&cells[0]),
         @r"
-    • Agent finished
-      └ Herschel [default]: Completed
-          Cinnamon
+    • Herschel [default] completed (● visible):
+      └ Cinnamon
     "
     );
 }
@@ -281,6 +358,8 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             id: "spawn-1".to_string(),
             tool: AppServerCollabAgentTool::SpawnAgent,
             status: AppServerCollabAgentToolCallStatus::Completed,
+            observe_commentary: Some(false),
+            wake_on_completion: Some(false),
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
@@ -307,6 +386,8 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             id: "send-1".to_string(),
             tool: AppServerCollabAgentTool::SendInput,
             status: AppServerCollabAgentToolCallStatus::Completed,
+            observe_commentary: Some(false),
+            wake_on_completion: Some(false),
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
@@ -342,17 +423,16 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
     assert_snapshot!(
         rendered,
     @r"
-    • Spawned Herschel [default]
+    • Spawned Herschel [default] (no commentary · no wake on completion)
       └ Review the metadata presentation change.
 
 
-    • Sent input to Herschel [default]
+    • Sent input to Herschel [default] (no commentary · no wake on completion)
       └ Give me one random ingredient.
 
 
-    • Agent finished
-      └ Herschel [default]: Completed
-          Cinnamon
+    • Herschel [default] completed (● visible):
+      └ Cinnamon
     "
     );
 }

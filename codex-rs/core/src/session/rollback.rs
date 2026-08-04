@@ -107,6 +107,12 @@ async fn apply(sess: &Arc<Session>, target: Target) -> CodexResult<ThreadRolledB
             "num_turns must be >= 1".to_string(),
         ));
     }
+    let _observation = sess
+        .services
+        .local_agent_runtime
+        .control(sess.session_id())
+        .acquire_response_observation_transaction(sess.presentation_id())
+        .await;
     let permit = sess
         .acquire_history_publication_barrier()
         .await
@@ -264,6 +270,13 @@ async fn apply(sess: &Arc<Session>, target: Target) -> CodexResult<ThreadRolledB
     {
         tracing::warn!(%error, "failed to persist optional rollback representation repair");
     }
+    let observations = sess
+        .services
+        .local_agent_runtime
+        .control(sess.session_id())
+        .response_observation_snapshots_for_parent(sess.presentation_id());
+    sess.persist_agent_response_observations(&observations)
+        .await?;
     drop(active);
     receipt.completed = true;
     Ok(marker)

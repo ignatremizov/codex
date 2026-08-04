@@ -35,6 +35,16 @@ impl ChatWidget {
         else {
             return;
         };
+        if let Some(cell) = multi_agents::background_commentary_history_cell_from_agent_message(
+            &text,
+            phase.as_ref(),
+            self.local_settings.tui.agent_response_preview_lines,
+            |thread_id| self.collab_agent_metadata(thread_id),
+        ) {
+            self.add_to_history(cell);
+            self.request_redraw();
+            return;
+        }
         let context = self.thread_id.and_then(|thread_id| {
             crate::inline_visualization::InlineVisualizationContext::from_config(
                 &self.config,

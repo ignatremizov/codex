@@ -3297,10 +3297,12 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
     let parent_spawn_call_id = "spawn-call-compacted-usage-hints".to_string();
     let compacted_notification = ContextualUserFragment::into(SubagentNotification::new(
         "/root/older-worker",
+        ThreadId::new(),
         AgentStatus::Completed(Some("compacted runtime notification".to_string())),
     ));
     let suffix_notification = ContextualUserFragment::into(SubagentNotification::new(
         "/root/recent-worker",
+        ThreadId::new(),
         AgentStatus::Completed(Some("suffix runtime notification".to_string())),
     ));
     let quoted_notification =
@@ -5045,7 +5047,7 @@ async fn completed_wait_suppresses_v1_background_watcher() {
 }
 
 #[tokio::test]
-async fn late_wait_does_not_suppress_v1_background_watcher() {
+async fn late_wait_does_not_reclaim_delivered_v1_background_completion() {
     let harness = AgentControlHarness::new().await;
     let (parent_thread_id, parent_thread) = harness.start_thread().await;
     let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -5102,15 +5104,19 @@ async fn late_wait_does_not_suppress_v1_background_watcher() {
         child_thread.agent_status().await,
         AgentStatus::Errored("child failed".to_string())
     );
+    // A terminal status is not delivery. A new wait may still claim a pending result;
+    // exercise the late-wait case only after the actual background presentation arrives.
+    assert!(wait_for_subagent_notification(&parent_thread).await);
+    assert!(wait_for_subagent_completion_item(&parent_thread).await);
     let wait = harness.control.register_targeted_wait_agent_presentation(
         parent_thread.session.presentation_id(),
         &[child_thread_id],
     );
     let commit = wait.freeze_for_children([child_thread_id]);
+    assert_eq!(commit.completion_presentation_agent_ids(), None);
     commit.commit();
 
     assert!(wait_for_subagent_notification(&parent_thread).await);
-    assert!(wait_for_subagent_completion_item(&parent_thread).await);
 }
 
 #[tokio::test]
@@ -6413,3 +6419,6 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
 
 #[path = "control_parent_binding_tests.rs"]
 mod parent_binding_tests;
+
+#[path = "control_response_observation_tests.rs"]
+mod response_observation_tests;

@@ -415,6 +415,7 @@ impl Session {
     }
 
     /// Wait ownership transfers only after canonical commit and primary event enqueue.
+    #[cfg(test)]
     pub(crate) async fn emit_turn_item_completed_with_primary_delivery(
         &self,
         turn: &TurnContext,

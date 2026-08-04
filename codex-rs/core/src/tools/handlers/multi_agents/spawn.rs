@@ -7,6 +7,7 @@ use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
@@ -85,6 +86,8 @@ async fn handle_spawn_agent(
                 id: call_id.clone(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::InProgress,
+                observe_commentary: Some(args.w.commentary()),
+                wake_on_completion: args.w.wake_on_completion_item_value(),
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: Vec::new(),
@@ -106,6 +109,7 @@ async fn handle_spawn_agent(
             fork_mode: fork_mode.as_ref(),
             role_name,
             model: args.model.as_deref(),
+            service_tier: args.service_tier.as_deref(),
             reasoning_effort: args.reasoning_effort.clone(),
         },
     )
@@ -135,6 +139,7 @@ async fn handle_spawn_agent(
                 turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
                 environments: Some(step_context.environments.clone()),
                 multi_agent_v2_usage_hints: None,
+                response_observation: args.w,
                 cyber_access_program: turn.cyber_access_program,
             },
         })
@@ -184,6 +189,8 @@ async fn handle_spawn_agent(
                 id: call_id,
                 tool: CollabAgentTool::SpawnAgent,
                 status: collab_tool_call_status(&status, new_thread_id),
+                observe_commentary: Some(args.w.commentary()),
+                wake_on_completion: args.w.wake_on_completion_item_value(),
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids,
@@ -224,8 +231,11 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<String>,
     #[serde(default)]
     fork_context: bool,
+    #[serde(default)]
+    w: ResponseObservationPolicy,
 }
 
 #[derive(Debug, Serialize)]

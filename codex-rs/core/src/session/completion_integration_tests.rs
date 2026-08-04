@@ -30,8 +30,12 @@ impl TurnLifecycleContributor for ItemRecorder {
     }
 }
 
+#[test_case::test_case(false; "native completion publisher")]
+#[test_case::test_case(true; "observed wait publisher")]
 #[tokio::test]
-async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery() -> anyhow::Result<()> {
+async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery(
+    observed_wait: bool,
+) -> anyhow::Result<()> {
     let (mut session, turn, events) = make_session_and_context_with_rx().await;
     let store = attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session"))
         .await;
@@ -42,6 +46,8 @@ async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery() 
         Arc::new(extensions.build());
     let child_id = ThreadId::new();
     let item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        observe_commentary: None,
+        wake_on_completion: None,
         id: "wait-receipt".to_string(),
         tool: CollabAgentTool::Wait,
         status: CollabAgentToolCallStatus::Completed,
@@ -53,18 +59,35 @@ async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery() 
         model: None,
         reasoning_effort: None,
         agents_states: std::collections::HashMap::from([(
-            child_id, AgentStatus::Completed(Some("child result".to_string())),
+            child_id,
+            AgentStatus::Completed(Some("child result".to_string())),
         )]),
         completion_presentation_agent_ids: Some(vec![child_id]),
     });
-    let started_at_ms = turn.turn_timing_state
+    let started_at_ms = turn
+        .turn_timing_state
         .record_item_started(item.id(), /*started_at_ms*/ 123)
         .await;
     let committed = Arc::new(AtomicBool::new(false));
     let committed_by_worker = Arc::clone(&committed);
-    session.emit_turn_item_completed_with_primary_delivery(&turn, item.clone(), move || {
-        committed_by_worker.store(true, Ordering::Release);
-    }).await;
+    if observed_wait {
+        let control = session
+            .services
+            .local_agent_runtime
+            .control(session.session_id());
+        let claim = control
+            .register_targeted_wait_agent_presentation(session.presentation_id(), &[child_id])
+            .freeze_none();
+        session
+            .emit_wait_item_completed(&turn, item.clone(), claim)
+            .await;
+    } else {
+        session
+            .emit_turn_item_completed_with_primary_delivery(&turn, item.clone(), move || {
+                committed_by_worker.store(true, Ordering::Release);
+            })
+            .await;
+    }
 
     let event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), events.recv()).await??;
     let EventMsg::ItemCompleted(completed) = &event.msg else {
@@ -77,37 +100,61 @@ async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery() 
         started_at_ms: Some(started_at_ms),
         completed_at_ms: completed.completed_at_ms,
     };
-    assert_eq!(serde_json::to_value(completed)?, serde_json::to_value(&expected)?);
-    assert!(committed.load(Ordering::Acquire));
+    assert_eq!(
+        serde_json::to_value(completed)?,
+        serde_json::to_value(&expected)?
+    );
+    assert_eq!(committed.load(Ordering::Acquire), !observed_wait);
     assert_eq!(
         serde_json::to_value(&*observed.lock().expect("item observations"))?,
         serde_json::to_value(vec![item.clone()])?,
     );
-    assert_eq!(turn.turn_timing_state.take_item_started(&item.id()).await, None);
+    assert_eq!(
+        turn.turn_timing_state.take_item_started(&item.id()).await,
+        None
+    );
     let legacy = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), events.recv()).await??;
     assert_eq!(
         serde_json::to_value(&legacy.msg)?,
-        serde_json::to_value(event.msg.as_legacy_events(/*show_raw_agent_reasoning*/ false)
-            .first().expect("wait legacy mirror"))?,
+        serde_json::to_value(
+            event
+                .msg
+                .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+                .first()
+                .expect("wait legacy mirror")
+        )?,
     );
     assert!(events.try_recv().is_err());
-    let history = store.load_history(LoadThreadHistoryParams {
-        thread_id: session.thread_id,
-        include_archived: false,
-    }).await?;
-    let canonical = history.items.into_iter().filter_map(|item| match item {
-        RolloutItem::EventMsg(EventMsg::ItemCompleted(item)) if item.item.id() == "wait-receipt" => Some(item),
-        _ => None,
-    }).collect::<Vec<_>>();
-    assert_eq!(serde_json::to_value(canonical)?, serde_json::to_value(vec![expected])?);
+    let history = store
+        .load_history(LoadThreadHistoryParams {
+            thread_id: session.thread_id,
+            include_archived: false,
+        })
+        .await?;
+    let canonical = history
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(item))
+                if item.item.id() == "wait-receipt" =>
+            {
+                Some(item)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        serde_json::to_value(canonical)?,
+        serde_json::to_value(vec![expected])?
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn queued_completion_installs_its_exact_canonical_source_envelope() -> anyhow::Result<()> {
     let (mut session, _, _events) = make_session_and_context_with_rx().await;
-    let store = attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session"))
-        .await;
+    let store =
+        attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session")).await;
     let mut communication = InterAgentCommunication::new(
         AgentPath::try_from("/root/child").map_err(anyhow::Error::msg)?,
         AgentPath::root(),

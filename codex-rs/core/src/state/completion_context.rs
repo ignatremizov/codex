@@ -10,7 +10,7 @@ pub(crate) struct CompletionRuntimeProvenance {
     pub(crate) presentations: HashMap<(String, String), StoredSubAgentCompletionPresentation>,
 }
 
-/// Canonically acknowledged completion evidence retained across stale compaction requests.
+/// Canonically acknowledged native completion or typed observed-response evidence.
 ///
 /// Pending entries are checkpoint-only until their mailbox lease is consumed. Installed entries
 /// remain retained until a successfully published checkpoint proves its request included that
