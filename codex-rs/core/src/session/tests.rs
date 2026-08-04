@@ -2661,7 +2661,10 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
             text: "child done".to_string(),
         }],
         phase: None,
-        internal_chat_message_metadata_passthrough: None,
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            turn_id: Some(turn_context.sub_id.clone()),
+            executed_tool_calls: None,
+        }),
     };
     store
         .fail_agent_response_observation_flushes_after(

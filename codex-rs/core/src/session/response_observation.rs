@@ -589,9 +589,10 @@ pub(super) fn apply_agent_response_event_state(
                 state.active_turn_id = None;
                 state.last_commentary_item_id = None;
             }
-            if state.latest_admitted_turn_id.as_deref() == Some(turn_id.as_str()) {
-                state.last_terminal = Some((turn_id.clone(), status.clone()));
-            }
+            // A prior turn can finish after a newer turn has started. Preserve that terminal
+            // outcome for observers without clearing the newer active turn or changing its
+            // session-wide Running status.
+            state.last_terminal = Some((turn_id.clone(), status.clone()));
         }
         AgentResponseEvent::TurnAborted { turn_id, .. } => {
             if state.latest_admitted_turn_id.is_none() {

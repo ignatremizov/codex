@@ -28,7 +28,6 @@ use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
-use codex_model_provider::create_model_provider;
 use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -370,9 +369,8 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         nickname: Option<String>,
     }
 
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let mut config = (*turn.config).clone();
     let provider_info =
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["ollama"].clone();
@@ -383,15 +381,21 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("approval policy should be set");
-    turn.approval_policy
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let session = Arc::clone(&root.thread.session);
+    let mut turn = root.thread.session.new_default_turn().await;
+    Arc::get_mut(&mut turn)
+        .expect("turn should be uniquely owned")
+        .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("approval policy should be set");
-    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
-    turn.config = Arc::new(config);
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "spawn_agent",
         function_payload(json!({
             "message": "inspect this repo",
@@ -1157,14 +1161,17 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
 
 #[tokio::test]
 async fn spawn_agent_returns_agent_id_without_task_name() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
 
     let output = SpawnAgentHandler::default()
         .handle(invocation(
-            Arc::new(session),
-            Arc::new(turn),
+            Arc::clone(&root.thread.session),
+            root.thread.session.new_default_turn().await,
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo"
@@ -2612,13 +2619,15 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
         nickname: Option<String>,
     }
 
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (_session, initial_turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
-    let expected_sandbox = turn.config.legacy_sandbox_policy();
+    let expected_sandbox = initial_turn.config.legacy_sandbox_policy();
     #[allow(deprecated)]
     let mut expected_file_system_sandbox_policy =
-        FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(&expected_sandbox, &turn.cwd);
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
+            &expected_sandbox,
+            &initial_turn.cwd,
+        );
     expected_file_system_sandbox_policy
         .entries
         .push(FileSystemSandboxEntry {
@@ -2634,22 +2643,32 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
         &expected_file_system_sandbox_policy,
         expected_network_sandbox_policy,
     );
-    turn.approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("approval policy should be set");
-    let mut config = (*turn.config).clone();
+    let mut config = (*initial_turn.config).clone();
     config.approvals_reviewer = ApprovalsReviewer::AutoReview;
-    set_turn_config(&mut turn, config);
-    turn.permission_profile = expected_permission_profile.clone();
-    assert_ne!(
-        expected_permission_profile,
-        turn.config.permissions.effective_permission_profile(),
-        "test requires a runtime profile override that differs from base config"
-    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let session = Arc::clone(&root.thread.session);
+    let mut turn = root.thread.session.new_default_turn().await;
+    {
+        let turn = Arc::get_mut(&mut turn).expect("turn should be uniquely owned");
+        turn.approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("approval policy should be set");
+        let config = (*turn.config).clone();
+        set_turn_config(turn, config);
+        turn.permission_profile = expected_permission_profile.clone();
+        assert_ne!(
+            expected_permission_profile,
+            turn.config.permissions.effective_permission_profile(),
+            "test requires a runtime profile override that differs from base config"
+        );
+    }
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "spawn_agent",
         function_payload(json!({
             "message": "await this command",
@@ -2737,14 +2756,20 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         nickname: Option<String>,
     }
 
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
 
     let mut config = (*turn.config).clone();
     config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 1;
-    turn.config = Arc::new(config);
-    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let session = Arc::clone(&root.thread.session);
+    let mut turn = root.thread.session.new_default_turn().await;
+    Arc::get_mut(&mut turn)
+        .expect("turn should be uniquely owned")
+        .session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: session.thread_id,
         depth: DEFAULT_AGENT_MAX_DEPTH,
         agent_path: None,
@@ -2753,8 +2778,8 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
     });
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "spawn_agent",
         function_payload(json!({"message": "hello"})),
     );
@@ -2892,13 +2917,16 @@ async fn send_input_rejects_invalid_id() {
 
 #[tokio::test]
 async fn send_input_reports_missing_agent() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    let parent = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("parent thread should start");
     let agent_id = ThreadId::new();
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "send_input",
         function_payload(json!({"target": agent_id.to_string(), "message": "hi"})),
     );
@@ -2913,18 +2941,21 @@ async fn send_input_reports_missing_agent() {
 
 #[tokio::test]
 async fn send_input_interrupts_before_prompt() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
     let thread = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start thread");
     let agent_id = thread.thread_id;
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "send_input",
         function_payload(json!({
             "target": agent_id.to_string(),
@@ -2955,18 +2986,21 @@ async fn send_input_interrupts_before_prompt() {
 
 #[tokio::test]
 async fn send_input_accepts_structured_items() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
     let thread = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start thread");
     let agent_id = thread.thread_id;
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "send_input",
         function_payload(json!({
             "target": agent_id.to_string(),
@@ -3030,13 +3064,16 @@ async fn resume_agent_rejects_invalid_id() {
 
 #[tokio::test]
 async fn resume_agent_reports_missing_agent() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    let parent = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("parent thread should start");
     let agent_id = ThreadId::new();
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "resume_agent",
         function_payload(json!({"id": agent_id.to_string()})),
     );
@@ -3051,10 +3088,13 @@ async fn resume_agent_reports_missing_agent() {
 
 #[tokio::test]
 async fn resume_agent_noops_for_active_agent() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
     let thread = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
@@ -3062,8 +3102,8 @@ async fn resume_agent_noops_for_active_agent() {
     let agent_id = thread.thread_id;
     let status_before = manager.agent_control().get_status(agent_id).await;
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "resume_agent",
         function_payload(json!({"id": agent_id.to_string()})),
     );
@@ -3078,8 +3118,11 @@ async fn resume_agent_noops_for_active_agent() {
     assert_eq!(result.status, status_before);
     assert_eq!(success, Some(true));
 
-    let thread_ids = manager.list_thread_ids().await;
-    assert_eq!(thread_ids, vec![agent_id]);
+    let mut thread_ids = manager.list_thread_ids().await;
+    thread_ids.sort_by_key(ToString::to_string);
+    let mut expected_thread_ids = vec![parent.thread_id, agent_id];
+    expected_thread_ids.sort_by_key(ToString::to_string);
+    assert_eq!(thread_ids, expected_thread_ids);
 
     let _ = thread
         .thread

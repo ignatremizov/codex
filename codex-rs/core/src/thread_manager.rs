@@ -240,12 +240,6 @@ enum ShutdownOutcome {
     TimedOut,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ThreadCreatedNotificationMode {
-    Immediate,
-    Deferred,
-}
-
 /// [`ThreadManager`] is responsible for creating threads and maintaining
 /// them in memory.
 pub struct ThreadManager {
@@ -890,7 +884,6 @@ impl ThreadManager {
             options.thread_extension_init,
             options.supports_openai_form_elicitation,
             /*user_shell_override*/ None,
-            ThreadCreatedNotificationMode::Immediate,
         ))
         .await
         .map(ThreadSpawnResult::into_new_thread)
@@ -1017,7 +1010,6 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ None,
-            ThreadCreatedNotificationMode::Immediate,
         ))
         .await
         .map(ThreadSpawnResult::into_new_thread)
@@ -1094,7 +1086,6 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ Some(user_shell_override),
-            ThreadCreatedNotificationMode::Immediate,
         ))
         .await
         .map(ThreadSpawnResult::into_new_thread)
@@ -1922,7 +1913,6 @@ impl ThreadManagerState {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
-            ThreadCreatedNotificationMode::Deferred,
         ))
         .await
         .map(ThreadSpawnResult::into_new_thread)
@@ -1968,7 +1958,6 @@ impl ThreadManagerState {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
-            ThreadCreatedNotificationMode::Deferred,
         ))
         .await
     }
@@ -2017,7 +2006,6 @@ impl ThreadManagerState {
             thread_extension_init,
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
-            ThreadCreatedNotificationMode::Deferred,
         ))
         .await
         .map(ThreadSpawnResult::into_new_thread)
@@ -2064,7 +2052,6 @@ impl ThreadManagerState {
             thread_extension_init,
             supports_openai_form_elicitation,
             user_shell_override,
-            ThreadCreatedNotificationMode::Immediate,
         ))
         .await
         .map(ThreadSpawnResult::into_new_thread)
@@ -2093,7 +2080,6 @@ impl ThreadManagerState {
         mut thread_extension_init: ExtensionDataInit,
         supports_openai_form_elicitation: bool,
         user_shell_override: Option<crate::shell::Shell>,
-        thread_created_notification: ThreadCreatedNotificationMode,
     ) -> CodexResult<ThreadSpawnResult> {
         let source_changed_during_startup = Arc::new(AtomicBool::new(false));
         {
@@ -2234,12 +2220,7 @@ impl ThreadManagerState {
         }))
         .await?;
         let new_thread = self
-            .finalize_thread_spawn(
-                session,
-                io,
-                tracked_session_source,
-                thread_created_notification,
-            )
+            .finalize_thread_spawn(session, io, tracked_session_source)
             .await?;
         if source_changed_during_startup.load(Ordering::Acquire) {
             new_thread.thread.session.request_mcp_runtime_refresh();
@@ -2255,7 +2236,6 @@ impl ThreadManagerState {
         session: Arc<Session>,
         io: SessionIo,
         session_source: SessionSource,
-        thread_created_notification: ThreadCreatedNotificationMode,
     ) -> CodexResult<ThreadSpawnResult> {
         let thread_id = session.thread_id();
         let event = io.next_event().await?;
@@ -2292,12 +2272,7 @@ impl ThreadManagerState {
             }
         };
         match insertion {
-            Ok(new_thread) => {
-                if thread_created_notification == ThreadCreatedNotificationMode::Immediate {
-                    self.notify_thread_created(new_thread.thread_id);
-                }
-                return Ok(new_thread);
-            }
+            Ok(new_thread) => return Ok(new_thread),
             Err(io) => {
                 if let Err(err) = io.shutdown_and_wait().await {
                     warn!("failed to shut down duplicate thread {thread_id}: {err}");

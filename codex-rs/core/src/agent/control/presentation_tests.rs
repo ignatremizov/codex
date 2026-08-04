@@ -1388,7 +1388,7 @@ fn reattached_observer_generation_replaces_stale_parent_selection() {
     let control = AgentControl::default();
     let parent_thread_id = ThreadId::new();
     let old_parent = session_presentation_id(parent_thread_id);
-    let new_parent = session_presentation_id(parent_thread_id);
+    let new_parent = SessionPresentationId::new(parent_thread_id, uuid::Uuid::now_v7());
     let child = session_presentation_id(ThreadId::new());
     let old_admission = Arc::new(SubmissionAdmission::default());
     let new_admission = Arc::new(SubmissionAdmission::default());
