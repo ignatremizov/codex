@@ -468,6 +468,7 @@ impl Session {
                 }
                 RolloutItem::EventMsg(_)
                 | RolloutItem::SessionMeta(_)
+                | RolloutItem::AgentResponseObservation(_)
                 | RolloutItem::RealtimeItem(_)
                 | RolloutItem::SecurityRiskScore(_)
                 | RolloutItem::TokenUsageRecord(_)
@@ -609,7 +610,8 @@ impl Session {
                         turn_context.model_info().truncation_policy.into(),
                     );
                 }
-                RolloutItem::InterAgentCommunicationMetadata { .. } => {}
+                RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::AgentResponseObservation(_) => {}
                 RolloutItem::Compacted(compacted) => {
                     if skipped_compacted_items
                         .iter()
@@ -715,6 +717,7 @@ impl Session {
                 | RolloutItem::ResponseItem(_)
                 | RolloutItem::InterAgentCommunication(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::AgentResponseObservation(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::RealtimeItem(_)
                 | RolloutItem::TokenUsageRecord(_)

@@ -5,6 +5,7 @@ use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::RolloutItem;
 use codex_tools::ToolSpec;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -100,6 +101,16 @@ impl Handler {
         };
 
         let deadline_at_ms = now_unix_timestamp_ms().checked_add(timeout_ms);
+        // Claim the final-outcome presentation before taking any status snapshot or subscription.
+        // A child can complete during setup, and its watcher must already see this wait as the
+        // owner.
+        let presentation_guard = session
+            .services
+            .agent_control
+            .register_targeted_wait_agent_presentation(
+                session.presentation_id(),
+                receiver_thread_ids.as_slice(),
+            );
         let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
         let mut initial_final_statuses = Vec::new();
         for id in &receiver_thread_ids {
@@ -110,35 +121,50 @@ impl Handler {
                 .await
             {
                 Ok((status, rx)) => {
-                    if is_final(&status) {
+                    if is_final(&status.status) {
                         initial_final_statuses.push((*id, status));
                     }
                     status_rxs.push((*id, rx));
                 }
                 Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
-                    initial_final_statuses.push((*id, AgentStatus::NotFound));
+                    initial_final_statuses.push((
+                        *id,
+                        crate::session::TerminalStatusEvent {
+                            turn_id: None,
+                            status: AgentStatus::NotFound,
+                        },
+                    ));
                 }
                 Err(err) => {
-                    let presentation_guard = session
-                        .services
-                        .agent_control
-                        .register_targeted_wait_agent_presentation(
-                            session.presentation_id(),
-                            receiver_thread_ids.as_slice(),
-                        );
                     let mut statuses = HashMap::with_capacity(1);
                     statuses.insert(*id, session.services.agent_control.get_status(*id).await);
+                    let terminal_statuses = statuses
+                        .iter()
+                        .map(|(thread_id, status)| (*thread_id, (None, status.clone())))
+                        .collect::<HashMap<_, _>>();
                     let presentation_commit =
-                        presentation_guard.freeze_for_children(statuses.keys().copied());
+                        presentation_guard.freeze_for_terminal_statuses(&terminal_statuses);
                     let completion_presentation_agent_ids =
-                        completion_presentation_agent_ids(&statuses);
+                        presentation_commit.completion_presentation_agent_ids();
+                    let observation_suffix = session
+                        .services
+                        .agent_control
+                        .wait_response_observation_committed_snapshots(
+                            session.presentation_id(),
+                            &presentation_commit.claimed_target_turns(),
+                        )
+                        .into_iter()
+                        .map(RolloutItem::AgentResponseObservation)
+                        .collect();
                     session
-                        .emit_turn_item_completed_with_primary_delivery(
+                        .emit_turn_item_completed_with_primary_delivery_and_rollout_suffix(
                             &turn,
                             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                                 id: call_id.clone(),
                                 tool: CollabAgentTool::Wait,
                                 status: wait_tool_call_status(&statuses),
+                                observe_commentary: None,
+                                wake_on_completion: None,
                                 deadline_at_ms: None,
                                 sender_thread_id: session.thread_id,
                                 receiver_thread_ids: statuses.keys().copied().collect(),
@@ -149,6 +175,7 @@ impl Handler {
                                 agents_states: statuses,
                                 completion_presentation_agent_ids,
                             }),
+                            observation_suffix,
                             move || presentation_commit.commit(),
                         )
                         .await;
@@ -156,13 +183,6 @@ impl Handler {
                 }
             }
         }
-        let presentation_guard = session
-            .services
-            .agent_control
-            .register_targeted_wait_agent_presentation(
-                session.presentation_id(),
-                receiver_thread_ids.as_slice(),
-            );
         session
             .emit_turn_item_started(
                 &turn,
@@ -170,6 +190,8 @@ impl Handler {
                     id: call_id.clone(),
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::InProgress,
+                    observe_commentary: None,
+                    wake_on_completion: None,
                     deadline_at_ms,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
@@ -216,10 +238,30 @@ impl Handler {
         };
 
         let timed_out = statuses.is_empty();
-        let statuses_by_id = statuses.clone().into_iter().collect::<HashMap<_, _>>();
+        let terminal_statuses_by_id = statuses
+            .iter()
+            .map(|(thread_id, status)| {
+                (*thread_id, (status.turn_id.clone(), status.status.clone()))
+            })
+            .collect::<HashMap<_, _>>();
+        let statuses_by_id = statuses
+            .iter()
+            .map(|(thread_id, status)| (*thread_id, status.status.clone()))
+            .collect::<HashMap<_, _>>();
         let presentation_commit =
-            presentation_guard.freeze_for_children(statuses_by_id.keys().copied());
-        let completion_presentation_agent_ids = completion_presentation_agent_ids(&statuses_by_id);
+            presentation_guard.freeze_for_terminal_statuses(&terminal_statuses_by_id);
+        let completion_presentation_agent_ids =
+            presentation_commit.completion_presentation_agent_ids();
+        let observation_suffix = session
+            .services
+            .agent_control
+            .wait_response_observation_committed_snapshots(
+                session.presentation_id(),
+                &presentation_commit.claimed_target_turns(),
+            )
+            .into_iter()
+            .map(RolloutItem::AgentResponseObservation)
+            .collect();
         let result = WaitAgentResult {
             status: statuses
                 .into_iter()
@@ -227,19 +269,21 @@ impl Handler {
                     target_by_thread_id
                         .get(&thread_id)
                         .cloned()
-                        .map(|target| (target, status))
+                        .map(|target| (target, status.status))
                 })
                 .collect(),
             timed_out,
         };
 
         session
-            .emit_turn_item_completed_with_primary_delivery(
+            .emit_turn_item_completed_with_primary_delivery_and_rollout_suffix(
                 &turn,
                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                     id: call_id,
                     tool: CollabAgentTool::Wait,
                     status: wait_tool_call_status(&statuses_by_id),
+                    observe_commentary: None,
+                    wake_on_completion: None,
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: statuses_by_id.keys().copied().collect(),
@@ -250,23 +294,13 @@ impl Handler {
                     agents_states: statuses_by_id,
                     completion_presentation_agent_ids,
                 }),
+                observation_suffix,
                 move || presentation_commit.commit(),
             )
             .await;
 
         Ok(boxed_tool_output(result))
     }
-}
-
-fn completion_presentation_agent_ids(
-    statuses: &HashMap<ThreadId, AgentStatus>,
-) -> Option<Vec<ThreadId>> {
-    let mut agent_ids = statuses
-        .iter()
-        .filter_map(|(thread_id, status)| is_final(status).then_some(*thread_id))
-        .collect::<Vec<_>>();
-    agent_ids.sort_by_key(ToString::to_string);
-    (!agent_ids.is_empty()).then_some(agent_ids)
 }
 
 fn wait_tool_call_status(statuses: &HashMap<ThreadId, AgentStatus>) -> CollabAgentToolCallStatus {
@@ -352,12 +386,18 @@ async fn wait_for_final_status(
     session: Arc<Session>,
     thread_id: ThreadId,
     mut status_rx: crate::session::TerminalStatusSubscription,
-) -> Option<(ThreadId, AgentStatus)> {
+) -> Option<(ThreadId, crate::session::TerminalStatusEvent)> {
     match status_rx.recv().await {
         Some(status) => Some((thread_id, status)),
         None => {
             let latest = session.services.agent_control.get_status(thread_id).await;
-            is_final(&latest).then_some((thread_id, latest))
+            is_final(&latest).then_some((
+                thread_id,
+                crate::session::TerminalStatusEvent {
+                    turn_id: None,
+                    status: latest,
+                },
+            ))
         }
     }
 }

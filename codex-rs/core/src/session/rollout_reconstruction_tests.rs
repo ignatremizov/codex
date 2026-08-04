@@ -96,15 +96,15 @@ fn inter_agent_assistant_message(text: &str) -> ResponseItem {
 }
 
 fn completion_context_item() -> ResponseItem {
-    ResponseItem::Message {
-        id: Some(new_sub_agent_completion_context_response_item_id()),
-        role: "user".to_string(),
-        content: vec![ContentItem::InputText {
-            text: "<subagent_notification>child done</subagent_notification>".to_string(),
-        }],
-        phase: None,
-        internal_chat_message_metadata_passthrough: None,
-    }
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "<subagent_notification>child done</subagent_notification>".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(new_sub_agent_completion_context_response_item_id());
+    communication.to_model_input_item()
 }
 
 #[tokio::test]

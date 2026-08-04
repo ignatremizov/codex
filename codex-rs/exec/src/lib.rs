@@ -1035,7 +1035,9 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     };
     exec_span.record("turn.id", task_id.as_str());
 
-    // Run the loop until the task is complete.
+    // Run the loop until the primary task is complete. This one-shot host exits at that boundary,
+    // so a multi-agent final wake cannot start a later exec turn. Commentary and final responses
+    // may still steer the active turn, and wait_agent may retrieve a response before it completes.
     // Track whether a fatal error was reported by the server so we can
     // exit with a non-zero status for automation-friendly signaling.
     let mut error_seen = false;

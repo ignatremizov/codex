@@ -426,6 +426,54 @@ async fn wait_for_turn_complete(codex: &CodexThread) {
     wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn steer_after_final_item_preserves_the_last_non_empty_agent_message() {
+    const FIRST_ANSWER: &str = "answer before the steer";
+    const STEER_PROMPT: &str = "no additional reply is needed";
+
+    let (gate_completed_tx, gate_completed_rx) = oneshot::channel();
+    let first_chunks = vec![
+        chunk(ev_response_created("resp-before-steer")),
+        chunk(ev_message_item_done("msg-before-steer", FIRST_ANSWER)),
+        gated_chunk(gate_completed_rx, vec![ev_completed("resp-before-steer")]),
+    ];
+    let follow_up_chunks = vec![
+        chunk(ev_response_created("resp-after-steer")),
+        chunk(ev_message_item_done("msg-after-steer", "")),
+        chunk(ev_completed("resp-after-steer")),
+    ];
+    let (server, _completions) =
+        start_streaming_sse_server(vec![first_chunks, follow_up_chunks]).await;
+    let codex = build_codex(&server).await;
+
+    submit_user_input(&codex, "answer before accepting a steer").await;
+    wait_for_agent_message(&codex, FIRST_ANSWER).await;
+    steer_user_input(&codex, STEER_PROMPT).await;
+    gate_completed_tx
+        .send(())
+        .expect("first response completion gate should remain open");
+
+    let event = wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    let EventMsg::TurnComplete(turn_complete) = event else {
+        unreachable!("wait predicate only accepts turn/complete events");
+    };
+    assert_eq!(
+        turn_complete.last_agent_message,
+        Some(FIRST_ANSWER.to_string())
+    );
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 2);
+    let follow_up: Value = from_slice(&requests[1]).expect("parse follow-up request");
+    assert!(
+        message_input_texts(&follow_up, "user")
+            .iter()
+            .any(|text| text == STEER_PROMPT)
+    );
+
+    server.shutdown().await;
+}
+
 async fn wait_for_sleep_item_started(codex: &CodexThread, call_id: &str, duration_ms: u64) {
     let event = wait_for_event(codex, |event| {
         matches!(

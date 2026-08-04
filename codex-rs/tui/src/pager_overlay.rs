@@ -1216,7 +1216,9 @@ impl TranscriptOverlay {
         }
         let live_tail = self.take_live_tail_renderable();
         self.cells = cells;
-        self.browser.clear_review_target();
+        if cell_count_changed {
+            self.browser.clear_review_target();
+        }
         if self
             .highlight_cell
             .is_some_and(|idx| idx >= self.cells.len())

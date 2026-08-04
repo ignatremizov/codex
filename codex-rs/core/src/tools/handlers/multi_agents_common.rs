@@ -309,13 +309,16 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
 pub(crate) async fn apply_spawn_agent_service_tier(
     session: &Session,
     config: &mut Config,
+    requested_service_tier: Option<&str>,
 ) -> Result<(), FunctionCallError> {
-    let Some(service_tier) = session.services.agent_control.root_service_tier() else {
+    let inherited_service_tier = session.services.agent_control.root_service_tier();
+    let candidate_service_tiers = [
+        requested_service_tier.map(str::to_string),
+        config.service_tier.clone(),
+        inherited_service_tier,
+    ];
+    if candidate_service_tiers.iter().all(Option::is_none) {
         config.service_tier = None;
-        return Ok(());
-    };
-    if service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE {
-        config.service_tier = Some(service_tier);
         return Ok(());
     }
 
@@ -330,9 +333,33 @@ pub(crate) async fn apply_spawn_agent_service_tier(
         .get_model_info(model.as_str(), &config.to_models_manager_config())
         .await;
 
-    config.service_tier = model_info
-        .supports_service_tier(service_tier.as_str())
-        .then_some(service_tier);
+    if let Some(requested_service_tier) = requested_service_tier
+        && requested_service_tier != SERVICE_TIER_DEFAULT_REQUEST_VALUE
+        && !model_info.supports_service_tier(requested_service_tier)
+    {
+        let supported_service_tiers = if model_info.service_tiers.is_empty() {
+            "none".to_string()
+        } else {
+            model_info
+                .service_tiers
+                .iter()
+                .map(|tier| tier.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(FunctionCallError::RespondToModel(format!(
+            "Service tier `{requested_service_tier}` is not supported for model `{model}`. Supported service tiers: {supported_service_tiers}"
+        )));
+    }
+
+    config.service_tier =
+        candidate_service_tiers
+            .into_iter()
+            .flatten()
+            .find(|candidate_service_tier| {
+                candidate_service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE
+                    || model_info.supports_service_tier(candidate_service_tier)
+            });
     Ok(())
 }
 

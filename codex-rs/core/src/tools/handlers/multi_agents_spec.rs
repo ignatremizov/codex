@@ -18,6 +18,10 @@ const SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1: &str =
     "Agent type override for the new agent. Omit to use `default`.";
 const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
     "Model override for the new agent. Omit unless an explicit override is needed.";
+const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
+    "Service tier override for the new agent. Omit unless explicitly requested.";
+const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional response handling for target agent turn. Omit for normal passive delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically. Continue parallel work, or finish your current turn to wait; completion wakes you when idle. f and wait_agent are alternatives for same target turn. x: do not subscribe this call to final reply; use to notify parent mid-turn so parent's later completion is not injected into current task. Can combine as cf or cx.";
+const RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION: &str = "Same response handling as send_input.w.";
 const MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION: usize = 5;
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
 
@@ -172,6 +176,10 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
                     .to_string(),
             )),
         ),
+        (
+            "w".to_string(),
+            response_observation_schema(RESPONSE_OBSERVATION_DESCRIPTION),
+        ),
     ]);
 
     ToolSpec::Namespace(ResponsesApiNamespace {
@@ -272,10 +280,16 @@ pub fn create_followup_task_tool(message_delivery: MultiAgentMessageDelivery) ->
 }
 
 pub fn create_resume_agent_tool() -> ToolSpec {
-    let properties = BTreeMap::from([(
-        "id".to_string(),
-        JsonSchema::string(Some("Agent id to resume.".to_string())),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "id".to_string(),
+            JsonSchema::string(Some("Agent id to resume.".to_string())),
+        ),
+        (
+            "w".to_string(),
+            response_observation_schema(RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION),
+        ),
+    ]);
 
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: MULTI_AGENT_V1_NAMESPACE.to_string(),
@@ -283,7 +297,7 @@ pub fn create_resume_agent_tool() -> ToolSpec {
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "resume_agent".to_string(),
             description:
-                "Resume a previously closed agent by id so it can receive send_input and wait_agent calls."
+                "Resume a previously closed agent by id so it can receive send_input and wait_agent calls. Cannot target current thread."
                     .to_string(),
             strict: false,
             defer_loading: None,
@@ -299,7 +313,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
         description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "wait_agent".to_string(),
-            description: "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status."
+            description: "Wait when a result is required before next action or a timeout is useful. Returns when any target reaches final status or timeout expires; completed status includes final message. For same target turn, wait_agent and w containing f are alternatives, not a sequence; an f subscription remains active through commentary and other work until completion."
                 .to_string(),
             strict: false,
             defer_loading: None,
@@ -353,7 +367,7 @@ pub fn create_close_agent_tool_v1() -> ToolSpec {
         description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "close_agent".to_string(),
-            description: "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore.".to_string(),
+            description: "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore. Cannot target current thread; return your result instead.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(properties, Some(vec!["target".to_string()]), Some(false.into())),
@@ -650,7 +664,21 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
                     .to_string(),
             )),
         ),
+        (
+            "service_tier".to_string(),
+            JsonSchema::string(Some(
+                SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION.to_string(),
+            )),
+        ),
+        (
+            "w".to_string(),
+            response_observation_schema(RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION),
+        ),
     ])
+}
+
+fn response_observation_schema(description: &str) -> JsonSchema {
+    JsonSchema::string(Some(description.to_string()))
 }
 
 fn spawn_agent_common_properties_v2(
@@ -686,6 +714,12 @@ fn spawn_agent_common_properties_v2(
             JsonSchema::string(Some(
                 "Reasoning effort override for the new agent. Omit to inherit the parent effort."
                     .to_string(),
+            )),
+        ),
+        (
+            "service_tier".to_string(),
+            JsonSchema::string(Some(
+                SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
     ])

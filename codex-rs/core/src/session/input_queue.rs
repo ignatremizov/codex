@@ -73,6 +73,14 @@ pub(crate) enum InputQueueActivity {
     Steer,
 }
 
+/// Whether the current turn-local queue requires another model sample.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PendingInputFollowUp {
+    Required,
+    DeferredAtMcpBoundary,
+    NoTurnLocalFollowUp { accepts_mailbox_delivery: bool },
+}
+
 pub(super) enum CompletionCommunicationCommit {
     Ordinary,
     Started(ResponseItemId),
@@ -129,6 +137,32 @@ impl TurnInputQueue {
     pub(crate) fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
+}
+
+pub(crate) fn classify_pending_input_follow_up(turn_state: &TurnState) -> PendingInputFollowUp {
+    let accepts_mailbox_delivery = turn_state.accepts_mailbox_delivery_for_current_turn();
+    for item in turn_state.pending_input() {
+        if is_mcp_server_use_context_input_item(item) {
+            return PendingInputFollowUp::DeferredAtMcpBoundary;
+        }
+        if !matches!(
+            item,
+            TurnInput::InterAgentCommunication(communication)
+                if !communication.trigger_turn && !accepts_mailbox_delivery
+        ) {
+            return PendingInputFollowUp::Required;
+        }
+    }
+    PendingInputFollowUp::NoTurnLocalFollowUp {
+        accepts_mailbox_delivery,
+    }
+}
+
+pub(super) fn is_mcp_server_use_context_input_item(item: &TurnInput) -> bool {
+    let TurnInput::ResponseItem(item) = item else {
+        return false;
+    };
+    crate::context::McpServerUseInstructions::matches_response_item(item)
 }
 
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.

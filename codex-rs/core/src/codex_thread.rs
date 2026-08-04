@@ -109,6 +109,51 @@ pub struct ThreadConfigSnapshot {
     pub originator: String,
 }
 
+/// Explains why `CodexThread::try_start_turn_if_idle` rejected an automatic
+/// idle turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TryStartTurnIfIdleRejectionReason {
+    /// User/client-triggered mailbox work or a subscribed agent wake is already
+    /// pending and must take priority over extension-initiated idle work.
+    PendingTriggerTurn,
+    /// The thread is in Plan mode, where idle work without user input must not
+    /// start a new model turn.
+    PlanMode,
+    /// Another turn or task is active, or the idle reservation was lost before
+    /// the automatic turn could start.
+    Busy,
+    /// A user-prompt hook consumed and rejected the submitted input.
+    RejectedByHook,
+    /// The automatic turn ended before its initial input was persisted.
+    TaskEndedBeforePersistence,
+    /// The initial input could not be durably written to the rollout.
+    PersistenceFailed,
+}
+
+/// Rejection returned when an extension asks to start automatic idle work but
+/// the thread is not eligible to run it.
+#[derive(Debug)]
+pub struct TryStartTurnIfIdleError {
+    reason: TryStartTurnIfIdleRejectionReason,
+    input: Vec<TurnInput>,
+}
+
+impl TryStartTurnIfIdleError {
+    pub(crate) fn new(reason: TryStartTurnIfIdleRejectionReason, input: Vec<TurnInput>) -> Self {
+        Self { reason, input }
+    }
+
+    /// Returns the stable reason the automatic idle turn was rejected.
+    pub fn reason(&self) -> TryStartTurnIfIdleRejectionReason {
+        self.reason
+    }
+
+    /// Consumes the rejection and returns the original turn input
+    /// unchanged, so callers can retry, drop, or log it explicitly.
+    pub fn into_input(self) -> Vec<TurnInput> {
+        self.input
+    }
+}
 impl ThreadConfigSnapshot {
     pub fn cwd(&self) -> &AbsolutePathBuf {
         &self.environments.legacy_fallback_cwd
@@ -561,6 +606,40 @@ impl CodexThread {
         task.turn_context.turn_metadata_state.root_turn_id()
     }
 
+    /// Starts an automatic regular turn with response items or user input only
+    /// when idle work is allowed for this thread.
+    ///
+    /// This is the required entry point for extensions that want to launch
+    /// model-visible work from `ThreadLifecycleContributor::on_thread_idle`.
+    /// The call succeeds only if no user/client-triggered turn is queued, no
+    /// subscribed agent wake is pending, and no task is currently active. Work
+    /// without user input is also rejected in Plan mode. Active Review tasks
+    /// are rejected by the active-task check because Review turns are not
+    /// steerable.
+    ///
+    /// On rejection, the returned error includes a stable reason and carries
+    /// the original `items` unchanged so the caller can decide whether to drop
+    /// them, retry later, or log why no automatic turn was started.
+    pub async fn try_start_turn_if_idle(
+        &self,
+        items: Vec<TurnInput>,
+    ) -> Result<(), TryStartTurnIfIdleError> {
+        self.session.try_start_turn_if_idle(items).await
+    }
+
+    /// Starts automatic idle work while retaining `reservation_lease` until the
+    /// session has atomically reserved the idle turn.
+    ///
+    /// The lease is released before turn-start lifecycle contributors run.
+    pub async fn try_start_turn_if_idle_with_lease(
+        &self,
+        items: Vec<TurnInput>,
+        reservation_lease: impl Send,
+    ) -> Result<(), TryStartTurnIfIdleError> {
+        self.session
+            .try_start_turn_if_idle_with_lease(items, reservation_lease)
+            .await
+    }
     pub async fn set_app_server_client_info(
         &self,
         app_server_client_name: Option<String>,

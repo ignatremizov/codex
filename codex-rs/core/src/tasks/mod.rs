@@ -28,7 +28,9 @@ use crate::codex_thread::BackgroundTerminalInfo;
 use crate::config::Config;
 use crate::context::ContextualUserFragment;
 use crate::hook_runtime::run_turn_interrupt_hooks;
+use crate::session::PendingInputFollowUp;
 use crate::session::TurnInput;
+use crate::session::classify_pending_input_follow_up;
 use crate::session::session::Session;
 use crate::session::turn::run_hooks_and_record_inputs;
 use crate::session::turn_context::NewTurnContextOptions;
@@ -72,6 +74,18 @@ const TASK_COMPACT_METRIC: &str = "codex.task.compact";
 static ACTIVE_TURNS: Gauge = Gauge::new("core.turns.active");
 
 pub(crate) type SessionTaskResult = CodexResult<Option<String>>;
+
+/// Whether task finalization completed or reserved the active task for newly accepted input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TaskFinishAction {
+    Finish,
+    Continue,
+}
+
+pub(crate) enum MailboxParentProvenance {
+    Ignore,
+    Attribute,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InterruptedTurnHistoryMarker {
@@ -202,6 +216,27 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = SessionTaskResult> + Send;
 
+    /// Whether the task can continue when input is accepted after its last pending-input check.
+    ///
+    /// Implementations returning `true` must override
+    /// [`SessionTask::run_pending_input_continuation`].
+    fn supports_pending_input_continuation(&self) -> bool {
+        false
+    }
+
+    /// Continues the existing turn without repeating its turn-start lifecycle.
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        cancellation_token: CancellationToken,
+    ) -> impl std::future::Future<Output = SessionTaskResult> + Send {
+        async move {
+            let _ = (self, session, ctx, cancellation_token);
+            unreachable!("task does not support pending input continuation")
+        }
+    }
+
     /// Gives the task a chance to perform cleanup after an abort.
     ///
     /// The default implementation is a no-op; override this if additional
@@ -228,6 +263,15 @@ pub(crate) trait AnySessionTask: Send + Sync + 'static {
         session: Arc<Session>,
         ctx: Arc<TurnContext>,
         input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, SessionTaskResult>;
+
+    fn supports_pending_input_continuation(&self) -> bool;
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
         cancellation_token: CancellationToken,
     ) -> BoxFuture<'static, SessionTaskResult>;
 
@@ -262,6 +306,24 @@ where
         ))
     }
 
+    fn supports_pending_input_continuation(&self) -> bool {
+        <T as SessionTask>::supports_pending_input_continuation(self)
+    }
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, SessionTaskResult> {
+        Box::pin(<T as SessionTask>::run_pending_input_continuation(
+            self,
+            session,
+            ctx,
+            cancellation_token,
+        ))
+    }
+
     fn abort<'a>(&'a self, session: Arc<Session>, ctx: Arc<TurnContext>) -> BoxFuture<'a, ()> {
         Box::pin(SessionTask::abort(self, session, ctx))
     }
@@ -288,6 +350,9 @@ impl Session {
         let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
         let span_name = task.span_name();
+        if !self.begin_agent_response_turn(&turn_context.sub_id) {
+            return;
+        }
         let started_at = Instant::now();
         let turn_started_at_unix_ms = turn_context
             .turn_timing_state
@@ -362,7 +427,7 @@ impl Session {
         let handle = tokio::spawn(
             async move {
                 let ctx_for_finish = Arc::clone(&ctx);
-                let task_result = task_for_run
+                let mut task_result = Arc::clone(&task_for_run)
                     .run(
                         Arc::clone(&session),
                         ctx,
@@ -372,22 +437,49 @@ impl Session {
                     .instrument(trace_span!("session_task.run"))
                     .await;
                 let sess = Arc::clone(&session);
-                if let Err(err) = sess.flush_rollout().await {
-                    warn!("failed to flush rollout before completing turn: {err}");
-                    sess.send_event(
-                        ctx_for_finish.as_ref(),
-                        EventMsg::Warning(WarningEvent {
-                            message: format!(
-                                "Failed to save the conversation transcript; Codex will continue retrying. Error: {err}"
-                            ),
-                        }),
-                    )
-                    .await;
-                }
-                if !task_cancellation_token.is_cancelled() {
-                    // Finish uniformly from the spawn site so all tasks share the same lifecycle.
-                    sess.on_task_finished(Arc::clone(&ctx_for_finish), task_result)
+                let mut last_agent_message = None;
+                loop {
+                    // Match run_turn's handling of late follow-up work: an acknowledgement with
+                    // no visible final text must not erase the turn's last visible answer.
+                    if let Ok(Some(message)) = &task_result {
+                        last_agent_message = Some(message.clone());
+                    } else if let (Ok(None), Some(message)) = (&task_result, &last_agent_message) {
+                        task_result = Ok(Some(message.clone()));
+                    }
+                    if let Err(err) = sess.flush_rollout().await {
+                        warn!("failed to flush rollout before completing turn: {err}");
+                        sess.send_event(
+                            ctx_for_finish.as_ref(),
+                            EventMsg::Warning(WarningEvent {
+                                message: format!(
+                                    "Failed to save the conversation transcript; Codex will continue retrying. Error: {err}"
+                                ),
+                            }),
+                        )
                         .await;
+                    }
+                    if task_cancellation_token.is_cancelled() {
+                        break;
+                    }
+                    // Finish uniformly from the spawn site so all tasks share the same lifecycle.
+                    match sess
+                        .on_task_finished(Arc::clone(&ctx_for_finish), task_result)
+                        .await
+                    {
+                        TaskFinishAction::Finish => break,
+                        TaskFinishAction::Continue => {
+                            task_result = Arc::clone(&task_for_run)
+                                .run_pending_input_continuation(
+                                    Arc::clone(&session),
+                                    Arc::clone(&ctx_for_finish),
+                                    task_cancellation_token.child_token(),
+                                )
+                                .instrument(trace_span!(
+                                    "session_task.run_pending_input_continuation"
+                                ))
+                                .await;
+                        }
+                    }
                 }
                 done_clone.notify_waiters();
             }
@@ -446,6 +538,18 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) {
+        // codex exec is a one-shot host: its client leaves when the primary turn completes.
+        // Mail may still steer that active turn, but must not synthesize a later idle turn during
+        // the narrow interval before exec consumes the primary TurnCompleted notification.
+        if self
+            .app_server_client_metadata()
+            .await
+            .client_name
+            .as_deref()
+            == Some("codex_exec")
+        {
+            return;
+        }
         if !self.input_queue.has_queued_turn_inputs().await
             && (!self.input_queue.has_pending_mailbox_items().await
                 || (!self.input_queue.has_trigger_turn_mailbox_items().await
@@ -641,11 +745,16 @@ impl Session {
         true
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "task removal and the final pending-input check must remain atomic with steering"
+    )]
     pub async fn on_task_finished(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         task_result: SessionTaskResult,
-    ) {
+    ) -> TaskFinishAction {
+        let can_continue = task_result.is_ok();
         let (last_agent_message, abort_reason) = match task_result {
             Ok(last_agent_message) => (last_agent_message, None),
             Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
@@ -667,21 +776,49 @@ impl Session {
                 (None, None)
             }
         };
+        let turn_state = {
+            let mut active = self.active_turn.lock().await;
+            let Some(active_turn) = active.as_mut() else {
+                return TaskFinishAction::Finish;
+            };
+            let Some(task) = active_turn.task.as_ref() else {
+                return TaskFinishAction::Finish;
+            };
+            // Steering takes these locks in the same order. It therefore either publishes input
+            // before this check and reserves a continuation, or observes the detached task and
+            // starts/rejects work through the ordinary idle-turn path.
+            let should_continue =
+                can_continue && task.task.supports_pending_input_continuation() && {
+                    let turn_state = active_turn.turn_state.lock().await;
+                    matches!(
+                        classify_pending_input_follow_up(&turn_state),
+                        PendingInputFollowUp::Required
+                    )
+                };
+            if should_continue {
+                return TaskFinishAction::Continue;
+            }
+            let Some(mut task) = active_turn.task.take() else {
+                return TaskFinishAction::Finish;
+            };
+            let task_ended_before_persistence = if let Some(sender) = task.input_persisted.take() {
+                let _ = sender.send(Err(
+                    TryStartTurnIfIdleRejectionReason::TaskEndedBeforePersistence,
+                ));
+                true
+            } else {
+                false
+            };
+            task.handle.detach();
+            (
+                Arc::clone(&active_turn.turn_state),
+                task_ended_before_persistence,
+            )
+        };
+        let (turn_state, mut task_ended_before_persistence) = turn_state;
         turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();
-
-        let turn_state = {
-            let mut active = self.active_turn.lock().await;
-            active.as_mut().and_then(|active_turn| {
-                let task = active_turn.task.take()?;
-                task.handle.detach();
-                Some(Arc::clone(&active_turn.turn_state))
-            })
-        };
-        let Some(turn_state) = turn_state else {
-            return;
-        };
         let mut pending_input = self
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
@@ -944,12 +1081,13 @@ impl Session {
         }
         drop(_durable_context_permit);
         if !cleared_active_turn {
-            return;
+            return TaskFinishAction::Finish;
         }
         if !queued_pending_input_after_mcp_use {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
         }
         self.maybe_start_turn_for_pending_work().await;
+        TaskFinishAction::Finish
     }
 
     pub(crate) async fn close_unified_exec_processes(&self) {

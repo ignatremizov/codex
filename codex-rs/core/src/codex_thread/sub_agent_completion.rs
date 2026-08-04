@@ -1,8 +1,9 @@
 use codex_protocol::items::TurnItem;
+use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
-use codex_protocol::protocol::sub_agent_completion_item;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
+use codex_protocol::protocol::sub_agent_completion_item_with_visibility;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,10 +52,12 @@ impl CodexThread {
         &self,
         agent_reference: &str,
         status: &AgentStatus,
+        model_visibility: SubAgentCompletionModelVisibility,
     ) {
         self.emit_sub_agent_completion_with_admission(
             agent_reference,
             status,
+            model_visibility,
             CompletionEmissionAdmission::Ordinary,
         )
         .await;
@@ -64,11 +67,13 @@ impl CodexThread {
         &self,
         agent_reference: &str,
         status: &AgentStatus,
+        model_visibility: SubAgentCompletionModelVisibility,
         completion_delivery: AcceptedCompletionDelivery,
     ) {
         self.emit_sub_agent_completion_with_admission(
             agent_reference,
             status,
+            model_visibility,
             CompletionEmissionAdmission::Accepted(completion_delivery),
         )
         .await;
@@ -78,9 +83,12 @@ impl CodexThread {
         &self,
         agent_reference: &str,
         status: &AgentStatus,
+        model_visibility: SubAgentCompletionModelVisibility,
         admission: CompletionEmissionAdmission,
     ) {
-        let Some(item) = sub_agent_completion_item(agent_reference, status) else {
+        let Some(item) =
+            sub_agent_completion_item_with_visibility(agent_reference, status, model_visibility)
+        else {
             return;
         };
         let accepted_completion_delivery = match admission {
@@ -130,41 +138,26 @@ impl CodexThread {
 
     pub(crate) async fn persist_sub_agent_notification_without_turn(
         &self,
-        message: String,
+        communication: InterAgentCommunication,
         admission: CompletionSubmissionAdmission,
+        committed_observations: Vec<AgentResponseObservation>,
     ) -> bool {
         let session = Arc::clone(&self.session);
-        let session_loop_termination = self.io.session_loop_termination.clone();
-        let response_item_id = new_sub_agent_completion_context_response_item_id();
-        let mut attempt = 1;
-        loop {
-            let result = tokio::select! {
-                _ = session_loop_termination.clone() => return false,
-                result = session.record_sub_agent_notification_with_admission(
-                    message.clone(),
-                    response_item_id.clone(),
-                    admission,
-                ) => result,
-            };
-            match result {
-                Ok(()) => return true,
-                Err(err) => {
-                    if !session
-                        .wait_for_completion_submission_admission(admission)
-                        .await
-                    {
-                        tracing::warn!(
-                            "failed to record subagent notification and parent admission is closed: {err}"
-                        );
-                        return false;
-                    }
-                    tracing::warn!(
-                        "failed to record subagent notification; retrying while the parent session is active: {err}"
-                    );
-                }
-            }
-            if !wait_for_completion_retry(&session_loop_termination, &mut attempt).await {
-                return false;
+        let result = tokio::select! {
+            _ = self.io.session_loop_termination.clone() => return false,
+            result = session.record_sub_agent_notification_with_observation_commit(
+                communication,
+                admission,
+                committed_observations,
+            ) => result,
+        };
+        match result {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to record observed subagent notification; watcher will retry: {err}"
+                );
+                false
             }
         }
     }

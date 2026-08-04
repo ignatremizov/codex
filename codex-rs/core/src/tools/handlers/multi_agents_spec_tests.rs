@@ -112,7 +112,12 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
             .and_then(|schema| schema.description.as_deref()),
         Some("Reasoning effort override for the new agent. Omit to inherit the parent effort.")
     );
-    assert!(!properties.contains_key("service_tier"));
+    assert_eq!(
+        properties
+            .get("service_tier")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION)
+    );
     assert_eq!(
         parameters.required.as_ref(),
         Some(&vec![
@@ -177,7 +182,56 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
             .and_then(|schema| schema.description.as_deref()),
         Some(SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION)
     );
-    assert!(!properties.contains_key("service_tier"));
+    assert_eq!(
+        properties
+            .get("service_tier")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION)
+    );
+    assert_eq!(
+        properties.get("w"),
+        Some(&response_observation_schema(
+            RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION
+        ))
+    );
+}
+
+#[test]
+fn v1_lifecycle_tools_use_compact_response_observation_guidance() {
+    let tools = [
+        (
+            create_spawn_agent_tool_v1(SpawnAgentToolOptions::default()),
+            RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION,
+        ),
+        (
+            create_send_input_tool_v1(),
+            RESPONSE_OBSERVATION_DESCRIPTION,
+        ),
+        (
+            create_resume_agent_tool(),
+            RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION,
+        ),
+    ];
+
+    for (tool, expected_description) in tools {
+        let ToolSpec::Namespace(namespace) = tool else {
+            panic!("v1 lifecycle tool should use the namespace");
+        };
+        let Some(ResponsesApiNamespaceTool::Function(tool)) = namespace.tools.first() else {
+            panic!("v1 lifecycle tool should contain a function");
+        };
+        let properties = tool
+            .parameters
+            .properties
+            .as_ref()
+            .expect("v1 lifecycle tool should use object params");
+        assert_eq!(
+            properties.get("w"),
+            Some(&response_observation_schema(expected_description)),
+            "{} should expose the shared wake/event state",
+            tool.name
+        );
+    }
 }
 
 #[test]

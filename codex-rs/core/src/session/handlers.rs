@@ -427,6 +427,11 @@ async fn thread_rollback_target(
         return ThreadRollbackDisposition::Continue;
     }
 
+    let _response_observation_transaction = sess
+        .services
+        .agent_control
+        .acquire_response_observation_transaction(sess.presentation_id())
+        .await;
     let Ok(_durable_context_permit) = sess.acquire_durable_context_permit().await else {
         send_thread_rollback_error(
             sess,
@@ -744,6 +749,26 @@ async fn thread_rollback_target(
         && let Err(err) = sess.persist_reconstruction_repair_with_policy(repair).await
     {
         warn!(%err, "failed to persist compacted-media repair after rollback");
+    }
+    let response_observations = sess
+        .services
+        .agent_control
+        .response_observation_snapshots_for_parent(sess.presentation_id());
+    if !sess
+        .persist_agent_response_observations_locked(&response_observations)
+        .await
+    {
+        sess.submission_admission.rollback_requires_reload();
+        send_thread_rollback_error_with_info(
+            sess,
+            turn_context.sub_id.clone(),
+            "rollback committed, but response observation state could not be re-persisted; refresh the thread before continuing"
+                .to_string(),
+            CodexErrorInfo::ThreadRollbackCommitUnknown,
+            ThreadRollbackErrorDelivery::Ephemeral,
+        )
+        .await;
+        return ThreadRollbackDisposition::ReloadRequired;
     }
 
     // Admit ordinary follow-up submissions while keeping completion delivery behind the rollback

@@ -1909,6 +1909,8 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 id: "wait-1".to_string(),
                 tool: codex_app_server_protocol::CollabAgentTool::Wait,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+                observe_commentary: None,
+                wake_on_completion: None,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
@@ -1951,6 +1953,8 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 id: "send-1".to_string(),
                 tool: codex_app_server_protocol::CollabAgentTool::SendInput,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1969,6 +1973,91 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
     )));
 
     assert_eq!(app.agent_navigation.get(&receiver_thread_id), None);
+}
+
+#[tokio::test]
+async fn collab_wake_subscription_tracks_current_and_resume_next_turn_policies() {
+    let mut app = make_test_app().await;
+    let observer_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000125").expect("valid thread id");
+    let receiver_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000126").expect("valid thread id");
+    let completed_tool =
+        |id: &str,
+         tool: codex_app_server_protocol::CollabAgentTool,
+         target_status: codex_app_server_protocol::CollabAgentStatus| {
+            ServerNotification::ItemCompleted(
+                codex_app_server_protocol::ItemCompletedNotification {
+                    thread_id: observer_thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    completed_at_ms: 0,
+                    item: ThreadItem::CollabAgentToolCall {
+                        id: id.to_string(),
+                        tool,
+                        status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                        observe_commentary: Some(false),
+                        wake_on_completion: Some(true),
+                        sender_thread_id: observer_thread_id.to_string(),
+                        receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                        receiver_agents: Vec::new(),
+                        prompt: None,
+                        model: None,
+                        reasoning_effort: None,
+                        agents_states: HashMap::from([(
+                            receiver_thread_id.to_string(),
+                            codex_app_server_protocol::CollabAgentState {
+                                status: target_status,
+                                message: None,
+                            },
+                        )]),
+                    },
+                },
+            )
+        };
+
+    let send = completed_tool(
+        "send-1",
+        codex_app_server_protocol::CollabAgentTool::SendInput,
+        codex_app_server_protocol::CollabAgentStatus::Running,
+    );
+    app.cache_collab_wake_subscription_for_notification(&send);
+
+    assert!(
+        app.agent_navigation
+            .has_wake_subscription(observer_thread_id, receiver_thread_id)
+    );
+
+    app.agent_navigation.mark_stopped(receiver_thread_id);
+
+    assert!(
+        !app.agent_navigation
+            .has_wake_subscription(observer_thread_id, receiver_thread_id)
+    );
+
+    let resume = completed_tool(
+        "resume-1",
+        codex_app_server_protocol::CollabAgentTool::ResumeAgent,
+        codex_app_server_protocol::CollabAgentStatus::Completed,
+    );
+    app.cache_collab_wake_subscription_for_notification(&resume);
+
+    assert!(
+        app.agent_navigation
+            .has_wake_subscription(observer_thread_id, receiver_thread_id),
+        "resume observation should remain bound to the next admitted target turn"
+    );
+    app.agent_navigation.mark_stopped(receiver_thread_id);
+    assert!(
+        app.agent_navigation
+            .has_wake_subscription(observer_thread_id, receiver_thread_id),
+        "replaying the already-terminal turn must not consume a next-turn wake"
+    );
+    app.agent_navigation.mark_running(receiver_thread_id);
+    app.agent_navigation.mark_stopped(receiver_thread_id);
+    assert!(
+        !app.agent_navigation
+            .has_wake_subscription(observer_thread_id, receiver_thread_id)
+    );
 }
 
 #[tokio::test]
@@ -2207,6 +2296,9 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
     .expect("embedded app server");
     let thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
+    let observer_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000999").expect("valid thread id");
+    app.active_thread_id = Some(observer_thread_id);
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
     app.agent_navigation
@@ -2215,6 +2307,11 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
             agent_path: "/root/worker".to_string(),
             is_running_hint: true,
         });
+    app.agent_navigation.note_wake_subscription(
+        observer_thread_id,
+        thread_id,
+        crate::app::agent_navigation::WakeSubscriptionBinding::Bound,
+    );
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
 
@@ -8326,6 +8423,8 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                             tool: codex_app_server_protocol::CollabAgentTool::Wait,
                             status:
                                 codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+                            observe_commentary: None,
+                            wake_on_completion: None,
                             sender_thread_id: ThreadId::new().to_string(),
                             receiver_thread_ids: vec![receiver_thread_id.to_string()],
                             receiver_agents: Vec::new(),
@@ -8377,6 +8476,8 @@ async fn metadata_free_collab_notification_preserves_cached_agent_label() {
                 id: "send-1".to_string(),
                 tool: codex_app_server_protocol::CollabAgentTool::SendInput,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
@@ -8422,7 +8523,7 @@ async fn metadata_free_collab_notification_preserves_cached_agent_label() {
     assert_snapshot!(
         rendered,
         @r"
-    • Sent input to Herschel [default]
+    • Sent input to Herschel [default] (no commentary · no wake on completion)
       └ Return the special word.
     "
     );
