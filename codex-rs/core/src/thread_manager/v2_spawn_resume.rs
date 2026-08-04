@@ -13,6 +13,7 @@ struct PersistedV2SpawnResume {
     agent_graph_store: Arc<dyn AgentGraphStore>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cleanup_failed_v2_spawn_resume(
     state: &Arc<ThreadManagerState>,
     owner: &AgentControl,

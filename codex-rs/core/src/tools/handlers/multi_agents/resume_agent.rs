@@ -244,22 +244,17 @@ async fn try_resume_closed_agent(
     session_source: SessionSource,
 ) -> Result<(), FunctionCallError> {
     let config = build_agent_resume_config(turn.as_ref())?;
-    Box::pin(
-        session
-            .services
-            .agent_control
-            .resume_agent_from_rollout_observing_response(
-                config,
-                receiver_thread_id,
-                session_source,
-                // The handler's post-resume adoption pass applies the requested policy once,
-                // including for standalone rollouts whose persisted source has no parent.
-                ResponseObservationPolicy::from_parts(
-                    /*commentary*/ false,
-                    FinalResponseObservation::None,
-                ),
-            ),
-    )
+    Box::pin(session.services.agent_control.resume_agent_from_rollout(
+        config,
+        receiver_thread_id,
+        session_source,
+        // The handler's post-resume adoption pass applies the requested policy once,
+        // including for standalone rollouts whose persisted source has no parent.
+        ResponseObservationPolicy::from_parts(
+            /*commentary*/ false,
+            FinalResponseObservation::None,
+        ),
+    ))
     .await
     .map(|_| ())
     .map_err(|err| collab_agent_error(receiver_thread_id, err))

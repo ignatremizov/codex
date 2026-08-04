@@ -187,13 +187,6 @@ impl AgentControl {
         }
     }
 
-    /// Shut down `agent_id` and any live descendants reachable from the in-memory spawn tree.
-    pub(crate) async fn shutdown_agent_tree(&self, agent_id: ThreadId) -> CodexResult<String> {
-        let descendant_ids = self.live_thread_spawn_descendants(agent_id).await?;
-        self.shutdown_agent_tree_with_descendants(agent_id, descendant_ids)
-            .await
-    }
-
     async fn shutdown_agent_tree_with_descendants(
         &self,
         agent_id: ThreadId,

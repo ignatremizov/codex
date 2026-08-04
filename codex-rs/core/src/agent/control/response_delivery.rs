@@ -279,6 +279,7 @@ impl AgentControl {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn deliver_v1_commentary(
         &self,
         parent: SessionPresentationId,
@@ -318,6 +319,7 @@ impl AgentControl {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn deliver_recovered_v1_commentary(
         &self,
         parent: SessionPresentationId,

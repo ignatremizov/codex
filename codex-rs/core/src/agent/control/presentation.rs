@@ -630,6 +630,9 @@ impl WaitAgentPresentationGuard {
         mut self,
         terminal_statuses: &HashMap<ThreadId, (Option<String>, AgentStatus)>,
     ) -> WaitAgentPresentationCommit {
+        if terminal_statuses.is_empty() {
+            return self.freeze_for_children(std::iter::empty());
+        }
         let terminals =
             self.presentations
                 .freeze_wait(self.wait_id, self.parent, self.scope.take(), |_| true);

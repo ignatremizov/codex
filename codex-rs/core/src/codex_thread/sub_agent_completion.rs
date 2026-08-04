@@ -10,7 +10,6 @@ use std::time::Duration;
 use super::CodexThread;
 use crate::session::AcceptedCompletionDelivery;
 use crate::session::CompletionSubmissionAdmission;
-use crate::session::CompletionSubmissionAdmissionMode;
 use crate::session::SessionLoopTermination;
 
 impl CodexThread {
@@ -145,7 +144,6 @@ impl CodexThread {
                 response_item_id,
                 admission,
                 committed_observations,
-                CompletionSubmissionAdmissionMode::Try,
             ) => result,
         };
         match result {

@@ -649,7 +649,12 @@ async fn resume_agent_errors_when_manager_dropped() {
     let control = AgentControl::default();
     let (_home, config) = test_config().await;
     let err = control
-        .resume_agent_from_rollout(config, ThreadId::new(), SessionSource::Exec)
+        .resume_agent_from_rollout(
+            config,
+            ThreadId::new(),
+            SessionSource::Exec,
+            ResponseObservationPolicy::default(),
+        )
         .await
         .expect_err("resume_agent should fail without a manager");
     assert_eq!(
@@ -1101,6 +1106,7 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
             harness.config.clone(),
             parent_thread_id,
             SessionSource::Exec,
+            ResponseObservationPolicy::default(),
         )
         .await
         .expect("v2 root resume should succeed");
@@ -2985,7 +2991,12 @@ async fn resume_agent_respects_max_threads_limit() {
         .expect("spawn_agent should succeed for active slot");
 
     let err = control
-        .resume_agent_from_rollout(config, resumable_id, SessionSource::Exec)
+        .resume_agent_from_rollout(
+            config,
+            resumable_id,
+            SessionSource::Exec,
+            ResponseObservationPolicy::default(),
+        )
         .await
         .expect_err("resume should respect max threads");
     let CodexErrorDetails::AgentLimitReached {
@@ -3019,7 +3030,12 @@ async fn resume_agent_releases_slot_after_resume_failure() {
     let control = manager.agent_control();
 
     let _ = control
-        .resume_agent_from_rollout(config.clone(), ThreadId::new(), SessionSource::Exec)
+        .resume_agent_from_rollout(
+            config.clone(),
+            ThreadId::new(),
+            SessionSource::Exec,
+            ResponseObservationPolicy::default(),
+        )
         .await
         .expect_err("resume should fail for missing rollout path");
 
@@ -3051,7 +3067,12 @@ async fn failed_concurrent_resume_setup_preserves_the_adopted_runtime() {
 
     let error = harness
         .control
-        .resume_agent_from_rollout(harness.config.clone(), thread_id, session_source)
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            thread_id,
+            session_source,
+            ResponseObservationPolicy::default(),
+        )
         .await
         .expect_err("adopted resume setup should fail for a missing parent");
 
@@ -4271,6 +4292,7 @@ async fn resume_thread_subagent_restores_stored_metadata() {
                 agent_nickname: None,
                 agent_role: None,
             }),
+            ResponseObservationPolicy::default(),
         )
         .await
         .expect("resume should succeed");
@@ -4344,7 +4366,12 @@ async fn resume_agent_from_rollout_reads_archived_rollout_path() {
 
     let resumed_thread_id = harness
         .control
-        .resume_agent_from_rollout(harness.config.clone(), child_thread_id, SessionSource::Exec)
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::Exec,
+            ResponseObservationPolicy::default(),
+        )
         .await
         .expect("resume should find archived rollout");
     assert_eq!(resumed_thread_id, child_thread_id);
@@ -4387,7 +4414,12 @@ async fn resume_agent_from_paginated_rollout_loads_model_context() {
 
     let resumed_thread_id = harness
         .control
-        .resume_agent_from_rollout(harness.config.clone(), child_thread_id, SessionSource::Exec)
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::Exec,
+            ResponseObservationPolicy::default(),
+        )
         .await
         .expect("resume should load paginated model context");
     assert_eq!(resumed_thread_id, child_thread_id);
@@ -4602,7 +4634,7 @@ async fn list_agent_subtree_thread_ids_finds_live_descendants_of_unloaded_root()
 }
 
 #[tokio::test]
-async fn shutdown_agent_tree_closes_live_descendants() {
+async fn close_agent_closes_live_descendants() {
     let harness = AgentControlHarness::new().await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
 
@@ -4656,7 +4688,7 @@ async fn shutdown_agent_tree_closes_live_descendants() {
 
     let _ = harness
         .control
-        .shutdown_agent_tree(parent_thread_id)
+        .close_agent(parent_thread_id)
         .await
         .expect("tree shutdown should succeed");
 
@@ -4687,7 +4719,7 @@ async fn shutdown_agent_tree_closes_live_descendants() {
 }
 
 #[tokio::test]
-async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
+async fn close_agent_closes_descendants_when_started_at_child() {
     let harness = AgentControlHarness::new().await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
 
@@ -4747,7 +4779,7 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
 
     let _ = harness
         .control
-        .shutdown_agent_tree(parent_thread_id)
+        .close_agent(parent_thread_id)
         .await
         .expect("tree shutdown should succeed");
 
@@ -4939,7 +4971,12 @@ async fn assert_close_wins_lifecycle_race_and_revokes_observation(
 
     let resumed_thread_id = harness
         .control
-        .resume_agent_from_rollout(harness.config.clone(), child_thread_id, child_source)
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            child_source,
+            ResponseObservationPolicy::default(),
+        )
         .await
         .expect("explicit resume should reopen the closed child");
     assert_eq!(resumed_thread_id, child_thread_id);
@@ -5892,7 +5929,12 @@ async fn assert_close_wins_queued_child_resume(multi_agent_version: MultiAgentVe
     let resume_config = harness.config.clone();
     let resume_task = tokio::spawn(async move {
         resume_control
-            .resume_agent_from_rollout(resume_config, child_thread_id, child_source)
+            .resume_agent_from_rollout(
+                resume_config,
+                child_thread_id,
+                child_source,
+                ResponseObservationPolicy::default(),
+            )
             .await
     });
     tokio::task::yield_now().await;
@@ -6022,6 +6064,7 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
             harness.config.clone(),
             parent_thread_id,
             SessionSource::Exec,
+            ResponseObservationPolicy::default(),
         )
         .await
         .expect("single-thread resume should succeed");
@@ -6041,7 +6084,7 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
 
     let _ = harness
         .control
-        .shutdown_agent_tree(parent_thread_id)
+        .close_agent(parent_thread_id)
         .await
         .expect("tree shutdown after resume should succeed");
 }
@@ -6118,6 +6161,7 @@ async fn resume_closed_child_reopens_open_descendants() {
                 agent_nickname: None,
                 agent_role: None,
             }),
+            ResponseObservationPolicy::default(),
         )
         .await
         .expect("child resume should succeed");
@@ -6210,6 +6254,7 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
             harness.config.clone(),
             parent_thread_id,
             SessionSource::Exec,
+            ResponseObservationPolicy::default(),
         )
         .await
         .expect("tree resume should succeed");
@@ -6229,7 +6274,7 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
 
     let _ = harness
         .control
-        .shutdown_agent_tree(parent_thread_id)
+        .close_agent(parent_thread_id)
         .await
         .expect("tree shutdown after subtree resume should succeed");
 }
@@ -6323,6 +6368,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
             harness.config.clone(),
             parent_thread_id,
             SessionSource::Exec,
+            ResponseObservationPolicy::default(),
         )
         .await
         .expect("tree resume should succeed");
@@ -6360,7 +6406,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
 
     let _ = harness
         .control
-        .shutdown_agent_tree(parent_thread_id)
+        .close_agent(parent_thread_id)
         .await
         .expect("tree shutdown after subtree resume should succeed");
 }
@@ -6438,6 +6484,7 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
             harness.config.clone(),
             parent_thread_id,
             SessionSource::Exec,
+            ResponseObservationPolicy::default(),
         )
         .await
         .expect("root resume should succeed");
@@ -6457,7 +6504,7 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
 
     let _ = harness
         .control
-        .shutdown_agent_tree(parent_thread_id)
+        .close_agent(parent_thread_id)
         .await
         .expect("tree shutdown after partial subtree resume should succeed");
 }

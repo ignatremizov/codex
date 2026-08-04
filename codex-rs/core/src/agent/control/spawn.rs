@@ -519,18 +519,16 @@ impl AgentControl {
                 .state
                 .agent_metadata_for_thread(thread_id)
                 .and_then(|metadata| metadata.last_task_message);
-            self.state
-                .reserve_agent_metadata_replacement(
-                    thread_id,
-                    AgentMetadata {
-                        agent_id: Some(thread_id),
-                        agent_path: canonical_agent_path(&canonical_session_source),
-                        agent_nickname: canonical_session_source.get_nickname(),
-                        agent_role: canonical_session_source.get_agent_role(),
-                        last_task_message,
-                    },
-                )?
-                .commit()?;
+            self.restore_agent_metadata(
+                thread_id,
+                AgentMetadata {
+                    agent_id: Some(thread_id),
+                    agent_path: canonical_agent_path(&canonical_session_source),
+                    agent_nickname: canonical_session_source.get_nickname(),
+                    agent_role: canonical_session_source.get_agent_role(),
+                    last_task_message,
+                },
+            )?;
             self.touch_loaded_v2_residency(&state, thread_id).await;
             return Ok(crate::thread_manager::ThreadSpawnResult {
                 thread_id,
@@ -1466,21 +1464,6 @@ impl AgentControl {
 
     /// Resume an existing agent thread from a recorded rollout file.
     pub(crate) async fn resume_agent_from_rollout(
-        &self,
-        config: Config,
-        thread_id: ThreadId,
-        session_source: SessionSource,
-    ) -> CodexResult<ThreadId> {
-        self.resume_agent_from_rollout_observing_response(
-            config,
-            thread_id,
-            session_source,
-            ResponseObservationPolicy::default(),
-        )
-        .await
-    }
-
-    pub(crate) async fn resume_agent_from_rollout_observing_response(
         &self,
         config: Config,
         thread_id: ThreadId,

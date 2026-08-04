@@ -348,10 +348,11 @@ async fn active_turn_abort_preserves_durable_v1_subagent_notification() {
     let notification = "<subagent_notification>durable child result</subagent_notification>";
 
     session
-        .record_sub_agent_notification_with_admission(
+        .record_sub_agent_notification_with_observation_commit(
             notification.to_string(),
             new_sub_agent_completion_context_response_item_id(),
             CompletionSubmissionAdmission::Ordinary,
+            Vec::new(),
         )
         .await
         .expect("persist notification");
@@ -392,7 +393,6 @@ async fn observed_notification_try_admission_does_not_wait_for_rollback() {
             new_sub_agent_completion_context_response_item_id(),
             CompletionSubmissionAdmission::Ordinary,
             Vec::new(),
-            CompletionSubmissionAdmissionMode::Try,
         ),
     )
     .await
@@ -632,10 +632,11 @@ async fn v1_completion_context_reuses_a_previously_committed_response_item() {
         .expect("persist completion context before reported failure");
 
     session
-        .record_sub_agent_notification_with_admission(
+        .record_sub_agent_notification_with_observation_commit(
             notification.to_string(),
             response_item_id.clone(),
             CompletionSubmissionAdmission::Ordinary,
+            Vec::new(),
         )
         .await
         .expect("reconcile committed completion context");

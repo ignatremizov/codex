@@ -50,6 +50,7 @@ impl AgentControl {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_recovered_commentary_observation_delivery(
         &self,
         parent: SessionPresentationId,
@@ -83,13 +84,10 @@ impl AgentControl {
         boundary: CommentaryEventBoundary<'_>,
     ) -> Option<AgentResponseCommentaryDelivery> {
         let mut state = self.wait_agent_presentations.state();
-        let Some(observation) = state
+        let observation = state
             .response_observation_by_observer_child
             .get_mut(&(parent, child))
-            .and_then(|relationship| relationship.turns.get_mut(turn_id))
-        else {
-            return None;
-        };
+            .and_then(|relationship| relationship.turns.get_mut(turn_id))?;
         if observation.commentary_delivery.is_some() {
             return None;
         }

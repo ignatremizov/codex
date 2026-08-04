@@ -197,6 +197,7 @@ impl AgentControl {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn register_response_watcher_with_admission(
         &self,
         child: SessionPresentationId,
@@ -222,6 +223,7 @@ impl AgentControl {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn register_response_watcher_with_admission_at_sequence(
         &self,
         child: SessionPresentationId,
@@ -312,6 +314,7 @@ impl AgentControl {
         registration
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn register_completion_watcher_inner(
         &self,
         child: SessionPresentationId,
@@ -365,11 +368,7 @@ impl AgentControl {
                 ResponseObservationBinding::NextTurn => relationship
                     .pending_next_turn
                     .get_or_insert_with(ResponseTurnObservation::default)
-                    .merge(
-                        response_observation,
-                        minimum_event_sequence,
-                        after_item_id.clone(),
-                    ),
+                    .merge(response_observation, minimum_event_sequence, after_item_id),
                 ResponseObservationBinding::ExplicitAdmission(admission_id) => relationship
                     .pending_admissions
                     .entry(admission_id)

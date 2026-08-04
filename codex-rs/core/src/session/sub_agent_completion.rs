@@ -28,12 +28,6 @@ use codex_thread_store::StoredSubAgentCompletionPresentation;
 use codex_thread_store::ThreadStoreError;
 use tokio::sync::mpsc;
 
-#[derive(Clone, Copy)]
-pub(crate) enum CompletionSubmissionAdmissionMode {
-    Wait,
-    Try,
-}
-
 pub(crate) struct TerminalStatusSubscription {
     id: u64,
     subscribers: std::sync::Weak<
@@ -51,10 +45,6 @@ pub(crate) struct TerminalStatusEvent {
 }
 
 impl TerminalStatusSubscription {
-    pub(crate) fn try_recv(&mut self) -> Result<TerminalStatusEvent, mpsc::error::TryRecvError> {
-        self.receiver.try_recv()
-    }
-
     pub(crate) async fn recv(&mut self) -> Option<TerminalStatusEvent> {
         self.receiver.recv().await
     }
@@ -72,62 +62,18 @@ impl Drop for TerminalStatusSubscription {
 }
 
 impl Session {
-    pub(crate) async fn wait_for_completion_submission_admission(
-        &self,
-        admission: CompletionSubmissionAdmission,
-    ) -> bool {
-        match admission {
-            CompletionSubmissionAdmission::Ordinary => {
-                self.submission_admission
-                    .wait_for_completion_submission()
-                    .await
-            }
-            CompletionSubmissionAdmission::Accepted => {
-                self.submission_admission
-                    .wait_for_accepted_completion_submission()
-                    .await
-            }
-        }
-    }
-
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "completion context persistence must remain ordered before shutdown admission"
     )]
-    pub(crate) async fn record_sub_agent_notification_with_admission(
-        self: &std::sync::Arc<Self>,
-        message: String,
-        response_item_id: ResponseItemId,
-        admission: CompletionSubmissionAdmission,
-    ) -> Result<(), ThreadStoreError> {
-        self.record_sub_agent_notification_with_observation_commit(
-            message,
-            response_item_id,
-            admission,
-            Vec::new(),
-            CompletionSubmissionAdmissionMode::Wait,
-        )
-        .await
-    }
-
     pub(crate) async fn record_sub_agent_notification_with_observation_commit(
         self: &std::sync::Arc<Self>,
         message: String,
         response_item_id: ResponseItemId,
         admission: CompletionSubmissionAdmission,
         committed_observations: Vec<AgentResponseObservation>,
-        admission_mode: CompletionSubmissionAdmissionMode,
     ) -> Result<(), ThreadStoreError> {
         let _admission_guard = loop {
-            if matches!(admission_mode, CompletionSubmissionAdmissionMode::Wait)
-                && !self
-                    .wait_for_completion_submission_admission(admission)
-                    .await
-            {
-                return Err(codex_thread_store::ThreadStoreError::Internal {
-                    message: "parent session is no longer accepting completion context".to_string(),
-                });
-            }
             let admission_guard = self.submission_admission.send_lock.lock().await;
             if matches!(admission, CompletionSubmissionAdmission::Ordinary)
                 && (self
@@ -150,12 +96,6 @@ impl Session {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match admission_state {
                 super::SubmissionAdmissionState::Ready => break admission_guard,
-                super::SubmissionAdmissionState::RollbackPending
-                | super::SubmissionAdmissionState::RollbackEventPending
-                    if matches!(admission_mode, CompletionSubmissionAdmissionMode::Wait) =>
-                {
-                    drop(admission_guard);
-                }
                 super::SubmissionAdmissionState::RollbackPending
                 | super::SubmissionAdmissionState::RollbackEventPending => {
                     return Err(codex_thread_store::ThreadStoreError::Internal {

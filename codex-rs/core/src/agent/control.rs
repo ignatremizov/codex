@@ -532,6 +532,7 @@ impl AgentControl {
         Ok((submission_id, thread))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_inter_agent_completion_communication_durably(
         &self,
         parent_thread_id: ThreadId,
@@ -1142,6 +1143,7 @@ impl AgentControl {
     ///
     /// This is only enabled for `SubAgentSource::ThreadSpawn`, where a parent thread exists and
     /// can receive completion notifications.
+    #[allow(clippy::too_many_arguments)]
     async fn maybe_start_completion_watcher(
         &self,
         child_thread: &Arc<CodexThread>,

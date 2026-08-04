@@ -145,6 +145,7 @@ impl AgentControl {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn ensure_v1_response_observer_for_thread(
         &self,
         state: &Arc<ThreadManagerState>,

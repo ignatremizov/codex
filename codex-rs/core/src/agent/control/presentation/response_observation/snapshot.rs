@@ -38,7 +38,7 @@ impl AgentControl {
                         .clone(),
                 });
                 let mut turns = relationship.turns.iter().collect::<Vec<_>>();
-                turns.sort_by(|(left, _), (right, _)| left.cmp(right));
+                turns.sort_by_key(|(turn_id, _)| *turn_id);
                 snapshots.extend(turns.into_iter().map(|(turn_id, observation)| {
                     AgentResponseObservation {
                         observer_thread_id: parent.thread_id,
