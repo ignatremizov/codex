@@ -878,7 +878,7 @@ async fn setup_turn_one_with_custom_spawned_child(
             ev_completed("resp-turn1-1"),
         ]),
     )
-    .await?;
+    .await;
 
     let child_sse = sse(vec![
         ev_response_created("resp-child-1"),
@@ -3033,7 +3033,7 @@ async fn spawn_x_does_not_inject_the_child_final_response(
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let (test, spawned_id, _child_request) = setup_turn_one_with_custom_spawned_child(
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
         &server,
         json!({
             "message": CHILD_PROMPT,
@@ -3115,7 +3115,7 @@ async fn close_agent_revokes_v1_final_wake_before_shutdown(
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+    let (test, spawned_id, _child_request) = setup_turn_one_with_custom_spawned_child(
         &server,
         json!({
             "message": CHILD_PROMPT,
@@ -3583,7 +3583,7 @@ async fn final_delivery_persistence_failure_restarts_the_v1_response_observer() 
                         if content.iter().any(|content| {
                             matches!(
                                 content,
-                                AgentMessageContent::Text { text }
+                                AgentMessageInputContent::InputText { text }
                                     if text.contains("result survives observation failure")
                             )
                         })

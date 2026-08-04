@@ -1,4 +1,6 @@
 use super::*;
+use crate::agent::response_observation::FinalResponseObservation;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use std::collections::HashSet;
 
 fn completed_status() -> AgentStatus {

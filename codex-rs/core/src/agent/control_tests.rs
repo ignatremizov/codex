@@ -3,6 +3,8 @@ use crate::CodexThread;
 use crate::StateDbHandle;
 use crate::ThreadManager;
 use crate::agent::agent_status_from_event;
+use crate::agent::control::InitialTerminalObservation;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::config::AgentRoleConfig;
@@ -4928,7 +4930,12 @@ async fn assert_close_wins_lifecycle_race_and_revokes_observation(
                 .await
                 .expect("late adoption should finish after close")
                 .expect("late adoption task should not panic"),
-            Err(CodexErr::ThreadNotFound(thread_id)) if thread_id == child_thread_id
+            Err(err)
+                if matches!(
+                    err.details(),
+                    CodexErrorDetails::ThreadNotFound(thread_id)
+                        if *thread_id == child_thread_id
+                )
         );
         assert!(
             !adoption_control.has_completion_watcher(parent_presentation, child_presentation),
@@ -5826,7 +5833,12 @@ async fn assert_close_wins_queued_child_spawn(multi_agent_version: MultiAgentVer
             .await
             .expect("late child spawn should finish")
             .expect("late child spawn task should not panic"),
-        Err(CodexErr::ThreadNotFound(thread_id)) if thread_id == parent_thread_id
+        Err(err)
+            if matches!(
+                err.details(),
+                CodexErrorDetails::ThreadNotFound(thread_id)
+                    if *thread_id == parent_thread_id
+            )
     );
     assert_eq!(
         harness.control.get_status(parent_thread_id).await,
@@ -5952,7 +5964,12 @@ async fn assert_close_wins_queued_child_resume(multi_agent_version: MultiAgentVe
             .await
             .expect("late child resume should finish")
             .expect("late child resume task should not panic"),
-        Err(CodexErr::ThreadNotFound(thread_id)) if thread_id == parent_thread_id
+        Err(err)
+            if matches!(
+                err.details(),
+                CodexErrorDetails::ThreadNotFound(thread_id)
+                    if *thread_id == parent_thread_id
+            )
     );
     assert_eq!(
         harness.control.get_status(child_thread_id).await,
