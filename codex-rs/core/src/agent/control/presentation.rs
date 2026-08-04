@@ -13,10 +13,22 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::PoisonError;
 use std::sync::Weak;
 use tokio::sync::Notify;
 use uuid::Uuid;
+
+mod response_observation;
+
+pub(crate) use response_observation::ResponseObservationBinding;
+pub(crate) use response_observation::ResponseObservationBindingPublication;
+pub(crate) use response_observation::ResponseObservationDeliveryCommit;
+pub(crate) use response_observation::ResponseObservationDeliveryKind;
+pub(crate) use response_observation::ResponseObservationEventMatch;
+pub(crate) use response_observation::ResponseObservationPersistence;
+use response_observation::ResponseObserverRelationship;
+pub(crate) use response_observation::ResponseWatcherRegistration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SessionPresentationId {
@@ -42,16 +54,30 @@ pub(crate) enum TerminalPresentationDelivery {
 #[derive(Default)]
 pub(super) struct WaitAgentPresentations {
     state: Mutex<PresentationState>,
+    pub(super) response_observation_changed: Notify,
+    pub(super) watcher_terminal_changed: Notify,
+    observation_transactions: Mutex<HashMap<SessionPresentationId, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 #[derive(Default)]
 struct PresentationState {
     next_wait: u64,
+    next_terminal: u64,
     waits: HashMap<u64, WaitRegistration>,
     parents: HashMap<SessionPresentationId, ParentBinding>,
     terminal_turns: HashMap<SessionPresentationId, HashSet<String>>,
     queued: HashMap<SessionPresentationId, VecDeque<WatcherTerminalPresentation>>,
     contexts: HashMap<ResponseItemId, Arc<Terminal>>,
+    response_observation_by_observer_child:
+        HashMap<(SessionPresentationId, SessionPresentationId), ResponseObserverRelationship>,
+    response_observers: HashMap<(SessionPresentationId, SessionPresentationId), Weak<CodexThread>>,
+    response_watchers: HashSet<(SessionPresentationId, SessionPresentationId)>,
+    response_terminals:
+        HashMap<(SessionPresentationId, SessionPresentationId, String), Arc<Terminal>>,
+    response_queued: HashMap<
+        (SessionPresentationId, SessionPresentationId),
+        VecDeque<WatcherTerminalPresentation>,
+    >,
 }
 
 struct WaitRegistration {
@@ -85,6 +111,7 @@ pub(crate) enum CompletionParentAdoption {
 }
 
 /// Immutable presentation identity allocated with terminal acceptance, before context writes.
+#[derive(Clone)]
 pub(crate) struct CompletionPresentation {
     pub(crate) item: TurnItem,
     pub(crate) history_only_turn_id: String,
@@ -93,10 +120,13 @@ pub(crate) struct CompletionPresentation {
 struct Terminal {
     parent: SessionPresentationId,
     child: SessionPresentationId,
+    turn_id: String,
+    sequence: u64,
     parent_thread: Mutex<Option<Arc<CodexThread>>>,
     context_id: ResponseItemId,
     status: AgentStatus,
     presentation: CompletionPresentation,
+    observation_presentation: OnceLock<Option<CompletionPresentation>>,
     accepted: Mutex<Option<AcceptedCompletionDelivery>>,
     ownership: Mutex<Ownership>,
     changed: Notify,
@@ -118,6 +148,13 @@ pub(crate) struct WatcherTerminalPresentation {
     pub(crate) turn_id: String,
     pub(crate) status: AgentStatus,
     pub(crate) presentation: AgentTerminalPresentation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ClaimedTargetTurn {
+    pub(crate) child: SessionPresentationId,
+    pub(crate) turn_id: String,
+    pub(crate) response_item_id: ResponseItemId,
 }
 
 pub(crate) struct CompletionWatcherRegistration {
@@ -215,6 +252,19 @@ impl LocalAgentControl {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        if let Some(inner) = state
+            .response_terminals
+            .get(&(parent, child, turn_id.to_owned()))
+        {
+            let presentation = AgentTerminalPresentation {
+                inner: Arc::clone(inner),
+            };
+            on_recorded();
+            return match delivery {
+                TerminalPresentationDelivery::Direct => Some(presentation),
+                TerminalPresentationDelivery::Watcher => None,
+            };
+        }
         if state
             .terminal_turns
             .get(&child)
@@ -253,13 +303,18 @@ impl LocalAgentControl {
                 .then_some(*id)
             })
             .collect::<HashSet<_>>();
+        let sequence = state.next_terminal;
+        state.next_terminal = state.next_terminal.saturating_add(1);
         let inner = Arc::new(Terminal {
             parent,
             child,
+            turn_id: turn_id.to_string(),
+            sequence,
             parent_thread: Mutex::new(Some(parent_thread)),
             context_id: new_sub_agent_completion_context_response_item_id(),
             status: status.clone(),
             presentation,
+            observation_presentation: OnceLock::new(),
             accepted: Mutex::new(Some(accepted)),
             ownership: Mutex::new(Ownership {
                 waits: waits.clone(),
@@ -282,7 +337,31 @@ impl LocalAgentControl {
         state
             .contexts
             .insert(inner.context_id.clone(), Arc::clone(&inner));
+        state
+            .response_terminals
+            .insert((parent, child, turn_id.to_string()), Arc::clone(&inner));
         let presentation = AgentTerminalPresentation { inner };
+        if state.response_watchers.contains(&(parent, child))
+            && state
+                .response_observation_by_observer_child
+                .get(&(parent, child))
+                .is_some_and(|relationship| {
+                    relationship.persistence == ResponseObservationPersistence::Durable
+                })
+        {
+            state
+                .response_queued
+                .entry((parent, child))
+                .or_default()
+                .push_back(WatcherTerminalPresentation {
+                    turn_id: turn_id.to_string(),
+                    status: status.clone(),
+                    presentation: presentation.clone(),
+                });
+            self.wait_agent_presentations
+                .watcher_terminal_changed
+                .notify_waiters();
+        }
         // Reservation and immutable evidence are visible before status observers wake.
         on_recorded();
         match delivery {
@@ -343,12 +422,22 @@ impl LocalAgentControl {
     }
 
     pub(crate) fn clear_completion_contexts_for_session(&self, parent: SessionPresentationId) {
-        self.wait_agent_presentations
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        let mut state = self.wait_agent_presentations.state();
+        state
             .contexts
             .retain(|_, terminal| terminal.parent != parent);
+        state
+            .response_terminals
+            .retain(|(observer, _, _), _| *observer != parent);
+        state
+            .response_observation_by_observer_child
+            .retain(|(observer, _), _| *observer != parent);
+        state
+            .response_observers
+            .retain(|(observer, _), _| *observer != parent);
+        state
+            .response_queued
+            .retain(|(observer, _), _| *observer != parent);
     }
 
     pub(crate) fn claim_completion_context_response_item_id(
@@ -374,6 +463,10 @@ impl LocalAgentControl {
 }
 
 impl WaitAgentPresentations {
+    fn state(&self) -> std::sync::MutexGuard<'_, PresentationState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn register(
         self: &Arc<Self>,
         parent: SessionPresentationId,
@@ -382,12 +475,34 @@ impl WaitAgentPresentations {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let id = state.next_wait;
         state.next_wait += 1;
+        let terminals = state
+            .contexts
+            .values()
+            .filter_map(|terminal| {
+                if terminal.parent != parent
+                    || children
+                        .as_ref()
+                        .is_some_and(|children| !children.contains(&terminal.child.thread_id))
+                {
+                    return None;
+                }
+                let mut ownership = terminal
+                    .ownership
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if ownership.committed || ownership.background_claimed {
+                    return None;
+                }
+                ownership.waits.insert(id);
+                Some(Arc::downgrade(terminal))
+            })
+            .collect();
         state.waits.insert(
             id,
             WaitRegistration {
                 parent,
                 children,
-                terminals: Vec::new(),
+                terminals,
             },
         );
         WaitAgentPresentationGuard {
@@ -400,6 +515,39 @@ impl WaitAgentPresentations {
 }
 
 impl WaitAgentPresentationGuard {
+    pub(crate) fn freeze_for_terminal_statuses(
+        self,
+        statuses: &HashMap<ThreadId, (Option<String>, AgentStatus)>,
+    ) -> WaitAgentPresentationCommit {
+        let selected = {
+            let state = self.state.state();
+            let mut latest = HashMap::<ThreadId, Arc<Terminal>>::new();
+            if let Some(wait) = state.waits.get(&self.id) {
+                for terminal in wait.terminals.iter().filter_map(Weak::upgrade) {
+                    let entry = latest
+                        .entry(terminal.child.thread_id)
+                        .or_insert_with(|| Arc::clone(&terminal));
+                    if terminal.sequence > entry.sequence {
+                        *entry = terminal;
+                    }
+                }
+            }
+            latest
+                .into_values()
+                .filter(|terminal| {
+                    statuses
+                        .get(&terminal.child.thread_id)
+                        .is_some_and(|(turn_id, status)| {
+                            turn_id.as_deref() == Some(terminal.turn_id.as_str())
+                                && status == &terminal.status
+                        })
+                })
+                .map(|terminal| terminal.context_id.clone())
+                .collect::<HashSet<_>>()
+        };
+        self.freeze(|terminal| selected.contains(&terminal.context_id), &[])
+    }
+
     pub(crate) fn freeze_for_children(
         self,
         children: impl IntoIterator<Item = ThreadId>,
@@ -517,6 +665,17 @@ impl Drop for WaitAgentPresentationGuard {
 }
 
 impl WaitAgentPresentationCommit {
+    pub(crate) fn claimed_target_turns(&self) -> Vec<ClaimedTargetTurn> {
+        self.terminals
+            .iter()
+            .map(|terminal| ClaimedTargetTurn {
+                child: terminal.child,
+                turn_id: terminal.turn_id.clone(),
+                response_item_id: terminal.context_id.clone(),
+            })
+            .collect()
+    }
+
     pub(crate) fn agent_states(&self) -> HashMap<ThreadId, AgentStatus> {
         self.captured_states.clone()
     }
@@ -600,8 +759,34 @@ impl Terminal {
 }
 
 impl AgentTerminalPresentation {
+    pub(crate) fn child(&self) -> SessionPresentationId {
+        self.inner.child
+    }
+
     pub(crate) fn completion_presentation(&self) -> &CompletionPresentation {
         &self.inner.presentation
+    }
+
+    /// Select the model-hidden row once, before its first canonical claim. The accepted
+    /// context identity and captured status remain shared with native completion and waits.
+    pub(crate) fn hidden_observation_presentation(
+        &self,
+        reference: &str,
+    ) -> Option<&CompletionPresentation> {
+        self.inner
+            .observation_presentation
+            .get_or_init(|| {
+                codex_protocol::protocol::sub_agent_completion_item_with_visibility(
+                    reference,
+                    &self.inner.status,
+                    codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible,
+                )
+                .map(|item| CompletionPresentation {
+                    item: TurnItem::AgentMessage(item),
+                    history_only_turn_id: self.inner.presentation.history_only_turn_id.clone(),
+                })
+            })
+            .as_ref()
     }
     pub(crate) fn parent(&self) -> SessionPresentationId {
         self.inner.parent

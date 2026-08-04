@@ -76,6 +76,15 @@ impl SubmissionAdmission {
         self.requires_reload() && self.writer_closed.load(Ordering::Acquire)
     }
 
+    pub(super) fn completion_writer_closed(&self) -> bool {
+        self.writer_closed.load(Ordering::Acquire)
+    }
+
+    pub(super) fn completion_is_closing(&self) -> bool {
+        self.completion_closed.load(Ordering::Acquire)
+            || self.completion_sealed.load(Ordering::Acquire)
+    }
+
     /// Holds public history-only injection ahead of any rollback reservation.
     pub(crate) async fn admit_injection(&self) -> CodexResult<tokio::sync::MutexGuard<'_, ()>> {
         let guard = self.send_lock.lock().await;

@@ -399,6 +399,13 @@ impl LocalAgentControl {
                 client_mcp_extensions_override,
             })
             .await?;
+        if resumed_thread.runtime_origin == crate::thread_manager::ThreadRuntimeOrigin::Existing {
+            // Failure cleanup below owns only a runtime allocated by this restoration.
+            // Never tear down an independently admitted runtime if that contract changes.
+            return Err(CodexErr::Fatal(
+                "deferred agent restoration adopted an existing runtime".to_string(),
+            ));
+        }
         let validation = if multi_agent_version == MultiAgentVersion::V2 {
             self.validate_loaded_v2_agent(&resumed_thread.thread, Some(&notification_source))
                 .and_then(|_| {

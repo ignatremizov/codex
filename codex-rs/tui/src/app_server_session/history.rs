@@ -9,6 +9,8 @@ use crate::legacy_core::config::Config;
 use crate::local_settings::LocalSettings;
 use crate::resize_reflow_cap::resize_reflow_max_rows;
 use crate::thread_transcript::RawReasoningVisibility;
+use crate::thread_transcript::collab_agent_metadata_from_items;
+use crate::thread_transcript::refresh_collab_agent_labels;
 use crate::thread_transcript::thread_items_to_transcript_cells_with_preview_line_limits;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::SortDirection;
@@ -424,7 +426,9 @@ fn rendered_history_rows(
     } else {
         HistoryRenderMode::Rich
     };
-    thread_items_to_transcript_cells_with_preview_line_limits(
+    let collab_agent_metadata =
+        collab_agent_metadata_from_items(thread.turns.iter().flat_map(|turn| turn.items.iter()));
+    let mut cells = thread_items_to_transcript_cells_with_preview_line_limits(
         Some(thread_id),
         &thread.cwd,
         items,
@@ -435,9 +439,9 @@ fn rendered_history_rows(
             user_shell: local_settings.tui.user_shell_output_preview_lines,
         },
         (&local_settings.tui).into(),
-    )
-    .into_iter()
-    .fold(rendered_rows, |rows, cell| {
+    );
+    refresh_collab_agent_labels(&mut cells, &collab_agent_metadata);
+    cells.into_iter().fold(rendered_rows, |rows, cell| {
         let height = usize::from(cell.desired_height_for_mode(width, mode));
         rows + height + usize::from(height != 0 && rows != 0 && !cell.is_stream_continuation())
     })

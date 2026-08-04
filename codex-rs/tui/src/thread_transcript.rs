@@ -25,6 +25,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use ratatui::style::Stylize as _;
 
 mod activity_pages;
+mod agent_metadata;
 mod computer_groups;
 mod exploration_groups;
 mod other_items;
@@ -33,6 +34,8 @@ mod user_identity;
 
 pub(crate) use activity_pages::fold_trailing_activity_details;
 pub(crate) use activity_pages::is_hidden_activity_detail;
+pub(crate) use agent_metadata::collab_agent_metadata_from_items;
+pub(crate) use agent_metadata::refresh_collab_agent_labels;
 #[allow(
     unused_imports,
     reason = "Used by later layers of the TUI refresh stack."
@@ -100,6 +103,8 @@ pub(crate) fn thread_to_transcript_cells(
     raw_reasoning_visibility: RawReasoningVisibility,
     config: Option<&Config>,
 ) -> TranscriptCells {
+    let metadata =
+        collab_agent_metadata_from_items(thread.turns.iter().flat_map(|turn| &turn.items));
     let cwd = thread.cwd;
     let thread_id = ThreadId::from_string(&thread.id).ok();
     let mut cells = thread
@@ -120,6 +125,7 @@ pub(crate) fn thread_to_transcript_cells(
             cells
         })
         .collect::<TranscriptCells>();
+    refresh_collab_agent_labels(&mut cells, &metadata);
     if cells.is_empty() {
         cells.push(Arc::new(PlainHistoryCell::new(vec![
             "No transcript content available".italic().dim().into(),
@@ -167,6 +173,8 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
     output_preview_line_limits: OutputPreviewLineLimits,
     agent_preview_line_limits: AgentPreviewLineLimits,
 ) -> TranscriptCells {
+    let items = items.into_iter().collect::<Vec<_>>();
+    let metadata = collab_agent_metadata_from_items(&items);
     let inline_visualization_context = config.and_then(|config| {
         thread_id.and_then(|thread_id| InlineVisualizationContext::from_config(config, thread_id))
     });
@@ -261,6 +269,7 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
         }
     }
     PendingActivity::flush(&mut pending, &mut cells);
+    refresh_collab_agent_labels(&mut cells, &metadata);
     cells
 }
 
@@ -302,6 +311,17 @@ fn item_to_cells(
             inter_agent_source: Some(_),
             ..
         } => {
+            if let Some(cell) =
+                crate::multi_agents::background_commentary_history_cell_from_agent_message(
+                    &text,
+                    phase.as_ref(),
+                    agent_preview_line_limits.response,
+                    |_| crate::multi_agents::AgentMetadata::default(),
+                )
+            {
+                cells.push(Arc::new(cell));
+                return cells;
+            }
             cells.push(Arc::new(
                 AgentMarkdownCell::new_with_inline_visualizations_and_phase(
                     text,
@@ -314,15 +334,22 @@ fn item_to_cells(
         ThreadItem::AgentMessage {
             id, text, phase, ..
         } => {
-            if let Some(cell) =
-                crate::multi_agents::background_completion_history_cell_from_agent_message(
-                    &id,
+            let cell = crate::multi_agents::background_completion_history_cell_from_agent_message(
+                &id,
+                &text,
+                phase.as_ref(),
+                agent_preview_line_limits.response,
+                |_| crate::multi_agents::AgentMetadata::default(),
+            )
+            .or_else(|| {
+                crate::multi_agents::background_commentary_history_cell_from_agent_message(
                     &text,
                     phase.as_ref(),
                     agent_preview_line_limits.response,
                     |_| crate::multi_agents::AgentMetadata::default(),
                 )
-            {
+            });
+            if let Some(cell) = cell {
                 cells.push(Arc::new(cell));
                 return cells;
             }

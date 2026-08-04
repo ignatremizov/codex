@@ -26,6 +26,8 @@ use crate::history_cell::UserHistoryCell;
 use crate::history_cell::raw_lines_from_source;
 use crate::legacy_core::config::Config;
 use crate::thread_transcript::RawReasoningVisibility;
+use crate::thread_transcript::collab_agent_metadata_from_items;
+use crate::thread_transcript::refresh_collab_agent_labels;
 use crate::thread_transcript::thread_items_to_transcript_cells;
 
 impl App {
@@ -115,6 +117,8 @@ pub(super) async fn load_export_transcript(
         }
     }
     let mut cells: Vec<Arc<dyn HistoryCell>> = Vec::new();
+    let collab_agent_metadata =
+        collab_agent_metadata_from_items(thread.turns.iter().flat_map(|turn| turn.items.iter()));
     for item in visible_export_items(thread.turns) {
         if let Some(cell) = export_activity_cell(&item) {
             cells.push(Arc::new(cell));
@@ -128,6 +132,7 @@ pub(super) async fn load_export_transcript(
             ));
         }
     }
+    refresh_collab_agent_labels(&mut cells, &collab_agent_metadata);
     Ok(cells)
 }
 

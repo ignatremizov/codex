@@ -79,6 +79,8 @@ use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::exec_output::ExecToolCallOutput;
+use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::AgentMessageItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -86,6 +88,7 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::openai_models::ModelServiceTier;
@@ -4500,6 +4503,7 @@ async fn start_new_context_window_persists_checkpoint_state() {
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
         | RolloutItem::RetainedContext(_)
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::RealtimeItem(_)
@@ -4591,6 +4595,7 @@ async fn record_initial_history_assigns_and_persists_id_for_forked_response_item
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
         | RolloutItem::RetainedContext(_)
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::RealtimeItem(_)
@@ -7058,6 +7063,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         tx_event,
         agent_status: agent_status_tx,
         agent_status_observations: Default::default(),
+        response_observation_state: Default::default(),
         completion_parent: std::sync::Mutex::new(Default::default()),
         state: Arc::new(Mutex::new(state)),
         thread_settings_persistence: Arc::new(Semaphore::new(/*permits*/ 1)),
@@ -7080,6 +7086,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         mcp_prewarm_task: std::sync::Mutex::new(None),
         spawn_parent_thread_id: None,
         terminal_publication_lock: std::sync::Mutex::new(()),
+        thread_removal_started: std::sync::atomic::AtomicBool::new(/*v*/ false),
         terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
@@ -9351,6 +9358,7 @@ where
         tx_event,
         agent_status: agent_status_tx,
         agent_status_observations: Default::default(),
+        response_observation_state: Default::default(),
         completion_parent: std::sync::Mutex::new(Default::default()),
         state: Arc::new(Mutex::new(state)),
         thread_settings_persistence: Arc::new(Semaphore::new(/*permits*/ 1)),
@@ -9373,6 +9381,7 @@ where
         mcp_prewarm_task: std::sync::Mutex::new(None),
         spawn_parent_thread_id: None,
         terminal_publication_lock: std::sync::Mutex::new(()),
+        thread_removal_started: std::sync::atomic::AtomicBool::new(/*v*/ false),
         terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
@@ -13311,4 +13320,291 @@ async fn session_start_hooks_require_project_trust_without_config_toml() -> std:
     }
 
     Ok(())
+}
+
+#[tokio::test]
+async fn codex_exec_mailbox_delivery_does_not_start_a_turn_after_primary_completion() {
+    let (session, _turn_context) = make_session_and_context().await;
+    session
+        .set_app_server_client_info(
+            Some("codex_exec".to_string()),
+            /*app_server_client_version*/ None,
+            /*mcp_elicitations_auto_deny*/ false,
+        )
+        .await
+        .expect("set codex exec client identity");
+    let session = Arc::new(session);
+    let communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "late child result".to_string(),
+        /*trigger_turn*/ true,
+    );
+    session
+        .input_queue
+        .enqueue_mailbox_communication(communication, Default::default())
+        .await;
+
+    session
+        .maybe_start_turn_for_pending_work_with_sub_id("late-wake".to_string())
+        .await;
+
+    assert!(session.active_turn.lock().await.is_none());
+    assert!(session.input_queue.has_pending_mailbox_items().await);
+}
+
+struct PendingInputContinuationTask {
+    final_pending_input_check_reached: Arc<tokio::sync::Notify>,
+    allow_initial_run_to_finish: Arc<tokio::sync::Notify>,
+}
+
+impl SessionTask for PendingInputContinuationTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.pending_input_continuation"
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        _ctx: Arc<TurnContext>,
+        _input: Vec<TurnInput>,
+        _cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        assert!(
+            !session
+                .input_queue
+                .has_pending_input(&session.active_turn)
+                .await,
+            "test task should reach its final pending-input decision before the steer"
+        );
+        self.final_pending_input_check_reached.notify_one();
+        self.allow_initial_run_to_finish.notified().await;
+        Ok(Some("answer before the late steer".to_string()))
+    }
+
+    fn supports_pending_input_continuation(&self) -> bool {
+        true
+    }
+
+    async fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        let mut mcp_startup_requirements = crate::session::turn::McpStartupRequirements::default();
+        crate::session::turn::run_turn(
+            session,
+            ctx,
+            Vec::new(),
+            &mut mcp_startup_requirements,
+            /*prewarmed_client_session*/ None,
+            cancellation_token,
+        )
+        .await
+    }
+}
+
+#[test]
+fn task_finish_continues_input_accepted_after_final_pending_input_check() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(/*val*/ 2)
+        // Match the production runtime because this test executes the full sampling future.
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("build test runtime");
+    runtime.block_on(task_finish_continues_late_input());
+}
+
+async fn task_finish_continues_late_input() {
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("response-late-steer"),
+            core_test_support::responses::ev_assistant_message("message-late-steer", ""),
+            ev_completed("response-late-steer"),
+        ]),
+    )
+    .await;
+    let base_url = server.uri();
+    let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        move |config| config.model_provider.base_url = Some(base_url),
+    )
+    .await;
+    let final_pending_input_check_reached = Arc::new(tokio::sync::Notify::new());
+    let allow_initial_run_to_finish = Arc::new(tokio::sync::Notify::new());
+
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            PendingInputContinuationTask {
+                final_pending_input_check_reached: Arc::clone(&final_pending_input_check_reached),
+                allow_initial_run_to_finish: Arc::clone(&allow_initial_run_to_finish),
+            },
+        )
+        .await;
+    timeout(
+        StdDuration::from_secs(/*secs*/ 2),
+        final_pending_input_check_reached.notified(),
+    )
+    .await
+    .expect("task should reach its final pending-input decision");
+
+    let client_id = "late-steer-client-id";
+    let steered = super::turn_input::handle(
+        &session,
+        TurnInputRequest::new(SubmittedTurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: "late steer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: Some(client_id.to_string()),
+        }),
+        TurnInputMode::Steer {
+            expected_turn_id: turn_context.sub_id.clone(),
+        },
+        "late-steer-submission".to_string(),
+    )
+    .await
+    .expect("steer should be accepted while the task is still active");
+    assert_eq!(
+        steered,
+        TurnInputSubmission::Steered {
+            turn_id: turn_context.sub_id.clone(),
+        }
+    );
+    allow_initial_run_to_finish.notify_one();
+
+    let (turn_complete, user_message_client_ids, turn_started_count) =
+        timeout(StdDuration::from_secs(/*secs*/ 15), async {
+            let mut user_message_client_ids = Vec::new();
+            let mut turn_started_count = 0;
+            loop {
+                let event = rx.recv().await.expect("event channel should remain open");
+                match event.msg {
+                    EventMsg::TurnStarted(_) => turn_started_count += 1,
+                    EventMsg::UserMessage(message) => {
+                        user_message_client_ids.push(message.client_id);
+                    }
+                    EventMsg::TurnComplete(turn_complete) => {
+                        break (turn_complete, user_message_client_ids, turn_started_count);
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("continued task should complete");
+
+    assert_eq!(
+        (
+            turn_complete.turn_id,
+            turn_complete.last_agent_message,
+            turn_complete.error
+        ),
+        (
+            turn_context.sub_id.clone(),
+            Some("answer before the late steer".to_string()),
+            None
+        )
+    );
+    assert_eq!(
+        (user_message_client_ids, turn_started_count),
+        (vec![Some(client_id.to_string())], 0)
+    );
+    let request = response_mock.single_request();
+    assert_eq!(
+        request
+            .message_input_texts("user")
+            .last()
+            .map(String::as_str),
+        Some("late steer")
+    );
+    assert_eq!(
+        request.body_json()["client_metadata"]["turn_id"].as_str(),
+        Some(turn_context.sub_id.as_str())
+    );
+    assert!(session.active_turn.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn steer_input_returns_the_response_boundary_captured_during_admission() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+    // This test task does not emit the regular task's TurnStarted event.
+    assert!(sess.begin_agent_response_turn(&tc.sub_id));
+    sess.publish_agent_response_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: sess.thread_id,
+        turn_id: tc.sub_id.clone(),
+        item: TurnItem::AgentMessage(AgentMessageItem {
+            id: "commentary-before-steer".to_string(),
+            content: vec![AgentMessageContent::Text {
+                text: "Working on the earlier instruction.".to_string(),
+            }],
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+            sub_agent_completion: None,
+        }),
+        started_at_ms: Some(0),
+        completed_at_ms: 1,
+    }));
+    let (snapshot, _subscription) = sess.subscribe_agent_responses();
+
+    let submission_id = "steer-with-observation".to_string();
+    let admission = sess.register_input_turn_admission(submission_id.clone());
+    let steered = super::turn_input::handle(
+        &sess,
+        TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "new instruction".to_string(),
+            text_elements: Vec::new(),
+        }]),
+        TurnInputMode::Steer {
+            expected_turn_id: tc.sub_id.clone(),
+        },
+        submission_id,
+    )
+    .await
+    .expect("steer should be admitted");
+    assert_eq!(
+        steered,
+        TurnInputSubmission::Steered {
+            turn_id: tc.sub_id.clone(),
+        }
+    );
+    let resolution = timeout(StdDuration::from_secs(/*secs*/ 2), admission.recv())
+        .await
+        .expect("admission receipt deadline")
+        .expect("admission sender")
+        .expect("accepted actual turn");
+
+    assert_eq!(
+        resolution,
+        InputTurnAdmissionResolution {
+            target_turn_id: tc.sub_id.clone(),
+            minimum_event_sequence: snapshot.next_event_sequence,
+            after_item_id: snapshot.last_commentary_item_id,
+        }
+    );
+    assert!(sess.input_queue.has_pending_input(&sess.active_turn).await);
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }

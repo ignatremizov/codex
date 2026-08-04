@@ -96,6 +96,9 @@ pub(crate) struct Session {
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
     pub(super) spawn_parent_thread_id: Option<ThreadId>,
     pub(super) terminal_publication_lock: StdMutex<()>,
+    pub(super) thread_removal_started: AtomicBool,
+    pub(super) response_observation_state:
+        Arc<StdMutex<super::response_observation::AgentResponseObservationState>>,
     pub(super) terminal_presentation_armed: AtomicBool,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) realtime_history: Option<Mutex<crate::realtime_history::RealtimeHistoryState>>,
@@ -717,6 +720,17 @@ impl Session {
             return;
         }
         let status = AgentStatus::NotFound;
+        let Some(turn_id) = self
+            .completion_parent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live_turn_id
+            .clone()
+        else {
+            return;
+        };
+        self.record_agent_response_terminal_observers(&turn_id, status.clone());
+        let publish_status = self.response_turn_can_publish_agent_status(&turn_id);
         let published_status = status.clone();
         let child = self.presentation_id();
         let Some(parent) = self
@@ -732,11 +746,13 @@ impl Session {
             .record_agent_terminal_presentation(
                 parent,
                 child,
-                &uuid::Uuid::now_v7().to_string(),
+                &turn_id,
                 status,
                 crate::agent::control::TerminalPresentationDelivery::Watcher,
                 || {
-                    self.replace_agent_status_locked(published_status);
+                    if publish_status {
+                        self.replace_agent_status_locked(published_status);
+                    }
                 },
             );
     }
@@ -1701,6 +1717,7 @@ impl Session {
                     | RolloutItem::ResponseItem(_)
                     | RolloutItem::InterAgentCommunication(_)
                     | RolloutItem::InterAgentCommunicationMetadata { .. }
+                    | RolloutItem::AgentResponseObservation(_)
                     | RolloutItem::TurnContext(_)
                     | RolloutItem::WorldState(_)
                     | RolloutItem::RealtimeItem(_)
@@ -1870,6 +1887,12 @@ impl Session {
                 mcp_prewarm_task: std::sync::Mutex::new(None),
                 spawn_parent_thread_id: session_configuration.session_source.parent_thread_id(),
                 terminal_publication_lock: StdMutex::new(()),
+                thread_removal_started: AtomicBool::new(false),
+                response_observation_state: Arc::new(StdMutex::new(
+                    super::response_observation::initial_agent_response_observation_state(
+                        &initial_history,
+                    ),
+                )),
                 terminal_presentation_armed: AtomicBool::new(false),
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 realtime_history: (session_configuration.history_mode == ThreadHistoryMode::Paginated

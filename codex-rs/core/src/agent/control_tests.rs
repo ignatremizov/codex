@@ -6199,3 +6199,6 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
 
 #[path = "control_parent_binding_tests.rs"]
 mod parent_binding_tests;
+
+#[path = "control_response_observation_tests.rs"]
+mod response_observation_tests;

@@ -571,6 +571,21 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(completion_writer::append(self, params))
     }
 
+    fn load_canonical_artifact_segments(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> ThreadStoreFuture<'_, crate::StoredCanonicalArtifactSegments> {
+        Box::pin(async move {
+            let segments = completion_artifacts::load_canonical_items(
+                self,
+                params.thread_id,
+                params.include_archived,
+            )
+            .await?;
+            Ok(crate::StoredCanonicalArtifactSegments { segments })
+        })
+    }
+
     fn load_sub_agent_completion_context_item(
         &self,
         params: LoadSubAgentCompletionContextItemParams,

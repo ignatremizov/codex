@@ -245,9 +245,16 @@ mod world_state_publication;
 pub(crate) use reasoning_effort::RequestEffortUsage;
 mod completion_admission;
 mod completion_replay;
+mod response_observation;
+pub(crate) use response_observation::AgentResponseEvent;
+pub(crate) use response_observation::AgentResponseSubscription;
+pub(crate) use response_observation::InputTurnAdmissionResolution;
+pub(crate) use response_observation::TerminalStatusEvent;
+pub(crate) use response_observation::TerminalStatusSubscription;
 mod input_queue;
 mod sub_agent_completion;
 mod terminal_capture;
+mod wait_publication;
 pub(crate) use completion_admission::AcceptedCompletionDelivery;
 pub(crate) use sub_agent_completion::CompletionContextDelivery;
 mod mcp;
@@ -1066,6 +1073,45 @@ impl SessionIo {
     ///
     /// Once queued, dropping the waiter does not retract the call. If the
     /// session loop exits before replying, the caller gets `InternalAgentDied`.
+    pub(crate) async fn submit_turn_input_with_admission(
+        &self,
+        session: &Session,
+        mut request: TurnInputRequest,
+        mode: TurnInputMode,
+    ) -> CodexResult<(String, InputTurnAdmissionResolution)> {
+        if !self
+            .session
+            .upgrade()
+            .is_some_and(|target| std::ptr::eq(target.as_ref(), session))
+        {
+            return Err(CodexErr::InvalidRequest(
+                "input admission belongs to another session".to_string(),
+            ));
+        }
+        let id = new_submission_id();
+        let admission = session.register_input_turn_admission(id.clone());
+        let (reply, routing) = oneshot::channel();
+        let trace = request.trace.take();
+        self.submit_with_id(Submission {
+            id: id.clone(),
+            op: Op::TurnInput {
+                request: Box::new(request),
+                mode,
+                reply,
+            },
+            trace,
+            parent_turn_id: None,
+            root_turn_id: None,
+        })
+        .await?;
+        routing.await.map_err(|_| CodexErr::InternalAgentDied)??;
+        let resolution = admission
+            .recv()
+            .await
+            .ok_or(CodexErr::InternalAgentDied)??;
+        Ok((id, resolution))
+    }
+
     pub(crate) async fn submit_turn_input(
         &self,
         mut request: TurnInputRequest,
@@ -2574,6 +2620,18 @@ impl Session {
         if persist {
             let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
             self.persist_rollout_items(&rollout_items).await;
+            if matches!(
+                &event.msg,
+                EventMsg::ItemCompleted(completed)
+                    if matches!(&completed.item, TurnItem::AgentMessage(item)
+                        if item.phase == Some(codex_protocol::models::MessagePhase::Commentary)
+                            && !item.has_sub_agent_completion_identity())
+            ) && let Err(error) = self.flush_rollout().await
+            {
+                self.quarantine_history(format!(
+                    "commentary publication lost its canonical receipt: {error}"
+                ));
+            }
         }
         self.services
             .rollout_thread_trace
@@ -2595,7 +2653,7 @@ impl Session {
     async fn deliver_event_raw(&self, event: Event) {
         // Record the last known agent status.
         self.prepare_raw_sub_agent_terminal_presentation(&event);
-        self.publish_agent_status_from_event(&event.msg);
+        self.publish_agent_status_from_event(&event);
         if let Err(e) = self.tx_event.send(event).await {
             debug!("dropping event because channel is closed: {e}");
         }
@@ -3758,6 +3816,9 @@ impl Session {
         model_info: &ModelInfo,
         mut communication: InterAgentCommunication,
     ) {
+        if self.consume_observed_communication(&communication).await {
+            return;
+        }
         if communication.id.as_ref().is_some_and(|id| {
             codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(id.as_str())
         }) {

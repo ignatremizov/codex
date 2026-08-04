@@ -82,6 +82,52 @@ fn live_review_and_full_rendering_leave_historical_previews_unchanged() {
 }
 
 #[test]
+fn same_length_label_refresh_preserves_review_navigation() {
+    #[derive(Debug)]
+    struct ReviewOutput(&'static str);
+
+    impl HistoryCell for ReviewOutput {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            vec![self.0.into()]
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            self.display_lines(u16::MAX)
+        }
+
+        fn transcript_navigation_kind(
+            &self,
+        ) -> Option<crate::history_cell::TranscriptNavigationKind> {
+            Some(crate::history_cell::TranscriptNavigationKind::Commentary)
+        }
+    }
+
+    let cells: Vec<Arc<dyn HistoryCell>> = vec![
+        Arc::new(ReviewOutput("first")),
+        Arc::new(ReviewOutput("second")),
+        Arc::new(ReviewOutput("third")),
+    ];
+    let Overlay::Transcript(mut live) =
+        Overlay::new_review_transcript(cells, RuntimeKeymap::defaults().pager)
+    else {
+        panic!("transcript")
+    };
+    live.view.jump_to_entry(&live.cells, /*index*/ 0);
+    paint(&mut live);
+    live.handle_key(KeyCode::Char(']').into());
+    paint(&mut live);
+    live.replace_cells(vec![
+        Arc::new(ReviewOutput("first renamed")),
+        Arc::new(ReviewOutput("second")),
+        Arc::new(ReviewOutput("third")),
+    ]);
+    paint(&mut live);
+    live.handle_key(KeyCode::Char(']').into());
+    let screen = paint(&mut live);
+    assert_eq!(screen.lines().nth(/*n*/ 1).map(str::trim), Some("second"));
+}
+
+#[test]
 fn fixed_browser_keys_precede_pager_bindings_but_not_search() {
     let mut keymap = RuntimeKeymap::defaults().pager;
     keymap.scroll_down = vec![plain(KeyCode::Char('v'))];

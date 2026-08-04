@@ -13,6 +13,7 @@ use codex_app_server_protocol::build_turns_from_rollout_items;
 use codex_extension_items::ExtensionItem;
 use codex_extension_items::image_generation::ImageGenerationFailure;
 use codex_extension_items::image_generation::ImageGenerationItem;
+use codex_history::AgentResponseObservation;
 use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
@@ -28,6 +29,7 @@ use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HistoryPosition;
@@ -436,6 +438,51 @@ async fn migration_publishes_canonical_projected_history_and_is_idempotent() {
         RolloutMigrationStatus::AlreadyPaginated
     );
     assert_eq!(fs::read(&path).expect("read idempotent rollout"), bytes);
+}
+
+#[tokio::test]
+async fn migration_preserves_agent_response_observation_records() {
+    let home = TempDir::new().expect("create Codex home");
+    let observer_thread_id = ThreadId::new();
+    let target_thread_id = ThreadId::new();
+    let observation = AgentResponseObservation {
+        observer_thread_id,
+        target_thread_id,
+        target_turn_id: Some("child-turn".to_string()),
+        task_preview: None,
+        promoted_task_context: None,
+        target_messages: false,
+        queue_delivery: false,
+        message_wake_turn_id: None,
+        pending_commentary: true,
+        commentary_after_sequences: vec![7],
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        baseline_final_delivery: AgentResponseFinalDelivery::Passive,
+        final_delivery: AgentResponseFinalDelivery::Wake,
+        final_delivery_response_item_id: None,
+        committed_delivery_response_item_ids: Vec::new(),
+    };
+    let path = write_rollout(
+        home.path(),
+        observer_thread_id,
+        SessionSource::Cli,
+        vec![
+            user_message("observe child"),
+            RolloutItem::AgentResponseObservation(observation.clone()),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate rollout with response observation");
+
+    assert!(read_rollout(&path).iter().any(|line| matches!(
+        &line.item,
+        RolloutItem::AgentResponseObservation(candidate) if candidate == &observation
+    )));
 }
 
 #[tokio::test]

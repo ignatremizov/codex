@@ -82,6 +82,10 @@ impl Drop for AgentStatusObservationSuppressionGuard<'_> {
 }
 
 impl AgentStatusObservations {
+    pub(super) fn is_suppressed(&self) -> bool {
+        self.suppressed.load(Ordering::Acquire)
+    }
+
     fn subscribe(&self, mut initial_status: AgentStatus) -> AgentStatusSubscription {
         let id = Uuid::now_v7();
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -163,6 +167,9 @@ impl Session {
             .terminal_publication_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        if self.thread_removal_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
         match reason {
             AgentStatusRetirement::ExplicitRemoval => {
                 if !self
@@ -170,6 +177,19 @@ impl Session {
                     .suppressed
                     .load(Ordering::Acquire)
                 {
+                    let turn_id = self
+                        .response_observation_state
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .live_turn_id
+                        .clone();
+                    if let Some(turn_id) = turn_id {
+                        self.record_agent_response_terminal_observers(
+                            &turn_id,
+                            AgentStatus::NotFound,
+                        );
+                        self.publish_agent_response_terminal(turn_id, AgentStatus::NotFound);
+                    }
                     self.capture_adopted_terminal_locked(&AgentStatus::NotFound);
                     self.replace_agent_status_locked(AgentStatus::NotFound);
                 }
@@ -177,6 +197,7 @@ impl Session {
             AgentStatusRetirement::ResidencyEviction | AgentStatusRetirement::RestoreRollback => {}
         }
         self.agent_status_observations.close();
+        self.close_agent_response_subscriptions();
     }
 }
 

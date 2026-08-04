@@ -378,6 +378,14 @@ pub enum ThreadItem {
         tool: CollabAgentTool,
         /// Current status of the collab tool call.
         status: CollabAgentToolCallStatus,
+        /// Whether commentary from the receiver is requested.
+        #[serde(default)]
+        #[ts(optional)]
+        observe_commentary: Option<bool>,
+        /// Whether the receiver's terminal response should wake the sender.
+        #[serde(default)]
+        #[ts(optional)]
+        wake_on_completion: Option<bool>,
         /// Thread ID of the agent issuing the collab request.
         sender_thread_id: String,
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
@@ -997,6 +1005,8 @@ impl From<CoreTurnItem> for ThreadItem {
                 id: call.id,
                 tool: call.tool.into(),
                 status: call.status.into(),
+                observe_commentary: call.observe_commentary,
+                wake_on_completion: call.wake_on_completion,
                 sender_thread_id: call.sender_thread_id.to_string(),
                 receiver_thread_ids: call
                     .receiver_thread_ids

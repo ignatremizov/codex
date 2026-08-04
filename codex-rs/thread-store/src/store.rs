@@ -206,6 +206,21 @@ pub trait ThreadStore: Any + Send + Sync {
         params: LoadThreadHistoryParams,
     ) -> ThreadStoreFuture<'_, StoredThreadHistory>;
 
+    /// Loads full raw artifact history, retaining original lineage and rollback coordinates.
+    ///
+    /// Unlike model-context reads, this cannot discard records before a checkpoint. This
+    /// is evidence for validation and replay only, never acknowledgement of an uncertain write.
+    fn load_canonical_artifact_segments(
+        &self,
+        _params: LoadThreadHistoryParams,
+    ) -> ThreadStoreFuture<'_, crate::StoredCanonicalArtifactSegments> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "load_canonical_artifact_segments",
+            })
+        })
+    }
+
     /// Locates a trusted completion-context item by its stable reserved identity.
     ///
     /// This lookup spans canonical history even when paginated model-context reads use a bounded

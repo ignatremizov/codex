@@ -514,6 +514,13 @@ impl LocalAgentControl {
             .await
         {
             Ok(reloaded_thread) => {
+                if reloaded_thread.runtime_origin
+                    == crate::thread_manager::ThreadRuntimeOrigin::Existing
+                {
+                    return Err(CodexErr::Fatal(
+                        "deferred agent restoration adopted an existing runtime".to_string(),
+                    ));
+                }
                 let validation = self
                     .validate_loaded_v2_agent(&reloaded_thread.thread, Some(&notification_source))
                     .and_then(|_| {

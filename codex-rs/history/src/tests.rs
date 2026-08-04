@@ -707,6 +707,12 @@ fn rollout_item_schema_matches_tagged_payload_and_sibling_metadata() -> Result<(
         response_item["properties"]["payload"]["$ref"],
         json!("#/definitions/ResponseItem")
     );
+    assert!(
+        variants.iter().any(|variant| {
+            variant["properties"]["type"]["enum"] == json!(["agent_response_observation"])
+        }),
+        "agent response observation schema"
+    );
 
     let compacted = &schema["definitions"]["CompactedItem"];
     assert_eq!(

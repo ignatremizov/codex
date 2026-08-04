@@ -79,7 +79,7 @@ async fn unbound_native_child_rejects_replacement_parent_control() {
     // The resume path uses the child's original control but resolves its parent by ID.
     // With no previous binding, the control check must reject the replacement parent.
     let error = replacement_control
-        .ensure_v1_completion_watcher(child_id, source)
+        .ensure_native_v1_completion_watcher(child_id, source)
         .await
         .expect_err("replacement parent control must not adopt the native child");
     assert_matches!(

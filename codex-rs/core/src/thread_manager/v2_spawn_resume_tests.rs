@@ -269,8 +269,9 @@ async fn deferred_publication_fixture() -> (tempfile::TempDir, ThreadManager, Ne
         .spawn_thread(request)
         .await
         .expect("prepare child");
+    assert_eq!(child.runtime_origin, ThreadRuntimeOrigin::Created);
     assert!(manager.get_thread(child.thread_id).await.is_err());
-    (home, manager, parent, child)
+    (home, manager, parent, child.into_new_thread())
 }
 
 #[tokio::test]

@@ -459,6 +459,8 @@ fn agent_tool_fallbacks_preserve_status_without_duplicating_v2_activity() {
             id: "pending-agent-call".to_string(),
             tool,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             sender_thread_id: "00000000-0000-0000-0000-000000000001".to_string(),
             receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".to_string()],
             receiver_agents: Vec::new(),

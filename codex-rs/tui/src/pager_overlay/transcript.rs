@@ -321,7 +321,16 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn replace_cells(&mut self, cells: Vec<Arc<dyn HistoryCell>>) {
-        self.view.clear_review_target();
+        if cells.len() != self.cells.len() {
+            self.view.clear_review_target();
+        } else {
+            for (index, (previous, replacement)) in self.cells.iter().zip(&cells).enumerate() {
+                if !Arc::ptr_eq(previous, replacement) {
+                    self.view
+                        .replace_range(&self.cells, index..index + 1, replacement);
+                }
+            }
+        }
         self.cells = cells;
         self.view.restart_search();
         self.view.history_loaded(&self.cells, 0..0);

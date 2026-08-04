@@ -1,8 +1,395 @@
 use super::*;
+use crate::agent::response_observation::FinalResponseObservation;
+use codex_protocol::protocol::AgentResponseCommentaryAdmission;
 use pretty_assertions::assert_eq;
+use response_observation::ResponseTurnObservation;
 
 fn identity() -> SessionPresentationId {
     SessionPresentationId::new(ThreadId::new(), Uuid::now_v7())
+}
+
+#[test]
+fn next_turn_policy_does_not_block_a_delayed_historical_terminal() {
+    let control = LocalAgentControl::default();
+    let parent = identity();
+    let child = identity();
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .insert(
+            (parent, child),
+            ResponseObserverRelationship {
+                pending_next_turn: Some(ResponseTurnObservation {
+                    final_response: FinalResponseObservation::Wake,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+    assert_eq!(
+        control.response_observation_event_match(parent, child, "old-turn"),
+        ResponseObservationEventMatch::Ignore,
+    );
+    assert!(control.bind_response_observation_started_turn_at_sequence(
+        parent, child, "new-turn", /*sequence*/ 10,
+    ));
+    assert_eq!(
+        control.response_observation_event_match(parent, child, "new-turn"),
+        ResponseObservationEventMatch::Observe,
+    );
+}
+
+#[test]
+fn admitted_policy_binds_actual_turn_and_cannot_downgrade_an_accepted_final() {
+    let control = LocalAgentControl::default();
+    let parent = identity();
+    let child = identity();
+    let admission = Uuid::now_v7();
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .insert(
+            (parent, child),
+            ResponseObserverRelationship {
+                persistence: ResponseObservationPersistence::Durable,
+                pending_admissions: HashMap::from([(
+                    admission,
+                    ResponseTurnObservation {
+                        final_response: FinalResponseObservation::Wake,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+    assert_eq!(
+        control.response_observation_event_match(parent, child, "actual-turn"),
+        ResponseObservationEventMatch::AwaitBinding,
+    );
+    control.bind_response_observation_turn_at_sequence(
+        parent,
+        child,
+        "actual-turn",
+        ResponseObservationBinding::ExplicitAdmission(admission),
+        /*commentary_boundary*/ None,
+        ResponseObservationBindingPublication::Immediate,
+    );
+    let context = new_sub_agent_completion_context_response_item_id();
+    assert_eq!(
+        control.prepare_final_response_observation_delivery(parent, child, "actual-turn", &context),
+        (FinalResponseObservation::Wake, Some(context.clone())),
+    );
+    let later_admission = Uuid::now_v7();
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .get_mut(&(parent, child))
+        .unwrap()
+        .pending_admissions
+        .insert(
+            later_admission,
+            ResponseTurnObservation {
+                final_response: FinalResponseObservation::PresentationOnly,
+                ..Default::default()
+            },
+        );
+    let before = control.response_observation_snapshots(parent, child);
+    control.bind_response_observation_turn_at_sequence(
+        parent,
+        child,
+        "actual-turn",
+        ResponseObservationBinding::ExplicitAdmission(later_admission),
+        /*commentary_boundary*/ None,
+        ResponseObservationBindingPublication::Immediate,
+    );
+    assert_eq!(
+        control.response_observation_snapshots(parent, child),
+        before
+    );
+    assert_eq!(
+        control.response_observation_event_match(parent, child, &admission.to_string()),
+        ResponseObservationEventMatch::Ignore,
+    );
+}
+
+#[test]
+fn commentary_boundary_delivers_once_and_retains_committed_evidence() {
+    let control = LocalAgentControl::default();
+    let parent = identity();
+    let child = identity();
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .insert(
+            (parent, child),
+            ResponseObserverRelationship {
+                persistence: ResponseObservationPersistence::Durable,
+                turns: HashMap::from([(
+                    "turn".to_owned(),
+                    ResponseTurnObservation {
+                        commentary_admissions: vec![AgentResponseCommentaryAdmission {
+                            minimum_event_sequence: 12,
+                            after_item_id: Some("before".to_owned()),
+                            canonical_boundary: true,
+                        }],
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+    assert_eq!(
+        control.prepare_commentary_observation_delivery_at_sequence(
+            parent,
+            child,
+            "turn",
+            "early",
+            "too early",
+            /*sequence*/ 11,
+        ),
+        None,
+    );
+    let text = "complete commentary 🦀 ".repeat(600);
+    let delivery = control
+        .prepare_commentary_observation_delivery_at_sequence(
+            parent, child, "turn", "eligible", &text, /*sequence*/ 12,
+        )
+        .unwrap();
+    assert_eq!(delivery.text, text);
+    let commit = ResponseObservationDeliveryCommit {
+        parent,
+        child,
+        turn_id: "turn".to_owned(),
+        response_item_id: delivery.response_item_id.clone(),
+        kind: ResponseObservationDeliveryKind::Commentary,
+    };
+    let committed = control.deferred_response_observation_commit_snapshots(&commit);
+    control.commit_response_observation_delivery(&commit);
+    assert_eq!(
+        control.response_observation_snapshots(parent, child),
+        committed
+    );
+    assert_eq!(
+        control.prepare_commentary_observation_delivery_at_sequence(
+            parent,
+            child,
+            "turn",
+            "later",
+            "not requested",
+            /*sequence*/ 13,
+        ),
+        None,
+    );
+    assert_eq!(
+        control.finish_response_observation_turn(parent, child, "turn"),
+        committed
+    );
+}
+
+#[test]
+fn every_final_disposition_commits_one_identity_including_presentation_only() {
+    for disposition in [
+        FinalResponseObservation::PresentationOnly,
+        FinalResponseObservation::Passive,
+        FinalResponseObservation::Wake,
+    ] {
+        let control = LocalAgentControl::default();
+        let parent = identity();
+        let child = identity();
+        control
+            .wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .insert(
+                (parent, child),
+                ResponseObserverRelationship {
+                    persistence: ResponseObservationPersistence::Durable,
+                    turns: HashMap::from([(
+                        "turn".to_owned(),
+                        ResponseTurnObservation {
+                            final_response: disposition,
+                            ..Default::default()
+                        },
+                    )]),
+                    ..Default::default()
+                },
+            );
+        let context = new_sub_agent_completion_context_response_item_id();
+        assert_eq!(
+            control.prepare_final_response_observation_delivery(parent, child, "turn", &context),
+            (disposition, Some(context.clone())),
+        );
+        let commit = ResponseObservationDeliveryCommit {
+            parent,
+            child,
+            turn_id: "turn".to_owned(),
+            response_item_id: context.clone(),
+            kind: ResponseObservationDeliveryKind::Final,
+        };
+        let snapshots = control.deferred_response_observation_commit_snapshots(&commit);
+        control.commit_response_observation_delivery(&commit);
+        assert_eq!(
+            control.response_observation_snapshots(parent, child),
+            snapshots
+        );
+        assert_eq!(
+            control.prepare_final_response_observation_delivery(parent, child, "turn", &context),
+            (FinalResponseObservation::None, None),
+        );
+    }
+}
+
+#[test]
+fn residency_transfer_moves_only_future_policy_and_keeps_old_delivery_identity() {
+    let control = LocalAgentControl::default();
+    let parent = identity();
+    let old_child = identity();
+    let new_child = SessionPresentationId::new(old_child.thread_id, Uuid::now_v7());
+    let context = new_sub_agent_completion_context_response_item_id();
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .insert(
+            (parent, old_child),
+            ResponseObserverRelationship {
+                persistence: ResponseObservationPersistence::Durable,
+                baseline_final_response: FinalResponseObservation::Passive,
+                pending_next_turn: Some(ResponseTurnObservation {
+                    final_response: FinalResponseObservation::Wake,
+                    commentary_admissions: vec![AgentResponseCommentaryAdmission {
+                        minimum_event_sequence: 900,
+                        after_item_id: Some("old-runtime-item".to_owned()),
+                        canonical_boundary: true,
+                    }],
+                    ..Default::default()
+                }),
+                turns: HashMap::from([(
+                    "old-turn".to_owned(),
+                    ResponseTurnObservation {
+                        final_response: FinalResponseObservation::Wake,
+                        final_delivery_response_item_id: Some(context.clone()),
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+    let mut expected_old = control.response_observation_snapshots(parent, old_child);
+    for snapshot in &mut expected_old {
+        snapshot.baseline_final_delivery =
+            codex_protocol::protocol::AgentResponseFinalDelivery::None;
+        if snapshot.target_turn_id.is_none() {
+            snapshot.final_delivery = codex_protocol::protocol::AgentResponseFinalDelivery::None;
+            snapshot.pending_commentary = false;
+            snapshot.commentary_admissions.clear();
+        }
+    }
+    assert!(control.move_future_response_observation(parent, old_child, new_child));
+    assert_eq!(
+        control.response_observation_snapshots(parent, old_child),
+        expected_old
+    );
+    assert!(control.has_future_response_observation(parent, new_child));
+    assert_eq!(
+        control
+            .prepare_final_response_observation_delivery(parent, new_child, "old-turn", &context),
+        (FinalResponseObservation::None, None),
+    );
+    assert!(control.bind_response_observation_started_turn_at_sequence(
+        parent, new_child, "new-turn", /*sequence*/ 0,
+    ));
+    assert_eq!(
+        control
+            .prepare_final_response_observation_delivery(parent, new_child, "new-turn", &context),
+        (FinalResponseObservation::Wake, Some(context)),
+    );
+    let commentary = control
+        .prepare_commentary_observation_delivery_at_sequence(
+            parent,
+            new_child,
+            "new-turn",
+            "new-item",
+            "new runtime commentary",
+            /*sequence*/ 1,
+        )
+        .unwrap();
+    assert_eq!(commentary.text, "new runtime commentary");
+}
+
+#[test]
+fn close_after_claim_yields_inert_exact_turn_committed_tombstone() {
+    let control = LocalAgentControl::default();
+    let commit = ResponseObservationDeliveryCommit {
+        parent: identity(),
+        child: identity(),
+        turn_id: "accepted-turn".to_owned(),
+        response_item_id: new_sub_agent_completion_context_response_item_id(),
+        kind: ResponseObservationDeliveryKind::Final,
+    };
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .insert(
+            (commit.parent, commit.child),
+            ResponseObserverRelationship {
+                persistence: ResponseObservationPersistence::Durable,
+                baseline_final_response: FinalResponseObservation::Passive,
+                turns: HashMap::from([(
+                    commit.turn_id.clone(),
+                    ResponseTurnObservation {
+                        final_response: FinalResponseObservation::Wake,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+    assert_eq!(
+        control.prepare_final_response_observation_delivery(
+            commit.parent,
+            commit.child,
+            &commit.turn_id,
+            &commit.response_item_id,
+        ),
+        (
+            FinalResponseObservation::Wake,
+            Some(commit.response_item_id.clone())
+        ),
+    );
+    control.revoke_response_observations_for_child(commit.child);
+    let tombstone = control.deferred_response_observation_commit_snapshots(&commit);
+    assert_eq!(
+        tombstone.last(),
+        Some(&codex_protocol::protocol::AgentResponseObservation {
+            observer_thread_id: commit.parent.thread_id,
+            target_thread_id: commit.child.thread_id,
+            target_turn_id: Some(commit.turn_id.clone()),
+            task_preview: None,
+            promoted_task_context: None,
+            target_messages: false,
+            queue_delivery: false,
+            message_wake_turn_id: None,
+            pending_commentary: false,
+            commentary_after_sequences: Vec::new(),
+            commentary_admissions: Vec::new(),
+            commentary_delivery: None,
+            baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
+            final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
+            final_delivery_response_item_id: Some(commit.response_item_id.clone()),
+            committed_delivery_response_item_ids: vec![commit.response_item_id.clone()],
+        })
+    );
+    control.commit_response_observation_delivery(&commit);
+    assert_eq!(
+        control.response_observation_snapshots(commit.parent, commit.child),
+        tombstone
+    );
 }
 
 fn terminal(
@@ -23,9 +410,13 @@ fn terminal(
             .then_some(*id)
         })
         .collect::<HashSet<_>>();
+    let sequence = state.next_terminal;
+    state.next_terminal += 1;
     let inner = Arc::new(Terminal {
         parent,
         child,
+        turn_id: format!("turn-{sequence}"),
+        sequence,
         parent_thread: Mutex::new(None),
         context_id: new_sub_agent_completion_context_response_item_id(),
         status: AgentStatus::Completed(Some("captured result".to_owned())),
@@ -39,6 +430,7 @@ fn terminal(
             ),
             history_only_turn_id: Uuid::now_v7().to_string(),
         },
+        observation_presentation: OnceLock::new(),
         accepted: Mutex::new(None),
         ownership: Mutex::new(Ownership {
             waits: waits.clone(),
@@ -59,7 +451,124 @@ fn terminal(
     state
         .contexts
         .insert(inner.context_id.clone(), Arc::clone(&inner));
+    state
+        .response_terminals
+        .insert((parent, child, inner.turn_id.clone()), Arc::clone(&inner));
     AgentTerminalPresentation { inner }
+}
+
+#[tokio::test]
+async fn late_wait_claims_only_latest_turn_and_releases_old_turn() {
+    let state = Arc::new(WaitAgentPresentations::default());
+    let parent = identity();
+    let child = identity();
+    let old = terminal(&state, parent, child);
+    let current = terminal(&state, parent, child);
+    let wait = state.register(parent, Some(HashSet::from([child.thread_id])));
+    let commit = wait.freeze_for_terminal_statuses(&HashMap::from([(
+        child.thread_id,
+        (
+            Some(current.inner.turn_id.clone()),
+            current.inner.status.clone(),
+        ),
+    )]));
+    assert_eq!(
+        commit.claimed_target_turns(),
+        vec![ClaimedTargetTurn {
+            child,
+            turn_id: current.inner.turn_id.clone(),
+            response_item_id: current.completion_context_response_item_id(),
+        }]
+    );
+    assert!(!old.wait_owns_presentation().await);
+    commit.commit();
+    assert!(current.wait_owns_presentation().await);
+}
+
+#[test]
+fn hidden_observation_freezes_a_trusted_row_without_replacing_the_native_receipt() {
+    let state = WaitAgentPresentations::default();
+    let presentation = terminal(&state, identity(), identity());
+    let context_id = presentation.completion_context_response_item_id();
+    let native = presentation.completion_presentation().item.clone();
+    let hidden = presentation
+        .hidden_observation_presentation("/root/child")
+        .expect("hidden completion row");
+    let TurnItem::AgentMessage(message) = &hidden.item else {
+        panic!("completion must be an agent message");
+    };
+    assert!(message.has_sub_agent_completion_identity());
+    assert_eq!(
+        codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id(
+            &message.id
+        ),
+        Some(codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible),
+    );
+    assert_eq!(
+        &presentation
+            .hidden_observation_presentation("/different/later/reference")
+            .expect("already frozen row")
+            .item,
+        &hidden.item,
+    );
+    assert_eq!(presentation.completion_presentation().item, native);
+    assert_eq!(
+        presentation.completion_context_response_item_id(),
+        context_id
+    );
+    assert_eq!(
+        hidden.history_only_turn_id,
+        presentation.completion_presentation().history_only_turn_id,
+    );
+}
+
+#[test]
+fn close_between_terminal_reservation_and_response_claim_preserves_policy_and_identity() {
+    let control = LocalAgentControl::default();
+    let parent = identity();
+    let child = identity();
+    let terminal = terminal(&control.wait_agent_presentations, parent, child);
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .insert(
+            (parent, child),
+            ResponseObserverRelationship {
+                persistence: ResponseObservationPersistence::Durable,
+                turns: HashMap::from([(
+                    terminal.inner.turn_id.clone(),
+                    ResponseTurnObservation {
+                        final_response: FinalResponseObservation::Wake,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+    control.revoke_response_observations_for_child(child);
+    let repeated = control
+        .record_response_observation_terminal(
+            parent,
+            child,
+            &terminal.inner.turn_id,
+            terminal.inner.status.clone(),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(&repeated.inner, &terminal.inner));
+    assert_eq!(
+        control.prepare_final_response_observation_delivery(
+            parent,
+            child,
+            &terminal.inner.turn_id,
+            &terminal.inner.context_id,
+        ),
+        (
+            FinalResponseObservation::Wake,
+            Some(terminal.inner.context_id.clone())
+        ),
+    );
+    assert!(!control.has_future_response_observation(parent, child));
 }
 
 #[tokio::test]

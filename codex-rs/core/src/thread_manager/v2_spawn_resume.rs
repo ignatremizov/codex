@@ -190,20 +190,6 @@ impl ThreadManagerState {
 }
 
 impl ThreadManagerState {
-    pub(crate) fn v2_spawn_resume_lock(&self, thread_id: ThreadId) -> Arc<tokio::sync::Mutex<()>> {
-        let mut locks = self
-            .v2_spawn_resume_locks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        locks.retain(|_, lock| lock.strong_count() > 0);
-        if let Some(lock) = locks.get(&thread_id).and_then(std::sync::Weak::upgrade) {
-            return lock;
-        }
-        let lock = Arc::new(tokio::sync::Mutex::new(()));
-        locks.insert(thread_id, Arc::downgrade(&lock));
-        lock
-    }
-
     async fn persisted_v2_spawn_resume(
         &self,
         initial_history: &InitialHistory,
@@ -225,9 +211,9 @@ impl ThreadManagerState {
             .get(thread_id)
             .is_some_and(|thread| Arc::ptr_eq(thread, expected))
         {
+            expected.session.prepare_for_thread_removal();
             let removed = threads.remove(thread_id);
-            if let Some(thread) = &removed {
-                thread.session.prepare_for_thread_removal();
+            if removed.is_some() {
                 on_remove();
             }
             removed
@@ -318,6 +304,7 @@ async fn resolve_persisted_v2_spawn_resume(
         | RolloutItem::ResponseItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::Compacted(_)
         | RolloutItem::RetainedContext(_)
         | RolloutItem::TokenUsageRecord(_)
