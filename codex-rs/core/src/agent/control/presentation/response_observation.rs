@@ -342,23 +342,25 @@ impl AgentControl {
             relationship.baseline_final_response = FinalResponseObservation::Passive;
         }
         match target_turn_id {
-            Some(target_turn_id) => relationship
-                .turns
-                .entry(target_turn_id)
-                .and_modify(|current| {
-                    current.merge(
-                        response_observation,
-                        minimum_event_sequence,
-                        after_item_id.clone(),
-                    );
-                })
-                .or_insert_with(|| {
-                    ResponseTurnObservation::new(
-                        response_observation,
-                        minimum_event_sequence,
-                        after_item_id.clone(),
-                    )
-                }),
+            Some(target_turn_id) => {
+                relationship
+                    .turns
+                    .entry(target_turn_id)
+                    .and_modify(|current| {
+                        current.merge(
+                            response_observation,
+                            minimum_event_sequence,
+                            after_item_id.clone(),
+                        );
+                    })
+                    .or_insert_with(|| {
+                        ResponseTurnObservation::new(
+                            response_observation,
+                            minimum_event_sequence,
+                            after_item_id.clone(),
+                        )
+                    });
+            }
             None => match pending_binding {
                 ResponseObservationBinding::NextTurn => relationship
                     .pending_next_turn

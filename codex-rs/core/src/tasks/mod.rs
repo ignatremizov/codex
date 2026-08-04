@@ -509,11 +509,9 @@ impl Session {
         // Mail may still steer that active turn, but must not synthesize a later idle turn during
         // the narrow interval before exec consumes the primary TurnCompleted notification.
         if self
-            .state
-            .lock()
+            .app_server_client_metadata()
             .await
-            .session_configuration
-            .app_server_client_name
+            .client_name
             .as_deref()
             == Some("codex_exec")
         {

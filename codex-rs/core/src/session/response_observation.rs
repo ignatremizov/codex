@@ -3,7 +3,6 @@ use super::turn::agent_message_text;
 use crate::agent::agent_status_from_event;
 use crate::agent::status::is_final;
 use codex_protocol::ResponseItemId;
-use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::TurnItem;
@@ -170,7 +169,7 @@ impl Drop for CommunicationDeliveryReceipt {
 }
 
 impl Session {
-    pub(super) fn begin_agent_response_turn(&self, turn_id: &str) -> bool {
+    pub(crate) fn begin_agent_response_turn(&self, turn_id: &str) -> bool {
         let _terminal_guard = self
             .terminal_publication_lock
             .lock()

@@ -378,7 +378,7 @@ impl AgentControl {
                     observer,
                     child,
                     previous_relationship,
-                    Some(resolution.target_turn_id),
+                    Some(resolution.target_turn_id.clone()),
                     message,
                 )
                 .await?;

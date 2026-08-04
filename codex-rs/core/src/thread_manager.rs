@@ -2269,36 +2269,40 @@ impl ThreadManagerState {
             }
         };
 
-        let new_thread = {
+        let insertion = {
             let mut threads = self.threads.write().await;
-            if let std::collections::hash_map::Entry::Vacant(e) = threads.entry(thread_id) {
-                let thread = Arc::new(CodexThread::new(
-                    session,
-                    io,
-                    session_configured.clone(),
-                    session_configured.rollout_path.clone(),
-                    session_source,
-                ));
-                e.insert(thread.clone());
-                Some(ThreadSpawnResult {
-                    thread_id,
-                    thread,
-                    session_configured,
-                    runtime_origin: ThreadRuntimeOrigin::Created,
-                })
-            } else {
-                None
+            match threads.entry(thread_id) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let thread = Arc::new(CodexThread::new(
+                        session,
+                        io,
+                        session_configured.clone(),
+                        session_configured.rollout_path.clone(),
+                        session_source,
+                    ));
+                    entry.insert(thread.clone());
+                    Ok(ThreadSpawnResult {
+                        thread_id,
+                        thread,
+                        session_configured,
+                        runtime_origin: ThreadRuntimeOrigin::Created,
+                    })
+                }
+                std::collections::hash_map::Entry::Occupied(_) => Err(io),
             }
         };
-        if let Some(new_thread) = new_thread {
-            if thread_created_notification == ThreadCreatedNotificationMode::Immediate {
-                self.notify_thread_created(new_thread.thread_id);
+        match insertion {
+            Ok(new_thread) => {
+                if thread_created_notification == ThreadCreatedNotificationMode::Immediate {
+                    self.notify_thread_created(new_thread.thread_id);
+                }
+                return Ok(new_thread);
             }
-            return Ok(new_thread);
-        }
-
-        if let Err(err) = io.shutdown_and_wait().await {
-            warn!("failed to shut down duplicate thread {thread_id}: {err}");
+            Err(io) => {
+                if let Err(err) = io.shutdown_and_wait().await {
+                    warn!("failed to shut down duplicate thread {thread_id}: {err}");
+                }
+            }
         }
         Err(CodexErr::InvalidRequest(format!(
             "thread {thread_id} is already running"

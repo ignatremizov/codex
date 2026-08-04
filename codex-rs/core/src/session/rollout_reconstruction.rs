@@ -593,7 +593,8 @@ impl Session {
                         turn_context.model_info.truncation_policy.into(),
                     );
                 }
-                RolloutItem::InterAgentCommunicationMetadata { .. } => {}
+                RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::AgentResponseObservation(_) => {}
                 RolloutItem::Compacted(compacted) => {
                     if skipped_compacted_items
                         .iter()

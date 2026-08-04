@@ -1,6 +1,7 @@
 use super::*;
 use crate::session::AgentResponseSubscription;
 use crate::session::agent_response_events_from_rollout;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 use std::collections::HashSet;
 
@@ -567,7 +568,9 @@ impl AgentControl {
                     let canonical_items = rollout_without_exact_rollback_ranges(&history.items);
                     break agent_response_events_from_rollout(&canonical_items);
                 }
-                Err(CodexErr::ThreadNotFound(_)) => break Vec::new(),
+                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
+                    break Vec::new();
+                }
                 Err(err) => {
                     warn!(
                         observer_thread_id = %parent.thread_id,

@@ -6,7 +6,7 @@ use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-pub(super) fn initial_agent_response_observation_state(
+pub(in crate::session) fn initial_agent_response_observation_state(
     initial_history: &InitialHistory,
 ) -> AgentResponseObservationState {
     let mut state = AgentResponseObservationState::default();

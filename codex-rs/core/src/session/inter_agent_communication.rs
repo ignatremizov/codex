@@ -134,7 +134,7 @@ impl Session {
                         std::slice::from_ref(&response_item),
                     )
                     .into_owned();
-                if let Some(persisted_response_item) = persisted_response_item.as_ref() {
+                if let Some(persisted_response_item) = persisted_response_item {
                     items[0] = persisted_response_item.clone();
                 }
                 let response_item = items[0].clone();
