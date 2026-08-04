@@ -235,6 +235,8 @@ mod subagent_notifications;
 #[path = "subagent_rollback_mode_tests.rs"]
 mod subagent_rollback_mode;
 mod subagent_service_tier;
+#[path = "test_codex_submission_tests.rs"]
+mod test_codex_submission;
 mod token_budget;
 mod token_usage_rollout;
 mod tool_harness;
