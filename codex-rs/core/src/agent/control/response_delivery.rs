@@ -66,7 +66,7 @@ impl AgentControl {
                         child,
                         child_reference,
                         &turn_id,
-                        delivery,
+                        &delivery,
                     )
                     .await
                 {
@@ -312,7 +312,7 @@ impl AgentControl {
             child,
             child_reference,
             turn_id,
-            delivery,
+            &delivery,
             submission_permit,
         )
         .await
@@ -358,7 +358,7 @@ impl AgentControl {
             child,
             child_reference,
             turn_id,
-            delivery,
+            &delivery,
             submission_permit,
         )
         .await
@@ -370,7 +370,7 @@ impl AgentControl {
         child: SessionPresentationId,
         child_reference: &str,
         turn_id: &str,
-        delivery: codex_protocol::protocol::AgentResponseCommentaryDelivery,
+        delivery: &codex_protocol::protocol::AgentResponseCommentaryDelivery,
     ) -> bool {
         let Ok(submission_permit) = self
             .acquire_mailbox_submission_permit(parent.thread_id)
@@ -402,7 +402,7 @@ impl AgentControl {
         child: SessionPresentationId,
         child_reference: &str,
         turn_id: &str,
-        delivery: codex_protocol::protocol::AgentResponseCommentaryDelivery,
+        delivery: &codex_protocol::protocol::AgentResponseCommentaryDelivery,
         submission_permit: tokio::sync::OwnedSemaphorePermit,
     ) -> bool {
         let Some(child_agent_path) = self.observation_agent_path(child.thread_id) else {
@@ -437,7 +437,7 @@ impl AgentControl {
                 .persist_response_observation_snapshot(parent, child)
                 .await;
         }
-        communication.id = Some(delivery.response_item_id);
+        communication.id = Some(delivery.response_item_id.clone());
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, child.thread_id);
         if self

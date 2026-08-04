@@ -392,7 +392,7 @@ impl AgentControl {
                     self.response_observation_audit_snapshots(
                         observer,
                         child,
-                        Some(resolution.target_turn_id),
+                        Some(resolution.target_turn_id.clone()),
                     ),
                 )
                 .await

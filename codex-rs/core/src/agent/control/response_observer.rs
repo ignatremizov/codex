@@ -771,7 +771,7 @@ impl AgentControl {
                             child,
                             &child_reference,
                             turn_id,
-                            delivery,
+                            &delivery,
                         )
                         .await;
                     drop(lifecycle_guard);
