@@ -34,6 +34,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -144,24 +145,47 @@ async fn subagent_notification_texts(session: &crate::session::session::Session)
         .await
         .raw_items()
         .iter()
-        .filter_map(|item| {
-            let ResponseItem::Message { role, content, .. } = item else {
-                return None;
-            };
-            if role != "user" {
-                return None;
+        .filter_map(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "user" => {
+                content.iter().find_map(|content| match content {
+                    ContentItem::InputText { text } | ContentItem::OutputText { text }
+                        if SubagentNotification::matches_text(text) =>
+                    {
+                        Some(text.clone())
+                    }
+                    ContentItem::InputText { .. }
+                    | ContentItem::OutputText { .. }
+                    | ContentItem::InputImage { .. }
+                    | ContentItem::InputAudio { .. } => None,
+                })
             }
-            content.iter().find_map(|content| match content {
-                ContentItem::InputText { text } | ContentItem::OutputText { text }
-                    if SubagentNotification::matches_text(text) =>
-                {
-                    Some(text.clone())
-                }
-                ContentItem::InputText { .. }
-                | ContentItem::OutputText { .. }
-                | ContentItem::InputImage { .. }
-                | ContentItem::InputAudio { .. } => None,
-            })
+            ResponseItem::AgentMessage { content, .. } => {
+                content.iter().find_map(|content| match content {
+                    AgentMessageInputContent::InputText { text }
+                        if SubagentNotification::matches_text(text) =>
+                    {
+                        Some(text.clone())
+                    }
+                    AgentMessageInputContent::InputText { .. }
+                    | AgentMessageInputContent::EncryptedContent { .. } => None,
+                })
+            }
+            ResponseItem::AdditionalTools { .. }
+            | ResponseItem::Message { .. }
+            | ResponseItem::Reasoning { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::FunctionCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::FunctionCallOutput { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::CustomToolCallOutput { .. }
+            | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. }
+            | ResponseItem::Compaction { .. }
+            | ResponseItem::CompactionTrigger { .. }
+            | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::Other => None,
         })
         .collect()
 }

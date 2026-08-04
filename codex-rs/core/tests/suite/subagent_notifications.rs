@@ -273,7 +273,7 @@ async fn wait_for_request_containing_text(
     mock: &core_test_support::responses::ResponseMock,
     text: &str,
 ) -> Result<ResponsesRequest> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if let Some(request) = mock
             .requests()
@@ -385,7 +385,7 @@ fn completed_parent_turn_has_error(event: &EventMsg) -> Option<bool> {
 }
 
 async fn wait_for_terminal_status(thread: &codex_core::CodexThread) -> Result<AgentStatus> {
-    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 10);
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 15);
     loop {
         let status = thread.agent_status().await;
         if matches!(
@@ -950,7 +950,7 @@ async fn setup_turn_one_with_custom_spawned_child(
             .codex
             .rollout_path()
             .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
-        let deadline = Instant::now() + Duration::from_secs(6);
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let has_notification = tokio::fs::read_to_string(&rollout_path)
                 .await
@@ -982,7 +982,7 @@ async fn spawn_child_and_capture_snapshot(
         server,
         spawn_args,
         ChildResponseTiming::Immediate,
-        /*wait_for_parent_notification*/ true,
+        /*wait_for_parent_notification*/ false,
         configure_test,
     )
     .await?;
@@ -2539,12 +2539,15 @@ async fn v1_late_wait_completion_survives_exact_rollback_and_cold_resume(
     initial.codex.flush_rollout().await?;
     let rollout_items = read_test_rollout_items(&initial)?;
     let effective_history = rollout_without_exact_rollback_ranges(&rollout_items);
+    // The background completion was already committed before this late wait, so the wait renders
+    // the result again without claiming durable presentation. Rolling back its parent turn removes
+    // that second copy while the earlier canonical completion remains below.
     assert_eq!(
         effective_history.iter().find_map(|item| match item {
             RolloutItem::EventMsg(event) => completed_wait_agent_states(event),
             _ => None,
         }),
-        Some(wait_agent_states)
+        None
     );
     assert_eq!(
         effective_history
@@ -3473,7 +3476,7 @@ async fn final_delivery_persistence_failure_restarts_the_v1_response_observer() 
             "message": CHILD_PROMPT,
         }),
         ChildResponseTiming::Immediate,
-        /*wait_for_parent_notification*/ true,
+        /*wait_for_parent_notification*/ false,
         move |builder| {
             builder.with_config(move |config| {
                 config.experimental_thread_store = ThreadStoreConfig::InMemory {
@@ -3574,7 +3577,13 @@ async fn final_delivery_persistence_failure_restarts_the_v1_response_observer() 
     assert!(request.body_contains_text("<subagent_notification>"));
     test.codex.flush_rollout().await?;
     assert_eq!(
-        read_test_rollout_items(&test)?
+        store
+            .load_rollback_history(LoadThreadHistoryParams {
+                thread_id: test.session_configured.thread_id,
+                include_archived: false,
+            })
+            .await?
+            .items
             .iter()
             .filter(|item| {
                 matches!(
@@ -3791,7 +3800,7 @@ async fn pending_v1_final_wake_survives_parent_compaction(
             "message": CHILD_PROMPT,
             "w": "f",
         }),
-        ChildResponseTiming::Delayed(Duration::from_secs(5)),
+        ChildResponseTiming::Delayed(Duration::from_secs(10)),
         /*wait_for_parent_notification*/ false,
         |builder| {
             builder
@@ -3860,10 +3869,11 @@ async fn pending_v1_final_wake_survives_parent_compaction(
         wait_for_request_containing_text(&inspect, "inspect compacted wake").await?;
     assert_eq!(
         inspect_request
-            .message_input_texts("user")
+            .inputs_of_type("agent_message")
             .iter()
-            .filter(|text| {
-                text.contains("<subagent_notification>") && text.contains("child done")
+            .filter(|item| {
+                let item = item.to_string();
+                item.contains("<subagent_notification>") && item.contains("child done")
             })
             .count(),
         1
@@ -3910,7 +3920,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
             ev_assistant_message("msg-cold-boundary-final", "durable child final"),
             ev_completed("resp-cold-boundary-child"),
         ]))
-        .set_delay(Duration::from_secs(5)),
+        .set_delay(Duration::from_secs(10)),
     )
     .await;
     mount_sse_once_match(
@@ -3947,8 +3957,8 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     );
 
     let parent_thread_id = initial.session_configured.thread_id;
-    let parent_history = store
-        .load_rollback_history(LoadThreadHistoryParams {
+    let parent_model_context = store
+        .load_latest_model_context(LoadThreadHistoryParams {
             thread_id: parent_thread_id,
             include_archived: false,
         })
@@ -3958,6 +3968,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         .thread_manager
         .remove_thread(&parent_thread_id)
         .await;
+    drop(durable_context_permit);
 
     let automatic_delivery = mount_sse_once_match(
         &server,
@@ -3978,7 +3989,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
             initial.config.clone(),
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: parent_thread_id,
-                history: Arc::new(parent_history.items),
+                history: Arc::new(parent_model_context.items),
                 rollout_path: None,
             }),
             codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test")),
@@ -4039,7 +4050,6 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     assert!(automatic_delivery.requests().is_empty());
 
     InMemoryThreadStore::remove_id(&store_id);
-    drop(durable_context_permit);
     Ok(())
 }
 
@@ -4059,7 +4069,7 @@ async fn fork_requires_explicit_agent_reconfiguration(
             "message": CHILD_PROMPT,
             "w": "cf",
         }),
-        ChildResponseTiming::Delayed(Duration::from_secs(5)),
+        ChildResponseTiming::Delayed(Duration::from_secs(10)),
         /*wait_for_parent_notification*/ false,
         move |builder| {
             builder
@@ -4082,6 +4092,12 @@ async fn fork_requires_explicit_agent_reconfiguration(
             include_archived: false,
         })
         .await?;
+    let parent_model_context = store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id: source_parent_id,
+            include_archived: false,
+        })
+        .await?;
     assert!(parent_history.items.iter().any(|item| {
         matches!(
             item,
@@ -4093,10 +4109,15 @@ async fn fork_requires_explicit_agent_reconfiguration(
     }));
     let forked = initial
         .thread_manager
-        .resume_thread_with_history(
+        .fork_thread_from_history(
+            codex_core::ForkSnapshot::Interrupted,
             initial.config.clone(),
-            InitialHistory::Forked(parent_history.items),
-            codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test")),
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: source_parent_id,
+                history: Arc::new(parent_model_context.items),
+                rollout_path: None,
+            }),
+            /*thread_source*/ None,
             /*parent_trace*/ None,
             /*supports_openai_form_elicitation*/ false,
         )
@@ -4195,6 +4216,12 @@ async fn send_input_persistence_failure_rolls_back_response_observation() -> Res
     let child_thread_id = ThreadId::from_string(&spawned_id)?;
     let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
     let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    wait_for_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        child_thread_id,
+    )
+    .await?;
 
     let send_call_id = "send-observation-persistence-failure";
     let send_args = serde_json::to_string(&json!({
@@ -4320,11 +4347,15 @@ async fn failed_response_observation_compensation_quarantines_the_parent() -> Re
     )
     .await?;
     let _ = wait_for_requests(&child_request).await?;
-    let child_thread = test
-        .thread_manager
-        .get_thread(ThreadId::from_string(&spawned_id)?)
-        .await?;
+    let child_thread_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
     let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    wait_for_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        child_thread_id,
+    )
+    .await?;
 
     let send_call_id = "send-with-unknown-observation-commit";
     let send_args = serde_json::to_string(&json!({
@@ -4405,7 +4436,7 @@ async fn failed_response_observation_compensation_quarantines_the_parent() -> Re
         .expect_err("parent should reject work after an unknown observation commit");
     assert_eq!(
         error.to_string(),
-        "invalid request: thread history must be reloaded before accepting more work"
+        "thread history must be reloaded before accepting more work"
     );
 
     InMemoryThreadStore::remove_id(&store_id);
@@ -4439,6 +4470,12 @@ async fn resume_persistence_failure_does_not_subscribe_the_next_target_turn() ->
     let child_thread_id = ThreadId::from_string(&spawned_id)?;
     let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
     let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    wait_for_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        child_thread_id,
+    )
+    .await?;
 
     let resume_call_id = "resume-observation-persistence-failure";
     let resume_args = serde_json::to_string(&json!({

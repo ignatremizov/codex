@@ -354,10 +354,24 @@ async fn retained_v2_eviction_rebinds_foreign_v1_watcher_after_reload() {
     mark_thread_completed(first.thread.as_ref()).await;
     assert!(foreign_observer.has_completion_watcher(root_presentation, first_presentation));
 
-    let pending_slot = child_owner
-        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
-        .await
-        .expect("second slot should unload the completed child");
+    let pending_slot = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match child_owner
+                .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+                .await
+            {
+                Ok(slot) => break slot,
+                Err(err)
+                    if matches!(err.details(), CodexErrorDetails::AgentLimitReached { .. }) =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(err) => panic!("second slot reservation failed unexpectedly: {err}"),
+            }
+        }
+    })
+    .await
+    .expect("completed child's transient watcher work should release its lifecycle boundary");
     drop(pending_slot);
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while foreign_observer.has_completion_watcher(root_presentation, first_presentation) {

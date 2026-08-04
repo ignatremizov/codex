@@ -519,6 +519,40 @@ impl AgentControl {
                 )
                 .await;
         }
+        let final_response_observation =
+            if final_response_observation == FinalResponseObservation::Wake {
+                let Ok(state) = self.upgrade() else {
+                    return false;
+                };
+                let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
+                    return false;
+                };
+                let is_idle_codex_exec = parent_thread
+                    .session
+                    .app_server_client_metadata()
+                    .await
+                    .client_name
+                    .as_deref()
+                    == Some("codex_exec")
+                    && !parent_thread
+                        .session
+                        .active_turn
+                        .lock()
+                        .await
+                        .as_ref()
+                        .is_some_and(|active_turn| active_turn.task.is_some());
+                if is_idle_codex_exec {
+                    // A one-shot exec host exits after its primary turn and cannot consume a
+                    // synthetic wake. Persist the subscribed result through the passive path so
+                    // the transcript remains complete without leaving a durable receipt blocked
+                    // on a turn that this host deliberately cannot start.
+                    FinalResponseObservation::Passive
+                } else {
+                    FinalResponseObservation::Wake
+                }
+            } else {
+                final_response_observation
+            };
         match final_response_observation {
             FinalResponseObservation::None => return true,
             FinalResponseObservation::Wake => {
