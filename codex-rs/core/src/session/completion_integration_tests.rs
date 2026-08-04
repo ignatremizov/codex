@@ -30,9 +30,12 @@ impl TurnLifecycleContributor for ItemRecorder {
     }
 }
 
+#[test_case::test_case(false; "native completion publisher")]
+#[test_case::test_case(true; "observed wait publisher")]
 #[tokio::test]
-async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery() -> anyhow::Result<()>
-{
+async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery(
+    observed_wait: bool,
+) -> anyhow::Result<()> {
     let (mut session, turn, events) = make_session_and_context_with_rx().await;
     let store =
         attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session")).await;
@@ -45,6 +48,8 @@ async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery() 
         .extensions = Arc::new(extensions.build());
     let child_id = ThreadId::new();
     let item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        observe_commentary: None,
+        wake_on_completion: None,
         id: "wait-receipt".to_string(),
         tool: CollabAgentTool::Wait,
         status: CollabAgentToolCallStatus::Completed,
@@ -67,11 +72,24 @@ async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery() 
         .await;
     let committed = Arc::new(AtomicBool::new(false));
     let committed_by_worker = Arc::clone(&committed);
-    session
-        .emit_turn_item_completed_with_primary_delivery(&turn, item.clone(), move || {
-            committed_by_worker.store(true, Ordering::Release);
-        })
-        .await;
+    if observed_wait {
+        let control = session
+            .services
+            .local_agent_runtime
+            .control(session.session_id());
+        let claim = control
+            .register_targeted_wait_agent_presentation(session.presentation_id(), &[child_id])
+            .freeze_none();
+        session
+            .emit_wait_item_completed(&turn, item.clone(), claim)
+            .await;
+    } else {
+        session
+            .emit_turn_item_completed_with_primary_delivery(&turn, item.clone(), move || {
+                committed_by_worker.store(true, Ordering::Release);
+            })
+            .await;
+    }
 
     let event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), events.recv()).await??;
     let EventMsg::ItemCompleted(completed) = &event.msg else {
@@ -88,7 +106,7 @@ async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery() 
         serde_json::to_value(completed)?,
         serde_json::to_value(&expected)?
     );
-    assert!(committed.load(Ordering::Acquire));
+    assert_eq!(committed.load(Ordering::Acquire), !observed_wait);
     assert_eq!(
         serde_json::to_value(&*observed.lock().expect("item observations"))?,
         serde_json::to_value(vec![item.clone()])?,

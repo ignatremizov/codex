@@ -237,7 +237,9 @@ pub(super) async fn handle(
 ) -> CodexResult<TurnInputSubmission> {
     let request = request.into();
     let result = match mode {
-        TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
+        TurnInputMode::StartOrSteer => {
+            start_or_steer(session, request, submission_id.clone()).await
+        }
         TurnInputMode::StartIfIdle => {
             let kind = match &request.request.input {
                 SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
@@ -251,7 +253,7 @@ pub(super) async fn handle(
             start_if_idle(
                 session,
                 request,
-                submission_id,
+                submission_id.clone(),
                 kind,
                 /*expected_previous_turn_id*/ None,
             )
@@ -264,21 +266,26 @@ pub(super) async fn handle(
                 &request.request.input,
                 SubmittedTurnInput::ResponseItem(_) | SubmittedTurnInput::AnnotatedResponseItem(_)
             ) {
-                return Err(CodexErr::InvalidRequest(
+                let error = CodexErr::InvalidRequest(
                     "continuation requires internal response input".to_string(),
-                ));
+                );
+                session.reject_input_turn_admission(
+                    &submission_id,
+                    CodexErr::InvalidRequest(error.to_string()),
+                );
+                return Err(error);
             }
             start_if_idle(
                 session,
                 request,
-                submission_id,
+                submission_id.clone(),
                 TurnStartKind::Recovery,
                 Some(expected_previous_turn_id),
             )
             .await
         }
         TurnInputMode::Steer { expected_turn_id } => {
-            steer(session, request, expected_turn_id, submission_id).await
+            steer(session, request, expected_turn_id, submission_id.clone()).await
         }
     };
     // Link this request's trace to the accepted turn, which may have an older trace.
@@ -287,6 +294,17 @@ pub(super) async fn handle(
     ) = &result
     {
         tracing::Span::current().record("turn.id", turn_id);
+    }
+    match &result {
+        Ok(TurnInputSubmission::NotSubmitted { reason }) => session.reject_input_turn_admission(
+            &submission_id,
+            CodexErr::InvalidRequest(format!("turn input was not submitted: {reason:?}")),
+        ),
+        Err(error) => session.reject_input_turn_admission(
+            &submission_id,
+            CodexErr::InvalidRequest(error.to_string()),
+        ),
+        Ok(TurnInputSubmission::Started { .. } | TurnInputSubmission::Steered { .. }) => {}
     }
     result
 }
@@ -384,8 +402,13 @@ async fn start_or_steer(
         )
         .await
     {
-        Ok((turn_id, root_turn_id)) => {
-            settings.apply_steered(session, submission_id).await?;
+        Ok(resolution) => {
+            settings
+                .apply_steered(session, submission_id.clone())
+                .await?;
+            let turn_id = resolution.target_turn_id.clone();
+            let root_turn_id = resolution.root_turn_id.clone();
+            session.resolve_input_turn_admission(&submission_id, resolution);
             Ok(TurnInputSubmission::Steered {
                 turn_id,
                 root_turn_id,
@@ -431,6 +454,11 @@ async fn start_or_steer(
             if let SubmittedTurnInput::UserInput { content, .. } = &input {
                 turn_context.session_telemetry.user_prompt(content);
             }
+            let resolution = session.capture_input_turn_admission_resolution(
+                turn_context.sub_id.clone(),
+                turn_context.root_turn_id(),
+            );
+            session.resolve_input_turn_admission(&submission_id, resolution);
             let mut task_input = merge_additional_context_input(session, additional_context).await;
             if has_explicit_input {
                 task_input.push(
@@ -568,6 +596,29 @@ async fn start_if_idle_with_lease(
         });
     }
 
+    let observation = if kind == TurnStartKind::Automatic {
+        Some(
+            session
+                .services
+                .local_agent_runtime
+                .control(session.session_id())
+                .acquire_response_observation_transaction(session.presentation_id())
+                .await,
+        )
+    } else {
+        None
+    };
+    if kind == TurnStartKind::Automatic
+        && session
+            .services
+            .local_agent_runtime
+            .control(session.session_id())
+            .has_bound_final_response_wake(session.presentation_id())
+    {
+        return Ok(TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::PendingTriggerTurn,
+        });
+    }
     let turn_state = {
         let mut active_turn = session.active_turn.lock().await;
         if active_turn.is_some() {
@@ -585,6 +636,7 @@ async fn start_if_idle_with_lease(
         let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
         Arc::clone(&active_turn.turn_state)
     };
+    drop(observation);
     // The reserved turn now owns admission. Lifecycle callbacks may reacquire the goal lease.
     drop(lease);
 
@@ -679,6 +731,11 @@ async fn start_if_idle_with_lease(
         }
     }
     on_admitted(&submission_id);
+    let resolution = session.capture_input_turn_admission_resolution(
+        turn_context.sub_id.clone(),
+        turn_context.root_turn_id(),
+    );
+    session.resolve_input_turn_admission(&submission_id, resolution);
     session
         .start_task(Arc::clone(&turn_context), task_input, RegularTask::new())
         .await;
@@ -733,8 +790,13 @@ async fn steer(
         )
         .await
     {
-        Ok((turn_id, root_turn_id)) => {
-            settings.apply_steered(session, submission_id).await?;
+        Ok(resolution) => {
+            settings
+                .apply_steered(session, submission_id.clone())
+                .await?;
+            let turn_id = resolution.target_turn_id.clone();
+            let root_turn_id = resolution.root_turn_id.clone();
+            session.resolve_input_turn_admission(&submission_id, resolution);
             Ok(TurnInputSubmission::Steered {
                 turn_id,
                 root_turn_id,
@@ -843,6 +905,7 @@ impl Session {
             && Arc::ptr_eq(&active_turn.turn_state, turn_state)
         {
             *active_turn_guard = None;
+            self.active_turn_transition.notify_waiters();
         }
     }
 
@@ -866,7 +929,7 @@ impl Session {
         required_final_output_json_schema: Option<&Value>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
         origin: UserInputOrigin,
-    ) -> Result<(String, String), NotSubmittedReason> {
+    ) -> Result<super::InputTurnAdmissionResolution, NotSubmittedReason> {
         let mut active = self.active_turn.lock().await;
         let Some(active_turn) = active.as_mut() else {
             return Err(NotSubmittedReason::NoActiveTurn);
@@ -947,7 +1010,7 @@ impl Session {
                 pending_input,
             )
             .await;
-        Ok((
+        Ok(self.capture_input_turn_admission_resolution(
             active_turn_id.clone(),
             active_task.turn_context.root_turn_id(),
         ))

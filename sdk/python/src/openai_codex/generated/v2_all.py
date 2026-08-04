@@ -159,6 +159,13 @@ class AgentPath(RootModel[str]):
     root: str
 
 
+class AgentResponseFinalDelivery(Enum):
+    none = "none"
+    presentation_only = "presentation_only"
+    passive = "passive"
+    wake = "wake"
+
+
 class AllowDenyRequirement(Enum):
     allow = "allow"
     deny = "deny"
@@ -10295,6 +10302,13 @@ class CollabAgentToolCallThreadItem(BaseModel):
     model: Annotated[
         str | None, Field(description="Model requested for the spawned agent, when applicable.")
     ] = None
+    observe_commentary: Annotated[
+        bool | None,
+        Field(
+            alias="observeCommentary",
+            description="Whether commentary from the receiver is requested.",
+        ),
+    ] = None
     prompt: Annotated[
         str | None,
         Field(description="Prompt text sent as part of the collab tool call, when available."),
@@ -10333,6 +10347,13 @@ class CollabAgentToolCallThreadItem(BaseModel):
     type: Annotated[
         Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
     ]
+    wake_on_completion: Annotated[
+        bool | None,
+        Field(
+            alias="wakeOnCompletion",
+            description="Whether the receiver's terminal response should wake the sender.",
+        ),
+    ] = None
 
 
 class WebSearchThreadItem(BaseModel):

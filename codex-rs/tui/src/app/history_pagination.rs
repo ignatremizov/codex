@@ -121,6 +121,38 @@ impl App {
         if !inserted.is_empty() {
             self.join_older_activity_group(inserted.end, &turns);
         }
+        let metadata = crate::thread_transcript::collab_agent_metadata_from_items(
+            turns.iter().flat_map(|turn| &turn.items),
+        );
+        let mut refreshed_cells = self.transcript_cells.clone();
+        crate::thread_transcript::refresh_collab_agent_labels(&mut refreshed_cells, &metadata);
+        let mut labels_changed = false;
+        for (index, (previous, replacement)) in self
+            .transcript_cells
+            .iter()
+            .zip(&refreshed_cells)
+            .enumerate()
+        {
+            if !Arc::ptr_eq(previous, replacement) {
+                labels_changed = true;
+                self.transcript_view.replace_range(
+                    &self.transcript_cells,
+                    index..index + 1,
+                    replacement,
+                );
+            }
+        }
+        self.transcript_cells = refreshed_cells;
+        for (thread_id, metadata) in metadata {
+            self.chat_widget.set_collab_agent_metadata(
+                thread_id,
+                metadata.agent_nickname,
+                metadata.agent_role,
+            );
+        }
+        if labels_changed && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+            overlay.replace_cells(self.transcript_cells.clone());
+        }
         merge_older_turns(&mut store.lock().await.turns, turns);
         self.scrollback_has_older_history = app_server.has_older_history(thread_id);
         if self.backtrack.overlay_preview_active

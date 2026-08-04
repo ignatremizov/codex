@@ -1,4 +1,7 @@
 use super::*;
+use crate::local::thread_history_materialization;
+use pretty_assertions::assert_eq;
+use sqlx::AssertSqlSafe;
 
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use std::io::Write;
@@ -158,21 +161,18 @@ async fn exact_projection_uses_decoded_indexes_and_rebuilds_old_eof_checkpoints(
         "thread_history_projection_state",
         "fork_thread_history_projection_state",
     ] {
-        sqlx::query(&format!(
+        // The table names are fixed fixture constants; the variable values remain bound.
+        sqlx::query(AssertSqlSafe(format!(
             "UPDATE {table} SET next_rollout_byte_offset = ?, next_rollout_ordinal = 10000001 WHERE thread_id = ?"
-        )).bind(length).bind(thread_id.to_string()).execute(&pool).await.expect("old EOF checkpoint");
+        ))).bind(length).bind(thread_id.to_string()).execute(&pool).await.expect("old EOF checkpoint");
     }
     sqlx::query("ALTER TABLE fork_thread_history_projection_state DROP COLUMN projection_version")
         .execute(&pool)
         .await
         .expect("old unversioned projection schema");
-    super::super::thread_history_materialization::materialize_to_sqlite(
-        &store,
-        thread_id,
-        &rollout_path,
-    )
-    .await
-    .expect("rebuild old projection");
+    thread_history_materialization::materialize_to_sqlite(&store, thread_id, &rollout_path)
+        .await
+        .expect("rebuild old projection");
     let items: Vec<String> = sqlx::query_scalar(
         "SELECT item_id FROM thread_items WHERE thread_id = ? ORDER BY rollout_ordinal",
     )
@@ -197,13 +197,9 @@ async fn exact_projection_uses_decoded_indexes_and_rebuilds_old_eof_checkpoints(
     );
     sqlx::query("CREATE TRIGGER reject_unnecessary_rebuild BEFORE INSERT ON thread_history_projection_state BEGIN SELECT RAISE(ABORT, 'unexpected second rebuild'); END")
         .execute(&pool).await.expect("forbid another rebuild");
-    super::super::thread_history_materialization::materialize_to_sqlite(
-        &store,
-        thread_id,
-        &rollout_path,
-    )
-    .await
-    .expect("versioned matching EOF requires no rebuild");
+    thread_history_materialization::materialize_to_sqlite(&store, thread_id, &rollout_path)
+        .await
+        .expect("versioned matching EOF requires no rebuild");
 }
 
 #[tokio::test]
@@ -239,7 +235,7 @@ async fn failed_exact_rebuild_keeps_old_rows_and_both_checkpoints() {
     sqlx::query("CREATE TRIGGER reject_exact_projection BEFORE INSERT ON fork_thread_history_projection_state BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END")
         .execute(&fixture.pool).await.expect("trigger");
     assert!(
-        super::super::thread_history_materialization::materialize_to_sqlite(
+        thread_history_materialization::materialize_to_sqlite(
             &fixture.store,
             fixture.thread_id,
             &path

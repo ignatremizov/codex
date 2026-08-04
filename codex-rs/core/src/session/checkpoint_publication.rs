@@ -23,6 +23,12 @@ impl Session {
                     .await,
             );
         }
+        let _observation = self
+            .services
+            .local_agent_runtime
+            .control(self.session_id())
+            .acquire_response_observation_transaction(self.presentation_id())
+            .await;
         let permit = thread_settings::acquire_persistence_lock(self).await;
         self.check_history_publication()?;
         let (
@@ -32,6 +38,7 @@ impl Session {
             advance_window,
             mcp_revision,
             compacted_prefix_len,
+            observation_artifacts,
         ) = {
             let state = self.state.lock().await;
             let mut unsummarized_suffix = Vec::new();
@@ -244,6 +251,45 @@ impl Session {
                 &mut canonical_items,
                 canonical_prefix_len,
             );
+            let observations = self
+                .services
+                .local_agent_runtime
+                .control(self.session_id())
+                .response_observation_snapshots_for_parent(self.presentation_id());
+            let mut observation_artifacts = Vec::new();
+            for completion in &state.acknowledged_completion_contexts {
+                let Some(id) = completion.item.id() else {
+                    continue;
+                };
+                if !canonical_items.contains(&completion.item) {
+                    continue;
+                }
+                let committed = observations
+                    .iter()
+                    .filter(|observation| {
+                        observation
+                            .committed_delivery_response_item_ids
+                            .contains(id)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !committed.is_empty() {
+                    observation_artifacts.push(RolloutItem::InterAgentCommunicationMetadata {
+                        trigger_turn: false,
+                    });
+                    observation_artifacts.push(RolloutItem::ResponseItem(completion.item.clone()));
+                    observation_artifacts.extend(
+                        committed
+                            .into_iter()
+                            .map(RolloutItem::AgentResponseObservation),
+                    );
+                }
+            }
+            observation_artifacts.extend(
+                observations
+                    .into_iter()
+                    .map(RolloutItem::AgentResponseObservation),
+            );
             let mut projected = state.history.clone();
             projected.replace_compacted(
                 canonical_items.clone(),
@@ -288,6 +334,7 @@ impl Session {
                 advance_window,
                 mcp_revision,
                 prefix_len,
+                observation_artifacts,
             )
         };
         if let Some((turn_context, item)) = started_item {
@@ -302,6 +349,7 @@ impl Session {
         rollout_items.push(RolloutItem::EventMsg(
             thread_settings::applied_event(self).await,
         ));
+        rollout_items.extend(observation_artifacts);
         let executed_tool_calls = self.services.executed_tool_calls.clone();
         let receiver = self.dispatch_history_publication(
             permit,

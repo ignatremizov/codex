@@ -1,4 +1,5 @@
 mod managed;
+mod observation;
 mod restoration_fence;
 mod shared_instructions;
 mod shutdown;
@@ -125,6 +126,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tracing::instrument;
@@ -192,6 +194,33 @@ pub struct NewThread {
     pub thread_id: ThreadId,
     pub thread: Arc<CodexThread>,
     pub session_configured: SessionConfiguredEvent,
+}
+
+/// Internal spawn/resume result that records whether this call installed the runtime.
+///
+/// Setup rollback may tear down a `Created` runtime. An `Existing` runtime belongs to an earlier
+/// caller, so rollback must preserve it and undo only state registered by the adopting attempt.
+pub(crate) struct ThreadSpawnResult {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) thread: Arc<CodexThread>,
+    pub(crate) session_configured: SessionConfiguredEvent,
+    pub(crate) runtime_origin: ThreadRuntimeOrigin,
+}
+
+impl ThreadSpawnResult {
+    pub(crate) fn into_new_thread(self) -> NewThread {
+        NewThread {
+            thread_id: self.thread_id,
+            thread: self.thread,
+            session_configured: self.session_configured,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ThreadRuntimeOrigin {
+    Created,
+    Existing,
 }
 
 // TODO(ccunningham): Add an explicit non-interrupting live-turn snapshot once
@@ -459,6 +488,9 @@ pub(crate) struct ThreadManagerState {
     v2_spawn_resume_locks:
         std::sync::Mutex<HashMap<ThreadId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     restoration_fences: std::sync::Mutex<HashMap<ThreadId, RestorationFence>>,
+    /// Process-local explicit-close epochs; residency eviction never advances these.
+    agent_lifecycle_generations: std::sync::Mutex<HashMap<ThreadId, u64>>,
+    agent_lifecycle_changed: Arc<Notify>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
 }
@@ -631,6 +663,8 @@ impl ThreadManager {
                 analytics_events_client,
                 v2_spawn_resume_locks: std::sync::Mutex::new(HashMap::new()),
                 restoration_fences: std::sync::Mutex::new(HashMap::new()),
+                agent_lifecycle_generations: std::sync::Mutex::new(HashMap::new()),
+                agent_lifecycle_changed: Arc::new(Notify::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -824,6 +858,8 @@ impl ThreadManager {
                 analytics_events_client: None,
                 v2_spawn_resume_locks: std::sync::Mutex::new(HashMap::new()),
                 restoration_fences: std::sync::Mutex::new(HashMap::new()),
+                agent_lifecycle_generations: std::sync::Mutex::new(HashMap::new()),
+                agent_lifecycle_changed: Arc::new(Notify::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -967,7 +1003,7 @@ impl ThreadManager {
     }
 
     pub fn subscribe_thread_created(&self) -> broadcast::Receiver<ThreadId> {
-        self.state.thread_created_tx.subscribe()
+        self.state.subscribe_thread_created()
     }
 
     pub async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
@@ -1253,7 +1289,9 @@ impl ThreadManager {
             request
         };
         request.startup = startup;
-        Box::pin(self.state.spawn_thread(request)).await
+        Box::pin(self.state.spawn_thread(request))
+            .await
+            .map(ThreadSpawnResult::into_new_thread)
     }
 
     // TODO(jif) merge with fork_agent
@@ -1337,6 +1375,13 @@ impl ThreadManager {
         {
             return Ok(restored_thread);
         }
+        let _lifecycle_guard = match &initial_history {
+            InitialHistory::Resumed(resumed) => {
+                let lifecycle_lock = self.state.agent_lifecycle_lock(resumed.conversation_id);
+                Some(lifecycle_lock.lock_owned().await)
+            }
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
+        };
 
         let agent_control = self
             .agent_control_for_resumed_history(&config, &initial_history)
@@ -1358,6 +1403,7 @@ impl ThreadManager {
             agent_control,
         )))
         .await
+        .map(ThreadSpawnResult::into_new_thread)
     }
 
     pub(crate) async fn start_thread_with_user_shell_override_for_tests(
@@ -1374,7 +1420,9 @@ impl ThreadManager {
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
         request.user_shell_override = Some(user_shell_override);
-        Box::pin(self.state.spawn_thread(request)).await
+        Box::pin(self.state.spawn_thread(request))
+            .await
+            .map(ThreadSpawnResult::into_new_thread)
     }
 
     pub(crate) async fn resume_legacy_thread_from_rollout_with_user_shell_override_for_tests(
@@ -1401,7 +1449,9 @@ impl ThreadManager {
         };
         let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
         request.user_shell_override = Some(user_shell_override);
-        Box::pin(self.state.spawn_thread(request)).await
+        Box::pin(self.state.spawn_thread(request))
+            .await
+            .map(ThreadSpawnResult::into_new_thread)
     }
 
     /// Removes the thread from the manager's internal map, though the thread is stored
@@ -1672,7 +1722,9 @@ impl ThreadManager {
         request.forked_from_thread_id = source_thread_id;
         request.fork_persistence = fork_persistence;
         request.inherited_instructions = Some(instructions);
-        Box::pin(self.state.spawn_thread(request)).await
+        Box::pin(self.state.spawn_thread(request))
+            .await
+            .map(ThreadSpawnResult::into_new_thread)
     }
 
     pub(crate) fn agent_control(&self) -> LocalAgentControl {
@@ -1847,11 +1899,10 @@ impl ThreadManagerState {
     /// Remove a thread from the manager by ID, returning it when present.
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         let mut threads = self.threads.write().await;
-        let removed = threads.remove(thread_id);
-        if let Some(thread) = &removed {
+        if let Some(thread) = threads.get(thread_id) {
             thread.session.prepare_for_thread_removal();
         }
-        removed
+        threads.remove(thread_id)
     }
 
     pub(crate) async fn remove_thread_if_matches(
@@ -2065,13 +2116,15 @@ impl ThreadManagerState {
             request.forked_from_thread_id = parent_thread_id;
             request.fork_persistence = ForkPersistence::CopiedDeferred;
         }
-        Box::pin(self.spawn_thread(request)).await
+        Box::pin(self.spawn_thread(request))
+            .await
+            .map(ThreadSpawnResult::into_new_thread)
     }
 
     pub(crate) async fn resume_thread_with_history_with_source(
         &self,
         options: ResumeThreadWithHistoryOptions,
-    ) -> CodexResult<NewThread> {
+    ) -> CodexResult<ThreadSpawnResult> {
         let ResumeThreadWithHistoryOptions {
             registration,
             config,
@@ -2127,7 +2180,10 @@ impl ThreadManagerState {
     }
 
     /// Spawn a new thread with optional history and register it with the manager.
-    async fn spawn_thread(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+    async fn spawn_thread(
+        &self,
+        mut request: ThreadSpawnRequest,
+    ) -> CodexResult<ThreadSpawnResult> {
         let runtime = request.agent_control.runtime().clone();
         let membership = runtime.admit_start()?;
         let owns_startup = request.startup.is_none();
@@ -2260,21 +2316,22 @@ impl ThreadManagerState {
                             resumed.conversation_id
                         )));
                     }
+                    drop(threads);
                     let session_configured =
                         thread.startup_metadata().to_session_configured_event();
                     startup_state.release_membership();
                     if let Some(startup_guard) = startup_guard {
                         startup_guard.disarm();
                     }
-                    return Ok(NewThread {
+                    return Ok(ThreadSpawnResult {
                         thread_id: resumed.conversation_id,
                         session_configured,
                         thread,
+                        runtime_origin: ThreadRuntimeOrigin::Existing,
                     });
                 }
-                if let Some(removed) = threads.remove(&resumed.conversation_id) {
-                    removed.session.prepare_for_thread_removal();
-                }
+                thread.session.prepare_for_thread_removal();
+                threads.remove(&resumed.conversation_id);
             }
         }
         let agent_control = match (&self.agent_control_factory, agent_control) {
@@ -2538,7 +2595,7 @@ impl ThreadManagerState {
         session_source: SessionSource,
         initial_host_config: Option<AgentConfigUpdate>,
         registration: ThreadRegistration,
-    ) -> CodexResult<NewThread> {
+    ) -> CodexResult<ThreadSpawnResult> {
         let thread_id = session.thread_id();
         let event = io.next_event().await?;
         let session_configured = match event {
@@ -2572,14 +2629,14 @@ impl ThreadManagerState {
                 if registration == ThreadRegistration::Immediate {
                     e.insert(thread.clone());
                 }
-                return Ok(NewThread {
+                return Ok(ThreadSpawnResult {
                     thread_id,
                     thread,
                     session_configured,
+                    runtime_origin: ThreadRuntimeOrigin::Created,
                 });
             }
         }
-
         if let Err(err) = io.shutdown_and_wait().await {
             warn!("failed to shut down duplicate thread {thread_id}: {err}");
         }
