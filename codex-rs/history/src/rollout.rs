@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 
@@ -83,8 +84,8 @@ pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
 
     // Subagent completion context and presentation are out-of-band arrivals, not output owned by
     // the user turn whose raw range happens to contain them. Once accepted and durably appended,
-    // later exact rollback must not erase them. Preserve the v2 delivery metadata immediately
-    // preceding a completion context item as part of the same durable pair.
+    // later exact rollback must not erase them. Preserve inter-agent delivery metadata immediately
+    // preceding a committed response item as part of the same durable pair.
     for index in 0..items.len() {
         if !removed[index] || !is_sub_agent_completion_artifact(items, index) {
             continue;
@@ -105,13 +106,20 @@ pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
 fn is_sub_agent_completion_artifact(items: &[RolloutItem], index: usize) -> bool {
     match &items[index] {
         RolloutItem::ResponseItem(item) => {
-            item.id()
-                .is_some_and(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
-                && matches!(
-                    index.checked_sub(1).and_then(|index| items.get(index)),
-                    Some(RolloutItem::InterAgentCommunicationMetadata { .. })
-                )
+            let Some(response_item_id) = item.id() else {
+                return false;
+            };
+            let reserved_completion_context =
+                is_sub_agent_completion_context_response_item_id(response_item_id.as_str())
+                    && matches!(
+                        index.checked_sub(1).and_then(|index| items.get(index)),
+                        Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+                    );
+            reserved_completion_context || is_committed_observed_response(items, index)
         }
+        // Pending and committed snapshots are model-hidden audit records. Retaining one is
+        // neither permission to activate a watcher nor evidence of an acknowledged delivery.
+        RolloutItem::AgentResponseObservation(_) => true,
         RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
             event.item.is_sub_agent_completion_presentation()
         }
@@ -127,6 +135,37 @@ fn is_sub_agent_completion_artifact(items: &[RolloutItem], index: usize) -> bool
         | RolloutItem::RealtimeItem(_)
         | RolloutItem::EventMsg(_) => false,
     }
+}
+
+/// Recognizes an observed response's canonical envelope in an unfiltered raw rollout segment.
+///
+/// Metadata must immediately precede the attributed response, and its committed identity must
+/// occur in the contiguous following observation snapshots. This permits audit replay and
+/// deduplication only: readable records do not certify a failed writer barrier or activate a
+/// live subscription. Callers must separately reject conflicting payloads for the same identity.
+pub fn is_committed_observed_response(items: &[RolloutItem], index: usize) -> bool {
+    let Some(RolloutItem::ResponseItem(item)) = items.get(index) else {
+        return false;
+    };
+    let ResponseItem::AgentMessage { id: Some(id), .. } = &item.item else {
+        return false;
+    };
+    id.as_str().starts_with("amsg_")
+        && matches!(
+            index.checked_sub(1).and_then(|index| items.get(index)),
+            Some(RolloutItem::InterAgentCommunicationMetadata { .. })
+        )
+        && items
+            .iter()
+            .skip(index.saturating_add(1))
+            .take_while(|item| matches!(item, RolloutItem::AgentResponseObservation(_)))
+            .any(|item| {
+                matches!(
+                    item,
+                    RolloutItem::AgentResponseObservation(observation)
+                        if observation.committed_delivery_response_item_ids.contains(id)
+                )
+            })
 }
 
 /// Returns the effective raw rollout with exact rollback ranges and their markers removed.

@@ -120,6 +120,15 @@ impl LocalAgentControl {
             }
         }
         let descendants = self.live_thread_spawn_descendants(agent_id).await?;
+        // An explicit close revokes future live recovery across every observer control.
+        // Accepted exact-session deliveries are drained independently; their receipts are
+        // never moved to a later runtime with the same rollout UUID.
+        for closed_id in std::iter::once(agent_id).chain(descendants.iter().copied()) {
+            state.advance_agent_lifecycle_generation(closed_id);
+            if let Ok(thread) = state.get_thread(closed_id).await {
+                self.revoke_response_observations_for_child(thread.session.presentation_id());
+            }
+        }
         let result = self.shutdown_live_agent_unlocked(agent_id).await;
         for child_id in descendants {
             match Box::pin(self.shutdown_live_agent(child_id)).await {

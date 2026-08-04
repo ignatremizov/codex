@@ -112,11 +112,14 @@ pub use crate::permissions::RawFileSystemSandboxPolicy;
 use crate::permissions::default_read_only_subpaths_for_writable_root;
 pub use crate::request_permissions::RequestPermissionsArgs;
 pub use crate::request_user_input::RequestUserInputEvent;
+pub use crate::sub_agent_completion::SubAgentCompletionModelVisibility;
 pub use crate::sub_agent_completion::SubAgentCompletionStatus;
 pub use crate::sub_agent_completion::is_sub_agent_completion_context_response_item_id;
 pub use crate::sub_agent_completion::new_sub_agent_completion_context_response_item_id;
 pub use crate::sub_agent_completion::ordinary_agent_message_response_item_id;
 pub use crate::sub_agent_completion::sub_agent_completion_item;
+pub use crate::sub_agent_completion::sub_agent_completion_item_with_visibility;
+pub use crate::sub_agent_completion::sub_agent_completion_model_visibility_from_response_item_id;
 pub use crate::sub_agent_completion::sub_agent_completion_status_from_response_item_id;
 pub use crate::sub_agent_completion::sub_agent_completion_transcript;
 pub use crate::sub_agent_completion::sub_agent_completion_transcript_parts;
@@ -3331,6 +3334,71 @@ impl WorldStateItem {
 pub struct TurnContextNetworkItem {
     pub allowed_domains: Vec<String>,
     pub denied_domains: Vec<String>,
+}
+
+/// Final-response handling retained as durable evidence for an observer.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum AgentResponseFinalDelivery {
+    None,
+    PresentationOnly,
+    #[default]
+    Passive,
+    Wake,
+}
+
+/// Durable snapshot of commentary and final-response observation state.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponseObservation {
+    pub observer_thread_id: ThreadId,
+    pub target_thread_id: ThreadId,
+    pub target_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub task_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub promoted_task_context: Option<AgentResponsePromotedTaskContext>,
+    pub pending_commentary: bool,
+    #[serde(default)]
+    pub commentary_after_sequences: Vec<u64>,
+    #[serde(default)]
+    pub commentary_admissions: Vec<AgentResponseCommentaryAdmission>,
+    pub commentary_delivery: Option<AgentResponseCommentaryDelivery>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub target_messages: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queue_delivery: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message_wake_turn_id: Option<String>,
+    pub baseline_final_delivery: AgentResponseFinalDelivery,
+    pub final_delivery: AgentResponseFinalDelivery,
+    pub final_delivery_response_item_id: Option<ResponseItemId>,
+    #[serde(default)]
+    pub committed_delivery_response_item_ids: Vec<ResponseItemId>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponsePromotedTaskContext {
+    pub response_item_id: ResponseItemId,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponseCommentaryAdmission {
+    pub minimum_event_sequence: u64,
+    pub after_item_id: Option<String>,
+    #[serde(default)]
+    pub canonical_boundary: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+pub struct AgentResponseCommentaryDelivery {
+    pub source_item_id: String,
+    pub text: String,
+    pub response_item_id: ResponseItemId,
 }
 
 /// Persist once per real user turn after computing that turn's model-visible

@@ -1147,6 +1147,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: Vec::new(),
             prompt: Some(payload.prompt.clone()),

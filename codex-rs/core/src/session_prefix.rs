@@ -1,10 +1,12 @@
 use codex_protocol::AgentPath;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
 
 use crate::context::ContextualUserFragment;
 use crate::context::InterAgentCompletionMessage;
+use crate::context::SubagentCommentary;
 use crate::context::SubagentNotification;
 
 const COMPLETION_MESSAGE_MAX_TOKENS: usize = 1_000;
@@ -19,9 +21,32 @@ const ERROR_NEXT_ACTION: &str = "This agent's turn failed. If you still need thi
 // TODO(jif) unify with structured schema
 pub(crate) fn format_subagent_notification_message(
     agent_reference: &str,
+    agent_id: ThreadId,
     status: &AgentStatus,
 ) -> String {
-    SubagentNotification::new(agent_reference, status.clone()).render()
+    let status = match status {
+        AgentStatus::Errored(error) => AgentStatus::Errored(truncate_text(
+            error,
+            TruncationPolicy::Tokens(ERROR_MAX_TOKENS),
+        )),
+        AgentStatus::PendingInit
+        | AgentStatus::Running
+        | AgentStatus::Interrupted
+        | AgentStatus::Completed(_)
+        | AgentStatus::Shutdown
+        | AgentStatus::NotFound => status.clone(),
+    };
+    SubagentNotification::new(agent_reference, agent_id, status).render()
+}
+
+pub(crate) fn format_subagent_commentary_message(
+    agent_reference: &str,
+    agent_id: ThreadId,
+    turn_id: &str,
+    item_id: &str,
+    message: &str,
+) -> String {
+    SubagentCommentary::new(agent_reference, agent_id, turn_id, item_id, message).render()
 }
 
 pub(crate) fn format_inter_agent_completion_message(

@@ -600,6 +600,7 @@ struct InMemoryThreadStoreState {
     names: HashMap<ThreadId, Option<String>>,
     rollout_paths: HashMap<PathBuf, ThreadId>,
     fail_next_operation: Option<InMemoryThreadStoreFailure>,
+    observation_barrier_failure: Option<(usize, InMemoryThreadStoreFailure)>,
     compacted_media_repair_flush_rollback: Option<(ThreadId, usize)>,
     fail_next_rollback_verification_read: bool,
     fail_next_rollback_response_read: bool,
@@ -644,6 +645,16 @@ impl InMemoryThreadStore {
     /// Makes the next matching operation return an injected internal error.
     pub async fn fail_next_operation(&self, operation: InMemoryThreadStoreFailure) {
         self.state.lock().await.fail_next_operation = Some(operation);
+    }
+
+    /// Fails one canonical observation barrier after the specified successful barriers.
+    /// Ordinary appends and other completion writes do not consume this schedule.
+    pub async fn fail_observation_barrier_after(
+        &self,
+        successful_barriers: usize,
+        failure: InMemoryThreadStoreFailure,
+    ) {
+        self.state.lock().await.observation_barrier_failure = Some((successful_barriers, failure));
     }
 
     async fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreResult<()> {
@@ -1098,6 +1109,25 @@ impl InMemoryThreadStore {
 }
 
 impl ThreadStore for InMemoryThreadStore {
+    fn load_canonical_artifact_segments(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> ThreadStoreFuture<'_, crate::StoredCanonicalArtifactSegments> {
+        Box::pin(async move {
+            let state = self.state.lock().await;
+            let items =
+                state
+                    .histories
+                    .get(&params.thread_id)
+                    .ok_or(ThreadStoreError::ThreadNotFound {
+                        thread_id: params.thread_id,
+                    })?;
+            Ok(crate::StoredCanonicalArtifactSegments {
+                segments: vec![items.clone()],
+            })
+        })
+    }
+
     fn append_completion_items_and_flush(
         &self,
         params: AppendThreadItemsParams,

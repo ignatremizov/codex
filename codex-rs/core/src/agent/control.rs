@@ -3,6 +3,8 @@ use crate::TurnInputSubmission;
 use crate::TurnStartOptions;
 use crate::agent::AgentStatus;
 use crate::agent::registry::AgentRegistry;
+use crate::agent::response_observation::FinalResponseObservation;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
 use crate::agent::types::AgentMetadata;
@@ -69,6 +71,9 @@ mod budget;
 mod completion;
 mod completion_watcher;
 mod presentation;
+mod response_delivery;
+mod response_observer;
+mod response_submission;
 mod restore_environments;
 mod restore_metadata;
 mod restore_publication;
@@ -80,8 +85,14 @@ pub(crate) use presentation::CompletionParentBinding;
 pub(crate) use presentation::CompletionParentState;
 pub(crate) use presentation::CompletionPresentation;
 pub(crate) use presentation::CompletionWatcherRegistration;
+use presentation::ResponseObservationBinding;
+use presentation::ResponseObservationBindingPublication;
+pub(crate) use presentation::ResponseObservationDeliveryCommit;
+pub(crate) use presentation::ResponseObservationDeliveryKind;
+use presentation::ResponseObservationPersistence;
 pub(crate) use presentation::SessionPresentationId;
 pub(crate) use presentation::TerminalPresentationDelivery;
+pub(crate) use presentation::WaitAgentPresentationCommit;
 mod delivery;
 mod execution;
 mod fork_goal_context;
@@ -701,14 +712,6 @@ impl LocalAgentControl {
             agent_nickname,
             ..Default::default()
         })
-    }
-
-    pub(crate) async fn subscribe_agent_status_events(
-        &self,
-        thread_id: ThreadId,
-    ) -> CodexResult<crate::session::AgentStatusSubscription> {
-        let thread = self.upgrade()?.get_thread(thread_id).await?;
-        Ok(thread.session.subscribe_agent_status_events())
     }
 
     #[allow(clippy::too_many_arguments)]

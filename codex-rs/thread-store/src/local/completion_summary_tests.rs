@@ -6,6 +6,7 @@ use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::sub_agent_completion_item;
 
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn cold_summary_keeps_completion_only_and_owned_orphan_wait_rows() {
@@ -14,7 +15,7 @@ async fn cold_summary_keeps_completion_only_and_owned_orphan_wait_rows() {
         let store = projection_store(home.path()).await;
         let thread_id = ThreadId::new();
         let worker_id = ThreadId::new();
-        create_paginated_thread(&store, thread_id).await;
+        create_indexed_paginated_thread(&store, thread_id, /*history_base*/ None).await;
         let completion = sub_agent_completion_item(
             "/root/worker",
             &AgentStatus::Completed(Some("done".to_string())),
@@ -32,6 +33,12 @@ async fn cold_summary_keeps_completion_only_and_owned_orphan_wait_rows() {
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,
             deadline_at_ms: None,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
+            input_batch: None,
+            mailbox_input: None,
             sender_thread_id: thread_id,
             receiver_thread_ids: vec![worker_id],
             receiver_agents: Vec::new(),
@@ -105,7 +112,7 @@ async fn fork_summary_does_not_include_completions_after_its_frozen_cutoff() {
     let home = TempDir::new().expect("temp dir");
     let store = projection_store(home.path()).await;
     let root_id = ThreadId::new();
-    create_paginated_thread(&store, root_id).await;
+    create_indexed_paginated_thread(&store, root_id, /*history_base*/ None).await;
     let first = sub_agent_completion_item("/root/first", &AgentStatus::Shutdown).expect("terminal");
     let first_id = first.id.clone();
     store
@@ -121,17 +128,7 @@ async fn fork_summary_does_not_include_completions_after_its_frozen_cutoff() {
         .expect("first completion");
     let prepared = prepare_paginated_fork(&store, root_id, ForkBoundary::Latest).await;
     let child_id = ThreadId::new();
-    create_paginated_subagent_thread(
-        &store,
-        child_id,
-        prepared.history_base,
-        /*subagent_history_start_ordinal*/ None,
-    )
-    .await;
-    store
-        .persist_thread(child_id, PersistContext::Standard)
-        .await
-        .expect("persist child");
+    create_indexed_paginated_thread(&store, child_id, prepared.history_base).await;
     let child_completion =
         sub_agent_completion_item("/root/child", &AgentStatus::Shutdown).expect("terminal");
     let child_completion_id = child_completion.id.clone();

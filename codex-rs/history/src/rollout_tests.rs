@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::items::CollabAgentTool;
@@ -8,6 +9,8 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
+use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -117,6 +120,8 @@ fn completion_wait_event(turn_id: &str) -> RolloutItem {
             id: "wait-agent-call".to_string(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,
+            observe_commentary: None,
+            wake_on_completion: None,
             deadline_at_ms: None,
             sender_thread_id: ThreadId::new(),
             receiver_thread_ids: vec![child_thread_id],
@@ -293,4 +298,124 @@ fn exact_rollback_preserves_accepted_sub_agent_completion_artifacts() {
         ])
         .expect("serialize expected rollout")
     );
+}
+
+#[test]
+fn exact_rollback_preserves_committed_observed_agent_responses() {
+    let observer_thread_id = ThreadId::new();
+    let target_thread_id = ThreadId::new();
+    let response_item_id = ResponseItemId::new("amsg");
+    let metadata = RolloutItem::InterAgentCommunicationMetadata { trigger_turn: true };
+    let response = RolloutItem::ResponseItem(
+        ResponseItem::AgentMessage {
+            id: Some(response_item_id.clone()),
+            author: "/root/worker".to_string(),
+            recipient: "/root".to_string(),
+            content: vec![AgentMessageInputContent::InputText {
+                text: "observed response".to_string(),
+            }],
+            internal_chat_message_metadata_passthrough: None,
+        }
+        .into(),
+    );
+    let observation = RolloutItem::AgentResponseObservation(AgentResponseObservation {
+        observer_thread_id,
+        target_thread_id,
+        target_turn_id: Some("target-turn".to_string()),
+        task_preview: None,
+        promoted_task_context: None,
+        pending_commentary: false,
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        target_messages: false,
+        queue_delivery: false,
+        message_wake_turn_id: None,
+        baseline_final_delivery: AgentResponseFinalDelivery::Passive,
+        final_delivery: AgentResponseFinalDelivery::Wake,
+        final_delivery_response_item_id: Some(response_item_id.clone()),
+        committed_delivery_response_item_ids: vec![response_item_id],
+    });
+    let items = vec![
+        started("turn-1"),
+        message("rolled back prompt"),
+        metadata.clone(),
+        response.clone(),
+        observation.clone(),
+        marker(0),
+    ];
+
+    assert_eq!(
+        serde_json::to_value(rollout_without_exact_rollback_ranges(&items))
+            .expect("serialize normalized rollout"),
+        serde_json::to_value(vec![metadata, response, observation])
+            .expect("serialize expected rollout")
+    );
+}
+
+#[test]
+fn exact_rollback_rejects_untrusted_observation_links() {
+    let response_item_id = ResponseItemId::new("amsg");
+    let response = RolloutItem::ResponseItem(
+        ResponseItem::Message {
+            id: Some(response_item_id.clone()),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "ordinary item".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }
+        .into(),
+    );
+    let observation = RolloutItem::AgentResponseObservation(AgentResponseObservation {
+        observer_thread_id: ThreadId::new(),
+        target_thread_id: ThreadId::new(),
+        target_turn_id: Some("target-turn".to_string()),
+        task_preview: None,
+        promoted_task_context: None,
+        pending_commentary: false,
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        target_messages: false,
+        queue_delivery: false,
+        message_wake_turn_id: None,
+        baseline_final_delivery: AgentResponseFinalDelivery::Passive,
+        final_delivery: AgentResponseFinalDelivery::Wake,
+        final_delivery_response_item_id: Some(response_item_id.clone()),
+        committed_delivery_response_item_ids: vec![response_item_id.clone()],
+    });
+    let agent_response = RolloutItem::ResponseItem(
+        ResponseItem::AgentMessage {
+            id: Some(response_item_id),
+            author: "/root/worker".to_string(),
+            recipient: "/root".to_string(),
+            content: vec![AgentMessageInputContent::InputText {
+                text: "unproven observed response".to_string(),
+            }],
+            internal_chat_message_metadata_passthrough: None,
+        }
+        .into(),
+    );
+    let metadata = RolloutItem::InterAgentCommunicationMetadata { trigger_turn: true };
+    for mut items in [
+        vec![response.clone(), observation.clone()],
+        vec![metadata.clone(), response, observation.clone()],
+        vec![agent_response.clone(), observation.clone()],
+        vec![
+            metadata,
+            agent_response,
+            message("break adjacency"),
+            observation.clone(),
+        ],
+    ] {
+        items.push(marker(0));
+        assert_eq!(
+            serde_json::to_value(rollout_without_exact_rollback_ranges(&items))
+                .expect("serialize normalized rollout"),
+            serde_json::to_value(vec![observation.clone()]).expect("serialize audit-only snapshot"),
+            "an audit snapshot must not promote unproven response input across rollback"
+        );
+    }
 }

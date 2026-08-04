@@ -94,6 +94,7 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_reference_context_item:
         RolloutItem::RealtimeItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::RetainedContext(_)
         | RolloutItem::SecurityRiskScore(_) => false,
         // Full-history forks preserve the cached prompt prefix and can keep diffing
@@ -224,6 +225,22 @@ impl LocalAgentControl {
     }
 
     async fn spawn_agent_internal(
+        &self,
+        config: Config,
+        initial_input: SpawnInitialInput,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+    ) -> CodexResult<LiveAgent> {
+        let control = self.clone();
+        tokio::spawn(async move {
+            Box::pin(control.spawn_agent_owned(config, initial_input, session_source, options))
+                .await
+        })
+        .await
+        .map_err(|error| CodexErr::Fatal(format!("agent spawn worker failed: {error}")))?
+    }
+
+    async fn spawn_agent_owned(
         &self,
         config: Config,
         initial_input: SpawnInitialInput,
@@ -400,11 +417,6 @@ impl LocalAgentControl {
             new_thread.thread.ensure_rollout_materialized().await;
         }
 
-        // Notify a new thread has been created. This notification will be processed by clients
-        // to subscribe or drain this newly created thread.
-        // TODO(jif) add helper for drain
-        state.notify_thread_created(new_thread.thread_id);
-
         self.persist_thread_spawn_edge_for_source(
             new_thread.thread.as_ref(),
             new_thread.thread_id,
@@ -419,10 +431,29 @@ impl LocalAgentControl {
             cyber_access_program: options.cyber_access_program,
             ..Default::default()
         };
-        match initial_input {
+        let submission = match initial_input {
             SpawnInitialInput::UserInput(input) => {
-                self.send_input(new_thread.thread_id, input, start_options)
-                    .await?;
+                if let Some(parent_id) = notification_source
+                    .as_ref()
+                    .and_then(SessionSource::parent_thread_id)
+                {
+                    match state.get_thread(parent_id).await {
+                        Ok(observer) => {
+                            self.send_input_observing_response(
+                                new_thread.thread_id,
+                                input,
+                                start_options,
+                                observer.session.presentation_id(),
+                                options.response_observation,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    self.send_input(new_thread.thread_id, input, start_options)
+                        .await
+                }
             }
             SpawnInitialInput::InterAgentCommunication(communication, context) => {
                 self.send_inter_agent_communication_after_capacity_check(
@@ -433,9 +464,18 @@ impl LocalAgentControl {
                     context,
                     start_options,
                 )
-                .await?;
+                .await
             }
+        };
+        if let Err(error) = submission {
+            // This spawn allocated a fresh thread ID; cleanup never removes an adopted runtime.
+            // The worker owns both admission and cleanup even if the caller drops its receipt.
+            if let Err(cleanup_error) = self.close_agent(new_thread.thread_id).await {
+                warn!("failed to retire unpublished spawned agent: {cleanup_error}");
+            }
+            return Err(error);
         }
+        state.notify_thread_created(new_thread.thread_id);
 
         Ok(LiveAgent {
             thread_id: new_thread.thread_id,
@@ -712,6 +752,7 @@ impl LocalAgentControl {
                 | RolloutItem::InterAgentCommunication(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. } => true,
                 RolloutItem::RetainedContext(_)
+                | RolloutItem::AgentResponseObservation(_)
                 | RolloutItem::TokenUsageRecord(_)
                 | RolloutItem::SecurityRiskScore(_) => false,
             }

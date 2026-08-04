@@ -105,6 +105,7 @@ pub(super) struct RollbackPlanner {
     pending_context_records: Vec<usize>,
     pending_user_response: Option<PendingUserResponse>,
     pending_delivery_boundary: Option<usize>,
+    pending_observed_response: Option<(ResponseItemId, usize, usize)>,
     turn_boundaries: HashMap<String, usize>,
     call_boundaries: HashMap<(String, String), Option<usize>>,
     retained_fact_sources: Vec<RetainedFactSource>,
@@ -123,6 +124,7 @@ impl RollbackPlanner {
             pending_context_records: Vec::new(),
             pending_user_response: None,
             pending_delivery_boundary: None,
+            pending_observed_response: None,
             turn_boundaries: HashMap::new(),
             call_boundaries: HashMap::new(),
             retained_fact_sources: Vec::new(),
@@ -154,6 +156,9 @@ impl RollbackPlanner {
         };
         self.pending_user_response = None;
         self.pending_delivery_boundary = None;
+        if !matches!(&line.item, RolloutItem::AgentResponseObservation(_)) {
+            self.pending_observed_response = None;
+        }
 
         match &line.item {
             RolloutItem::SessionMeta(_) => self.record_boundaries[index] = None,
@@ -161,6 +166,10 @@ impl RollbackPlanner {
                 if let Some(boundary) = paired_delivery_boundary {
                     self.record_boundaries[index] = Some(boundary);
                     self.boundaries[boundary].message_id = response.id().cloned();
+                    if let Some(id) = response.id().filter(|id| id.as_str().starts_with("amsg_")) {
+                        self.pending_observed_response =
+                            Some((id.clone(), self.boundaries[boundary].record_index, index));
+                    }
                 } else if rollback::counts_as_boundary(&response.item) {
                     let boundary = self.start_boundary(index);
                     self.boundaries[boundary].message_id = response.id().cloned();
@@ -256,6 +265,17 @@ impl RollbackPlanner {
             }
             RolloutItem::TokenUsageRecord(record) => {
                 self.assign_targeted_record(index, Some(record.turn_id.as_str()));
+            }
+            RolloutItem::AgentResponseObservation(observation) => {
+                self.record_boundaries[index] = None;
+                if let Some((id, metadata_index, response_index)) = &self.pending_observed_response
+                    && observation
+                        .committed_delivery_response_item_ids
+                        .contains(id)
+                {
+                    self.record_boundaries[*metadata_index] = None;
+                    self.record_boundaries[*response_index] = None;
+                }
             }
             RolloutItem::WorldState(_) | RolloutItem::RealtimeItem(_) => {}
             RolloutItem::RetainedContext(codex_rollout::RetainedContextEvent::VerifiedAnswer {

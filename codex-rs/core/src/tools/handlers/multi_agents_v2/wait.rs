@@ -87,6 +87,8 @@ impl Handler {
                     id: call_id.clone(),
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::InProgress,
+                    observe_commentary: None,
+                    wake_on_completion: None,
                     deadline_at_ms,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: Vec::new(),
@@ -120,12 +122,14 @@ impl Handler {
         receiver_thread_ids.sort_by_key(ToString::to_string);
 
         session
-            .emit_turn_item_completed_with_primary_delivery(
+            .emit_wait_item_completed(
                 &turn,
                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                     id: call_id,
                     tool: CollabAgentTool::Wait,
                     status: wait_tool_call_status(&agents_states),
+                    observe_commentary: None,
+                    wake_on_completion: None,
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids,
@@ -136,7 +140,7 @@ impl Handler {
                     agents_states,
                     completion_presentation_agent_ids,
                 }),
-                move || presentation_commit.commit(),
+                presentation_commit,
             )
             .await;
 

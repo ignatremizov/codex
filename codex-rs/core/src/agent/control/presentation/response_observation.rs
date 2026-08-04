@@ -1,0 +1,326 @@
+use super::*;
+use crate::agent::response_observation::FinalResponseObservation;
+use crate::agent::response_observation::ResponseObservationPolicy;
+use codex_protocol::protocol::AgentResponseCommentaryAdmission;
+use codex_protocol::protocol::AgentResponseCommentaryDelivery;
+use codex_protocol::protocol::AgentResponseObservation;
+
+mod delivery;
+mod runtime;
+mod snapshot;
+
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct ResponseTurnObservation {
+    pub(super) commentary_admissions: Vec<AgentResponseCommentaryAdmission>,
+    pub(super) commentary_delivery: Option<AgentResponseCommentaryDelivery>,
+    pub(super) final_response: FinalResponseObservation,
+    pub(super) final_delivery_response_item_id: Option<ResponseItemId>,
+    pub(super) committed_delivery_response_item_ids: Vec<ResponseItemId>,
+}
+
+impl Default for ResponseTurnObservation {
+    fn default() -> Self {
+        Self {
+            commentary_admissions: Vec::new(),
+            commentary_delivery: None,
+            final_response: FinalResponseObservation::None,
+            final_delivery_response_item_id: None,
+            committed_delivery_response_item_ids: Vec::new(),
+        }
+    }
+}
+
+impl ResponseTurnObservation {
+    fn new(
+        policy: ResponseObservationPolicy,
+        minimum_event_sequence: u64,
+        after_item_id: Option<String>,
+    ) -> Self {
+        let mut observation = Self {
+            final_response: policy.final_response(),
+            ..Default::default()
+        };
+        observation.merge(policy, minimum_event_sequence, after_item_id);
+        observation
+    }
+
+    fn merge(
+        &mut self,
+        policy: ResponseObservationPolicy,
+        minimum_event_sequence: u64,
+        after_item_id: Option<String>,
+    ) {
+        if policy.commentary() {
+            self.commentary_admissions
+                .push(AgentResponseCommentaryAdmission {
+                    minimum_event_sequence,
+                    after_item_id,
+                    canonical_boundary: true,
+                });
+        }
+        self.final_response = self.final_response.max(policy.final_response());
+    }
+}
+
+#[derive(Clone)]
+pub(in crate::agent::control) struct ResponseObserverRelationship {
+    pub(super) revoked: bool,
+    pub(super) persistence: ResponseObservationPersistence,
+    pub(super) baseline_final_response: FinalResponseObservation,
+    pub(super) pending_next_turn: Option<ResponseTurnObservation>,
+    pub(super) pending_admissions: HashMap<Uuid, ResponseTurnObservation>,
+    pub(super) turns: HashMap<String, ResponseTurnObservation>,
+}
+
+impl Default for ResponseObserverRelationship {
+    fn default() -> Self {
+        Self {
+            revoked: false,
+            persistence: ResponseObservationPersistence::RuntimeOnly,
+            baseline_final_response: FinalResponseObservation::None,
+            pending_next_turn: None,
+            pending_admissions: HashMap::new(),
+            turns: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResponseObservationBinding {
+    NextTurn,
+    ExplicitAdmission(Uuid),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResponseObservationBindingPublication {
+    Immediate,
+    Deferred,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ResponseObservationPersistence {
+    #[default]
+    RuntimeOnly,
+    Durable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResponseObservationEventMatch {
+    Observe,
+    Ignore,
+    AwaitBinding,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResponseObservationDeliveryKind {
+    Commentary,
+    Final,
+}
+
+/// Identifies a durably claimed response whose committed snapshot is written when the observer
+/// consumes its mailbox item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResponseObservationDeliveryCommit {
+    pub(crate) parent: SessionPresentationId,
+    pub(crate) child: SessionPresentationId,
+    pub(crate) turn_id: String,
+    pub(crate) response_item_id: ResponseItemId,
+    pub(crate) kind: ResponseObservationDeliveryKind,
+}
+
+pub(crate) struct ResponseWatcherRegistration {
+    state: Arc<WaitAgentPresentations>,
+    parent: SessionPresentationId,
+    child: SessionPresentationId,
+    active: bool,
+    preserve_state: bool,
+}
+
+impl LocalAgentControl {
+    /// Returns whether `observer` has a wake-capable final observation bound to concrete work.
+    ///
+    /// Pending next-turn policies do not count: an idle target may never start that turn, so
+    /// treating an unbound policy as pending work could indefinitely defer other automatic work.
+    pub(crate) fn has_bound_final_response_wake(&self, observer: SessionPresentationId) -> bool {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .iter()
+            .any(|((parent, _), relationship)| {
+                *parent == observer && relationship_has_bound_final_response_wake(relationship)
+            })
+    }
+
+    /// Installs a policy only for an already validated, exact live observer/target pair.
+    /// The caller holds the target lifecycle and observer transaction guards.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn register_response_watcher_with_parent_at_sequence(
+        &self,
+        child: SessionPresentationId,
+        observer: &Arc<CodexThread>,
+        response_observation: ResponseObservationPolicy,
+        retain_passive_completion_relationship: bool,
+        target_turn_id: Option<String>,
+        pending_binding: ResponseObservationBinding,
+        persistence: ResponseObservationPersistence,
+        minimum_event_sequence: u64,
+        after_item_id: Option<String>,
+    ) -> Option<ResponseWatcherRegistration> {
+        let parent = observer.session.presentation_id();
+        if parent.instance_id.is_nil() || child.instance_id.is_nil() {
+            return None;
+        }
+        let mut state = self.wait_agent_presentations.state();
+        let observer_child = (parent, child);
+        let relationship = state
+            .response_observation_by_observer_child
+            .entry(observer_child)
+            .or_default();
+        if relationship.revoked {
+            return None;
+        }
+        relationship.persistence = relationship.persistence.max(persistence);
+        if retain_passive_completion_relationship
+            && response_observation.final_response() != FinalResponseObservation::None
+        {
+            // The requested policy, including the omitted-`w` passive default, is installed
+            // directly on the pending or bound turn below. This baseline is only the passive
+            // fallback for later turns in a retained watcher relationship; it does not downgrade
+            // a wake policy on the current turn.
+            relationship.baseline_final_response = FinalResponseObservation::Passive;
+        }
+        match target_turn_id {
+            Some(target_turn_id) => {
+                relationship
+                    .turns
+                    .entry(target_turn_id)
+                    .and_modify(|current| {
+                        current.merge(
+                            response_observation,
+                            minimum_event_sequence,
+                            after_item_id.clone(),
+                        );
+                    })
+                    .or_insert_with(|| {
+                        ResponseTurnObservation::new(
+                            response_observation,
+                            minimum_event_sequence,
+                            after_item_id.clone(),
+                        )
+                    });
+            }
+            None => match pending_binding {
+                ResponseObservationBinding::NextTurn => relationship
+                    .pending_next_turn
+                    .get_or_insert_with(ResponseTurnObservation::default)
+                    .merge(response_observation, minimum_event_sequence, after_item_id),
+                ResponseObservationBinding::ExplicitAdmission(admission_id) => relationship
+                    .pending_admissions
+                    .entry(admission_id)
+                    .or_default()
+                    .merge(response_observation, minimum_event_sequence, after_item_id),
+            },
+        }
+
+        state
+            .response_observers
+            .insert(observer_child, Arc::downgrade(observer));
+        let inserted = state.response_watchers.insert(observer_child);
+        drop(state);
+        self.publish_response_observation_binding();
+        inserted.then(|| ResponseWatcherRegistration {
+            state: Arc::clone(&self.wait_agent_presentations),
+            parent,
+            child,
+            active: true,
+            preserve_state: false,
+        })
+    }
+
+    pub(crate) fn cancel_response_observation_admission(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        admission_id: Uuid,
+    ) {
+        if let Some(relationship) = self
+            .wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get_mut(&(parent, child))
+        {
+            relationship.pending_admissions.remove(&admission_id);
+        }
+        self.publish_response_observation_binding();
+    }
+}
+
+fn relationship_has_bound_final_response_wake(relationship: &ResponseObserverRelationship) -> bool {
+    relationship.turns.values().any(|observation| {
+        observation.final_response == FinalResponseObservation::Wake
+            && observation
+                .final_delivery_response_item_id
+                .as_ref()
+                .is_none_or(|id| {
+                    !observation
+                        .committed_delivery_response_item_ids
+                        .contains(id)
+                })
+    })
+}
+
+impl ResponseWatcherRegistration {
+    pub(crate) fn retire_if_observation_idle(&mut self) -> bool {
+        if !self.active {
+            return true;
+        }
+        let mut state = self.state.state();
+        if state
+            .response_observation_by_observer_child
+            .get(&(self.parent, self.child))
+            .is_some_and(|relationship| {
+                relationship.baseline_final_response != FinalResponseObservation::None
+                    || relationship.pending_next_turn.is_some()
+                    || !relationship.pending_admissions.is_empty()
+                    || relationship.turns.values().any(|turn| {
+                        !turn.commentary_admissions.is_empty()
+                            || turn.commentary_delivery.is_some()
+                            || (turn.final_response != FinalResponseObservation::None
+                                && turn
+                                    .final_delivery_response_item_id
+                                    .as_ref()
+                                    .is_none_or(|id| {
+                                        !turn.committed_delivery_response_item_ids.contains(id)
+                                    }))
+                    })
+            })
+        {
+            return false;
+        }
+        state.response_watchers.remove(&(self.parent, self.child));
+        state.response_observers.remove(&(self.parent, self.child));
+        self.active = false;
+        true
+    }
+
+    pub(crate) fn preserve_state_for_replacement_on_drop(&mut self) {
+        self.preserve_state = true;
+    }
+}
+
+impl Drop for ResponseWatcherRegistration {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut state = self.state.state();
+        let pair = (self.parent, self.child);
+        state.response_watchers.remove(&pair);
+        state.response_observers.remove(&pair);
+        if !self.preserve_state {
+            state.revoke_response_observation(pair);
+        }
+        drop(state);
+        self.state.response_observation_changed.notify_waiters();
+    }
+}

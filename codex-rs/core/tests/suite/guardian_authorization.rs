@@ -12,12 +12,12 @@ use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::ImageReference;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
-use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
@@ -27,7 +27,6 @@ use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
-use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
@@ -65,7 +64,7 @@ async fn guardian_revalidates_owning_session_before_allow(
         "Guardian approval actions require host-native paths"
     );
 
-    let (parent_completion_tx, parent_completion_rx) = oneshot::channel();
+    let (parent_followup_tx, parent_followup_rx) = oneshot::channel();
     let (review_completion_tx, review_completion_rx) = oneshot::channel();
     let parent_followup = if matches!(change, PendingReviewChange::VerifiedAnswer) {
         responses::sse(vec![
@@ -86,27 +85,35 @@ async fn guardian_revalidates_owning_session_before_allow(
     } else {
         responses::sse(vec![responses::ev_completed("parent-followup")])
     };
-    let (streaming_server, _) = start_streaming_sse_server(vec![
-        vec![
-            StreamingSseChunk {
-                gate: None,
-                body: responses::sse(vec![
-                    responses::ev_response_created("parent-start"),
-                    responses::ev_custom_tool_call(
-                        "reviewed-tool",
-                        "exec",
-                        "yield_control(); await tools.exec_command({cmd: 'printf authorized', login: false, sandbox_permissions: 'require_escalated', justification: 'Exercise Guardian authorization freshness.'});",
-                    ),
-                ]),
-            },
-            StreamingSseChunk {
-                gate: Some(parent_completion_rx),
-                body: responses::sse(vec![responses::ev_completed("parent-start")]),
-            },
-        ],
+    let (streaming_server, _) = start_streaming_sse_server(Vec::new()).await;
+    streaming_server.mount_response(
+        |request| !request.body_contains_text("reviewed-tool")
+            && request.body_json().pointer("/client_metadata/x-openai-subagent")
+                != Some(&json!("guardian")),
         vec![StreamingSseChunk {
-            gate: Some(review_completion_rx),
+            gate: None,
             body: responses::sse(vec![
+                responses::ev_response_created("parent-start"),
+                responses::ev_custom_tool_call(
+                    "reviewed-tool",
+                    "exec",
+                    "yield_control(); await tools.exec_command({cmd: 'printf authorized', login: false, sandbox_permissions: 'require_escalated', justification: 'Exercise Guardian authorization freshness.'});",
+                ),
+                responses::ev_completed("parent-start"),
+            ]),
+        }],
+    ).await;
+    let mut review_response = streaming_server
+        .mount_response(
+            |request| {
+                request
+                    .body_json()
+                    .pointer("/client_metadata/x-openai-subagent")
+                    == Some(&json!("guardian"))
+            },
+            vec![StreamingSseChunk {
+                gate: Some(review_completion_rx),
+                body: responses::sse(vec![
                 responses::ev_response_created("review"),
                 responses::ev_assistant_message(
                     "review-result",
@@ -117,8 +124,27 @@ async fn guardian_revalidates_owning_session_before_allow(
                 ),
                 responses::ev_completed("review"),
             ]),
-        }],
-        vec![StreamingSseChunk { gate: None, body: parent_followup }],
+            }],
+        )
+        .await;
+    streaming_server
+        .mount_response(
+            |request| {
+                request.body_contains_text("reviewed-tool")
+                    && request
+                        .body_json()
+                        .pointer("/client_metadata/x-openai-subagent")
+                        != Some(&json!("guardian"))
+            },
+            vec![StreamingSseChunk {
+                gate: Some(parent_followup_rx),
+                body: parent_followup,
+            }],
+        )
+        .await;
+    streaming_server.mount_response(
+        |request| request.body_json().pointer("/client_metadata/x-openai-subagent")
+            != Some(&json!("guardian")),
         vec![StreamingSseChunk {
             gate: None,
             body: match change {
@@ -133,7 +159,7 @@ async fn guardian_revalidates_owning_session_before_allow(
                 }
             },
         }],
-    ]).await;
+    ).await;
     let base_url = format!("{}/v1", streaming_server.uri());
     let server = responses::start_mock_server().await;
     let mut test = test_codex()
@@ -183,35 +209,92 @@ async fn guardian_revalidates_owning_session_before_allow(
         ),
         review_mode,
     );
+    // Keep the executor and cwd selected by the automatic environment fixture.
+    // Reinterpreting a remote cwd as local can fail before Guardian is requested.
     test.codex
-        .start_or_steer_turn(
-            TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "Run the command in a background cell.".into(),
-                text_elements: Vec::new(),
-            }])
-            .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
-                ..Default::default()
-            }),
-        )
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Run the command in a background cell.".into(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
 
-    // The parent stream cannot finish until Guardian has captured its prompt, so the
-    // second request is deterministically the pending review, not a parent follow-up.
-    tokio::time::timeout(
+    // Dispatch the completed tool call before waiting for Guardian. Gate the parent's
+    // follow-up instead, and identify the actual reviewer rather than relying on
+    // request order between the background cell and the parent model.
+    let review_started = tokio::time::timeout(
         Duration::from_secs(/*secs*/ 10),
-        streaming_server.wait_for_request_count(/*count*/ 2),
+        review_response.wait_for_request(),
     )
-    .await
-    .context("Guardian review did not start")?;
-    let review: Value = serde_json::from_slice(&streaming_server.requests().await[1])?;
+    .await;
+    if let Err(error) = review_started {
+        // Release this failed fixture's follow-up before collecting tool diagnostics.
+        let _ = parent_followup_tx.send(());
+        let mut events = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(/*secs*/ 1), async {
+            for _ in 0..128 {
+                let event = match test.codex.next_event().await {
+                    Ok(event) => event,
+                    Err(error) => {
+                        events.push(format!("event stream failed: {error}"));
+                        break;
+                    }
+                };
+                let relevant = matches!(
+                    &event.msg,
+                    EventMsg::Error(_)
+                        | EventMsg::Warning(_)
+                        | EventMsg::GuardianWarning(_)
+                        | EventMsg::GuardianAssessment(_)
+                        | EventMsg::ExecCommandBegin(_)
+                        | EventMsg::ExecCommandEnd(_)
+                        | EventMsg::TurnComplete(_)
+                ) || matches!(
+                    &event.msg,
+                    EventMsg::RawResponseItem(item)
+                        if matches!(&item.item, ResponseItem::CustomToolCallOutput { .. }
+                            | ResponseItem::FunctionCallOutput { .. })
+                );
+                if relevant {
+                    events.push(format!("{:?}", event.msg));
+                }
+            }
+        })
+        .await;
+        let requests = streaming_server.requests().await;
+        let parent = requests
+            .first()
+            .map(|request| serde_json::from_slice::<Value>(request))
+            .transpose()?
+            .unwrap_or_default();
+        let advertised_tools = parent["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|tool| {
+                json!({
+                    "name": tool["name"],
+                    "type": tool["type"],
+                    "tools": tool["tools"].as_array().map(|tools|
+                        tools.iter().map(|tool| &tool["name"]).collect::<Vec<_>>()
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+        return Err(error).with_context(|| {
+            format!(
+                "Guardian review did not start ({} captured requests); advertised tools: {advertised_tools:?}; terminal diagnostics: {events:#?}",
+                requests.len(),
+            )
+        });
+    }
+    let review = review_started?.body_json();
     assert_eq!(
         review.pointer("/client_metadata/x-openai-subagent"),
         Some(&json!("guardian"))
     );
-    parent_completion_tx
+    parent_followup_tx
         .send(())
-        .expect("release parent completion");
+        .expect("release parent follow-up");
     if matches!(change, PendingReviewChange::VerifiedAnswer) {
         let request = wait_for_event_match(&test.codex, |event| match event {
             EventMsg::RequestUserInput(request) => Some(request.clone()),

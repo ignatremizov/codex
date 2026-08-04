@@ -96,6 +96,7 @@ pub use types::SearchTextRange;
 pub use types::SearchThreadOccurrencesParams;
 pub use types::SearchThreadsParams;
 pub use types::SortDirection;
+pub use types::StoredCanonicalArtifactSegments;
 pub use types::StoredModelContext;
 pub use types::StoredSubAgentCompletionPresentation;
 pub use types::StoredThread;

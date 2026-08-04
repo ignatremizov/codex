@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn bounded_context_retains_checkpoint_completion_once_after_original_pair_cutoff() {

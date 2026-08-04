@@ -355,6 +355,14 @@ pub struct CollabAgentToolCallItem {
     pub deadline_at_ms: Option<i64>,
     pub tool: CollabAgentTool,
     pub status: CollabAgentToolCallStatus,
+    /// Whether commentary from the receiver is requested for this call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub observe_commentary: Option<bool>,
+    /// Whether the receiver's terminal response should wake the sender.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wake_on_completion: Option<bool>,
     pub sender_thread_id: ThreadId,
     #[serde(default)]
     pub receiver_thread_ids: Vec<ThreadId>,
@@ -796,6 +804,31 @@ impl TurnItem {
             TurnItem::FileChange(item) => item.id.clone(),
             TurnItem::McpToolCall(item) => item.id.clone(),
             TurnItem::ContextCompaction(item) => item.id.clone(),
+        }
+    }
+    /// Returns whether this item durably presents a subagent completion.
+    pub fn is_sub_agent_completion_presentation(&self) -> bool {
+        match self {
+            TurnItem::AgentMessage(item) => item.has_sub_agent_completion_identity(),
+            TurnItem::CollabAgentToolCall(item) => item.owns_completion_presentation(),
+            TurnItem::UserMessage(_)
+            | TurnItem::FunctionCallOutput(_)
+            | TurnItem::HookPrompt(_)
+            | TurnItem::Plan(_)
+            | TurnItem::Reasoning(_)
+            | TurnItem::CommandExecution(_)
+            | TurnItem::DynamicToolCall(_)
+            | TurnItem::SubAgentActivity(_)
+            | TurnItem::UserAgentControl(_)
+            | TurnItem::WebSearch(_)
+            | TurnItem::ImageView(_)
+            | TurnItem::Extension(_)
+            | TurnItem::ImageGeneration(_)
+            | TurnItem::EnteredReviewMode(_)
+            | TurnItem::ExitedReviewMode(_)
+            | TurnItem::FileChange(_)
+            | TurnItem::McpToolCall(_)
+            | TurnItem::ContextCompaction(_) => false,
         }
     }
 }

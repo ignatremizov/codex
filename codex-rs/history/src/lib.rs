@@ -16,6 +16,7 @@ use codex_protocol::mcp::McpResourceOriginCheckpoint;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+pub use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -138,6 +139,7 @@ pub enum RolloutItem {
     InterAgentCommunicationMetadata {
         trigger_turn: bool,
     },
+    AgentResponseObservation(AgentResponseObservation),
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
     TokenUsageRecord(TokenUsageRecord),
@@ -197,9 +199,10 @@ pub use retained_context::RetainedInputSource;
 pub use retained_context::RetainedUserMessage;
 pub use retained_context::VerifiedAnswer;
 pub use retained_context::VerifiedQuestionAnswer;
-mod rollout;
+pub mod rollout;
 mod rollout_payload;
 pub use rollout::exact_rollback_removed_items;
+pub use rollout::is_committed_observed_response;
 pub use rollout::rollout_without_exact_rollback_ranges;
 
 pub use guardian_history::GuardianHistoryCheckpoint;
@@ -560,6 +563,7 @@ fn multi_agent_version_from_items(
             | RolloutItem::ResponseItem(_)
             | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::Compacted(_)
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::WorldState(_)
