@@ -136,12 +136,15 @@ use codex_otel::TelemetryAuthMode;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::build_hook_prompt_message;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -2822,6 +2825,110 @@ async fn completion_communication_commit_survives_caller_cancellation() {
 }
 
 #[tokio::test]
+async fn passive_observed_completion_retry_reconciles_an_append_after_commit_failure() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    let store = attach_in_memory_thread_store(&mut session).await;
+    let session = Arc::new(session);
+    let response_item_id = new_sub_agent_completion_context_response_item_id();
+    let child_thread_id = ThreadId::new();
+    let observation = codex_protocol::protocol::AgentResponseObservation {
+        observer_thread_id: session.thread_id,
+        target_thread_id: child_thread_id,
+        target_turn_id: Some("child-turn".to_string()),
+        pending_commentary: false,
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::Passive,
+        final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
+        final_delivery_response_item_id: Some(response_item_id.clone()),
+        committed_delivery_response_item_ids: vec![response_item_id.clone()],
+    };
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(response_item_id.clone());
+    store
+        .fail_agent_response_observation_flushes_after(
+            /*successful_flushes*/ 0, /*failed_flushes*/ 1,
+        )
+        .await;
+
+    session
+        .record_sub_agent_notification_with_observation_commit(
+            communication.clone(),
+            CompletionSubmissionAdmission::Ordinary,
+            vec![observation.clone()],
+        )
+        .await
+        .expect_err("first append should report its injected post-commit failure");
+    session
+        .record_sub_agent_notification_with_observation_commit(
+            communication,
+            CompletionSubmissionAdmission::Ordinary,
+            vec![observation.clone()],
+        )
+        .await
+        .expect("retry should reconcile the committed delivery");
+
+    let history = session
+        .services
+        .thread_store
+        .load_rollback_history(codex_thread_store::LoadThreadHistoryParams {
+            thread_id: session.thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("load canonical history");
+    let history = codex_protocol::rollout::rollout_without_exact_rollback_ranges(&history.items);
+    let persisted_item = history
+        .iter()
+        .find_map(|rollout_item| match rollout_item {
+            RolloutItem::ResponseItem(response_item)
+                if response_item.id() == Some(&response_item_id) =>
+            {
+                Some(response_item)
+            }
+            _ => None,
+        })
+        .expect("persisted passive completion context");
+    assert_eq!(
+        session.clone_history().await.raw_items(),
+        std::slice::from_ref(persisted_item)
+    );
+    assert_eq!(
+        history
+            .iter()
+            .filter(|rollout_item| {
+                matches!(
+                    rollout_item,
+                    RolloutItem::ResponseItem(response_item)
+                        if response_item.id() == Some(&response_item_id)
+                )
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        history
+            .iter()
+            .filter(|rollout_item| {
+                matches!(
+                    rollout_item,
+                    RolloutItem::AgentResponseObservation(persisted)
+                        if persisted == &observation
+                )
+            })
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn record_inter_agent_communication_normalizes_untrusted_completion_context_id() {
     let (session, turn_context) = make_session_and_context().await;
     let session = Arc::new(session);
@@ -4502,6 +4609,7 @@ async fn start_new_context_window_persists_checkpoint_state() {
         | RolloutItem::ResponseItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
         | RolloutItem::SecurityRiskScore(_)
@@ -4591,6 +4699,7 @@ async fn record_initial_history_assigns_and_persists_id_for_forked_response_item
         RolloutItem::SessionMeta(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
@@ -7985,10 +8094,12 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
+        agent_status_turn_id: std::sync::Mutex::new(None),
         terminal_status_subscribers: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
         next_terminal_status_subscriber_id: std::sync::atomic::AtomicU64::new(/*v*/ 0),
+        response_observation_state: Default::default(),
         terminal_status_suppressed: std::sync::atomic::AtomicBool::new(/*v*/ false),
         state: Mutex::new(state),
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
@@ -8006,7 +8117,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         mcp_prewarm_task: std::sync::Mutex::new(None),
         spawn_parent_thread_id: None,
         terminal_publication_lock: std::sync::Mutex::new(()),
-        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
+        thread_removal_started: std::sync::atomic::AtomicBool::new(/*v*/ false),
+        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(/*v*/ true),
         session_start_mcp_servers: HashMap::new(),
         session_start_mcp_tools: Mutex::new(HashMap::new()),
         session_start_direct_mcp_servers: std::sync::Mutex::new(None),
@@ -8024,7 +8136,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         fork_persistence: ForkPersistence::Copied,
         forked_from_ordinal_exclusive: None,
         submission_admission: Arc::new(SubmissionAdmission::default()),
-        next_internal_sub_id: AtomicU64::new(0),
+        next_internal_sub_id: AtomicU64::new(/*v*/ 0),
     };
     let per_turn_config =
         session.build_per_turn_config(&session_configuration, session_configuration.cwd().clone());
@@ -9231,6 +9343,26 @@ async fn completion_submission_stops_waiting_when_rollback_requires_reload() {
     assert!(!wait.await);
 }
 
+#[test]
+fn response_observation_retry_distinguishes_accepted_shutdown_work_from_ordinary_work() {
+    let admission = SubmissionAdmission::default();
+
+    assert!(admission.response_observation_delivery_can_retry());
+    assert!(admission.response_observation_accepted_delivery_can_retry());
+
+    admission
+        .shutdown_pending
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    assert!(!admission.response_observation_delivery_can_retry());
+    assert!(admission.response_observation_accepted_delivery_can_retry());
+
+    admission.rollback_requires_reload();
+
+    assert!(!admission.response_observation_delivery_can_retry());
+    assert!(!admission.response_observation_accepted_delivery_can_retry());
+}
+
 #[tokio::test]
 async fn shutdown_queues_after_a_preaccepted_completion_delivery() {
     let (tx_sub, rx_sub) = async_channel::bounded(2);
@@ -10005,6 +10137,38 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
         },
         store.calls().await
     );
+}
+
+#[tokio::test]
+async fn codex_exec_mailbox_delivery_does_not_start_a_turn_after_primary_completion() {
+    let (session, _turn_context) = make_session_and_context().await;
+    session
+        .set_app_server_client_info(
+            Some("codex_exec".to_string()),
+            /*app_server_client_version*/ None,
+            /*mcp_elicitations_auto_deny*/ false,
+        )
+        .await
+        .expect("set codex exec client identity");
+    let session = Arc::new(session);
+    let communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "late child result".to_string(),
+        /*trigger_turn*/ true,
+    );
+    session
+        .input_queue
+        .enqueue_mailbox_communication(communication, /*parent_turn_id*/ None)
+        .await;
+
+    session
+        .maybe_start_turn_for_pending_work_with_sub_id("late-wake".to_string())
+        .await;
+
+    assert!(session.active_turn.lock().await.is_none());
+    assert!(session.input_queue.has_pending_mailbox_items().await);
 }
 
 #[tokio::test]
@@ -10803,10 +10967,12 @@ where
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
+        agent_status_turn_id: std::sync::Mutex::new(None),
         terminal_status_subscribers: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
         next_terminal_status_subscriber_id: std::sync::atomic::AtomicU64::new(/*v*/ 0),
+        response_observation_state: Default::default(),
         terminal_status_suppressed: std::sync::atomic::AtomicBool::new(/*v*/ false),
         state: Mutex::new(state),
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
@@ -10824,7 +10990,8 @@ where
         mcp_prewarm_task: std::sync::Mutex::new(None),
         spawn_parent_thread_id: None,
         terminal_publication_lock: std::sync::Mutex::new(()),
-        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(true),
+        thread_removal_started: std::sync::atomic::AtomicBool::new(/*v*/ false),
+        terminal_presentation_armed: std::sync::atomic::AtomicBool::new(/*v*/ true),
         session_start_mcp_servers: HashMap::new(),
         session_start_mcp_tools: Mutex::new(HashMap::new()),
         session_start_direct_mcp_servers: std::sync::Mutex::new(None),
@@ -10842,7 +11009,7 @@ where
         fork_persistence: ForkPersistence::Copied,
         forked_from_ordinal_exclusive: None,
         submission_admission: Arc::new(SubmissionAdmission::default()),
-        next_internal_sub_id: AtomicU64::new(0),
+        next_internal_sub_id: AtomicU64::new(/*v*/ 0),
     });
     let per_turn_config =
         session.build_per_turn_config(&session_configuration, session_configuration.cwd().clone());
@@ -12863,6 +13030,57 @@ impl SessionTask for CompletingTask {
     }
 }
 
+struct PendingInputContinuationTask {
+    final_pending_input_check_reached: Arc<tokio::sync::Notify>,
+    allow_initial_run_to_finish: Arc<tokio::sync::Notify>,
+}
+
+impl SessionTask for PendingInputContinuationTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.pending_input_continuation"
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        _ctx: Arc<TurnContext>,
+        _input: Vec<TurnInput>,
+        _cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        assert!(
+            !session.has_pending_input_requiring_follow_up().await,
+            "test task should reach its final pending-input decision before the steer"
+        );
+        self.final_pending_input_check_reached.notify_one();
+        self.allow_initial_run_to_finish.notified().await;
+        Ok(Some("answer before the late steer".to_string()))
+    }
+
+    fn supports_pending_input_continuation(&self) -> bool {
+        true
+    }
+
+    async fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        crate::session::turn::run_turn(
+            session,
+            ctx,
+            Vec::new(),
+            /*prewarmed_client_session*/ None,
+            cancellation_token,
+        )
+        .await
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalEventKind {
     TurnComplete,
@@ -13725,6 +13943,124 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
     ));
 }
 
+#[test]
+fn task_finish_continues_input_accepted_after_final_pending_input_check() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        // Match the production runtime because this test executes the full sampling future.
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("build test runtime");
+    runtime.block_on(task_finish_continues_late_input());
+}
+
+async fn task_finish_continues_late_input() {
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("response-late-steer"),
+            core_test_support::responses::ev_assistant_message("message-late-steer", ""),
+            ev_completed("response-late-steer"),
+        ]),
+    )
+    .await;
+    let base_url = server.uri();
+    let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        move |config| config.model_provider.base_url = Some(base_url),
+    )
+    .await;
+    let final_pending_input_check_reached = Arc::new(tokio::sync::Notify::new());
+    let allow_initial_run_to_finish = Arc::new(tokio::sync::Notify::new());
+
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            PendingInputContinuationTask {
+                final_pending_input_check_reached: Arc::clone(&final_pending_input_check_reached),
+                allow_initial_run_to_finish: Arc::clone(&allow_initial_run_to_finish),
+            },
+        )
+        .await;
+    timeout(
+        StdDuration::from_secs(2),
+        final_pending_input_check_reached.notified(),
+    )
+    .await
+    .expect("task should reach its final pending-input decision");
+
+    let client_id = "late-steer-client-id";
+    session
+        .steer_input(
+            vec![UserInput::Text {
+                text: "late steer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            /*additional_context*/ Default::default(),
+            /*expected_turn_id*/ Some(&turn_context.sub_id),
+            /*client_user_message_id*/ Some(client_id.to_string()),
+            /*responsesapi_client_metadata*/ None,
+        )
+        .await
+        .expect("steer should be accepted while the task is still active");
+    allow_initial_run_to_finish.notify_one();
+
+    let (turn_complete, user_message_client_ids, turn_started_count) =
+        timeout(StdDuration::from_secs(15), async {
+            let mut user_message_client_ids = Vec::new();
+            let mut turn_started_count = 0;
+            loop {
+                let event = rx.recv().await.expect("event channel should remain open");
+                match event.msg {
+                    EventMsg::TurnStarted(_) => turn_started_count += 1,
+                    EventMsg::UserMessage(message) => {
+                        user_message_client_ids.push(message.client_id);
+                    }
+                    EventMsg::TurnComplete(turn_complete) => {
+                        break (turn_complete, user_message_client_ids, turn_started_count);
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("continued task should complete");
+
+    assert_eq!(
+        (
+            turn_complete.turn_id,
+            turn_complete.last_agent_message,
+            turn_complete.error
+        ),
+        (
+            turn_context.sub_id.clone(),
+            Some("answer before the late steer".to_string()),
+            None
+        )
+    );
+    assert_eq!(
+        (user_message_client_ids, turn_started_count),
+        (vec![Some(client_id.to_string())], 0)
+    );
+    let request = response_mock.single_request();
+    assert_eq!(
+        request
+            .message_input_texts("user")
+            .last()
+            .map(String::as_str),
+        Some("late steer")
+    );
+    assert_eq!(
+        request.body_json()["client_metadata"]["turn_id"].as_str(),
+        Some(turn_context.sub_id.as_str())
+    );
+    assert!(session.active_turn.lock().await.is_none());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn task_finish_emits_thread_idle_lifecycle_after_active_turn_clears() {
     struct ThreadIdleRecorder {
@@ -13819,6 +14155,61 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
 }
 
 // Start-if-idle and steering behavior is covered by session/turn_input_tests.rs.
+
+#[tokio::test]
+async fn steer_input_returns_the_response_boundary_captured_during_admission() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+    sess.publish_agent_response_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: sess.thread_id,
+        turn_id: tc.sub_id.clone(),
+        item: TurnItem::AgentMessage(AgentMessageItem {
+            id: "commentary-before-steer".to_string(),
+            content: vec![AgentMessageContent::Text {
+                text: "Working on the earlier instruction.".to_string(),
+            }],
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+            delivery: None,
+            sub_agent_completion: None,
+        }),
+        started_at_ms: Some(0),
+        completed_at_ms: 1,
+    }));
+    let (snapshot, _subscription) = sess.subscribe_agent_responses();
+
+    let resolution = sess
+        .steer_input_with_response_observation_boundary(
+            vec![UserInput::Text {
+                text: "new instruction".to_string(),
+                text_elements: Vec::new(),
+            }],
+            /*additional_context*/ Default::default(),
+            Some(&tc.sub_id),
+            /*client_user_message_id*/ None,
+            /*responsesapi_client_metadata*/ None,
+        )
+        .await
+        .expect("steer should be admitted");
+
+    assert_eq!(
+        resolution,
+        InputTurnAdmissionResolution {
+            target_turn_id: tc.sub_id.clone(),
+            minimum_event_sequence: snapshot.next_event_sequence,
+            after_item_id: snapshot.last_commentary_item_id,
+        }
+    );
+    assert!(sess.input_queue.has_pending_input(&sess.active_turn).await);
+}
 
 #[tokio::test]
 async fn queued_response_items_for_next_turn_move_into_next_active_turn() {

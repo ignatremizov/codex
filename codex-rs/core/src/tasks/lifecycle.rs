@@ -56,6 +56,16 @@ impl Session {
             return;
         }
 
+        // A concrete `f` result is already scheduled automatic work. Running idle contributors
+        // now would race that result, most visibly by making an active goal start a wait turn.
+        if self
+            .services
+            .agent_control
+            .has_bound_final_response_wake(self.presentation_id())
+        {
+            return;
+        }
+
         for contributor in self.services.extensions.thread_lifecycle_contributors() {
             contributor
                 .on_thread_idle(codex_extension_api::ThreadIdleInput {

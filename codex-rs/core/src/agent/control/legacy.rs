@@ -1,6 +1,7 @@
 use super::*;
 use codex_protocol::error::CodexErrorDetails;
 use codex_thread_store::PersistContext;
+use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
 pub(crate) enum LiveAgentMetadataDisposition {
@@ -9,6 +10,23 @@ pub(crate) enum LiveAgentMetadataDisposition {
 }
 
 impl AgentControl {
+    /// Remove a runtime that was never published to thread-created subscribers.
+    ///
+    /// Suppressing the final-outcome fallback prevents a failed spawn or resume from emitting a
+    /// completion for an agent identity that its caller never received.
+    pub(crate) async fn discard_unpublished_agent_instance(
+        &self,
+        thread: &Arc<CodexThread>,
+        metadata_disposition: LiveAgentMetadataDisposition,
+    ) -> CodexResult<()> {
+        let terminal_presentation_disarm = thread.session.disarm_terminal_presentation();
+        let result = self
+            .discard_live_agent_instance(thread, metadata_disposition)
+            .await;
+        terminal_presentation_disarm.commit();
+        result
+    }
+
     /// Remove a specific restored runtime when graceful rollback cannot finish.
     ///
     /// Dropping the manager's last `CodexThread` handle closes its submission channel. Cleanup
@@ -94,6 +112,8 @@ impl AgentControl {
     /// agent and any live descendants reached from the in-memory tree.
     pub(crate) async fn close_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
+        let lifecycle_lock = state.agent_lifecycle_lock(agent_id);
+        let _lifecycle_guard = lifecycle_lock.lock_owned().await;
         let known_agent = self.state.agent_metadata_for_thread(agent_id).is_some();
         match state.get_thread(agent_id).await {
             Ok(thread) => {
@@ -130,7 +150,54 @@ impl AgentControl {
                 warn!("failed to inspect agent before close {agent_id}: {err}");
             }
         }
-        match Box::pin(self.shutdown_agent_tree(agent_id)).await {
+        // Membership changes take the direct parent's lifecycle lock before publishing or
+        // reopening a child. Stabilize the live subtree by taking every discovered descendant
+        // lock in parent-before-child order, then re-snapshot until no new member can appear.
+        let mut descendant_ids = Vec::new();
+        let mut locked_thread_ids = HashSet::from([agent_id]);
+        let mut _descendant_lifecycle_guards = Vec::new();
+        loop {
+            let discovered_ids = self.live_thread_spawn_descendants(agent_id).await?;
+            let mut added_descendant = false;
+            for descendant_id in discovered_ids {
+                if locked_thread_ids.insert(descendant_id) {
+                    let descendant_guard =
+                        state.agent_lifecycle_lock(descendant_id).lock_owned().await;
+                    descendant_ids.push(descendant_id);
+                    _descendant_lifecycle_guards.push(descendant_guard);
+                    added_descendant = true;
+                }
+            }
+            if !added_descendant {
+                break;
+            }
+        }
+
+        // Explicit close is authoritative over passive and wake response observation for the
+        // entire subtree. Revoke before shutdown so Shutdown cannot wake an old observer or
+        // schedule V1 watcher recovery for a later runtime with the same rollout thread ID.
+        // Persisted descendant edges deliberately remain Open: explicitly resuming the closed
+        // target may reopen its prior subtree, but every response relationship below is fresh.
+        let mut affected_wake_observers = HashSet::new();
+        for closed_thread_id in std::iter::once(agent_id).chain(descendant_ids.iter().copied()) {
+            state.advance_agent_lifecycle_generation(closed_thread_id);
+            affected_wake_observers
+                .extend(self.revoke_response_observations_for_child(closed_thread_id));
+        }
+        let result =
+            Box::pin(self.shutdown_agent_tree_with_descendants(agent_id, descendant_ids)).await;
+        drop(_descendant_lifecycle_guards);
+        drop(_lifecycle_guard);
+
+        // A foreign observer may already be idle when this close removes its last outstanding
+        // wake. Re-run idle lifecycle after shutdown so automatic work such as an active goal
+        // cannot remain deferred indefinitely. Observers that are active, replaced, or themselves
+        // part of the closed subtree reject the callback through the ordinary lifecycle gates.
+        for observer in affected_wake_observers {
+            self.recheck_thread_idle_lifecycle(observer).await;
+        }
+
+        match result {
             Err(err)
                 if known_agent
                     && matches!(
@@ -144,9 +211,11 @@ impl AgentControl {
         }
     }
 
-    /// Shut down `agent_id` and any live descendants reachable from the in-memory spawn tree.
-    pub(crate) async fn shutdown_agent_tree(&self, agent_id: ThreadId) -> CodexResult<String> {
-        let descendant_ids = self.live_thread_spawn_descendants(agent_id).await?;
+    async fn shutdown_agent_tree_with_descendants(
+        &self,
+        agent_id: ThreadId,
+        descendant_ids: Vec<ThreadId>,
+    ) -> CodexResult<String> {
         let result = self.shutdown_live_agent(agent_id).await;
         for descendant_id in descendant_ids {
             match self.shutdown_live_agent(descendant_id).await {

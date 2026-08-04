@@ -20,14 +20,20 @@ use codex_app_server_protocol::ThreadStatus;
 use codex_protocol::AgentPath;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::CollabAgentTool;
+use codex_protocol::items::CollabAgentToolCallItem;
+use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::items::EnteredReviewModeItem;
 use codex_protocol::items::ExitedReviewModeItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
+use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::SessionSource as RolloutSessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::sub_agent_completion_item;
 use codex_protocol::user_input::UserInput as CoreUserInput;
 use codex_state::SqliteConfig;
 use futures::SinkExt;
@@ -1703,6 +1709,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
         .lines()
         .map(serde_json::from_str::<serde_json::Value>)
         .collect::<Result<Vec<_>, _>>()?;
+    let child_thread_id = ThreadId::new();
     let events = std::iter::once(EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: "multi-page-turn".to_string(),
         trace_id: None,
@@ -1711,6 +1718,34 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
         collaboration_mode_kind: Default::default(),
         agent_queue: None,
     }))
+    .chain(std::iter::once(EventMsg::ItemCompleted(
+        ItemCompletedEvent {
+            thread_id,
+            turn_id: "multi-page-turn".to_string(),
+            item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: "multi-page-spawn".to_string(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
+                deadline_at_ms: None,
+                sender_thread_id: thread_id,
+                receiver_thread_ids: vec![child_thread_id],
+                receiver_agents: vec![CollabAgentRef {
+                    thread_id: child_thread_id,
+                    agent_nickname: Some("Robie".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                }],
+                prompt: Some("Inspect paginated history.".to_string()),
+                model: None,
+                reasoning_effort: None,
+                agents_states: Default::default(),
+                completion_presentation_agent_ids: None,
+            }),
+            started_at_ms: None,
+            completed_at_ms: 0,
+        },
+    )))
     .chain((0..305).map(|index| {
         EventMsg::ItemCompleted(ItemCompletedEvent {
             thread_id,
@@ -1729,7 +1764,22 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
             started_at_ms: None,
             completed_at_ms: 0,
         })
-    }));
+    }))
+    .chain(std::iter::once(EventMsg::ItemCompleted(
+        ItemCompletedEvent {
+            thread_id,
+            turn_id: "multi-page-turn".to_string(),
+            item: TurnItem::AgentMessage(
+                sub_agent_completion_item(
+                    &child_thread_id.to_string(),
+                    &AgentStatus::Completed(Some("Finished the paginated review.".to_string())),
+                )
+                .expect("terminal completion"),
+            ),
+            started_at_ms: None,
+            completed_at_ms: 0,
+        },
+    )));
     for event in events {
         records.push(serde_json::json!({
             "timestamp": "2026-01-02T00:00:00Z",
@@ -1794,6 +1844,10 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
             .eq(markdown.lines().filter(|line| line.starts_with("history")))
     );
     assert!(
+        markdown.contains("Robie [explorer] completed (● visible):"),
+        "{markdown}"
+    );
+    assert!(
         recorded_params(&requests, "thread/turns/list")[initial_turn_requests..]
             .iter()
             .all(|params| params["itemsView"] == "notLoaded")
@@ -1831,6 +1885,12 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
         cell.display_lines(/*width*/ 80)
             .iter()
             .any(|line| line.to_string().contains("history output 0"))
+    }));
+    assert!(app.transcript_cells.iter().any(|cell| {
+        cell.display_lines(/*width*/ 80).iter().any(|line| {
+            line.to_string()
+                .contains("Robie [explorer] completed (● visible):")
+        })
     }));
     let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() else {
         panic!("expected transcript overlay after Home navigation");

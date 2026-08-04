@@ -7,7 +7,8 @@ use crate::history_cell::HistoryRenderMode;
 use crate::legacy_core::config::Config;
 use crate::resize_reflow_cap::resize_reflow_max_rows;
 use crate::thread_transcript::RawReasoningVisibility;
-use crate::thread_transcript::thread_items_to_transcript_cells;
+use crate::thread_transcript::collab_agent_metadata_from_items;
+use crate::thread_transcript::thread_items_to_transcript_cells_with_metadata;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
@@ -303,12 +304,15 @@ fn rendered_history_rows(
     } else {
         HistoryRenderMode::Rich
     };
-    thread_items_to_transcript_cells(
+    let collab_agent_metadata =
+        collab_agent_metadata_from_items(thread.turns.iter().flat_map(|turn| turn.items.iter()));
+    thread_items_to_transcript_cells_with_metadata(
         Some(thread_id),
         &thread.cwd,
         items,
         visibility,
         Some(config),
+        &collab_agent_metadata,
     )
     .into_iter()
     .fold(rendered_rows, |rows, cell| {

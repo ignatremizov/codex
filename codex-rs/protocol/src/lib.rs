@@ -17,6 +17,7 @@ pub use sanitized_git_url::SanitizedGitUrl;
 pub use session_id::SessionId;
 pub use thread_id::RolloutId;
 pub use sub_agent_completion::SubAgentCompletionMetadata;
+pub use sub_agent_completion::SubAgentCompletionModelVisibility;
 pub use thread_id::ThreadId;
 pub use tool_name::DEFAULT_FUNCTION_NAMESPACE;
 pub use tool_name::ToolName;

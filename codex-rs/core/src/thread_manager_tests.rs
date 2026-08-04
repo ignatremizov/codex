@@ -769,6 +769,57 @@ async fn exact_thread_removal_preserves_a_replaced_manager_entry() {
 }
 
 #[tokio::test]
+async fn concurrent_resume_reports_that_it_adopted_the_running_runtime() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let running = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start running thread");
+    running.thread.ensure_rollout_materialized().await;
+    running
+        .thread
+        .flush_rollout()
+        .await
+        .expect("flush running thread");
+
+    let adopted = manager
+        .state
+        .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
+            config,
+            initial_history: InitialHistory::Resumed(ResumedHistory {
+                conversation_id: running.thread_id,
+                history: Arc::new(Vec::new()),
+                rollout_path: running.thread.rollout_path(),
+            }),
+            agent_control: manager.agent_control(),
+            session_source: SessionSource::Exec,
+            parent_thread_id: None,
+            environment_selections: None,
+            inherited_environments: None,
+            inherited_exec_policy: None,
+            client_mcp_extensions_override: None,
+        })
+        .await
+        .expect("concurrent resume should adopt running thread");
+
+    assert_eq!(adopted.runtime_origin, ThreadRuntimeOrigin::Existing);
+    assert!(Arc::ptr_eq(&adopted.thread, &running.thread));
+    let _ = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+}
+
+#[tokio::test]
 async fn code_mode_session_provider_is_shared_across_threads() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;

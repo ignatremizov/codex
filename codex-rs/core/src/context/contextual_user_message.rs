@@ -11,6 +11,7 @@ use super::LegacyModelMismatchWarning;
 use super::LegacyUnifiedExecProcessLimitWarning;
 use super::McpServerUseInstructions;
 use super::RecommendedPluginsInstructions;
+use super::SubagentCommentary;
 use super::SubagentNotification;
 use super::TurnAborted;
 use super::UserInstructions;
@@ -25,6 +26,7 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     McpServerUseInstructions::matches_text,
     UserShellCommand::matches_text,
     TurnAborted::matches_text,
+    SubagentCommentary::matches_text,
     SubagentNotification::matches_text,
     InternalModelContextFragment::matches_text,
     RecommendedPluginsInstructions::matches_text,

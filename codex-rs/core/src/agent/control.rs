@@ -4,9 +4,10 @@ use crate::TurnStartOptions;
 use crate::agent::AgentStatus;
 use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
+use crate::agent::response_observation::FinalResponseObservation;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
-use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::codex_thread::CodexThread;
@@ -51,12 +52,15 @@ use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
 use codex_protocol::turn_input::CyberAccessProgram;
+use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::user_input::UserInput;
 use codex_rollout_trace::AgentResultTracePayload;
 use codex_thread_store::LoadThreadHistoryParams;
@@ -74,19 +78,114 @@ pub(crate) use self::execution::AgentExecutionGuard;
 use self::execution::AgentExecutionLimiter;
 pub(crate) use self::legacy::LiveAgentMetadataDisposition;
 pub(crate) use self::presentation::AgentTerminalPresentation;
+use self::presentation::ResponseObservationBinding;
+use self::presentation::ResponseObservationBindingPublication;
+pub(crate) use self::presentation::ResponseObservationDeliveryCommit;
+use self::presentation::ResponseObservationDeliveryKind;
+use self::presentation::ResponseObservationPersistence;
 pub(crate) use self::presentation::SessionPresentationId;
 use self::presentation::SpawnedThreadRelease;
 pub(crate) use self::presentation::TerminalPresentationDelivery;
 use self::presentation::WaitAgentPresentations;
-use self::presentation::WatcherTerminalPresentation;
 use self::residency::V2Residency;
+use self::response_delivery::WatcherTerminalPoll;
 
 const ROOT_LAST_TASK_MESSAGE: &str = "Main thread";
+
+enum InitialTerminalObservation {
+    FutureTurnsOnly,
+    ReconcileIfAdvancedFrom(AgentStatus),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThreadCreatedPublication {
+    Immediate,
+    Deferred,
+}
+
+struct InitialTerminalReconciliation {
+    terminal: Option<(String, AgentStatus)>,
+    status: AgentStatus,
+}
+
+struct DurableResponseDelivery {
+    commit: ResponseObservationDeliveryCommit,
+    submission_permit: tokio::sync::OwnedSemaphorePermit,
+    target_lifecycle_guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl InitialTerminalObservation {
+    fn observes_future_turns(&self) -> bool {
+        matches!(self, Self::FutureTurnsOnly)
+    }
+
+    fn target_turn_id(&self, active_turn_id: Option<String>) -> Option<String> {
+        match self {
+            Self::FutureTurnsOnly => None,
+            Self::ReconcileIfAdvancedFrom(_) => active_turn_id,
+        }
+    }
+
+    fn reconcile(
+        self,
+        active_turn_id: Option<String>,
+        last_terminal: Option<(String, AgentStatus)>,
+        snapshot_status: AgentStatus,
+    ) -> InitialTerminalReconciliation {
+        match self {
+            Self::FutureTurnsOnly => InitialTerminalReconciliation {
+                terminal: None,
+                status: snapshot_status,
+            },
+            Self::ReconcileIfAdvancedFrom(previous_status)
+                if !crate::agent::status::is_final(&previous_status) =>
+            {
+                // A final outcome from an older turn can arrive after a newer turn has started.
+                // In that state the active turn and current Running status are authoritative;
+                // reconciling the historical outcome would make live adoption report the wrong
+                // status and enqueue an unsolicited completion for the old turn.
+                if active_turn_id.is_some() && !crate::agent::status::is_final(&snapshot_status) {
+                    InitialTerminalReconciliation {
+                        terminal: None,
+                        status: snapshot_status,
+                    }
+                } else if let Some((turn_id, status)) = last_terminal {
+                    InitialTerminalReconciliation {
+                        terminal: Some((turn_id, status.clone())),
+                        status,
+                    }
+                } else if crate::agent::status::is_final(&snapshot_status) {
+                    // Raw lifecycle events such as ShutdownComplete can make the session final
+                    // without publishing a response-stream terminal. Preserve the active turn
+                    // identity when one exists so an already-bound one-shot observation can
+                    // reconcile that outcome instead of ignoring a synthetic unrelated turn.
+                    let turn_id =
+                        active_turn_id.unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+                    InitialTerminalReconciliation {
+                        terminal: Some((turn_id, snapshot_status.clone())),
+                        status: snapshot_status,
+                    }
+                } else {
+                    InitialTerminalReconciliation {
+                        terminal: None,
+                        status: snapshot_status,
+                    }
+                }
+            }
+            Self::ReconcileIfAdvancedFrom(_) => InitialTerminalReconciliation {
+                terminal: None,
+                status: snapshot_status,
+            },
+        }
+    }
+}
 
 mod execution;
 mod legacy;
 mod presentation;
 mod residency;
+mod response_delivery;
+mod response_observer;
 mod service_tier;
 mod spawn;
 mod user_authorization;
@@ -107,16 +206,36 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
     pub(crate) multi_agent_v2_usage_hints: Option<ResolvedMultiAgentV2UsageHints>,
     pub(crate) cyber_access_program: Option<CyberAccessProgram>,
+    pub(crate) response_observation: ResponseObservationPolicy,
 }
 
 enum InterAgentSubmission<'a> {
     Ordinary {
         start_options: TurnStartOptions,
     },
+    ObservedResponse {
+        parent_turn_id: Option<String>,
+        receiver: SessionPresentationId,
+    },
     Completion {
         presentation: &'a AgentTerminalPresentation,
         admission: CompletionSubmissionAdmission,
     },
+}
+
+fn response_observations_have_work(
+    observations: &[codex_protocol::protocol::AgentResponseObservation],
+) -> bool {
+    observations.iter().any(|observation| {
+        observation.pending_commentary
+            || !observation.commentary_after_sequences.is_empty()
+            || !observation.commentary_admissions.is_empty()
+            || observation.commentary_delivery.is_some()
+            || observation.final_delivery
+                != codex_protocol::protocol::AgentResponseFinalDelivery::None
+            || observation.baseline_final_delivery
+                != codex_protocol::protocol::AgentResponseFinalDelivery::None
+    })
 }
 
 struct CompletionContextAuthorizationGuard {
@@ -230,7 +349,19 @@ impl AgentControl {
         self.rollout_budget.as_ref()
     }
 
+    pub(crate) async fn acquire_mailbox_submission_permit(
+        &self,
+        agent_id: ThreadId,
+    ) -> CodexResult<tokio::sync::OwnedSemaphorePermit> {
+        self.state
+            .mailbox_submission_semaphore(agent_id)
+            .acquire_owned()
+            .await
+            .map_err(|err| CodexErr::Fatal(format!("mailbox submission semaphore closed: {err}")))
+    }
+
     /// Send rich user input items to an existing agent thread.
+    #[cfg(test)]
     pub(crate) async fn send_input(
         &self,
         agent_id: ThreadId,
@@ -238,31 +369,168 @@ impl AgentControl {
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
         let state = self.upgrade()?;
+        self.send_input_after_capacity_check(agent_id, &state, input, start_options)
+            .await
+            .map(|(submission_id, _resolution)| submission_id)
+    }
+
+    pub(crate) async fn send_input_observing_response(
+        &self,
+        agent_id: ThreadId,
+        input: Vec<UserInput>,
+        start_options: TurnStartOptions,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+    ) -> CodexResult<String> {
+        let state = self.upgrade()?;
+        let lifecycle_lock = state.agent_lifecycle_lock(agent_id);
+        let _lifecycle_guard = lifecycle_lock.lock_owned().await;
+        let _submission_permit = self.acquire_mailbox_submission_permit(agent_id).await?;
+        let thread = state.get_thread(agent_id).await?;
+        let child_lifecycle_generation = state.agent_lifecycle_generation(agent_id);
+        // Observation semantics belong to this V1 caller. A V2 target still publishes the common
+        // response stream and must not silently discard the caller's `w` policy.
+        let observes_v1_response = agent_id != observer.thread_id;
+        let _response_observation_transaction = self
+            .acquire_response_observation_transaction(observer)
+            .await;
+        let admission_id = uuid::Uuid::now_v7();
+        let binding = ResponseObservationBinding::ExplicitAdmission(admission_id);
+        let child = thread.session.presentation_id();
+        let previous_relationship =
+            self.response_observation_relationship_snapshot(observer, child);
+        self.ensure_v1_response_observer_for_thread(
+            &state,
+            &thread,
+            observer,
+            child_lifecycle_generation,
+            response_observation,
+            /*retain_passive_completion_relationship*/ false,
+            binding,
+            InitialTerminalObservation::FutureTurnsOnly,
+        )
+        .await?;
+        let send_result = self
+            .send_input_to_retained_thread(
+                agent_id,
+                &state,
+                &thread,
+                input,
+                start_options,
+            )
+            .await;
+        let (submission_id, resolution) = match send_result {
+            Ok(result) => result,
+            Err(err) => {
+                self.restore_response_observation_relationship_snapshot(
+                    observer,
+                    child,
+                    previous_relationship,
+                );
+                return Err(err);
+            }
+        };
+        if observes_v1_response
+            && (response_observation.commentary()
+                || response_observation.final_response() != FinalResponseObservation::None)
+        {
+            self.bind_response_observation_turn_at_sequence(
+                observer,
+                child,
+                &resolution.target_turn_id,
+                binding,
+                Some((
+                    resolution.minimum_event_sequence,
+                    resolution.after_item_id.clone(),
+                )),
+                ResponseObservationBindingPublication::Deferred,
+            );
+            if !self
+                .persist_response_observation_snapshot(observer, child)
+                .await
+            {
+                let message = "failed to persist response observation state";
+                self.rollback_response_observation_relationship_locked(
+                    observer,
+                    child,
+                    previous_relationship,
+                    Some(resolution.target_turn_id.clone()),
+                    message,
+                )
+                .await?;
+                return Err(CodexErr::Fatal(message.to_string()));
+            }
+            self.publish_response_observation_binding();
+        } else if observes_v1_response
+            && !self
+                .persist_response_observation_updates(
+                    observer,
+                    self.response_observation_audit_snapshots(
+                        observer,
+                        child,
+                        Some(resolution.target_turn_id.clone()),
+                    ),
+                )
+                .await
+        {
+            let message = "failed to persist response observation audit state";
+            self.rollback_response_observation_relationship_locked(
+                observer,
+                child,
+                previous_relationship,
+                Some(resolution.target_turn_id),
+                message,
+            )
+            .await?;
+            return Err(CodexErr::Fatal(message.to_string()));
+        }
+        Ok(submission_id)
+    }
+
+    #[cfg(test)]
+    async fn send_input_after_capacity_check(
+        &self,
+        agent_id: ThreadId,
+        state: &Arc<ThreadManagerState>,
+        input: Vec<UserInput>,
+        start_options: TurnStartOptions,
+    ) -> CodexResult<(String, crate::session::InputTurnAdmissionResolution)> {
         let submission_semaphore = self.state.mailbox_submission_semaphore(agent_id);
         let _submission_permit = submission_semaphore.acquire_owned().await.map_err(|err| {
             CodexErr::Fatal(format!("mailbox submission semaphore closed: {err}"))
         })?;
-        let last_task_message = non_empty_task_message(render_input_preview(&input));
         let thread = state.get_thread(agent_id).await?;
-        let result = match thread
-            .start_or_steer_turn(TurnInputRequest::user_input(input).on_start(start_options))
-            .await
-        {
-            Ok(TurnInputSubmission::Started { turn_id }) => Ok(turn_id),
-            Ok(TurnInputSubmission::Steered { .. }) => {
-                // MAv1 exposes an opaque `submission_id` to the model. The legacy
-                // `Op::UserInput` path returned a fresh ID for every steer, while the
-                // turn-input API returns the active turn ID. Keep the tool-visible ID
-                // unique without adding a submission receipt back to Core.
-                Ok(Uuid::now_v7().to_string())
-            }
-            Ok(TurnInputSubmission::NotSubmitted { reason }) => Err(CodexErr::InvalidRequest(
-                format!("turn input was not submitted: {reason:?}"),
-            )),
-            Err(err) => Err(err),
-        };
+        self.send_input_to_retained_thread(
+            agent_id,
+            state,
+            &thread,
+            input,
+            start_options,
+        )
+        .await
+    }
+
+    async fn send_input_to_retained_thread(
+        &self,
+        agent_id: ThreadId,
+        state: &Arc<ThreadManagerState>,
+        thread: &Arc<CodexThread>,
+        input: Vec<UserInput>,
+        start_options: TurnStartOptions,
+    ) -> CodexResult<(String, crate::session::InputTurnAdmissionResolution)> {
+        // V1 deliberately forwards task input unchanged. Direct agent-to-agent replies remain
+        // explicit, while commentary and final-response observation cover routine return traffic.
+        let last_task_message = non_empty_task_message(render_input_preview(&input));
+        let send_result = thread
+            .io
+            .submit_turn_input_with_admission(
+                thread.session.as_ref(),
+                TurnInputRequest::user_input(input).on_start(start_options),
+                TurnInputMode::StartOrSteer,
+            )
+            .await;
         let result = self
-            .handle_thread_request_result(&state, &thread, result)
+            .handle_thread_request_result(state, thread, send_result)
             .await;
         if result.is_ok() {
             match last_task_message {
@@ -283,6 +551,8 @@ impl AgentControl {
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
         let state = self.upgrade()?;
+        let lifecycle_lock = state.agent_lifecycle_lock(agent_id);
+        let _lifecycle_guard = lifecycle_lock.lock_owned().await;
         if communication.trigger_turn {
             let thread = state.get_thread(agent_id).await?;
             self.ensure_execution_capacity_for_turn_start(&thread)
@@ -345,6 +615,153 @@ impl AgentControl {
                 .await;
         }
         Ok(())
+    }
+
+    async fn send_inter_agent_communication_durably(
+        &self,
+        receiver: SessionPresentationId,
+        communication: InterAgentCommunication,
+        agent_communication_context: AgentCommunicationContext,
+        parent_turn_id: Option<String>,
+        delivery: DurableResponseDelivery,
+    ) -> CodexResult<(String, Arc<CodexThread>)> {
+        let DurableResponseDelivery {
+            commit: delivery_commit,
+            submission_permit,
+            target_lifecycle_guard,
+        } = delivery;
+        let response_item_id = communication.id.clone().ok_or_else(|| {
+            CodexErr::InvalidRequest(
+                "durable inter-agent response delivery requires a response item ID".to_string(),
+            )
+        })?;
+        if response_item_id != delivery_commit.response_item_id
+            || receiver != delivery_commit.parent
+            || delivery_commit.kind != ResponseObservationDeliveryKind::Commentary
+        {
+            return Err(CodexErr::InvalidRequest(
+                "durable inter-agent response delivery does not match its observation claim"
+                    .to_string(),
+            ));
+        }
+        let state = self.upgrade()?;
+        let thread = state.get_thread(receiver.thread_id).await?;
+        if thread.session.presentation_id() != receiver {
+            return Err(CodexErr::ThreadNotFound(receiver.thread_id));
+        }
+        if communication.trigger_turn {
+            self.ensure_execution_capacity_for_turn_start(&thread)
+                .await?;
+        }
+        let receipt = thread
+            .session
+            .register_communication_delivery(delivery_commit);
+        let (submission_id, thread) = self
+            .submit_inter_agent_communication_with_permit(
+                receiver.thread_id,
+                &state,
+                communication,
+                agent_communication_context,
+                InterAgentSubmission::ObservedResponse {
+                    parent_turn_id,
+                    receiver,
+                },
+                submission_permit,
+            )
+            .await?;
+        // The accepted claim and mailbox enqueue are ordered under the target lifecycle boundary,
+        // but parent consumption must not retain that boundary.
+        drop(target_lifecycle_guard);
+        let delivered = tokio::select! {
+            delivered = receipt.recv() => delivered,
+            () = thread.io.session_loop_termination.clone() => false,
+        };
+        if !delivered {
+            return Err(CodexErr::InternalAgentDied);
+        }
+        Ok((submission_id, thread))
+    }
+
+    async fn send_inter_agent_completion_communication_durably(
+        &self,
+        parent_thread_id: ThreadId,
+        communication: InterAgentCommunication,
+        context: AgentCommunicationContext,
+        presentation: &AgentTerminalPresentation,
+        admission: CompletionSubmissionAdmission,
+        delivery: DurableResponseDelivery,
+    ) -> CodexResult<(String, Arc<CodexThread>)> {
+        let DurableResponseDelivery {
+            commit: delivery_commit,
+            submission_permit,
+            target_lifecycle_guard,
+        } = delivery;
+        if presentation.parent().thread_id != parent_thread_id {
+            return Err(CodexErr::InvalidRequest(
+                "completion destination does not match its presentation parent".to_string(),
+            ));
+        }
+        let response_item_id = communication.id.clone().ok_or_else(|| {
+            CodexErr::InvalidRequest(
+                "durable completion response delivery requires a response item ID".to_string(),
+            )
+        })?;
+        if response_item_id != delivery_commit.response_item_id
+            || presentation.parent() != delivery_commit.parent
+            || presentation.child() != delivery_commit.child
+            || delivery_commit.kind != ResponseObservationDeliveryKind::Final
+        {
+            return Err(CodexErr::InvalidRequest(
+                "durable completion response delivery does not match its observation claim"
+                    .to_string(),
+            ));
+        }
+        let state = self.upgrade()?;
+        if !is_sub_agent_completion_context_response_item_id(response_item_id.as_str())
+            || response_item_id.as_str()
+                != presentation.completion_context_response_item_id().as_str()
+        {
+            return Err(CodexErr::InvalidRequest(
+                "completion communication response item ID does not match its presentation"
+                    .to_string(),
+            ));
+        }
+        let parent_thread = state.get_thread(parent_thread_id).await?;
+        if parent_thread.session.presentation_id() != presentation.parent() {
+            return Err(CodexErr::ThreadNotFound(parent_thread_id));
+        }
+        if communication.trigger_turn {
+            self.ensure_execution_capacity_for_turn_start(&parent_thread)
+                .await?;
+        }
+        let receipt = parent_thread
+            .session
+            .register_communication_delivery(delivery_commit);
+        let (submission_id, parent_thread) = self
+            .submit_inter_agent_communication_with_permit(
+                parent_thread_id,
+                &state,
+                communication,
+                context,
+                InterAgentSubmission::Completion {
+                    presentation,
+                    admission,
+                },
+                submission_permit,
+            )
+            .await?;
+        // A close that starts after this enqueue revokes future observation, not the response
+        // item that already won admission. Do not retain the child lifecycle boundary while the
+        // parent waits to consume that item.
+        drop(target_lifecycle_guard);
+        let delivered = tokio::select! {
+            delivered = receipt.recv() => delivered,
+            () = parent_thread.io.session_loop_termination.clone() => false,
+        };
+        if !delivered {
+            return Err(CodexErr::InternalAgentDied);
+        }
+        Ok((submission_id, parent_thread))
     }
 
     pub(crate) async fn send_inter_agent_completion_communication(
@@ -496,25 +913,53 @@ impl AgentControl {
         context: AgentCommunicationContext,
         submission: InterAgentSubmission<'_>,
     ) -> CodexResult<(String, Arc<CodexThread>)> {
-        let submission_semaphore = self.state.mailbox_submission_semaphore(agent_id);
-        let _submission_permit = submission_semaphore.acquire_owned().await.map_err(|err| {
-            CodexErr::Fatal(format!("mailbox submission semaphore closed: {err}"))
-        })?;
+        let submission_permit = self.acquire_mailbox_submission_permit(agent_id).await?;
+        self.submit_inter_agent_communication_with_permit(
+            agent_id,
+            state,
+            communication,
+            context,
+            submission,
+            submission_permit,
+        )
+        .await
+    }
+
+    async fn submit_inter_agent_communication_with_permit(
+        &self,
+        agent_id: ThreadId,
+        state: &Arc<ThreadManagerState>,
+        communication: InterAgentCommunication,
+        context: AgentCommunicationContext,
+        submission: InterAgentSubmission<'_>,
+        _submission_permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> CodexResult<(String, Arc<CodexThread>)> {
         let last_task_message = context
             .updates_last_task_message()
             .then(|| non_empty_task_message(communication.content.clone()));
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
         let thread = state.get_thread(agent_id).await?;
-        if let InterAgentSubmission::Completion { presentation, .. } = &submission
-            && thread.session.presentation_id() != presentation.parent()
-        {
-            return Err(CodexErr::ThreadNotFound(agent_id));
+        match &submission {
+            InterAgentSubmission::Ordinary { .. } => {}
+            InterAgentSubmission::ObservedResponse { receiver, .. }
+                if thread.session.presentation_id() != *receiver =>
+            {
+                return Err(CodexErr::ThreadNotFound(agent_id));
+            }
+            InterAgentSubmission::ObservedResponse { .. } => {}
+            InterAgentSubmission::Completion { presentation, .. }
+                if thread.session.presentation_id() != presentation.parent() =>
+            {
+                return Err(CodexErr::ThreadNotFound(agent_id));
+            }
+            InterAgentSubmission::Completion { .. } => {}
         }
         let mut authorization_guard = CompletionContextAuthorizationGuard {
             control: self.clone(),
             response_item_id: match &submission {
-                InterAgentSubmission::Ordinary { .. } => None,
+                InterAgentSubmission::Ordinary { .. }
+                | InterAgentSubmission::ObservedResponse { .. } => None,
                 InterAgentSubmission::Completion { presentation, .. } => {
                     Some(presentation.completion_context_response_item_id())
                 }
@@ -548,6 +993,17 @@ impl AgentControl {
                         },
                         parent_turn_id,
                         root_turn_id,
+                    )
+                    .await
+            }
+            InterAgentSubmission::ObservedResponse { parent_turn_id, .. } => {
+                let parent_turn_id = parent_turn_id.filter(|_| communication.trigger_turn);
+                state
+                    .send_op_to_thread(
+                        &thread,
+                        Op::InterAgentCommunication { communication },
+                        parent_turn_id,
+                        /*root_turn_id*/ None,
                     )
                     .await
             }
@@ -639,6 +1095,16 @@ impl AgentControl {
                 })
                 .await;
         }
+        if result.is_ok() {
+            let thread_id = thread.session.thread_id();
+            let still_current = state
+                .get_thread(thread_id)
+                .await
+                .is_ok_and(|current| Arc::ptr_eq(&current, thread));
+            if !still_current {
+                return Err(CodexErr::ThreadNotFound(thread_id));
+            }
+        }
         result
     }
 
@@ -666,6 +1132,36 @@ impl AgentControl {
 
     pub(crate) fn get_agent_metadata(&self, agent_id: ThreadId) -> Option<AgentMetadata> {
         self.state.agent_metadata_for_thread(agent_id)
+    }
+
+    pub(crate) fn restore_agent_metadata(
+        &self,
+        agent_id: ThreadId,
+        metadata: AgentMetadata,
+    ) -> CodexResult<()> {
+        self.state
+            .reserve_agent_metadata_replacement(agent_id, metadata)?
+            .commit()
+    }
+
+    pub(crate) fn restore_agent_metadata_if_current(
+        &self,
+        agent_id: ThreadId,
+        expected: &AgentMetadata,
+        metadata: AgentMetadata,
+    ) -> CodexResult<bool> {
+        self.state
+            .reserve_agent_metadata_replacement(agent_id, metadata)?
+            .commit_if_current(expected)
+    }
+
+    pub(crate) fn clear_agent_metadata_if_current(
+        &self,
+        agent_id: ThreadId,
+        expected: &AgentMetadata,
+    ) -> bool {
+        self.state
+            .release_spawned_thread_if_current(agent_id, expected)
     }
 
     pub(crate) fn ensure_agent_known(&self, agent_id: ThreadId) -> CodexResult<AgentMetadata> {
@@ -731,7 +1227,10 @@ impl AgentControl {
     pub(crate) async fn subscribe_terminal_status(
         &self,
         agent_id: ThreadId,
-    ) -> CodexResult<(AgentStatus, crate::session::TerminalStatusSubscription)> {
+    ) -> CodexResult<(
+        crate::session::TerminalStatusEvent,
+        crate::session::TerminalStatusSubscription,
+    )> {
         let state = self.upgrade()?;
         let thread = state.get_thread(agent_id).await?;
         Ok(thread.session.subscribe_terminal_status())
@@ -838,59 +1337,198 @@ impl AgentControl {
     ///
     /// This is only enabled for `SubAgentSource::ThreadSpawn`, where a parent thread exists and
     /// can receive completion notifications.
+    #[allow(clippy::too_many_arguments)]
     async fn maybe_start_completion_watcher(
         &self,
         child_thread: &Arc<CodexThread>,
         session_source: Option<SessionSource>,
         child_reference: String,
         child_agent_path: Option<AgentPath>,
-        child_multi_agent_version: MultiAgentVersion,
-    ) {
+        response_observation: ResponseObservationPolicy,
+        initial_terminal_observation: InitialTerminalObservation,
+    ) -> CodexResult<AgentStatus> {
+        if !response_observation.commentary()
+            && response_observation.final_response() == FinalResponseObservation::None
+        {
+            return Ok(child_thread.agent_status().await);
+        }
         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
         })) = session_source
         else {
-            return;
+            return Ok(child_thread.agent_status().await);
         };
         let Ok(state) = self.upgrade() else {
-            return;
+            return Ok(child_thread.agent_status().await);
         };
         let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
-            return;
+            return Ok(child_thread.agent_status().await);
         };
+        let observer_multi_agent_version = parent_thread
+            .multi_agent_version()
+            .unwrap_or(MultiAgentVersion::V1);
         let parent = parent_thread.session.presentation_id();
         let child = child_thread.session.presentation_id();
         let child_thread_id = child.thread_id;
-        let Some(watcher_registration) = self.register_completion_watcher_with_admission(
+        let (response_snapshot, mut response_rx) = match observer_multi_agent_version {
+            MultiAgentVersion::V1 | MultiAgentVersion::Disabled => {
+                let terminal_control = self.clone();
+                let terminal_lifecycle_generation =
+                    self.agent_lifecycle_generation(child_thread_id);
+                child_thread
+                    .session
+                    .subscribe_agent_responses_observing_terminal(move |turn_id, status| {
+                        if !terminal_control.agent_lifecycle_generation_is_current(
+                            child.thread_id,
+                            terminal_lifecycle_generation,
+                        ) {
+                            return;
+                        }
+                        let _ = terminal_control.record_agent_terminal_presentation(
+                            parent,
+                            child,
+                            turn_id,
+                            status,
+                            TerminalPresentationDelivery::Watcher,
+                            || {},
+                        );
+                    })
+            }
+            // Native V2 completion remains direct. A V1 observer of a V2 target takes the
+            // watcher branch above so the caller receives V1 delivery and durability semantics.
+            MultiAgentVersion::V2 => child_thread.session.subscribe_agent_responses(),
+        };
+        let target_turn_id =
+            initial_terminal_observation.target_turn_id(response_snapshot.active_turn_id.clone());
+        let initial_reconciliation = initial_terminal_observation.reconcile(
+            response_snapshot.active_turn_id.clone(),
+            response_snapshot.last_terminal.clone(),
+            response_snapshot.status.clone(),
+        );
+        let previous_relationship = self.response_observation_relationship_snapshot(parent, child);
+        let retain_passive_completion_relationship =
+            observer_multi_agent_version != MultiAgentVersion::V1;
+        let watcher_registration = self.register_response_watcher_with_admission_at_sequence(
             child,
             parent,
             &parent_thread.session.submission_admission,
-        ) else {
-            return;
+            response_observation,
+            retain_passive_completion_relationship,
+            target_turn_id.clone(),
+            ResponseObservationBinding::NextTurn,
+            match observer_multi_agent_version {
+                MultiAgentVersion::V1 => ResponseObservationPersistence::Durable,
+                MultiAgentVersion::V2 | MultiAgentVersion::Disabled => {
+                    ResponseObservationPersistence::RuntimeOnly
+                }
+            },
+            response_snapshot.next_event_sequence,
+            response_snapshot.last_commentary_item_id,
+        );
+        if observer_multi_agent_version == MultiAgentVersion::V1
+            && !self
+                .persist_response_observation_snapshot(parent, child)
+                .await
+        {
+            drop(watcher_registration);
+            let message = "failed to persist initial response observation state";
+            self.rollback_response_observation_relationship_locked(
+                parent,
+                child,
+                previous_relationship,
+                target_turn_id,
+                message,
+            )
+            .await?;
+            return Err(CodexErr::Fatal(message.to_string()));
+        }
+        let Some(watcher_registration) = watcher_registration else {
+            return Ok(initial_reconciliation.status);
         };
-        let mut status_rx = child_thread.subscribe_status();
+        if let Some((turn_id, status)) = initial_reconciliation.terminal {
+            let _ = self.record_agent_terminal_presentation(
+                parent,
+                child,
+                &turn_id,
+                status,
+                TerminalPresentationDelivery::Watcher,
+                || {},
+            );
+        }
         let child_rollout_thread_trace = child_thread.session.services.rollout_thread_trace.clone();
         let control = self.clone();
         tokio::spawn(async move {
-            let _watcher_registration = watcher_registration;
+            let child_lifecycle_generation = watcher_registration.child_lifecycle_generation();
+            let mut watcher_guard = self::response_observer::CompletionWatcherLifecycleGuard::new(
+                control.clone(),
+                watcher_registration,
+                parent,
+                child,
+            );
             loop {
-                let terminal = match control.take_watcher_terminal_presentation(child) {
-                    Some(terminal) => terminal,
-                    None => {
-                        if status_rx.changed().await.is_ok() {
-                            continue;
-                        }
-                        if let Some(terminal) = control.take_watcher_terminal_presentation(child) {
-                            terminal
-                        } else {
+                let terminal = match control
+                    .next_watcher_terminal(
+                        parent,
+                        child,
+                        child_reference.as_str(),
+                        &mut response_rx,
+                        observer_multi_agent_version,
+                        child_lifecycle_generation,
+                    )
+                    .await
+                {
+                    WatcherTerminalPoll::Terminal(terminal) => terminal,
+                    WatcherTerminalPoll::Retry => {
+                        if !control.agent_lifecycle_generation_is_current(
+                            child.thread_id,
+                            child_lifecycle_generation,
+                        ) || !control.response_observer_can_retry(parent).await
+                        {
                             return;
                         }
+                        while !control
+                            .persist_response_observation_snapshot_transactionally(parent, child)
+                            .await
+                        {
+                            if !control.agent_lifecycle_generation_is_current(
+                                child.thread_id,
+                                child_lifecycle_generation,
+                            ) || !control.response_observer_can_retry(parent).await
+                            {
+                                return;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    WatcherTerminalPoll::Closed => {
+                        if observer_multi_agent_version == MultiAgentVersion::V1
+                            && control.response_observer_can_retry(parent).await
+                        {
+                            control.restart_v1_response_observer_after_runtime_end(
+                                watcher_guard.take_registration(),
+                                parent,
+                                child,
+                            );
+                        }
+                        return;
                     }
                 };
                 let status = terminal.status.clone();
-                if child_multi_agent_version == MultiAgentVersion::V2
-                    && let Some(child_agent_path) = child_agent_path.clone()
-                {
+                if observer_multi_agent_version == MultiAgentVersion::V2 {
+                    let Some(_lifecycle_guard) = control
+                        .acquire_current_agent_lifecycle(
+                            child.thread_id,
+                            child_lifecycle_generation,
+                        )
+                        .await
+                    else {
+                        return;
+                    };
+                    let Some(child_agent_path) = child_agent_path.clone() else {
+                        return;
+                    };
                     let accepted_completion_delivery =
                         terminal.presentation.take_accepted_completion_delivery();
                     let admission = if accepted_completion_delivery.is_some() {
@@ -956,6 +1594,7 @@ impl AgentControl {
                                     .emit_accepted_sub_agent_completion_without_turn(
                                         &child_reference,
                                         &status,
+                                        SubAgentCompletionModelVisibility::Visible,
                                         completion_delivery,
                                     )
                                     .await;
@@ -965,6 +1604,7 @@ impl AgentControl {
                                     .emit_sub_agent_completion_without_turn(
                                         &child_reference,
                                         &status,
+                                        SubAgentCompletionModelVisibility::Visible,
                                     )
                                     .await;
                             }
@@ -981,200 +1621,91 @@ impl AgentControl {
                             },
                         );
                     }
-                } else if !control
-                    .deliver_v1_watcher_terminal(
-                        parent_thread_id,
-                        child_reference.as_str(),
-                        &terminal,
-                    )
-                    .await
-                {
-                    return;
-                }
-                if matches!(status, AgentStatus::Shutdown | AgentStatus::NotFound) {
-                    control.finish_watcher_terminal_presentation(child, &terminal.turn_id);
-                    return;
-                }
-            }
-        });
-    }
-
-    async fn deliver_v1_watcher_terminal(
-        &self,
-        parent_thread_id: ThreadId,
-        child_reference: &str,
-        terminal: &WatcherTerminalPresentation,
-    ) -> bool {
-        let accepted_completion_delivery =
-            terminal.presentation.take_accepted_completion_delivery();
-        let admission = if accepted_completion_delivery.is_some() {
-            CompletionSubmissionAdmission::Accepted
-        } else {
-            CompletionSubmissionAdmission::Ordinary
-        };
-        let Ok(state) = self.upgrade() else {
-            return false;
-        };
-        let message = format_subagent_notification_message(child_reference, &terminal.status);
-        let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
-            return false;
-        };
-        if parent_thread.session.presentation_id() != terminal.presentation.parent() {
-            return false;
-        }
-        if !parent_thread
-            .persist_sub_agent_notification_without_turn(message, admission)
-            .await
-        {
-            return false;
-        }
-        if !terminal.presentation.wait_owns_presentation().await {
-            match accepted_completion_delivery {
-                Some(completion_delivery) => {
-                    parent_thread
-                        .emit_accepted_sub_agent_completion_without_turn(
-                            child_reference,
-                            &terminal.status,
-                            completion_delivery,
-                        )
-                        .await;
-                }
-                None => {
-                    parent_thread
-                        .emit_sub_agent_completion_without_turn(child_reference, &terminal.status)
-                        .await;
-                }
-            }
-        }
-        true
-    }
-
-    /// Ensures an explicitly adopted live v1 thread reports terminal status to its caller.
-    ///
-    /// A thread can already be live because another client resumed its rollout directly through
-    /// the app-server. V1 tools address live threads through the global thread manager, so direct
-    /// control already works in that case, but the caller's session-scoped presentation state
-    /// still needs a completion watcher. Registering is idempotent for the child presentation.
-    pub(crate) async fn ensure_v1_completion_watcher(
-        &self,
-        child_thread_id: ThreadId,
-        session_source: SessionSource,
-    ) -> CodexResult<()> {
-        let state = self.upgrade()?;
-        let child_thread = state.get_thread(child_thread_id).await?;
-        if child_thread.multi_agent_version() == Some(MultiAgentVersion::V2) {
-            return Ok(());
-        }
-        let (initial_status, mut terminal_status_rx) =
-            child_thread.session.subscribe_terminal_status();
-        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        }) = &session_source
-        else {
-            return Ok(());
-        };
-        let parent_thread_id = *parent_thread_id;
-        if child_thread_id == parent_thread_id {
-            return Ok(());
-        }
-        let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
-            return Ok(());
-        };
-        let child_reference = self
-            .get_agent_metadata(child_thread_id)
-            .and_then(|metadata| metadata.agent_path)
-            .map_or_else(|| child_thread_id.to_string(), |path| path.to_string());
-        let child_uses_this_parent_presentation = matches!(
-            &child_thread.session_source,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: source_parent_thread_id,
-                ..
-            }) if *source_parent_thread_id == parent_thread_id
-        );
-        if child_uses_this_parent_presentation
-            && Arc::ptr_eq(
-                &self.wait_agent_presentations,
-                &child_thread
-                    .session
-                    .services
-                    .agent_control
-                    .wait_agent_presentations,
-            )
-        {
-            self.maybe_start_completion_watcher(
-                &child_thread,
-                Some(session_source),
-                child_reference,
-                /*child_agent_path*/ None,
-                MultiAgentVersion::V1,
-            )
-            .await;
-            return Ok(());
-        }
-        let parent = parent_thread.session.presentation_id();
-        let child = child_thread.session.presentation_id();
-        let Some(watcher_registration) = self.register_completion_watcher_with_admission(
-            child,
-            parent,
-            &parent_thread.session.submission_admission,
-        ) else {
-            return Ok(());
-        };
-        let control = self.clone();
-        tokio::spawn(async move {
-            let _watcher_registration = watcher_registration;
-            let mut initial_status = Some(initial_status);
-            loop {
-                let status = match terminal_status_rx.try_recv() {
-                    Ok(status) => {
-                        initial_status = None;
-                        status
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                        match initial_status.take().filter(is_final) {
-                            Some(status) => status,
-                            None => match terminal_status_rx.recv().await {
-                                Some(status) => status,
-                                None => return,
-                            },
-                        }
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                        let Some(status) = initial_status.take().filter(is_final) else {
+                } else {
+                    loop {
+                        let Some(lifecycle_guard) = control
+                            .acquire_current_agent_lifecycle(
+                                child.thread_id,
+                                child_lifecycle_generation,
+                            )
+                            .await
+                        else {
                             return;
                         };
-                        status
+                        let delivered = control
+                            .deliver_v1_watcher_terminal(
+                                parent_thread_id,
+                                child_reference.as_str(),
+                                &terminal,
+                                lifecycle_guard,
+                            )
+                            .await;
+                        if delivered {
+                            break;
+                        }
+                        if !control.agent_lifecycle_generation_is_current(
+                            child.thread_id,
+                            child_lifecycle_generation,
+                        ) || !control
+                            .terminal_response_observer_can_retry(parent, &terminal.presentation)
+                            .await
+                        {
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
-                };
-                let turn_id = uuid::Uuid::now_v7().to_string();
-                let _ = control.record_agent_terminal_presentation(
-                    parent,
-                    child,
-                    &turn_id,
-                    status.clone(),
-                    TerminalPresentationDelivery::Watcher,
-                    || {},
-                );
-                let Some(terminal) = control.take_watcher_terminal_presentation(child) else {
-                    continue;
-                };
-                if !control
-                    .deliver_v1_watcher_terminal(
-                        parent_thread_id,
-                        child_reference.as_str(),
-                        &terminal,
-                    )
-                    .await
-                {
-                    return;
+                }
+                if observer_multi_agent_version == MultiAgentVersion::V1 {
+                    while !control
+                        .finish_and_persist_response_observation_turn(
+                            parent,
+                            child,
+                            &terminal.turn_id,
+                        )
+                        .await
+                    {
+                        if !control.agent_lifecycle_generation_is_current(
+                            child.thread_id,
+                            child_lifecycle_generation,
+                        ) || !control.response_observer_can_retry(parent).await
+                        {
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    if watcher_guard.retire_if_observation_idle() {
+                        return;
+                    }
+                } else {
+                    let _transaction_permit = control
+                        .acquire_response_observation_transaction(parent)
+                        .await;
+                    let removed_bound_wake = control
+                        .response_observation_turn_has_bound_final_wake(
+                            parent,
+                            child,
+                            &terminal.turn_id,
+                        );
+                    control.finish_response_observation_turn(parent, child, &terminal.turn_id);
+                    drop(_transaction_permit);
+                    if removed_bound_wake {
+                        control.recheck_thread_idle_lifecycle(parent).await;
+                    }
                 }
                 if matches!(status, AgentStatus::Shutdown | AgentStatus::NotFound) {
-                    control.finish_watcher_terminal_presentation(child, &terminal.turn_id);
+                    control.finish_watcher_terminal_presentation(parent, child, &terminal.turn_id);
+                    if observer_multi_agent_version == MultiAgentVersion::V1 {
+                        control.restart_v1_response_observer_after_runtime_end(
+                            watcher_guard.take_registration(),
+                            parent,
+                            child,
+                        );
+                    }
                     return;
                 }
             }
         });
-        Ok(())
+        Ok(initial_reconciliation.status)
     }
 
     fn prepare_agent_metadata(
@@ -1351,6 +1882,10 @@ impl AgentControl {
         Ok(children_by_parent)
     }
 
+    /// Persist a child edge after its runtime and observation relationship are ready.
+    ///
+    /// The caller must hold the direct parent's lifecycle guard through this call so a
+    /// concurrent subtree close cannot take its final membership snapshot first.
     async fn persist_thread_spawn_edge_for_source(
         &self,
         child_thread: &crate::CodexThread,

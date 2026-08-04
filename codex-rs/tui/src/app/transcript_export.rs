@@ -26,7 +26,8 @@ use crate::history_cell::UserHistoryCell;
 use crate::history_cell::raw_lines_from_source;
 use crate::legacy_core::config::Config;
 use crate::thread_transcript::RawReasoningVisibility;
-use crate::thread_transcript::thread_items_to_transcript_cells;
+use crate::thread_transcript::collab_agent_metadata_from_items;
+use crate::thread_transcript::thread_items_to_transcript_cells_with_metadata;
 
 impl App {
     pub(super) async fn export_transcript(
@@ -114,16 +115,19 @@ pub(super) async fn load_export_transcript(
         }
     }
     let mut cells: Vec<Arc<dyn HistoryCell>> = Vec::new();
+    let collab_agent_metadata =
+        collab_agent_metadata_from_items(thread.turns.iter().flat_map(|turn| turn.items.iter()));
     for item in visible_export_items(thread.turns) {
         if let Some(cell) = export_activity_cell(&item) {
             cells.push(Arc::new(cell));
         } else {
-            cells.extend(thread_items_to_transcript_cells(
+            cells.extend(thread_items_to_transcript_cells_with_metadata(
                 Some(thread_id),
                 &thread.cwd,
                 [item],
                 visibility,
                 config,
+                &collab_agent_metadata,
             ));
         }
     }

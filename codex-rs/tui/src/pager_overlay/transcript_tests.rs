@@ -355,6 +355,27 @@ async fn consolidation_restores_pending_review_target_alignment() {
 }
 
 #[tokio::test]
+async fn same_length_cell_refresh_preserves_review_target() {
+    let mut overlay = TranscriptOverlay::new(
+        review_cells(),
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    render_overlay_once(&mut overlay);
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE)),
+        )
+        .expect("navigate");
+
+    overlay.replace_cells(review_cells());
+
+    assert_eq!(Some(0), overlay.selected_review_target());
+}
+
+#[tokio::test]
 async fn browser_actions_wait_for_initial_viewport_render() {
     let mut overlay = TranscriptOverlay::new(
         review_cells(),

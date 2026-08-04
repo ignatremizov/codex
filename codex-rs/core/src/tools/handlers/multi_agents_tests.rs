@@ -33,7 +33,6 @@ use codex_history::InitialHistory;
 use codex_history::RolloutItem;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
-use codex_model_provider::create_model_provider;
 use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -42,6 +41,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
@@ -64,11 +64,13 @@ use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
@@ -174,24 +176,47 @@ async fn subagent_notification_texts(session: &crate::session::session::Session)
         .await
         .raw_items()
         .iter()
-        .filter_map(|item| {
-            let ResponseItem::Message { role, content, .. } = item else {
-                return None;
-            };
-            if role != "user" {
-                return None;
+        .filter_map(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "user" => {
+                content.iter().find_map(|content| match content {
+                    ContentItem::InputText { text } | ContentItem::OutputText { text }
+                        if SubagentNotification::matches_text(text) =>
+                    {
+                        Some(text.clone())
+                    }
+                    ContentItem::InputText { .. }
+                    | ContentItem::OutputText { .. }
+                    | ContentItem::InputImage { .. }
+                    | ContentItem::InputAudio { .. } => None,
+                })
             }
-            content.iter().find_map(|content| match content {
-                ContentItem::InputText { text } | ContentItem::OutputText { text }
-                    if SubagentNotification::matches_text(text) =>
-                {
-                    Some(text.clone())
-                }
-                ContentItem::InputText { .. }
-                | ContentItem::OutputText { .. }
-                | ContentItem::InputImage { .. }
-                | ContentItem::InputAudio { .. } => None,
-            })
+            ResponseItem::AgentMessage { content, .. } => {
+                content.iter().find_map(|content| match content {
+                    AgentMessageInputContent::InputText { text }
+                        if SubagentNotification::matches_text(text) =>
+                    {
+                        Some(text.clone())
+                    }
+                    AgentMessageInputContent::InputText { .. }
+                    | AgentMessageInputContent::EncryptedContent { .. } => None,
+                })
+            }
+            ResponseItem::AdditionalTools { .. }
+            | ResponseItem::Message { .. }
+            | ResponseItem::Reasoning { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::FunctionCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::FunctionCallOutput { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::CustomToolCallOutput { .. }
+            | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. }
+            | ResponseItem::Compaction { .. }
+            | ResponseItem::CompactionTrigger { .. }
+            | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::Other => None,
         })
         .collect()
 }
@@ -402,9 +427,8 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         nickname: Option<String>,
     }
 
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let mut config = (*turn.config).clone();
     let provider_info =
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["ollama"].clone();
@@ -415,12 +439,16 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("approval policy should be set");
-    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
-    turn.config = Arc::new(config);
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let session = Arc::clone(&root.thread.session);
+    let turn = root.thread.session.new_default_turn().await;
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "spawn_agent",
         function_payload(json!({
             "message": "inspect this repo",
@@ -831,7 +859,11 @@ async fn spawn_agent_service_tier_uses_root_preference_when_root_model_cannot_su
     assert_eq!(root.thread.config_snapshot().await.service_tier, None);
 
     config.model = Some("gpt-5.4".to_string());
-    apply_spawn_agent_service_tier(root.thread.session.as_ref(), &mut config)
+    apply_spawn_agent_service_tier(
+        root.thread.session.as_ref(),
+        &mut config,
+        /*requested_service_tier*/ None,
+    )
         .await
         .expect("root preference should be resolved against the child model");
 
@@ -1244,14 +1276,17 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
 
 #[tokio::test]
 async fn spawn_agent_returns_agent_id_without_task_name() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
 
     let output = SpawnAgentHandler::default()
         .handle(invocation(
-            Arc::new(session),
-            Arc::new(turn),
+            Arc::clone(&root.thread.session),
+            root.thread.session.new_default_turn().await,
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo"
@@ -1921,6 +1956,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         .expect("encrypted-only send_message should succeed");
 
     let child_turn = child_thread.session.new_default_turn().await;
+    publish_agent_turn_started(child_thread.as_ref(), child_turn.as_ref()).await;
     timeout(
         Duration::from_secs(5),
         child_thread.session.send_event(
@@ -2710,7 +2746,7 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
         nickname: Option<String>,
     }
 
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (_session, mut initial_turn) = make_session_and_context().await;
     let server = core_test_support::responses::start_mock_server().await;
     let sandbox_runtime = core_test_support::test_codex::test_codex()
         .build_with_auto_env(&server)
@@ -2720,14 +2756,16 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
     let manager = ThreadManager::with_models_provider_and_home_for_tests(
         CodexAuth::from_api_key("dummy"),
         built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
-        turn.config.codex_home.to_path_buf(),
+        initial_turn.config.codex_home.to_path_buf(),
         Arc::clone(&environment_manager),
     );
-    session.services.agent_control = manager.agent_control();
-    let expected_sandbox = turn.config.legacy_sandbox_policy();
+    let expected_sandbox = initial_turn.config.legacy_sandbox_policy();
     #[allow(deprecated)]
     let mut expected_file_system_sandbox_policy =
-        FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(&expected_sandbox, &turn.cwd);
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
+            &expected_sandbox,
+            &initial_turn.cwd,
+        );
     expected_file_system_sandbox_policy
         .entries
         .push(FileSystemSandboxEntry {
@@ -2749,51 +2787,62 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
         &expected_file_system_sandbox_policy,
         expected_network_sandbox_policy,
     );
-    Arc::make_mut(&mut turn.config)
-        .permissions
-        .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("approval policy should be set");
-    let mut config = (*turn.config).clone();
+    let mut config = (*initial_turn.config).clone();
     config.approvals_reviewer = ApprovalsReviewer::AutoReview;
     config
         .permissions
         .set_permission_profile(PermissionProfile::Disabled)
         .expect("test setup should allow updating permission profile");
-    set_turn_config(&mut turn, config);
-    let role_name = install_role_with_model_override(&mut turn).await;
-    let mut role_config = (*turn.config).clone();
+    set_turn_config(&mut initial_turn, config);
+    let role_name = install_role_with_model_override(&mut initial_turn).await;
+    let mut role_config = (*initial_turn.config).clone();
     crate::agent::role::apply_role_to_config(&mut role_config, Some(role_name.as_str()))
         .await
         .expect("non-empty role config should apply");
-    let TurnEnvironmentState::Ready(environment) = turn
-        .environments
-        .environments
-        .first_mut()
-        .expect("parent environment should exist")
-    else {
-        panic!("parent environment should be ready");
-    };
-    environment.environment = environment_manager
-        .default_environment()
-        .expect("sandbox-capable test environment should exist");
-    environment.config_mut().permission_profile =
-        PermissionProfileSnapshot::legacy(expected_permission_profile.clone());
-    environment.config_origin = EnvironmentConfigOrigin::Owner;
+    let root = manager
+        .start_thread(StartThreadOptions::new((*initial_turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let session = Arc::clone(&root.thread.session);
+    let mut turn = root.thread.session.new_default_turn().await;
+    {
+        let turn = Arc::get_mut(&mut turn).expect("turn should be uniquely owned");
+        let mut config = (*turn.config).clone();
+        config
+            .permissions
+            .approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("approval policy should be set");
+        set_turn_config(turn, config);
+        let TurnEnvironmentState::Ready(environment) = turn
+            .environments
+            .environments
+            .first_mut()
+            .expect("parent environment should exist")
+        else {
+            panic!("parent environment should be ready");
+        };
+        environment.environment = environment_manager
+            .default_environment()
+            .expect("sandbox-capable test environment should exist");
+        environment.config_mut().permission_profile =
+            PermissionProfileSnapshot::legacy(expected_permission_profile.clone());
+        environment.config_origin = EnvironmentConfigOrigin::Owner;
+        assert_ne!(
+            expected_permission_profile,
+            turn.permission_profile(),
+            "test requires an environment profile that differs from the thread profile"
+        );
+    }
     assert_ne!(
         role_config.permissions.effective_permission_profile(),
         expected_permission_profile,
         "role config must discard the runtime permission override before it is reapplied"
     );
-    assert_ne!(
-        expected_permission_profile,
-        turn.config.permissions.effective_permission_profile(),
-        "test requires an environment profile that differs from the thread profile"
-    );
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "spawn_agent",
         function_payload(json!({
             "message": "await this command",
@@ -2885,14 +2934,20 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         nickname: Option<String>,
     }
 
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
 
     let mut config = (*turn.config).clone();
     config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 1;
-    turn.config = Arc::new(config);
-    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let session = Arc::clone(&root.thread.session);
+    let mut turn = root.thread.session.new_default_turn().await;
+    Arc::get_mut(&mut turn)
+        .expect("turn should be uniquely owned")
+        .session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: session.thread_id,
         depth: DEFAULT_AGENT_MAX_DEPTH,
         agent_path: None,
@@ -2901,8 +2956,8 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
     });
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "spawn_agent",
         function_payload(json!({"message": "hello"})),
     );
@@ -3040,13 +3095,16 @@ async fn send_input_rejects_invalid_id() {
 
 #[tokio::test]
 async fn send_input_reports_missing_agent() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    let parent = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("parent thread should start");
     let agent_id = ThreadId::new();
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "send_input",
         function_payload(json!({"target": agent_id.to_string(), "message": "hi"})),
     );
@@ -3061,18 +3119,21 @@ async fn send_input_reports_missing_agent() {
 
 #[tokio::test]
 async fn send_input_interrupts_before_prompt() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
     let thread = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start thread");
     let agent_id = thread.thread_id;
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "send_input",
         function_payload(json!({
             "target": agent_id.to_string(),
@@ -3110,18 +3171,21 @@ async fn send_input_interrupts_before_prompt() {
 
 #[tokio::test]
 async fn send_input_accepts_structured_items() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
     let thread = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start thread");
     let agent_id = thread.thread_id;
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "send_input",
         function_payload(json!({
             "target": agent_id.to_string(),
@@ -3178,13 +3242,16 @@ async fn resume_agent_rejects_invalid_id() {
 
 #[tokio::test]
 async fn resume_agent_reports_missing_agent() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    let parent = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("parent thread should start");
     let agent_id = ThreadId::new();
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "resume_agent",
         function_payload(json!({"id": agent_id.to_string()})),
     );
@@ -3199,10 +3266,13 @@ async fn resume_agent_reports_missing_agent() {
 
 #[tokio::test]
 async fn resume_agent_noops_for_active_agent() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
     let thread = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
@@ -3210,8 +3280,8 @@ async fn resume_agent_noops_for_active_agent() {
     let agent_id = thread.thread_id;
     let status_before = manager.agent_control().get_status(agent_id).await;
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "resume_agent",
         function_payload(json!({"id": agent_id.to_string()})),
     );
@@ -3226,8 +3296,11 @@ async fn resume_agent_noops_for_active_agent() {
     assert_eq!(result.status, status_before);
     assert_eq!(success, Some(true));
 
-    let thread_ids = manager.list_thread_ids().await;
-    assert_eq!(thread_ids, vec![agent_id]);
+    let mut thread_ids = manager.list_thread_ids().await;
+    thread_ids.sort_by_key(ToString::to_string);
+    let mut expected_thread_ids = vec![parent.thread_id, agent_id];
+    expected_thread_ids.sort_by_key(ToString::to_string);
+    assert_eq!(thread_ids, expected_thread_ids);
 
     let _ = thread
         .thread
@@ -3252,6 +3325,7 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
     let child_thread_id = child.thread_id;
     let parent_session = parent.thread.session.clone();
     let child_turn = child.thread.session.new_default_turn().await;
+    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
 
     let first_resume = tokio::spawn({
         let parent_session = Arc::clone(&parent_session);
@@ -3304,7 +3378,6 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
             }),
         )
         .await;
-    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
     first_resume
         .await
         .expect("first resume task should join")
@@ -3343,46 +3416,93 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
         }
     })
     .await
-    .expect("completion should survive an immediate running transition");
+    .expect("completion should reach the adopting parent");
     assert_eq!(
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
             child_thread_id.to_string().as_str(),
+            child_thread_id,
             &AgentStatus::Completed(Some("child done".to_string())),
         )]
     );
+}
 
+#[tokio::test]
+async fn resume_agent_live_adoption_prefers_a_new_active_turn_over_historical_completion() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("parent thread should start");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("independently resumed child thread should be live");
+    let historical_turn = child
+        .thread
+        .session
+        .new_turn_with_default_settings("historical-turn".to_string(), Default::default())
+        .await;
+    let active_turn = child
+        .thread
+        .session
+        .new_turn_with_default_settings("active-turn".to_string(), Default::default())
+        .await;
+    publish_agent_turn_started(child.thread.as_ref(), historical_turn.as_ref()).await;
+    publish_agent_turn_started(child.thread.as_ref(), active_turn.as_ref()).await;
     child
         .thread
         .session
-        .record_not_found_terminal_if_unfinished();
-    timeout(Duration::from_secs(5), async {
-        loop {
-            if subagent_notification_texts(parent_session.as_ref())
-                .await
-                .len()
-                == 2
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("removal should deliver a terminal fallback to the adopting parent");
+        .send_event(
+            historical_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: historical_turn.sub_id.clone(),
+                last_agent_message: Some("historical result".to_string()),
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    let (snapshot, response_subscription) = child.thread.session.subscribe_agent_responses();
+    drop(response_subscription);
     assert_eq!(
-        subagent_notification_texts(parent_session.as_ref()).await,
-        vec![
-            format_subagent_notification_message(
-                child_thread_id.to_string().as_str(),
-                &AgentStatus::Completed(Some("child done".to_string())),
-            ),
-            format_subagent_notification_message(
-                child_thread_id.to_string().as_str(),
-                &AgentStatus::NotFound,
-            ),
-        ]
+        (
+            snapshot.active_turn_id,
+            snapshot.last_terminal,
+            snapshot.status,
+        ),
+        (
+            Some(active_turn.sub_id.clone()),
+            Some((
+                historical_turn.sub_id.clone(),
+                AgentStatus::Completed(Some("historical result".to_string())),
+            )),
+            AgentStatus::Running,
+        )
     );
+
+    let output = ResumeAgentHandler
+        .handle(invocation(
+            Arc::clone(&parent.thread.session),
+            parent.thread.session.new_default_turn().await,
+            "resume_agent",
+            function_payload(json!({
+                "id": child.thread_id.to_string(),
+                "w": "f",
+            })),
+        ))
+        .await
+        .expect("resume_agent should adopt the live thread");
+    let (content, success) = expect_text_output(output);
+    let result: resume_agent::ResumeAgentResult =
+        serde_json::from_str(&content).expect("resume_agent result should be json");
+
+    assert_eq!((result.status, success), (AgentStatus::Running, Some(true)));
 }
 
 #[tokio::test]
@@ -3475,7 +3595,22 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
     assert!(!submission_id.is_empty());
     assert_eq!(success, Some(true));
 
-    let completion_turn = resumed_thread.session.new_default_turn().await;
+    let admitted_turn_id = timeout(Duration::from_secs(5), async {
+        loop {
+            let (snapshot, subscription) = resumed_thread.session.subscribe_agent_responses();
+            drop(subscription);
+            if let Some(active_turn_id) = snapshot.active_turn_id {
+                break active_turn_id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("send_input should admit a target turn");
+    let completion_turn = resumed_thread
+        .session
+        .new_turn_with_default_settings(admitted_turn_id, Default::default())
+        .await;
     resumed_thread
         .session
         .send_event(
@@ -3491,7 +3626,6 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
             }),
         )
         .await;
-    publish_agent_turn_started(resumed_thread.as_ref(), completion_turn.as_ref()).await;
     timeout(Duration::from_secs(5), async {
         loop {
             if subagent_notification_texts(parent_session.as_ref())
@@ -3510,6 +3644,7 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
             agent_id.to_string().as_str(),
+            agent_id,
             &AgentStatus::Completed(Some("standalone done".to_string())),
         )]
     );
@@ -3519,6 +3654,328 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         .shutdown_live_agent(agent_id)
         .await
         .expect("shutdown resumed agent");
+}
+
+#[tokio::test]
+async fn live_adoption_reconciles_terminal_that_raced_observed_running_status() {
+    let (_, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start child thread");
+    let child_turn = child.thread.session.new_default_turn().await;
+    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+    child
+        .thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("completed during adoption".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let adopted_status = manager
+        .agent_control()
+        .ensure_v1_completion_watcher(
+            child.thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            crate::agent::response_observation::ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                crate::agent::response_observation::FinalResponseObservation::Wake,
+            ),
+            AgentStatus::Running,
+        )
+        .await
+        .expect("adopt completed child");
+    assert_eq!(
+        adopted_status,
+        AgentStatus::Completed(Some("completed during adoption".to_string()))
+    );
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if subagent_notification_texts(parent.thread.session.as_ref())
+                .await
+                .len()
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("racing terminal should reach adopting parent");
+    assert_eq!(
+        subagent_notification_texts(parent.thread.session.as_ref()).await,
+        vec![format_subagent_notification_message(
+            child.thread_id.to_string().as_str(),
+            child.thread_id,
+            &AgentStatus::Completed(Some("completed during adoption".to_string())),
+        )]
+    );
+}
+
+#[tokio::test]
+async fn live_adoption_publishes_presentation_only_terminal_that_raced_running_status() {
+    let (_, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start child thread");
+    let child_turn = child.thread.session.new_default_turn().await;
+    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+    child
+        .thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("completed during presentation-only adoption".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let adopted_status = manager
+        .agent_control()
+        .ensure_v1_completion_watcher(
+            child.thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            crate::agent::response_observation::ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                crate::agent::response_observation::FinalResponseObservation::PresentationOnly,
+            ),
+            AgentStatus::Running,
+        )
+        .await
+        .expect("adopt completed child for presentation-only delivery");
+    assert_eq!(
+        adopted_status,
+        AgentStatus::Completed(Some(
+            "completed during presentation-only adoption".to_string()
+        ))
+    );
+
+    let completion_visibility = timeout(Duration::from_secs(5), async {
+        loop {
+            let event = parent
+                .thread
+                .next_event()
+                .await
+                .expect("parent completion event");
+            let EventMsg::ItemCompleted(event) = event.msg else {
+                continue;
+            };
+            let TurnItem::AgentMessage(item) = event.item else {
+                continue;
+            };
+            if let Some(visibility) =
+                sub_agent_completion_model_visibility_from_response_item_id(&item.id)
+            {
+                break visibility;
+            }
+        }
+    })
+    .await
+    .expect("presentation-only completion should reach the adopting parent");
+    assert_eq!(
+        completion_visibility,
+        SubAgentCompletionModelVisibility::NotVisible
+    );
+    assert_eq!(
+        subagent_notification_texts(parent.thread.session.as_ref()).await,
+        Vec::<String>::new()
+    );
+}
+
+#[tokio::test]
+async fn live_adoption_synthesizes_terminal_from_final_snapshot_status() {
+    let (_, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start child thread");
+    let child_turn = child.thread.session.new_default_turn().await;
+    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+    child
+        .thread
+        .session
+        .send_event(child_turn.as_ref(), EventMsg::ShutdownComplete)
+        .await;
+
+    let adopted_status = manager
+        .agent_control()
+        .ensure_v1_completion_watcher(
+            child.thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            crate::agent::response_observation::ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                crate::agent::response_observation::FinalResponseObservation::Wake,
+            ),
+            AgentStatus::Running,
+        )
+        .await
+        .expect("adopt shutdown child");
+    assert_eq!(adopted_status, AgentStatus::Shutdown);
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if subagent_notification_texts(parent.thread.session.as_ref())
+                .await
+                .len()
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("synthetic terminal should reach adopting parent");
+    assert_eq!(
+        subagent_notification_texts(parent.thread.session.as_ref()).await,
+        vec![format_subagent_notification_message(
+            child.thread_id.to_string().as_str(),
+            child.thread_id,
+            &AgentStatus::Shutdown,
+        )]
+    );
+}
+
+#[tokio::test]
+async fn resume_agent_x_returns_status_and_persists_audit_without_subscribing() {
+    let manager = thread_manager();
+    let (_, turn) = make_session_and_context().await;
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start target thread");
+    let session = Arc::clone(&parent.thread.session);
+    let turn = session.new_default_turn().await;
+
+    let output = ResumeAgentHandler
+        .handle(invocation(
+            Arc::clone(&session),
+            turn,
+            "resume_agent",
+            function_payload(json!({
+                "id": child.thread_id.to_string(),
+                "w": "x",
+            })),
+        ))
+        .await
+        .expect("resume_agent x should return the live target status");
+    let (content, success) = expect_text_output(output);
+    let result: resume_agent::ResumeAgentResult =
+        serde_json::from_str(&content).expect("resume_agent result should be json");
+
+    assert_eq!(result.status, child.thread.agent_status().await);
+    assert_eq!(success, Some(true));
+    assert!(
+        manager
+            .agent_control()
+            .response_observation_snapshots(
+                session.presentation_id(),
+                child.thread.session.presentation_id(),
+            )
+            .is_empty(),
+        "x must not create a runtime response watcher relationship"
+    );
+    parent
+        .thread
+        .flush_rollout()
+        .await
+        .expect("flush parent audit record");
+    let stored = parent
+        .thread
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
+        .await
+        .expect("read parent rollout");
+    let observation = stored
+        .history
+        .expect("parent history")
+        .items
+        .into_iter()
+        .find_map(|item| match item {
+            RolloutItem::AgentResponseObservation(observation)
+                if observation.target_thread_id == child.thread_id =>
+            {
+                Some(observation)
+            }
+            _ => None,
+        })
+        .expect("resolved x audit observation");
+    assert_eq!(
+        (
+            observation.observer_thread_id,
+            observation.target_thread_id,
+            observation.pending_commentary,
+            observation.final_delivery,
+        ),
+        (
+            parent.thread_id,
+            child.thread_id,
+            false,
+            codex_protocol::protocol::AgentResponseFinalDelivery::None,
+        )
+    );
 }
 
 #[tokio::test]

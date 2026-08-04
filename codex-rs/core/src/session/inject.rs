@@ -1,10 +1,18 @@
-use super::TurnInput as PendingTurnInput;
+use super::input_queue::TurnInput;
 use super::session::Session;
 use super::turn_context::TurnContext;
-use codex_features::Feature;
+use crate::codex_thread::TryStartTurnIfIdleError;
+use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
+use crate::features::Feature;
+use crate::state::ActiveTurn;
+use crate::state::TurnState;
+use crate::tasks::MailboxParentProvenance;
+use crate::tasks::RegularTask;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::models::ResponseItem;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
-use codex_protocol::models::ResponseItem;
+use std::sync::Arc;
 
 impl Session {
     /// Returns the input if there is no active turn to inject into.
@@ -25,7 +33,7 @@ impl Session {
                         input
                             .into_iter()
                             .map(ResponseItemEnvelope::new)
-                            .map(PendingTurnInput::ResponseItem)
+                            .map(TurnInput::ResponseItem)
                             .collect(),
                     )
                     .await;
@@ -64,6 +72,175 @@ impl Session {
         Ok(())
     }
 
+    /// Starts a regular turn with the provided input only if automatic idle work
+    /// is allowed for the current session state.
+    ///
+    /// This is the shared gate for extension-initiated idle work. It refuses to
+    /// start a turn when user/client-triggered work or a subscribed agent wake
+    /// is pending, any task is still active, or the session is currently in
+    /// Plan mode. Active Review tasks are covered by the active-task check
+    /// because Review turns are not steerable.
+    pub(crate) async fn try_start_turn_if_idle(
+        self: &Arc<Self>,
+        input: Vec<TurnInput>,
+    ) -> Result<(), TryStartTurnIfIdleError> {
+        self.try_start_turn_if_idle_with_lease(input, ()).await
+    }
+
+    pub(crate) async fn try_start_turn_if_idle_with_lease(
+        self: &Arc<Self>,
+        input: Vec<TurnInput>,
+        reservation_lease: impl Send,
+    ) -> Result<(), TryStartTurnIfIdleError> {
+        if input.is_empty() {
+            return Ok(());
+        }
+        let has_user_input = input.iter().any(
+            |item| matches!(item, TurnInput::UserInput { content, .. } if !content.is_empty()),
+        );
+        if self.input_queue.has_trigger_turn_mailbox_items().await {
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
+                input,
+            ));
+        }
+        if !has_user_input && self.collaboration_mode().await.mode == ModeKind::Plan {
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::PlanMode,
+                input,
+            ));
+        }
+
+        // Linearize automatic work against response delivery and late target-turn binding.
+        // Lifecycle delivery takes the destination mailbox before the observer transaction, so
+        // idle reservation follows the same order. Whichever side publishes first owns the next
+        // turn: an already-bound `f` wake wins, while a policy bound after the placeholder is
+        // installed may steer the automatic turn that was already reserved.
+        let Ok(_mailbox_submission_permit) = self
+            .services
+            .agent_control
+            .acquire_mailbox_submission_permit(self.thread_id)
+            .await
+        else {
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::Busy,
+                input,
+            ));
+        };
+        let _response_observation_transaction = self
+            .services
+            .agent_control
+            .acquire_response_observation_transaction(self.presentation_id())
+            .await;
+        if self.input_queue.has_trigger_turn_mailbox_items().await
+            || self
+                .services
+                .agent_control
+                .has_bound_final_response_wake(self.presentation_id())
+        {
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
+                input,
+            ));
+        }
+
+        let turn_state = {
+            let mut active_turn = self.active_turn.lock().await;
+            if active_turn.is_some() {
+                return Err(TryStartTurnIfIdleError::new(
+                    TryStartTurnIfIdleRejectionReason::Busy,
+                    input,
+                ));
+            }
+            let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
+            Arc::clone(&active_turn.turn_state)
+        };
+        drop(_response_observation_transaction);
+        drop(_mailbox_submission_permit);
+        // The active-turn placeholder now prevents another turn from starting. Release any
+        // extension-owned state lease before turn-start lifecycle runs so contributors may
+        // reacquire their own state locks without deadlocking.
+        drop(reservation_lease);
+
+        if self.input_queue.has_trigger_turn_mailbox_items().await {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            self.maybe_start_turn_for_pending_work().await;
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
+                input,
+            ));
+        }
+
+        let turn_context = self
+            .new_turn_with_default_settings(uuid::Uuid::new_v4().to_string(), Default::default())
+            .await;
+        if !has_user_input && turn_context.mode == ModeKind::Plan {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            self.maybe_start_turn_for_pending_work().await;
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::PlanMode,
+                input,
+            ));
+        }
+        self.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
+            .await;
+        if self.input_queue.has_trigger_turn_mailbox_items().await {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            self.maybe_start_turn_for_pending_work().await;
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
+                input,
+            ));
+        }
+        let still_reserved = {
+            let active_turn = self.active_turn.lock().await;
+            active_turn.as_ref().is_some_and(|active_turn| {
+                active_turn.task.is_none() && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
+            })
+        };
+        if !still_reserved {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::Busy,
+                input,
+            ));
+        }
+
+        let task_input = if has_user_input {
+            self.clear_connector_selection().await;
+            for item in &input {
+                if let TurnInput::UserInput { content, .. } = item {
+                    turn_context.session_telemetry.user_prompt(content);
+                }
+            }
+            input
+        } else {
+            self.input_queue
+                .extend_pending_input_for_turn_state(turn_state.as_ref(), input)
+                .await;
+            Vec::new()
+        };
+        self.start_task(
+            turn_context,
+            task_input,
+            RegularTask::new(),
+            MailboxParentProvenance::Ignore,
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
+        let mut active_turn_guard = self.active_turn.lock().await;
+        if let Some(active_turn) = active_turn_guard.as_ref()
+            && active_turn.task.is_none()
+            && Arc::ptr_eq(&active_turn.turn_state, turn_state)
+        {
+            *active_turn_guard = None;
+            self.active_turn_transition.notify_waiters();
+        }
+    }
+
     /// Preserves trusted client provenance while items wait for an active turn.
     #[expect(
         clippy::await_holding_invalid_type,
@@ -83,10 +260,7 @@ impl Session {
             self.input_queue
                 .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                     active_turn.turn_state.as_ref(),
-                    items
-                        .into_iter()
-                        .map(PendingTurnInput::ResponseItem)
-                        .collect(),
+                    items.into_iter().map(TurnInput::ResponseItem).collect(),
                 )
                 .await;
             return;

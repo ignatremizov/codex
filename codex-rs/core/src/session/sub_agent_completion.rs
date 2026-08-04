@@ -8,11 +8,12 @@ use crate::agent::status::is_final;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::ResponseItemId;
 use codex_protocol::items::TurnItem;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::SessionSource;
@@ -30,17 +31,21 @@ use tokio::sync::mpsc;
 pub(crate) struct TerminalStatusSubscription {
     id: u64,
     subscribers: std::sync::Weak<
-        std::sync::Mutex<std::collections::HashMap<u64, mpsc::UnboundedSender<AgentStatus>>>,
+        std::sync::Mutex<
+            std::collections::HashMap<u64, mpsc::UnboundedSender<TerminalStatusEvent>>,
+        >,
     >,
-    receiver: mpsc::UnboundedReceiver<AgentStatus>,
+    receiver: mpsc::UnboundedReceiver<TerminalStatusEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TerminalStatusEvent {
+    pub(crate) turn_id: Option<String>,
+    pub(crate) status: AgentStatus,
 }
 
 impl TerminalStatusSubscription {
-    pub(crate) fn try_recv(&mut self) -> Result<AgentStatus, mpsc::error::TryRecvError> {
-        self.receiver.try_recv()
-    }
-
-    pub(crate) async fn recv(&mut self) -> Option<AgentStatus> {
+    pub(crate) async fn recv(&mut self) -> Option<TerminalStatusEvent> {
         self.receiver.recv().await
     }
 }
@@ -57,43 +62,17 @@ impl Drop for TerminalStatusSubscription {
 }
 
 impl Session {
-    pub(crate) async fn wait_for_completion_submission_admission(
-        &self,
-        admission: CompletionSubmissionAdmission,
-    ) -> bool {
-        match admission {
-            CompletionSubmissionAdmission::Ordinary => {
-                self.submission_admission
-                    .wait_for_completion_submission()
-                    .await
-            }
-            CompletionSubmissionAdmission::Accepted => {
-                self.submission_admission
-                    .wait_for_accepted_completion_submission()
-                    .await
-            }
-        }
-    }
-
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "completion context persistence must remain ordered before shutdown admission"
     )]
-    pub(crate) async fn record_sub_agent_notification_with_admission(
+    pub(crate) async fn record_sub_agent_notification_with_observation_commit(
         self: &std::sync::Arc<Self>,
-        message: String,
-        response_item_id: ResponseItemId,
+        mut communication: InterAgentCommunication,
         admission: CompletionSubmissionAdmission,
+        committed_observations: Vec<AgentResponseObservation>,
     ) -> Result<(), ThreadStoreError> {
-        let _admission_guard = loop {
-            let admitted = self
-                .wait_for_completion_submission_admission(admission)
-                .await;
-            if !admitted {
-                return Err(codex_thread_store::ThreadStoreError::Internal {
-                    message: "parent session is no longer accepting completion context".to_string(),
-                });
-            }
+        let _admission_guard = {
             let admission_guard = self.submission_admission.send_lock.lock().await;
             if matches!(admission, CompletionSubmissionAdmission::Ordinary)
                 && (self
@@ -115,9 +94,13 @@ impl Session {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match admission_state {
-                super::SubmissionAdmissionState::Ready => break admission_guard,
+                super::SubmissionAdmissionState::Ready => admission_guard,
                 super::SubmissionAdmissionState::RollbackPending
-                | super::SubmissionAdmissionState::RollbackEventPending => drop(admission_guard),
+                | super::SubmissionAdmissionState::RollbackEventPending => {
+                    return Err(codex_thread_store::ThreadStoreError::Internal {
+                        message: "parent session rollback is already in progress".to_string(),
+                    });
+                }
                 super::SubmissionAdmissionState::ReloadRequired => {
                     return Err(codex_thread_store::ThreadStoreError::Internal {
                         message: "parent session requires reload before completion context"
@@ -126,17 +109,46 @@ impl Session {
                 }
             }
         };
+        let Some(response_item_id) = communication
+            .id
+            .as_ref()
+            .filter(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
+            .cloned()
+        else {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: "subagent notification requires a reserved response item ID".to_string(),
+            });
+        };
+        if communication.trigger_turn {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: "passive subagent notification cannot trigger a turn".to_string(),
+            });
+        }
         let turn_context = self.new_default_turn().await;
-        self.record_durable_context_items(
+        communication.set_turn_id_if_missing(&turn_context.sub_id);
+        let response_item = communication.to_model_input_item();
+        let (items, image_preparations) = self.prepare_conversation_items_for_history(
+            turn_context.as_ref(),
+            std::slice::from_ref(&response_item),
+        );
+        let mut items = items.into_owned();
+        let Some(ResponseItem::AgentMessage { id, .. }) = items.first_mut() else {
+            return Err(ThreadStoreError::Internal {
+                message: "subagent notification did not produce an agent message".to_string(),
+            });
+        };
+        // Preparation normalizes caller-provided agent-message IDs. Restore the reserved
+        // completion identity only inside this trusted watcher commit.
+        *id = Some(response_item_id);
+        self.record_prepared_durable_context_items_with_rollout_suffix(
             turn_context,
-            vec![ResponseItem::Message {
-                id: Some(response_item_id),
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText { text: message }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            }],
+            items,
             /*acknowledgement*/ None,
+            committed_observations
+                .into_iter()
+                .map(RolloutItem::AgentResponseObservation)
+                .collect(),
+            image_preparations,
         )
         .await
     }
@@ -180,7 +192,9 @@ impl Session {
             .await
     }
 
-    pub(crate) fn subscribe_terminal_status(&self) -> (AgentStatus, TerminalStatusSubscription) {
+    pub(crate) fn subscribe_terminal_status(
+        &self,
+    ) -> (TerminalStatusEvent, TerminalStatusSubscription) {
         let _terminal_guard = self
             .terminal_publication_lock
             .lock()
@@ -189,12 +203,43 @@ impl Session {
         let id = self
             .next_terminal_status_subscriber_id
             .fetch_add(/*val*/ 1, std::sync::atomic::Ordering::Relaxed);
-        self.terminal_status_subscribers
+        if !self
+            .thread_removal_started
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            self.terminal_status_subscribers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id, terminal_status_tx);
+        }
+        let status = self.agent_status.borrow().clone();
+        // The process-local marker starts empty on a restored runtime. Canonical response state
+        // supplies the same turn identity until the runtime publishes its next status.
+        let turn_id = self
+            .agent_status_turn_id
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, terminal_status_tx);
+            .clone()
+            .or_else(|| {
+                let state = self
+                    .response_observation_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state
+                    .last_terminal
+                    .as_ref()
+                    .filter(|(_, terminal_status)| terminal_status == &status)
+                    .map(|(turn_id, _)| turn_id.clone())
+                    .or_else(|| {
+                        if is_final(&status) {
+                            state.latest_admitted_turn_id.clone()
+                        } else {
+                            None
+                        }
+                    })
+            });
         (
-            self.agent_status.borrow().clone(),
+            TerminalStatusEvent { turn_id, status },
             TerminalStatusSubscription {
                 id,
                 subscribers: std::sync::Arc::downgrade(&self.terminal_status_subscribers),
@@ -204,6 +249,15 @@ impl Session {
     }
 
     pub(super) fn replace_agent_status_locked(&self, status: AgentStatus) {
+        self.replace_agent_status_for_turn_locked(status, /*turn_id*/ None);
+    }
+
+    pub(super) fn replace_agent_status_for_turn_locked(
+        &self,
+        status: AgentStatus,
+        turn_id: Option<&str>,
+    ) {
+        let turn_id = turn_id.map(ToOwned::to_owned);
         if is_final(&status)
             && !self
                 .terminal_status_suppressed
@@ -212,22 +266,77 @@ impl Session {
             self.terminal_status_subscribers
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retain(|_, subscriber| subscriber.send(status.clone()).is_ok());
+                .retain(|_, subscriber| {
+                    subscriber
+                        .send(TerminalStatusEvent {
+                            turn_id: turn_id.clone(),
+                            status: status.clone(),
+                        })
+                        .is_ok()
+                });
         }
+        *self
+            .agent_status_turn_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = turn_id;
         self.agent_status.send_replace(status);
     }
 
-    pub(super) fn publish_agent_status_from_event(&self, event: &EventMsg) {
-        let Some(status) = agent_status_from_event(event) else {
-            return;
-        };
+    pub(super) fn publish_agent_envelope_status(&self, event: &Event) -> bool {
         let _terminal_guard = self
             .terminal_publication_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self
+            .thread_removal_started
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        self.publish_agent_status_from_event_locked(&event.msg, Some(&event.id));
+        true
+    }
+
+    pub(super) fn publish_agent_response_event_and_status(&self, event: &Event) -> bool {
+        let _terminal_guard = self
+            .terminal_publication_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self
+            .thread_removal_started
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        self.publish_agent_response_event(&event.msg);
+        self.publish_agent_status_from_event_locked(&event.msg, Some(&event.id));
+        true
+    }
+
+    fn publish_agent_status_from_event_locked(
+        &self,
+        event: &EventMsg,
+        envelope_turn_id: Option<&str>,
+    ) {
+        let Some(status) = agent_status_from_event(event) else {
+            return;
+        };
         let current_status = self.agent_status.borrow().clone();
+        let envelope_turn_id = envelope_turn_id.filter(|id| !id.is_empty());
+        let status_turn_id = match event {
+            EventMsg::TurnStarted(event) => Some(event.turn_id.as_str()),
+            EventMsg::TurnComplete(event) => Some(event.turn_id.as_str()),
+            EventMsg::TurnAborted(event) => event.turn_id.as_deref().or(envelope_turn_id),
+            EventMsg::Error(_) => envelope_turn_id,
+            _ => None,
+        };
+        if status_turn_id
+            .is_some_and(|turn_id| !self.response_turn_can_publish_agent_status(turn_id))
+        {
+            return;
+        }
         if matches!(&status, AgentStatus::Running) || !is_final(&current_status) {
-            self.replace_agent_status_locked(status);
+            self.replace_agent_status_for_turn_locked(status, status_turn_id);
         }
     }
 
@@ -249,16 +358,59 @@ impl Session {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current_status = self.agent_status.borrow().clone();
-        if is_final(&current_status) {
+        let updates_agent_status = self.response_turn_can_publish_agent_status(turn_id);
+        if updates_agent_status && is_final(&current_status) {
             return None;
         }
         let child = self.presentation_id();
+        // Observer-owned callbacks must run before either V1 watcher or V2 direct publication
+        // exposes final status. Mixed-version V1 callers can observe an independently controlled
+        // V2 target through the same response-event stream.
+        self.record_agent_response_terminal_observers(turn_id, status.clone());
+        if delivery == TerminalPresentationDelivery::Watcher {
+            // Response subscriptions can be owned by a different AgentControl when a V1 parent
+            // adopts an independently resumed child. Record those observer-local presentations
+            // before exposing final child status, just like observers in this session's control.
+            let parents = self
+                .services
+                .agent_control
+                .completion_observers_for_child(child);
+            if parents.is_empty() {
+                if updates_agent_status {
+                    self.replace_agent_status_for_turn_locked(status, Some(turn_id));
+                }
+                return None;
+            }
+            // Publish every V1 observer's pending final-outcome presentation before making the
+            // shared child status final. A wait that snapshots that final status can then claim
+            // the already-recorded presentation instead of racing a detached watcher and
+            // receiving the result twice.
+            for parent in parents {
+                let _ = self
+                    .services
+                    .agent_control
+                    .record_agent_terminal_presentation(
+                        parent,
+                        child,
+                        turn_id,
+                        status.clone(),
+                        TerminalPresentationDelivery::Watcher,
+                        || {},
+                    );
+            }
+            if updates_agent_status {
+                self.replace_agent_status_for_turn_locked(status, Some(turn_id));
+            }
+            return None;
+        }
         let parent = self
             .services
             .agent_control
             .completion_parent_for_child(child, parent_thread_id);
         let Some(parent) = parent else {
-            self.replace_agent_status_locked(status);
+            if updates_agent_status {
+                self.replace_agent_status_for_turn_locked(status, Some(turn_id));
+            }
             return None;
         };
         self.services
@@ -270,7 +422,9 @@ impl Session {
                 status.clone(),
                 delivery,
                 || {
-                    self.replace_agent_status_locked(status);
+                    if updates_agent_status {
+                        self.replace_agent_status_for_turn_locked(status, Some(turn_id));
+                    }
                 },
             )
     }
@@ -288,11 +442,17 @@ impl Session {
         else {
             return None;
         };
+        let uses_durable_response_observer = self
+            .services
+            .agent_control
+            .completion_uses_durable_response_observer(self.presentation_id(), *parent_thread_id);
         let delivery = match (turn_context.multi_agent_version, event) {
             (
                 codex_protocol::protocol::MultiAgentVersion::V2,
                 EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_),
-            ) if agent_path.is_some() => TerminalPresentationDelivery::Direct,
+            ) if agent_path.is_some() && !uses_durable_response_observer => {
+                TerminalPresentationDelivery::Direct
+            }
             _ => TerminalPresentationDelivery::Watcher,
         };
         let status = if delivery == TerminalPresentationDelivery::Direct {
@@ -324,8 +484,22 @@ impl Session {
         let Some(parent_thread_id) = self.spawn_parent_thread_id else {
             return;
         };
+        let observed_turn_id = if matches!(&event.msg, EventMsg::ShutdownComplete) {
+            self.response_observation_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active_turn_id
+                .clone()
+        } else {
+            None
+        };
         let generated_turn_id;
-        let turn_id = if event.id.is_empty() {
+        let turn_id = if let Some(observed_turn_id) = observed_turn_id.as_deref() {
+            // Shutdown can cancel an admitted turn without publishing TurnAborted. Attribute its
+            // final lifecycle outcome to that turn so a one-shot response observer receives the
+            // subscribed outcome before retiring.
+            observed_turn_id
+        } else if event.id.is_empty() {
             generated_turn_id = uuid::Uuid::now_v7().to_string();
             generated_turn_id.as_str()
         } else {
@@ -420,8 +594,11 @@ impl Session {
             let (turn_context, history_only) =
                 match (partial_history_only_turn, active_turn_context) {
                     (true, _) => (
-                        self.new_default_turn_with_sub_id(history_only_turn_id.to_string())
-                            .await,
+                        self.new_turn_with_default_settings(
+                            history_only_turn_id.to_string(),
+                            Default::default(),
+                        )
+                        .await,
                         true,
                     ),
                     (false, Some(Some(turn_context))) => (turn_context, false),
@@ -432,8 +609,11 @@ impl Session {
                         continue;
                     }
                     (false, None) => (
-                        self.new_default_turn_with_sub_id(history_only_turn_id.to_string())
-                            .await,
+                        self.new_turn_with_default_settings(
+                            history_only_turn_id.to_string(),
+                            Default::default(),
+                        )
+                        .await,
                         true,
                     ),
                 };

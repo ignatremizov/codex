@@ -50,9 +50,12 @@ pub(crate) struct Session {
     pub(crate) installation_id: String,
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
+    pub(super) agent_status_turn_id: StdMutex<Option<String>>,
     pub(super) terminal_status_subscribers:
-        Arc<StdMutex<HashMap<u64, mpsc::UnboundedSender<AgentStatus>>>>,
+        Arc<StdMutex<HashMap<u64, mpsc::UnboundedSender<super::TerminalStatusEvent>>>>,
     pub(super) next_terminal_status_subscriber_id: AtomicU64,
+    pub(super) response_observation_state:
+        Arc<StdMutex<super::response_observation::AgentResponseObservationState>>,
     pub(super) terminal_status_suppressed: AtomicBool,
     pub(super) state: Mutex<SessionState>,
     /// Orders accepted settings commits and their persisted events with compaction checkpoints.
@@ -77,7 +80,12 @@ pub(crate) struct Session {
     pub(super) mcp_prewarm_shutdown: CancellationToken,
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
     pub(super) spawn_parent_thread_id: Option<ThreadId>,
+    /// Serializes turn identity, agent status, and removal-generated final-outcome publication.
+    ///
+    /// Acquire this before `response_observation_state` whenever both are needed.
     pub(super) terminal_publication_lock: StdMutex<()>,
+    /// Permanently fences event and status publication once this runtime leaves the manager.
+    pub(super) thread_removal_started: AtomicBool,
     pub(super) terminal_presentation_armed: AtomicBool,
     /// Effective MCP server visibility captured at the session-start exposure boundary.
     ///
@@ -656,11 +664,25 @@ impl Session {
         crate::agent::control::SessionPresentationId::new(self.thread_id, self.instance_id)
     }
 
+    /// Fences publication and prepares final-outcome state while the manager still exposes this
+    /// runtime.
     pub(crate) fn prepare_for_thread_removal(&self) {
         self.services
             .agent_control
             .clear_wait_agent_presentations_for_session(self.presentation_id());
         self.record_not_found_terminal_if_unfinished();
+    }
+
+    /// Closes observer streams after the manager no longer exposes this runtime.
+    pub(crate) fn finish_thread_removal(&self) {
+        // The manager no longer exposes this runtime. Queued final-outcome events remain
+        // drainable, then closing the streams lets observers resolve absence or rebind instead of
+        // waiting forever when another Arc retains the removed Session.
+        self.terminal_status_subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.close_agent_response_subscriptions();
     }
 
     pub(crate) fn disarm_terminal_presentation(&self) -> TerminalPresentationDisarmGuard<'_> {
@@ -678,47 +700,79 @@ impl Session {
         }
     }
 
-    /// Publishes a terminal fallback before manager removal or final `Session` drop.
+    /// Publishes a final-outcome fallback before manager removal or final `Session` drop.
     pub(crate) fn record_not_found_terminal_if_unfinished(&self) {
         let _terminal_guard = self
             .terminal_publication_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.thread_removal_started
+            .store(true, std::sync::atomic::Ordering::Release);
+        let active_turn_id = self
+            .response_observation_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active_turn_id
+            .clone();
         let status = self.agent_status.borrow().clone();
-        if crate::agent::status::is_final(&status) {
-            return;
-        }
-        let status = AgentStatus::NotFound;
-        let child = self.presentation_id();
-        let parent = self.spawn_parent_thread_id.and_then(|parent_thread_id| {
-            self.services
-                .agent_control
-                .completion_parent_for_child(child, parent_thread_id)
-        });
         if !self
             .terminal_presentation_armed
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            self.replace_agent_status_locked(status);
+            if !crate::agent::status::is_final(&status) {
+                self.replace_agent_status_for_turn_locked(
+                    AgentStatus::NotFound,
+                    active_turn_id.as_deref(),
+                );
+            }
+            // Temporary unload and unpublished-runtime cleanup intentionally suppress
+            // final-outcome presentation. Close this runtime's observer streams explicitly so
+            // independently owned observers can enter reload recovery even if another Arc keeps
+            // the removed Session alive.
             return;
         }
-        let Some(parent) = parent else {
-            self.replace_agent_status_locked(status);
+        if crate::agent::status::is_final(&status) {
+            // Final-outcome presentation intentionally precedes durable event publication. If
+            // removal crosses that persistence window, the final status already won but the
+            // fenced event can no longer settle the response snapshot. Complete that exact
+            // admitted turn now; observer-side presentation recording is idempotent by turn ID.
+            if let Some(turn_id) = active_turn_id {
+                self.publish_agent_response_terminal(turn_id, status);
+            }
             return;
-        };
-        let _ = self
+        }
+        let status = AgentStatus::NotFound;
+        // A removal-generated final outcome belongs to the turn that was active when teardown
+        // crossed the final-outcome publication boundary. Observers may already be bound to that
+        // exact turn; a synthetic ID would either be ignored or bind an unrelated passive
+        // observation while leaving the real turn pending.
+        let turn_id = active_turn_id.unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+        self.record_agent_response_terminal_observers(&turn_id, status.clone());
+        let child = self.presentation_id();
+        let parents = self
             .services
             .agent_control
-            .record_agent_terminal_presentation(
-                parent,
-                child,
-                &uuid::Uuid::now_v7().to_string(),
-                status.clone(),
-                crate::agent::control::TerminalPresentationDelivery::Watcher,
-                || {
-                    self.replace_agent_status_locked(status);
-                },
-            );
+            .completion_observers_for_child(child);
+        for parent in parents {
+            let _ = self
+                .services
+                .agent_control
+                .record_agent_terminal_presentation(
+                    parent,
+                    child,
+                    &turn_id,
+                    status.clone(),
+                    crate::agent::control::TerminalPresentationDelivery::Watcher,
+                    || {},
+                );
+        }
+        // Final-status callbacks may have inserted every observer presentation first, making
+        // every same-control insertion above a deduplicated no-op. Status publication is
+        // independent of which observer won that race.
+        self.replace_agent_status_for_turn_locked(status.clone(), Some(&turn_id));
+        // A removed runtime may be retained by another Arc, so dropping it cannot be relied upon
+        // to close response subscriptions and wake the detached watcher.
+        self.publish_agent_response_terminal(turn_id, status);
     }
 
     /// Returns the concrete identity for this thread.
@@ -1511,6 +1565,7 @@ impl Session {
                     | RolloutItem::ResponseItem(_)
                     | RolloutItem::InterAgentCommunication(_)
                     | RolloutItem::InterAgentCommunicationMetadata { .. }
+                    | RolloutItem::AgentResponseObservation(_)
                     | RolloutItem::TurnContext(_)
                     | RolloutItem::WorldState(_)
                     | RolloutItem::RealtimeItem(_)
@@ -1638,8 +1693,16 @@ impl Session {
                 installation_id,
                 tx_event: tx_event.clone(),
                 agent_status,
+                agent_status_turn_id: StdMutex::new(None),
                 terminal_status_subscribers: Arc::new(StdMutex::new(HashMap::new())),
                 next_terminal_status_subscriber_id: AtomicU64::new(/*v*/ 0),
+                // Reconstruct only this thread's response event cursor. Parent/child observation
+                // relationships are live orchestration state and do not cross resume or fork.
+                response_observation_state: Arc::new(StdMutex::new(
+                    super::response_observation::initial_agent_response_observation_state(
+                        &initial_history,
+                    ),
+                )),
                 terminal_status_suppressed: AtomicBool::new(/*v*/ false),
                 state: Mutex::new(state),
                 thread_settings_persistence: Semaphore::new(/*permits*/ 1),
@@ -1662,7 +1725,8 @@ impl Session {
                     _ => None,
                 },
                 terminal_publication_lock: StdMutex::new(()),
-                terminal_presentation_armed: AtomicBool::new(false),
+                thread_removal_started: AtomicBool::new(/*v*/ false),
+                terminal_presentation_armed: AtomicBool::new(/*v*/ false),
                 session_start_mcp_servers,
                 session_start_mcp_tools: Mutex::new(HashMap::new()),
                 session_start_direct_mcp_servers: StdMutex::new(None),
@@ -1682,7 +1746,7 @@ impl Session {
                 fork_persistence,
                 forked_from_ordinal_exclusive,
                 submission_admission: Arc::new(SubmissionAdmission::default()),
-                next_internal_sub_id: AtomicU64::new(0),
+                next_internal_sub_id: AtomicU64::new(/*v*/ 0),
             });
             if let Some(network_policy_decider_session) = network_policy_decider_session {
                 let mut guard = network_policy_decider_session.write().await;
@@ -1811,6 +1875,7 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.prepare_for_thread_removal();
+        self.finish_thread_removal();
         self.services
             .agent_control
             .clear_completion_contexts_for_session(self.presentation_id());

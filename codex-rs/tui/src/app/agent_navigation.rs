@@ -29,6 +29,12 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WakeSubscriptionBinding {
+    NextTurn,
+    Bound,
+}
+
 /// Small state container for multi-agent picker ordering and labeling.
 ///
 /// `App` owns thread lifecycle and UI side effects. This type keeps the pure rules for stable
@@ -48,6 +54,8 @@ pub(crate) struct AgentNavigationState {
     parent_threads: HashMap<ThreadId, ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
+    /// Live V1 wake subscriptions keyed by `(observer, target)`.
+    wake_subscriptions: HashMap<(ThreadId, ThreadId), WakeSubscriptionBinding>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
     pub(super) picker_refresh: Option<(ThreadId, Uuid)>,
 }
@@ -178,6 +186,11 @@ impl AgentNavigationState {
             return;
         }
         self.stopped_threads.remove(&thread_id);
+        for ((_, target), binding) in &mut self.wake_subscriptions {
+            if *target == thread_id && *binding == WakeSubscriptionBinding::NextTurn {
+                *binding = WakeSubscriptionBinding::Bound;
+            }
+        }
         self.set_running(thread_id, /*is_running*/ true);
     }
 
@@ -187,6 +200,11 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
+        if !is_running {
+            self.wake_subscriptions.retain(|(_, target), binding| {
+                *target != thread_id || *binding == WakeSubscriptionBinding::NextTurn
+            });
+        }
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_running = is_running;
         }
@@ -219,6 +237,20 @@ impl AgentNavigationState {
         self.parent_threads.get(&thread_id).copied()
     }
 
+    /// Records a V1 wake subscription for one observer/target pair.
+    pub(crate) fn note_wake_subscription(
+        &mut self,
+        observer: ThreadId,
+        target: ThreadId,
+        binding: WakeSubscriptionBinding,
+    ) {
+        self.wake_subscriptions.insert((observer, target), binding);
+    }
+
+    pub(crate) fn has_wake_subscription(&self, observer: ThreadId, target: ThreadId) -> bool {
+        self.wake_subscriptions.contains_key(&(observer, target))
+    }
+
     /// Marks a thread as closed without removing it from the traversal cache.
     ///
     /// Closed threads stay in the picker and in spawn order so users can still review them and so
@@ -235,6 +267,8 @@ impl AgentNavigationState {
                 /*is_closed*/ true,
             );
         }
+        self.wake_subscriptions
+            .retain(|(observer, target), _| *observer != thread_id && *target != thread_id);
     }
 
     /// Drops all cached picker state.
@@ -246,6 +280,7 @@ impl AgentNavigationState {
         self.order.clear();
         self.parent_threads.clear();
         self.stopped_threads.clear();
+        self.wake_subscriptions.clear();
         self.picker_refresh = None;
     }
 
@@ -259,6 +294,8 @@ impl AgentNavigationState {
         self.order.retain(|candidate| *candidate != thread_id);
         self.parent_threads.remove(&thread_id);
         self.stopped_threads.remove(&thread_id);
+        self.wake_subscriptions
+            .retain(|(observer, target), _| *observer != thread_id && *target != thread_id);
     }
 
     /// Returns whether there is at least one tracked thread other than the primary one.
@@ -482,6 +519,49 @@ mod tests {
         );
         state.clear();
         assert_eq!(state.parent_thread_id(second_agent_id), None);
+    }
+
+    #[test]
+    fn wake_subscriptions_are_observer_relative_and_end_with_the_target_turn() {
+        let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
+
+        state.note_wake_subscription(
+            main_thread_id,
+            first_agent_id,
+            WakeSubscriptionBinding::Bound,
+        );
+        state.note_wake_subscription(
+            first_agent_id,
+            second_agent_id,
+            WakeSubscriptionBinding::Bound,
+        );
+
+        assert!(state.has_wake_subscription(main_thread_id, first_agent_id));
+        assert!(state.has_wake_subscription(first_agent_id, second_agent_id));
+        assert!(!state.has_wake_subscription(main_thread_id, second_agent_id));
+
+        state.mark_stopped(first_agent_id);
+
+        assert!(!state.has_wake_subscription(main_thread_id, first_agent_id));
+        assert!(
+            state.has_wake_subscription(first_agent_id, second_agent_id),
+            "an observer's own turn ending must not cancel its target subscription"
+        );
+
+        state.mark_closed(first_agent_id);
+
+        assert!(!state.has_wake_subscription(first_agent_id, second_agent_id));
+
+        state.note_wake_subscription(
+            main_thread_id,
+            second_agent_id,
+            WakeSubscriptionBinding::NextTurn,
+        );
+        state.mark_stopped(second_agent_id);
+        assert!(state.has_wake_subscription(main_thread_id, second_agent_id));
+        state.mark_running(second_agent_id);
+        state.mark_stopped(second_agent_id);
+        assert!(!state.has_wake_subscription(main_thread_id, second_agent_id));
     }
 
     #[test]

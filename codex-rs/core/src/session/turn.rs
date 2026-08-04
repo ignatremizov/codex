@@ -460,6 +460,16 @@ pub(crate) async fn run_turn(
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
                 } = sampling_request_output;
+                // Pending input can arrive after a sampling request emits its final message but
+                // before the response stream closes. Preserve that message across the required
+                // follow-up so an empty acknowledgement does not erase the turn's last visible
+                // answer.
+                if !model_needs_follow_up
+                    && let Some(sampling_request_last_agent_message) =
+                        sampling_request_last_agent_message
+                {
+                    last_agent_message = Some(sampling_request_last_agent_message);
+                }
                 if model_needs_follow_up {
                     sess.input_queue
                         .accept_mailbox_delivery_for_current_turn(
@@ -568,7 +578,6 @@ pub(crate) async fn run_turn(
                 }
 
                 if !needs_follow_up {
-                    last_agent_message = sampling_request_last_agent_message;
                     let stop_outcome = run_turn_stop_hooks(
                         &sess,
                         &step_context,

@@ -4,8 +4,14 @@ use codex_core::ThreadConfigSnapshot;
 use codex_core::TurnInputRequest;
 use codex_core::config::AgentRoleConfig;
 use codex_core::config::CurrentTimeReminderConfig;
+use codex_core::config::Config;
 use codex_core::config::MultiAgentMessageDelivery;
 use codex_core::config::ThreadStoreConfig;
+use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ThreadIdleCause;
+use codex_extension_api::ThreadIdleInput;
+use codex_extension_api::ThreadLifecycleContributor;
 use codex_features::Feature;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
@@ -29,6 +35,7 @@ use codex_protocol::openai_models::MultiAgentMessages;
 use codex_protocol::openai_models::MultiAgentRoleMessages;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -37,18 +44,22 @@ use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActivityKind;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::SubAgentCompletionStatus;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_transcript_parts;
 use codex_rollout::rollout::rollout_without_exact_rollback_ranges;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::InMemoryThreadStoreFailure;
+use codex_thread_store::LoadThreadHistoryParams;
+use codex_thread_store::ThreadStore;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::assert_parent_turn;
@@ -60,7 +71,6 @@ use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::ev_tool_search_call;
-use core_test_support::responses::mount_responder_once_match;
 use core_test_support::responses::mount_response_once_match;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
@@ -71,6 +81,11 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::responses::strip_metadata_from_json;
 use core_test_support::responses::strip_response_item_ids_from_json;
 use core_test_support::skip_if_no_network;
+use core_test_support::streaming_sse::StreamingSseChunk;
+use core_test_support::streaming_sse::StreamingSseRequest;
+use core_test_support::streaming_sse::StreamingSseResponseHandle;
+use core_test_support::streaming_sse::StreamingSseServer;
+use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
@@ -89,14 +104,13 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Duration;
 use test_case::test_case;
+use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use tracing::Level;
 use tracing_test::internal::MockWriter;
 use wiremock::MockServer;
-use wiremock::Respond;
-use wiremock::ResponseTemplate;
 
 const SPAWN_CALL_ID: &str = "spawn-call-1";
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
@@ -119,27 +133,24 @@ const V2_REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
 enum ChildResponseTiming {
     Immediate,
     Delayed(Duration),
-    Gated(mpsc::Receiver<()>),
 }
 
-struct GatedSseResponse {
-    gate_rx: Mutex<Option<mpsc::Receiver<()>>>,
-    response: String,
+#[derive(Clone, Copy, Debug)]
+enum ConcurrentObservationKind {
+    Commentary,
+    Final,
 }
 
-impl Respond for GatedSseResponse {
-    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
-        if let Some(gate_rx) = self
-            .gate_rx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            let _ = gate_rx.recv();
-        }
-        sse_response(self.response.clone())
+struct ThreadIdleRecorder(mpsc::Sender<String>);
+
+impl ThreadLifecycleContributor<Config> for ThreadIdleRecorder {
+    fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let _ = self.0.send(input.thread_store.level_id().to_string());
+        })
     }
 }
+
 const ROLE_MODEL: &str = "gpt-5.4";
 const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
 const SUBAGENT_START_CONTEXT: &str = "subagent start context reaches child";
@@ -168,6 +179,12 @@ fn request_agent_name_is(req: &wiremock::Request, expected_agent_name: &str) -> 
         .and_then(Value::as_str)
         .and_then(|text| serde_json::from_str::<Value>(text).ok())
         .is_some_and(|metadata| metadata["agent_name"] == expected_agent_name)
+}
+
+fn ev_commentary_message(id: &str, text: &str) -> Value {
+    let mut event = ev_assistant_message(id, text);
+    event["item"]["phase"] = json!("commentary");
+    event
 }
 
 fn request_has_input_type(req: &wiremock::Request, ty: &str) -> bool {
@@ -213,6 +230,10 @@ fn request_has_agent_message_text(req: &wiremock::Request, expected_text: &str) 
     let Ok(body) = serde_json::from_slice::<Value>(&body) else {
         return false;
     };
+    body_has_agent_message_text(&body, expected_text)
+}
+
+fn body_has_agent_message_text(body: &Value, expected_text: &str) -> bool {
     let Some(input) = body.get("input").and_then(Value::as_array) else {
         return false;
     };
@@ -241,6 +262,14 @@ fn request_has_agent_message_route(
     let Ok(body) = serde_json::from_slice::<Value>(&body) else {
         return false;
     };
+    body_has_agent_message_route(&body, expected_author, expected_recipient)
+}
+
+fn body_has_agent_message_route(
+    body: &Value,
+    expected_author: &str,
+    expected_recipient: &str,
+) -> bool {
     let Some(input) = body.get("input").and_then(Value::as_array) else {
         return false;
     };
@@ -249,6 +278,16 @@ fn request_has_agent_message_route(
             && item.get("author").and_then(Value::as_str) == Some(expected_author)
             && item.get("recipient").and_then(Value::as_str) == Some(expected_recipient)
     })
+}
+
+fn inputs_of_type(body: &Value, item_type: &str) -> Vec<Value> {
+    body["input"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| item["type"].as_str() == Some(item_type))
+        .cloned()
+        .collect()
 }
 
 async fn wait_for_agent_messages(
@@ -297,7 +336,7 @@ async fn wait_for_request_containing_text(
     mock: &core_test_support::responses::ResponseMock,
     text: &str,
 ) -> Result<ResponsesRequest> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if let Some(request) = mock
             .requests()
@@ -329,25 +368,134 @@ fn read_test_rollout_items(test: &TestCodex) -> Result<Vec<RolloutItem>> {
         .collect()
 }
 
+async fn wait_for_persisted_sub_agent_completion(
+    test: &TestCodex,
+    expected_payload: &str,
+) -> Result<(
+    (String, SubAgentCompletionStatus, String, String),
+    Vec<RolloutItem>,
+)> {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            test.codex.flush_rollout().await?;
+            let history_items = read_test_rollout_items(test)?;
+            if let Some(completion) = history_items.iter().find_map(|item| {
+                let RolloutItem::EventMsg(event) = item else {
+                    return None;
+                };
+                sub_agent_completion_event(event)
+                    .filter(|(_, _, _, payload)| payload == expected_payload)
+            }) {
+                break Ok::<_, anyhow::Error>((completion, history_items));
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("timed out waiting for persisted subagent completion {expected_payload:?}")
+    })?
+}
+
 fn has_subagent_notification(req: &ResponsesRequest) -> bool {
-    req.message_input_texts("user")
+    subagent_notification_count(req) != 0
+}
+
+fn subagent_notification_count(req: &ResponsesRequest) -> usize {
+    let user_message_count = req
+        .message_input_texts("user")
         .iter()
-        .any(|text| text.contains("<subagent_notification>"))
+        .filter(|text| text.contains("<subagent_notification>"))
+        .count();
+    let agent_message_count = req
+        .inputs_of_type("agent_message")
+        .iter()
+        .filter(|item| is_subagent_notification_agent_message(item))
+        .count();
+    user_message_count.saturating_add(agent_message_count)
+}
+
+fn subagent_notification_count_json(body: &Value) -> usize {
+    let input = body["input"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let user_message_count = input
+        .iter()
+        .filter(|item| {
+            item["type"].as_str() == Some("message") && item["role"].as_str() == Some("user")
+        })
+        .flat_map(|item| item["content"].as_array().into_iter().flatten())
+        .filter(|content| {
+            content["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("<subagent_notification>"))
+        })
+        .count();
+    let agent_message_count = input
+        .iter()
+        .filter(|item| item["type"].as_str() == Some("agent_message"))
+        .filter(|item| is_subagent_notification_agent_message(item))
+        .count();
+    user_message_count.saturating_add(agent_message_count)
+}
+
+fn subagent_notification_agent_message(req: &ResponsesRequest) -> Option<Value> {
+    subagent_notification_agent_message_json(&req.body_json())
+}
+
+fn subagent_notification_agent_message_json(body: &Value) -> Option<Value> {
+    body["input"]
+        .as_array()?
+        .iter()
+        .filter(|item| item["type"].as_str() == Some("agent_message"))
+        .find(|item| is_subagent_notification_agent_message(item))
+        .cloned()
+}
+
+fn is_subagent_notification_agent_message(item: &Value) -> bool {
+    item["content"].as_array().is_some_and(|content| {
+        content.iter().any(|part| {
+            part["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("<subagent_notification>"))
+        })
+    })
 }
 
 fn assert_input_item_ids_are_provider_compatible(request: &ResponsesRequest) {
     let body = request.body_json();
+    assert_input_item_ids_are_provider_compatible_json(&body);
+}
+
+fn assert_input_item_ids_are_provider_compatible_json(body: &Value) {
     for item in body["input"].as_array().into_iter().flatten() {
         if let Some(id) = item["id"].as_str() {
             assert!(id.len() <= 64, "input item ID exceeds provider limit: {id}");
-            if item["type"].as_str() == Some("message") {
-                assert!(
+            match item["type"].as_str() {
+                Some("message") => assert!(
                     id.starts_with("msg"),
                     "message input item ID has invalid provider prefix: {id}"
-                );
+                ),
+                Some("agent_message") => assert!(
+                    id.starts_with("amsg"),
+                    "agent message input item ID has invalid provider prefix: {id}"
+                ),
+                _ => {}
             }
         }
     }
+}
+
+async fn wait_for_streaming_request(
+    response: &mut StreamingSseResponseHandle,
+) -> Result<StreamingSseRequest> {
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 15),
+        response.wait_for_request(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for streaming SSE request"))
 }
 
 fn sub_agent_completion_item(
@@ -409,7 +557,7 @@ fn completed_parent_turn_has_error(event: &EventMsg) -> Option<bool> {
 }
 
 async fn wait_for_terminal_status(thread: &codex_core::CodexThread) -> Result<AgentStatus> {
-    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 10);
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 15);
     loop {
         let status = thread.agent_status().await;
         if matches!(
@@ -426,6 +574,67 @@ async fn wait_for_terminal_status(thread: &codex_core::CodexThread) -> Result<Ag
         }
         tokio::task::yield_now().await;
     }
+}
+
+async fn assert_no_pending_response_observation(
+    store: &InMemoryThreadStore,
+    observer_thread_id: ThreadId,
+    target_thread_id: ThreadId,
+) -> Result<()> {
+    assert!(
+        response_observation_has_no_pending_work(store, observer_thread_id, target_thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+async fn wait_for_no_pending_response_observation(
+    store: &InMemoryThreadStore,
+    observer_thread_id: ThreadId,
+    target_thread_id: ThreadId,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if response_observation_has_no_pending_work(store, observer_thread_id, target_thread_id)
+            .await?
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for durable response observation to become idle");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn response_observation_has_no_pending_work(
+    store: &InMemoryThreadStore,
+    observer_thread_id: ThreadId,
+    target_thread_id: ThreadId,
+) -> Result<bool> {
+    let history = store
+        .load_rollback_history(LoadThreadHistoryParams {
+            thread_id: observer_thread_id,
+            include_archived: false,
+        })
+        .await?;
+    let mut latest = HashMap::new();
+    for item in history.items {
+        if let RolloutItem::AgentResponseObservation(observation) = item
+            && observation.observer_thread_id == observer_thread_id
+            && observation.target_thread_id == target_thread_id
+        {
+            latest.insert(observation.target_turn_id.clone(), observation);
+        }
+    }
+    Ok(!latest.is_empty()
+        && latest.values().all(|observation| {
+            !observation.pending_commentary
+                && observation.commentary_after_sequences.is_empty()
+                && observation.commentary_admissions.is_empty()
+                && observation.commentary_delivery.is_none()
+                && observation.final_delivery == AgentResponseFinalDelivery::None
+        }))
 }
 
 async fn diagnostic_stage<T>(
@@ -873,19 +1082,6 @@ async fn setup_turn_one_with_custom_spawned_child(
             )
             .await
         }
-        ChildResponseTiming::Gated(gate_rx) => {
-            mount_responder_once_match(
-                server,
-                |req: &wiremock::Request| {
-                    body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
-                },
-                GatedSseResponse {
-                    gate_rx: Mutex::new(Some(gate_rx)),
-                    response: child_sse,
-                },
-            )
-            .await
-        }
     };
 
     let _turn1_followup = mount_sse_once_match(
@@ -931,7 +1127,7 @@ async fn setup_turn_one_with_custom_spawned_child(
             .codex
             .rollout_path()
             .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
-        let deadline = Instant::now() + Duration::from_secs(6);
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let has_notification = tokio::fs::read_to_string(&rollout_path)
                 .await
@@ -950,6 +1146,81 @@ async fn setup_turn_one_with_custom_spawned_child(
     let spawned_id = wait_for_spawned_thread_id(&test).await?;
 
     Ok((test, spawned_id, child_request_log))
+}
+
+async fn setup_turn_one_with_custom_streamed_child(
+    server: &StreamingSseServer,
+    spawn_args: serde_json::Value,
+    child_gate_rx: oneshot::Receiver<()>,
+    configure_test: impl FnOnce(
+        core_test_support::test_codex::TestCodexBuilder,
+    ) -> core_test_support::test_codex::TestCodexBuilder,
+) -> Result<(TestCodex, String)> {
+    let spawn_args = serde_json::to_string(&spawn_args)?;
+    server
+        .mount_response(
+            |request| request.body_contains_text(TURN_1_PROMPT),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-turn1-1"),
+                    ev_function_call_with_namespace(
+                        SPAWN_CALL_ID,
+                        MULTI_AGENT_V1_NAMESPACE,
+                        "spawn_agent",
+                        &spawn_args,
+                    ),
+                    ev_completed("resp-turn1-1"),
+                ]),
+            }],
+        )
+        .await;
+    let mut child_response = server
+        .mount_response(
+            |request| {
+                request.body_contains_text(CHILD_PROMPT)
+                    && !request.body_contains_text(SPAWN_CALL_ID)
+            },
+            vec![StreamingSseChunk {
+                gate: Some(child_gate_rx),
+                body: sse(vec![
+                    ev_response_created("resp-child-1"),
+                    ev_assistant_message("msg-child-1", "child done"),
+                    ev_completed("resp-child-1"),
+                ]),
+            }],
+        )
+        .await;
+    let mut turn1_followup = server
+        .mount_response(
+            |request| request.body_contains_text(SPAWN_CALL_ID),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-turn1-2"),
+                    ev_assistant_message("msg-turn1-2", "parent done"),
+                    ev_completed("resp-turn1-2"),
+                ]),
+            }],
+        )
+        .await;
+
+    let mut builder = configure_test(test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config.model = Some(INHERITED_MODEL.to_string());
+        config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
+    }));
+    let test = builder.build_with_streaming_server_auto_env(server).await?;
+    test.submit_turn(TURN_1_PROMPT).await?;
+    let spawned_id = wait_for_spawned_thread_id(&test).await?;
+    let _ = wait_for_streaming_request(&mut child_response).await?;
+    let _ = wait_for_streaming_request(&mut turn1_followup).await?;
+    let _ = wait_for_terminal_status(test.codex.as_ref()).await?;
+
+    Ok((test, spawned_id))
 }
 
 async fn spawn_child_and_capture_snapshot(
@@ -1534,12 +1805,15 @@ async fn subagent_notification_is_included_without_wait(
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = start_mock_server().await;
-    let (child_gate_tx, child_gate_rx) = mpsc::channel();
-    let (test, spawned_id) = setup_turn_one_with_spawned_child(
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let (test, spawned_id) = setup_turn_one_with_custom_streamed_child(
         &server,
-        ChildResponseTiming::Gated(child_gate_rx),
-        history_mode,
+        json!({
+            "message": CHILD_PROMPT,
+        }),
+        child_gate_rx,
+        |builder| builder.with_history_mode(history_mode),
     )
     .await?;
 
@@ -1591,27 +1865,38 @@ async fn subagent_notification_is_included_without_wait(
         .collect::<Vec<_>>();
     assert_eq!(persisted_completions, vec![expected_completion]);
 
-    let turn2 = mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| body_contains(req, TURN_2_NO_WAIT_PROMPT),
-        sse(vec![
-            ev_response_created("resp-turn2-1"),
-            ev_assistant_message("msg-turn2-1", "no wait path"),
-            ev_completed("resp-turn2-1"),
-        ]),
-    )
-    .await;
+    let mut turn2 = server
+        .mount_response(
+            |request| request.body_contains_text(TURN_2_NO_WAIT_PROMPT),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-turn2-1"),
+                    ev_assistant_message("msg-turn2-1", "no wait path"),
+                    ev_completed("resp-turn2-1"),
+                ]),
+            }],
+        )
+        .await;
     test.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
 
-    let turn2_requests = wait_for_requests(&turn2).await?;
-    assert!(
-        turn2_requests
-            .iter()
-            .any(|request| request.has_content_kinds(&["multi_agent.subagent_notification"]))
+    let notification_request = wait_for_streaming_request(&mut turn2).await?;
+    let notification_request_body = notification_request.body_json();
+    assert_ne!(
+        subagent_notification_count_json(&notification_request_body),
+        0,
+        "turn 2 should contain the passive subagent notification"
     );
-    turn2_requests
-        .iter()
-        .for_each(assert_input_item_ids_are_provider_compatible);
+    let completion_context = subagent_notification_agent_message_json(&notification_request_body)
+        .expect("passive notification should use agent-message input");
+    let completion_context_id = completion_context["id"]
+        .as_str()
+        .expect("passive completion context should have a response item ID");
+    assert!(
+        completion_context_id.starts_with("amsg_x_"),
+        "passive completion context should retain its reserved identity: {completion_context_id}"
+    );
+    assert_input_item_ids_are_provider_compatible_json(&notification_request_body);
 
     Ok(())
 }
@@ -1723,22 +2008,28 @@ async fn v1_subagent_notification_survives_an_active_parent_turn_abort() -> Resu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v1_terminal_published_before_shutdown_survives_resume() -> Result<()> {
-    let server = start_mock_server().await;
-    let notification_request = mount_sse_once_match(
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let mut notification_request = server
+        .mount_response(
+            |request| request.body_contains_text(TURN_AFTER_RESUME_PROMPT),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-after-resume"),
+                    ev_assistant_message("msg-after-resume", "completion retained"),
+                    ev_completed("resp-after-resume"),
+                ]),
+            }],
+        )
+        .await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let (initial, spawned_id) = setup_turn_one_with_custom_streamed_child(
         &server,
-        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
-        sse(vec![
-            ev_response_created("resp-after-resume"),
-            ev_assistant_message("msg-after-resume", "completion retained"),
-            ev_completed("resp-after-resume"),
-        ]),
-    )
-    .await;
-    let (child_gate_tx, child_gate_rx) = mpsc::channel();
-    let (initial, spawned_id) = setup_turn_one_with_spawned_child(
-        &server,
-        ChildResponseTiming::Gated(child_gate_rx),
-        ThreadHistoryMode::Legacy,
+        json!({
+            "message": CHILD_PROMPT,
+        }),
+        child_gate_rx,
+        |builder| builder.with_history_mode(ThreadHistoryMode::Legacy),
     )
     .await?;
     let home = initial.home.clone();
@@ -1794,34 +2085,53 @@ async fn v1_terminal_published_before_shutdown_survives_resume() -> Result<()> {
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
         });
-    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    let resumed = resume_builder
+        .resume_with_streaming_server(&server, home, rollout_path)
+        .await?;
     resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
 
-    let notification_request =
-        wait_for_request_containing_text(&notification_request, TURN_AFTER_RESUME_PROMPT).await?;
+    let notification_request = wait_for_streaming_request(&mut notification_request).await?;
     assert!(
-        has_subagent_notification(&notification_request),
+        subagent_notification_count_json(&notification_request.body_json()) != 0,
         "expected the pre-shutdown v1 completion in resumed model context"
     );
 
     Ok(())
 }
 
+#[test_case(
+    None,
+    SubAgentCompletionModelVisibility::Visible,
+    1;
+    "passive"
+)]
+#[test_case(
+    Some("x"),
+    SubAgentCompletionModelVisibility::NotVisible,
+    0;
+    "presentation_only"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn v1_watcher_retries_canonical_completion_before_shutdown_and_replay() -> Result<()> {
-    let server = start_mock_server().await;
+async fn v1_watcher_retries_canonical_completion_before_shutdown_and_replay(
+    w: Option<&str>,
+    expected_visibility: SubAgentCompletionModelVisibility,
+    expected_context_count: usize,
+) -> Result<()> {
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
     let store_id = uuid::Uuid::now_v7().to_string();
     let store = InMemoryThreadStore::for_id(store_id.clone());
     let configured_store_id = store_id.clone();
-    let (child_gate_tx, child_gate_rx) = mpsc::channel();
-    let (initial, spawned_id, _child_request) = setup_turn_one_with_custom_spawned_child(
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let mut spawn_args = json!({
+        "message": CHILD_PROMPT,
+    });
+    if let Some(w) = w {
+        spawn_args["w"] = json!(w);
+    }
+    let (initial, spawned_id) = setup_turn_one_with_custom_streamed_child(
         &server,
-        json!({
-            "message": CHILD_PROMPT,
-        }),
-        ChildResponseTiming::Gated(child_gate_rx),
-        /*wait_for_parent_notification*/ false,
-        INHERITED_REASONING_EFFORT,
+        spawn_args,
+        child_gate_rx,
         move |builder| {
             builder.with_config(move |config| {
                 config.experimental_thread_store = ThreadStoreConfig::InMemory {
@@ -1896,6 +2206,10 @@ async fn v1_watcher_retries_canonical_completion_before_shutdown_and_replay() ->
             "child done".to_string(),
         )
     );
+    assert_eq!(
+        sub_agent_completion_model_visibility_from_response_item_id(&started_id),
+        Some(expected_visibility)
+    );
     shutdown.await??;
     wait_for_event_match(&initial.codex, |event| {
         matches!(event, EventMsg::ShutdownComplete).then_some(())
@@ -1924,27 +2238,25 @@ async fn v1_watcher_retries_canonical_completion_before_shutdown_and_replay() ->
         1
     );
 
-    let resumed_request = mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
-        sse(vec![
-            ev_response_created("resp-after-retry-resume"),
-            ev_assistant_message("msg-after-retry-resume", "completion retained"),
-            ev_completed("resp-after-retry-resume"),
-        ]),
-    )
-    .await;
+    let mut resumed_request = server
+        .mount_response(
+            |request| request.body_contains_text(TURN_AFTER_RESUME_PROMPT),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-after-retry-resume"),
+                    ev_assistant_message("msg-after-retry-resume", "completion retained"),
+                    ev_completed("resp-after-retry-resume"),
+                ]),
+            }],
+        )
+        .await;
     let resumed = resume_in_memory_thread_from_store(&initial).await?;
     submit_turn_on_thread(resumed.as_ref(), TURN_AFTER_RESUME_PROMPT).await?;
-    let resumed_request =
-        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT).await?;
+    let resumed_request = wait_for_streaming_request(&mut resumed_request).await?;
     assert_eq!(
-        resumed_request
-            .message_input_texts("user")
-            .iter()
-            .filter(|text| text.contains("<subagent_notification>"))
-            .count(),
-        1
+        subagent_notification_count_json(&resumed_request.body_json()),
+        expected_context_count
     );
     InMemoryThreadStore::remove_id(&store_id);
 
@@ -1953,19 +2265,18 @@ async fn v1_watcher_retries_canonical_completion_before_shutdown_and_replay() ->
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v1_watcher_releases_completion_when_rollback_requires_reload() -> Result<()> {
-    let server = start_mock_server().await;
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
     let store_id = uuid::Uuid::now_v7().to_string();
     let store = InMemoryThreadStore::for_id(store_id.clone());
     let configured_store_id = store_id.clone();
-    let (child_gate_tx, child_gate_rx) = mpsc::channel();
-    let (initial, spawned_id, _child_request) = setup_turn_one_with_custom_spawned_child(
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let (initial, spawned_id) = setup_turn_one_with_custom_streamed_child(
         &server,
         json!({
             "message": CHILD_PROMPT,
+            "w": "x",
         }),
-        ChildResponseTiming::Gated(child_gate_rx),
-        /*wait_for_parent_notification*/ false,
-        INHERITED_REASONING_EFFORT,
+        child_gate_rx,
         move |builder| {
             builder.with_config(move |config| {
                 config.experimental_thread_store = ThreadStoreConfig::InMemory {
@@ -2032,26 +2343,24 @@ async fn v1_watcher_releases_completion_when_rollback_requires_reload() -> Resul
         )
     }));
 
-    let resumed_request = mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
-        sse(vec![
-            ev_response_created("resp-after-reload-required-resume"),
-            ev_assistant_message("msg-after-reload-required-resume", "completion rejected"),
-            ev_completed("resp-after-reload-required-resume"),
-        ]),
-    )
-    .await;
+    let mut resumed_request = server
+        .mount_response(
+            |request| request.body_contains_text(TURN_AFTER_RESUME_PROMPT),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-after-reload-required-resume"),
+                    ev_assistant_message("msg-after-reload-required-resume", "completion rejected"),
+                    ev_completed("resp-after-reload-required-resume"),
+                ]),
+            }],
+        )
+        .await;
     let resumed = resume_in_memory_thread_from_store(&initial).await?;
     submit_turn_on_thread(resumed.as_ref(), TURN_AFTER_RESUME_PROMPT).await?;
-    let resumed_request =
-        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT).await?;
+    let resumed_request = wait_for_streaming_request(&mut resumed_request).await?;
     assert_eq!(
-        resumed_request
-            .message_input_texts("user")
-            .iter()
-            .filter(|text| text.contains("<subagent_notification>"))
-            .count(),
+        subagent_notification_count_json(&resumed_request.body_json()),
         0
     );
     InMemoryThreadStore::remove_id(&store_id);
@@ -2065,22 +2374,28 @@ async fn v1_watcher_releases_completion_when_rollback_requires_reload() -> Resul
 async fn v1_accepted_completion_survives_exact_rollback_and_cold_resume(
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
-    let server = start_mock_server().await;
-    let resumed_request = mount_sse_once_match(
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let mut resumed_request = server
+        .mount_response(
+            |request| request.body_contains_text(TURN_AFTER_RESUME_PROMPT),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-after-rollback-resume"),
+                    ev_assistant_message("msg-after-rollback-resume", "completion retained"),
+                    ev_completed("resp-after-rollback-resume"),
+                ]),
+            }],
+        )
+        .await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let (initial, spawned_id) = setup_turn_one_with_custom_streamed_child(
         &server,
-        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
-        sse(vec![
-            ev_response_created("resp-after-rollback-resume"),
-            ev_assistant_message("msg-after-rollback-resume", "completion retained"),
-            ev_completed("resp-after-rollback-resume"),
-        ]),
-    )
-    .await;
-    let (child_gate_tx, child_gate_rx) = mpsc::channel();
-    let (initial, spawned_id) = setup_turn_one_with_spawned_child(
-        &server,
-        ChildResponseTiming::Gated(child_gate_rx),
-        history_mode,
+        json!({
+            "message": CHILD_PROMPT,
+        }),
+        child_gate_rx,
+        |builder| builder.with_history_mode(history_mode),
     )
     .await?;
     let home = initial.home.clone();
@@ -2120,11 +2435,11 @@ async fn v1_accepted_completion_survives_exact_rollback_and_cold_resume(
         matches!(
             item,
             RolloutItem::ResponseItem(envelope)
-                if matches!(
-                    &envelope.item,
-                    ResponseItem::Message { id: Some(id), .. }
-                        if is_sub_agent_completion_context_response_item_id(id)
-                )
+                if envelope
+                    .id()
+                    .is_some_and(|id| {
+                        is_sub_agent_completion_context_response_item_id(id.as_str())
+                    })
         )
     }));
     assert_eq!(
@@ -2155,13 +2470,14 @@ async fn v1_accepted_completion_survives_exact_rollback_and_cold_resume(
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
         });
-    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    let resumed = resume_builder
+        .resume_with_streaming_server(&server, home, rollout_path)
+        .await?;
     resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
 
-    let resumed_request =
-        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT).await?;
+    let resumed_request = wait_for_streaming_request(&mut resumed_request).await?;
     assert!(
-        has_subagent_notification(&resumed_request),
+        subagent_notification_count_json(&resumed_request.body_json()) != 0,
         "expected the accepted v1 completion after exact rollback and cold resume"
     );
 
@@ -2174,26 +2490,27 @@ async fn v1_accepted_completion_survives_exact_rollback_and_cold_resume(
 async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
-    let server = start_mock_server().await;
-    let resumed_request = mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
-        sse(vec![
-            ev_response_created("resp-after-racing-rollback-resume"),
-            ev_assistant_message("msg-after-racing-rollback-resume", "completion retained"),
-            ev_completed("resp-after-racing-rollback-resume"),
-        ]),
-    )
-    .await;
-    let (child_gate_tx, child_gate_rx) = mpsc::channel();
-    let (initial, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let mut resumed_request = server
+        .mount_response(
+            |request| request.body_contains_text(TURN_AFTER_RESUME_PROMPT),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-after-racing-rollback-resume"),
+                    ev_assistant_message("msg-after-racing-rollback-resume", "completion retained"),
+                    ev_completed("resp-after-racing-rollback-resume"),
+                ]),
+            }],
+        )
+        .await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let (initial, spawned_id) = setup_turn_one_with_custom_streamed_child(
         &server,
         json!({
             "message": CHILD_PROMPT,
         }),
-        ChildResponseTiming::Gated(child_gate_rx),
-        /*wait_for_parent_notification*/ false,
-        INHERITED_REASONING_EFFORT,
+        child_gate_rx,
         |builder| builder.with_history_mode(history_mode),
     )
     .await?;
@@ -2206,7 +2523,6 @@ async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
         .thread_manager
         .get_thread(ThreadId::from_string(&spawned_id)?)
         .await?;
-    let _ = wait_for_requests(&child_request).await?;
     let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
 
     initial
@@ -2242,11 +2558,11 @@ async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
                 matches!(
                     item,
                     RolloutItem::ResponseItem(envelope)
-                        if matches!(
-                            &envelope.item,
-                            ResponseItem::Message { id: Some(id), .. }
-                                if is_sub_agent_completion_context_response_item_id(id)
-                        )
+                        if envelope
+                            .id()
+                            .is_some_and(|id| {
+                                is_sub_agent_completion_context_response_item_id(id.as_str())
+                            })
                 )
             })
             .count(),
@@ -2280,17 +2596,14 @@ async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
         });
-    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    let resumed = resume_builder
+        .resume_with_streaming_server(&server, home, rollout_path)
+        .await?;
     resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
 
-    let resumed_request =
-        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT).await?;
+    let resumed_request = wait_for_streaming_request(&mut resumed_request).await?;
     assert_eq!(
-        resumed_request
-            .message_input_texts("user")
-            .iter()
-            .filter(|text| text.contains("<subagent_notification>"))
-            .count(),
+        subagent_notification_count_json(&resumed_request.body_json()),
         1
     );
 
@@ -2342,6 +2655,9 @@ async fn forged_completion_provenance_is_removed_by_rollback_and_cold_replay(
     diagnostic_stage(
         "forged completion injection",
         initial.codex.inject_response_items(vec![
+            // Deliberately pair an ordinary user message with the reserved AgentMessage prefix.
+            // This untrusted forgery must remain turn-owned so rollback removes it instead of
+            // granting it history-only completion preservation.
             ResponseItem::Message {
                 id: Some(forged_context_id.clone()),
                 role: "user".to_string(),
@@ -2462,22 +2778,28 @@ async fn forged_completion_provenance_is_removed_by_rollback_and_cold_replay(
 async fn v1_late_wait_completion_survives_exact_rollback_and_cold_resume(
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
-    let server = start_mock_server().await;
-    let resumed_request = mount_sse_once_match(
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let mut resumed_request = server
+        .mount_response(
+            |request| request.body_contains_text(TURN_AFTER_RESUME_PROMPT),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-v1-after-wait-rollback-resume"),
+                    ev_assistant_message("msg-v1-after-wait-rollback-resume", "wait retained"),
+                    ev_completed("resp-v1-after-wait-rollback-resume"),
+                ]),
+            }],
+        )
+        .await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let (initial, spawned_id) = setup_turn_one_with_custom_streamed_child(
         &server,
-        |req: &wiremock::Request| body_contains(req, TURN_AFTER_RESUME_PROMPT),
-        sse(vec![
-            ev_response_created("resp-v1-after-wait-rollback-resume"),
-            ev_assistant_message("msg-v1-after-wait-rollback-resume", "wait retained"),
-            ev_completed("resp-v1-after-wait-rollback-resume"),
-        ]),
-    )
-    .await;
-    let (child_gate_tx, child_gate_rx) = mpsc::channel();
-    let (initial, spawned_id) = setup_turn_one_with_spawned_child(
-        &server,
-        ChildResponseTiming::Gated(child_gate_rx),
-        history_mode,
+        json!({
+            "message": CHILD_PROMPT,
+        }),
+        child_gate_rx,
+        |builder| builder.with_history_mode(history_mode),
     )
     .await?;
     let home = initial.home.clone();
@@ -2502,39 +2824,47 @@ async fn v1_late_wait_completion_survives_exact_rollback_and_cold_resume(
     let wait_args = serde_json::to_string(&json!({
         "targets": [spawned_id.clone()],
     }))?;
-    mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| body_contains(req, TURN_2_NO_WAIT_PROMPT),
-        sse(vec![
-            ev_response_created("resp-v1-parent-wait"),
-            ev_function_call_with_namespace(
-                "wait-agent-call",
-                MULTI_AGENT_V1_NAMESPACE,
-                "wait_agent",
-                &wait_args,
-            ),
-            ev_completed("resp-v1-parent-wait"),
-        ]),
-    )
-    .await;
-    let wait_followup = mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| {
-            body_contains(req, "wait-agent-call")
-                && body_contains(req, "\"type\":\"function_call_output\"")
-        },
-        sse(vec![
-            ev_response_created("resp-v1-parent-after-wait"),
-            ev_assistant_message("msg-v1-parent-after-wait", "done"),
-            ev_completed("resp-v1-parent-after-wait"),
-        ]),
-    )
-    .await;
+    server
+        .mount_response(
+            |request| request.body_contains_text(TURN_2_NO_WAIT_PROMPT),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-v1-parent-wait"),
+                    ev_function_call_with_namespace(
+                        "wait-agent-call",
+                        MULTI_AGENT_V1_NAMESPACE,
+                        "wait_agent",
+                        &wait_args,
+                    ),
+                    ev_completed("resp-v1-parent-wait"),
+                ]),
+            }],
+        )
+        .await;
+    let mut wait_followup = server
+        .mount_response(
+            |request| {
+                request.body_contains_text("wait-agent-call")
+                    && request.body_contains_text("\"type\":\"function_call_output\"")
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-v1-parent-after-wait"),
+                    ev_assistant_message("msg-v1-parent-after-wait", "done"),
+                    ev_completed("resp-v1-parent-after-wait"),
+                ]),
+            }],
+        )
+        .await;
 
     initial.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
-    let wait_followup =
-        wait_for_request_containing_text(&wait_followup, TURN_2_NO_WAIT_PROMPT).await?;
-    assert!(has_subagent_notification(&wait_followup));
+    let wait_followup = wait_for_streaming_request(&mut wait_followup).await?;
+    assert_ne!(
+        subagent_notification_count_json(&wait_followup.body_json()),
+        0
+    );
     initial.codex.flush_rollout().await?;
     let history = read_test_rollout_items(&initial)?;
     let wait_agent_states = history
@@ -2577,12 +2907,15 @@ async fn v1_late_wait_completion_survives_exact_rollback_and_cold_resume(
     initial.codex.flush_rollout().await?;
     let rollout_items = read_test_rollout_items(&initial)?;
     let effective_history = rollout_without_exact_rollback_ranges(&rollout_items);
+    // The background completion was already committed before this late wait, so the wait renders
+    // the result again without claiming durable presentation. Rolling back its parent turn removes
+    // that second copy while the earlier canonical completion remains below.
     assert_eq!(
         effective_history.iter().find_map(|item| match item {
             RolloutItem::EventMsg(event) => completed_wait_agent_states(event),
             _ => None,
         }),
-        Some(wait_agent_states)
+        None
     );
     assert_eq!(
         effective_history
@@ -2612,16 +2945,13 @@ async fn v1_late_wait_completion_survives_exact_rollback_and_cold_resume(
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
         });
-    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    let resumed = resume_builder
+        .resume_with_streaming_server(&server, home, rollout_path)
+        .await?;
     resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
-    let resumed_request =
-        wait_for_request_containing_text(&resumed_request, TURN_AFTER_RESUME_PROMPT).await?;
+    let resumed_request = wait_for_streaming_request(&mut resumed_request).await?;
     assert_eq!(
-        resumed_request
-            .message_input_texts("user")
-            .iter()
-            .filter(|text| text.contains("<subagent_notification>"))
-            .count(),
+        subagent_notification_count_json(&resumed_request.body_json()),
         1
     );
 
@@ -2794,6 +3124,2996 @@ async fn spawned_child_receives_forked_parent_context(
     assert_parent_turn(&reused_child_body, Some(followup_parent_turn_id))?;
     assert_root_turn(&followup_parent_body, Some(followup_parent_turn_id))?;
     assert_root_turn(&reused_child_body, Some(followup_parent_turn_id))?;
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_final_wake_starts_an_idle_parent_turn(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "wake parent on final"),
+        sse(vec![
+            ev_response_created("resp-observation-spawn"),
+            ev_function_call_with_namespace(
+                "observation-spawn",
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-observation-spawn"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, CHILD_PROMPT) && !body_contains(request, "observation-spawn")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-observation-child"),
+            ev_assistant_message("msg-observation-child", "wake result"),
+            ev_completed("resp-observation-child"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "observation-spawn"),
+        sse(vec![
+            ev_response_created("resp-observation-parent-done"),
+            ev_assistant_message("msg-observation-parent-done", "parent idle"),
+            ev_completed("resp-observation-parent-done"),
+        ]),
+    )
+    .await;
+    let wake_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "<subagent_notification>"),
+        sse(vec![
+            ev_response_created("resp-observation-wake"),
+            ev_assistant_message("msg-observation-wake", "wake handled"),
+            ev_completed("resp-observation-wake"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.submit_turn("wake parent on final").await?;
+
+    let request =
+        wait_for_request_containing_text(&wake_request, "<subagent_notification>").await?;
+    assert!(request.body_contains_text("<subagent_notification>"));
+    assert!(request.body_contains_text("wake result"));
+    assert_input_item_ids_are_provider_compatible(&request);
+    let completion_context = subagent_notification_agent_message(&request)
+        .expect("wake request should contain completion context as an agent message");
+    let completion_context_id = completion_context["id"]
+        .as_str()
+        .expect("completion context should have a response item ID");
+    assert!(
+        completion_context_id.starts_with("amsg_x_"),
+        "completion context should retain its API-compatible reserved identity: {completion_context_id}"
+    );
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_wait_preserves_full_history_spawn_final_wake(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let mut wake_request = server
+        .mount_response(
+            |request| {
+                request.body_contains_text("<subagent_notification>")
+                    && request.body_contains_text("child done")
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-forked-spawn-wake"),
+                    ev_assistant_message("msg-forked-spawn-wake", "wake handled"),
+                    ev_completed("resp-forked-spawn-wake"),
+                ]),
+            }],
+        )
+        .await;
+    let (test, spawned_id) = setup_turn_one_with_custom_streamed_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "fork_context": true,
+            "w": "f",
+        }),
+        child_gate_rx,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+
+    let wait_call_id = "wait-for-forked-spawn";
+    let wait_args = serde_json::to_string(&json!({
+        "targets": [spawned_id.clone()],
+        "timeout_ms": 3_600_000,
+    }))?;
+    server
+        .mount_response(
+            |request| request.body_contains_text("wait before interrupting forked child"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-wait-for-forked-spawn"),
+                    ev_function_call_with_namespace(
+                        wait_call_id,
+                        MULTI_AGENT_V1_NAMESPACE,
+                        "wait_agent",
+                        &wait_args,
+                    ),
+                    ev_completed("resp-wait-for-forked-spawn"),
+                ]),
+            }],
+        )
+        .await;
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "wait before interrupting forked child".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event_match(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ItemStarted(event)
+                if matches!(
+                    &event.item,
+                    TurnItem::CollabAgentToolCall(item)
+                        if item.tool == CollabAgentTool::Wait
+                )
+        )
+        .then_some(())
+    })
+    .await;
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event_match(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_)).then_some(())
+    })
+    .await;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+
+    let request = wait_for_streaming_request(&mut wake_request).await?;
+    assert!(request.body_contains_text("<subagent_notification>"));
+    assert_input_item_ids_are_provider_compatible_json(&request.body_json());
+    let (completion_id, status, agent_reference, payload) =
+        wait_for_event_match(&test.codex, sub_agent_completion_event).await;
+    assert_eq!(
+        (status, agent_reference, payload),
+        (
+            SubAgentCompletionStatus::Completed,
+            spawned_id,
+            "child done".to_string(),
+        )
+    );
+    assert_eq!(
+        sub_agent_completion_model_visibility_from_response_item_id(&completion_id),
+        Some(SubAgentCompletionModelVisibility::Visible)
+    );
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn omitted_w_full_history_spawn_delivers_passively_to_next_user_turn(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let mut follow_up = server
+        .mount_response(
+            |request| {
+                request.body_contains_text("inspect passive fork completion")
+                    && request.body_contains_text("<subagent_notification>")
+                    && request.body_contains_text("child done")
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-inspect-passive-fork-completion"),
+                    ev_assistant_message(
+                        "msg-inspect-passive-fork-completion",
+                        "passive result retained",
+                    ),
+                    ev_completed("resp-inspect-passive-fork-completion"),
+                ]),
+            }],
+        )
+        .await;
+    let (test, spawned_id) = setup_turn_one_with_custom_streamed_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "fork_context": true,
+        }),
+        child_gate_rx,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+
+    let (completion_id, status, agent_reference, payload) =
+        wait_for_event_match(&test.codex, sub_agent_completion_event).await;
+    assert_eq!(
+        (status, agent_reference, payload),
+        (
+            SubAgentCompletionStatus::Completed,
+            spawned_id,
+            "child done".to_string(),
+        )
+    );
+    assert_eq!(
+        sub_agent_completion_model_visibility_from_response_item_id(&completion_id),
+        Some(SubAgentCompletionModelVisibility::Visible)
+    );
+
+    test.submit_turn("inspect passive fork completion").await?;
+
+    let request = wait_for_streaming_request(&mut follow_up).await?;
+    assert!(request.body_contains_text("<subagent_notification>"));
+    assert!(request.body_contains_text("child done"));
+    assert_input_item_ids_are_provider_compatible_json(&request.body_json());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn final_wake_defers_idle_lifecycle_automation_until_wake_turn_finishes() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "w": "f",
+    }))?;
+    server
+        .mount_response(
+            |request| request.body_contains_text("defer idle automation"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-idle-deferral-spawn"),
+                    ev_function_call_with_namespace(
+                        "idle-deferral-spawn",
+                        MULTI_AGENT_V1_NAMESPACE,
+                        "spawn_agent",
+                        &spawn_args,
+                    ),
+                    ev_completed("resp-idle-deferral-spawn"),
+                ]),
+            }],
+        )
+        .await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let mut child_response = server
+        .mount_response(
+            |request| {
+                request.body_contains_text(CHILD_PROMPT)
+                    && !request.body_contains_text("idle-deferral-spawn")
+            },
+            vec![StreamingSseChunk {
+                gate: Some(child_gate_rx),
+                body: sse(vec![
+                    ev_response_created("resp-idle-deferral-child"),
+                    ev_assistant_message("msg-idle-deferral-child", "deferred wake result"),
+                    ev_completed("resp-idle-deferral-child"),
+                ]),
+            }],
+        )
+        .await;
+    server
+        .mount_response(
+            |request| request.body_contains_text("idle-deferral-spawn"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-idle-deferral-parent-done"),
+                    ev_assistant_message("msg-idle-deferral-parent-done", "parent idle"),
+                    ev_completed("resp-idle-deferral-parent-done"),
+                ]),
+            }],
+        )
+        .await;
+    let (wake_gate_tx, wake_gate_rx) = oneshot::channel();
+    let mut wake_request = server
+        .mount_response(
+            |request| {
+                request.body_contains_text("<subagent_notification>")
+                    && request.body_contains_text("deferred wake result")
+            },
+            vec![StreamingSseChunk {
+                gate: Some(wake_gate_rx),
+                body: sse(vec![
+                    ev_response_created("resp-idle-deferral-wake"),
+                    ev_assistant_message("msg-idle-deferral-wake", "wake handled"),
+                    ev_completed("resp-idle-deferral-wake"),
+                ]),
+            }],
+        )
+        .await;
+
+    let (idle_tx, idle_rx) = mpsc::channel();
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdleRecorder(idle_tx)));
+    let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let test = builder
+        .build_with_streaming_server_auto_env(&server)
+        .await?;
+    let parent_thread_id = test.session_configured.thread_id.to_string();
+
+    test.submit_turn("defer idle automation").await?;
+    let _ = wait_for_streaming_request(&mut child_response).await?;
+    // TurnComplete is emitted before the task's idle lifecycle opportunity. Probe the same gate
+    // explicitly so this absence assertion cannot run before an incorrect callback is emitted.
+    test.codex
+        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+        .await;
+
+    assert!(
+        idle_rx
+            .try_iter()
+            .all(|thread_id| thread_id != parent_thread_id),
+        "parent idle automation should remain deferred while final wake is outstanding"
+    );
+
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate should remain open"))?;
+    let _ = wait_for_streaming_request(&mut wake_request).await?;
+    let wake_turn_id = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    test.codex
+        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+        .await;
+    assert!(
+        idle_rx
+            .try_iter()
+            .all(|thread_id| thread_id != parent_thread_id),
+        "parent idle automation should remain deferred while the wake turn is active"
+    );
+    wake_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("wake response gate should remain open"))?;
+    wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnComplete(event) if event.turn_id == wake_turn_id => Some(()),
+        _ => None,
+    })
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if idle_rx
+            .try_iter()
+            .any(|thread_id| thread_id == parent_thread_id)
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("parent idle lifecycle did not resume after wake turn completed");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_final_wake_does_not_start_a_later_codex_exec_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "one shot parent"),
+        sse(vec![
+            ev_response_created("resp-exec-boundary-spawn"),
+            ev_function_call_with_namespace(
+                "exec-boundary-spawn",
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-exec-boundary-spawn"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, CHILD_PROMPT) && !body_contains(request, "exec-boundary-spawn")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-exec-boundary-child"),
+            ev_assistant_message("msg-exec-boundary-child", "late exec result"),
+            ev_completed("resp-exec-boundary-child"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "exec-boundary-spawn"),
+        sse(vec![
+            ev_response_created("resp-exec-boundary-parent-done"),
+            ev_assistant_message("msg-exec-boundary-parent-done", "parent done"),
+            ev_completed("resp-exec-boundary-parent-done"),
+        ]),
+    )
+    .await;
+    let unexpected_wake = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "<subagent_notification>"),
+        sse(vec![
+            ev_response_created("resp-unexpected-exec-boundary-wake"),
+            ev_assistant_message("msg-unexpected-exec-boundary-wake", "unexpected"),
+            ev_completed("resp-unexpected-exec-boundary-wake"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+    test.codex
+        .set_app_server_client_info(
+            Some("codex_exec".to_string()),
+            /*app_server_client_version*/ None,
+            /*mcp_elicitations_auto_deny*/ false,
+        )
+        .await
+        .expect("set codex exec client identity");
+
+    test.submit_turn("one shot parent").await?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rollout = fs::read_to_string(
+            test.codex
+                .rollout_path()
+                .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?,
+        )?;
+        if rollout.contains("<subagent_notification>") && rollout.contains("late exec result") {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for the late exec result to persist");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(unexpected_wake.requests().is_empty());
+    assert_eq!(
+        test.codex.agent_status().await,
+        AgentStatus::Completed(Some("parent done".to_string()))
+    );
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_cx_wakes_once_and_keeps_final_out_of_model_context(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "w": "cx",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "observe first commentary"),
+        sse(vec![
+            ev_response_created("resp-commentary-spawn"),
+            ev_function_call_with_namespace(
+                "commentary-spawn",
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-commentary-spawn"),
+        ]),
+    )
+    .await;
+    let mut first_commentary =
+        ev_assistant_message("msg-first-commentary", "useful acknowledgement");
+    first_commentary["item"]["phase"] = json!("commentary");
+    let mut later_commentary = ev_assistant_message("msg-later-commentary", "progress noise");
+    later_commentary["item"]["phase"] = json!("commentary");
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, CHILD_PROMPT) && !body_contains(request, "commentary-spawn")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-commentary-child"),
+            first_commentary,
+            later_commentary,
+            ev_assistant_message("msg-commentary-final", "final result is not subscribed"),
+            ev_completed("resp-commentary-child"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "commentary-spawn"),
+        sse(vec![
+            ev_response_created("resp-commentary-parent-done"),
+            ev_assistant_message("msg-commentary-parent-done", "parent idle"),
+            ev_completed("resp-commentary-parent-done"),
+        ]),
+    )
+    .await;
+    let commentary_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "<subagent_commentary>"),
+        sse(vec![
+            ev_response_created("resp-commentary-wake"),
+            ev_assistant_message("msg-commentary-wake", "commentary handled"),
+            ev_completed("resp-commentary-wake"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.submit_turn("observe first commentary").await?;
+
+    let request =
+        wait_for_request_containing_text(&commentary_request, "<subagent_commentary>").await?;
+    assert!(request.body_contains_text("useful acknowledgement"));
+    assert!(!request.body_contains_text("progress noise"));
+    assert!(!request.body_contains_text("final result is not subscribed"));
+    let (completion_id, status, agent_reference, payload) =
+        wait_for_event_match(&test.codex, sub_agent_completion_event).await;
+    assert_eq!(
+        (status, payload),
+        (
+            SubAgentCompletionStatus::Completed,
+            "final result is not subscribed".to_string(),
+        )
+    );
+    ThreadId::from_string(&agent_reference)?;
+    assert_eq!(
+        sub_agent_completion_model_visibility_from_response_item_id(&completion_id),
+        Some(SubAgentCompletionModelVisibility::NotVisible)
+    );
+    let rollout_path = test
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+    let rollout = tokio::fs::read_to_string(rollout_path).await?;
+    assert!(!rollout.contains("<subagent_notification>"));
+    assert!(rollout.contains("final result is not subscribed"));
+    Ok(())
+}
+
+#[test_case(
+    ThreadHistoryMode::Legacy,
+    ConcurrentObservationKind::Commentary;
+    "non_paginated_commentary"
+)]
+#[test_case(
+    ThreadHistoryMode::Paginated,
+    ConcurrentObservationKind::Commentary;
+    "paginated_commentary"
+)]
+#[test_case(
+    ThreadHistoryMode::Legacy,
+    ConcurrentObservationKind::Final;
+    "non_paginated_final"
+)]
+#[test_case(
+    ThreadHistoryMode::Paginated,
+    ConcurrentObservationKind::Final;
+    "paginated_final"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observed_response_delivery_does_not_block_a_later_close(
+    history_mode: ThreadHistoryMode,
+    observation_kind: ConcurrentObservationKind,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const PARENT_PROMPT: &str = "close a target while its observed response is pending";
+    const TARGET_PROMPT: &str = "target response in the delivery race";
+    const SEND_CALL_ID: &str = "response-delivery-send";
+    const CLOSE_CALL_ID: &str = "response-delivery-close";
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    let target = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            history_mode: Some(history_mode),
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?;
+    let target_id = target.thread_id;
+
+    let (policy, observed_tag, target_events) = match observation_kind {
+        ConcurrentObservationKind::Commentary => (
+            "c",
+            "<subagent_commentary>",
+            vec![
+                ev_response_created("resp-delivery-target-commentary"),
+                ev_commentary_message("msg-delivery-target-commentary", "target acknowledgement"),
+                ev_assistant_message("msg-delivery-target-final", "target final response"),
+                ev_completed("resp-delivery-target-commentary"),
+            ],
+        ),
+        ConcurrentObservationKind::Final => (
+            "f",
+            "<subagent_notification>",
+            vec![
+                ev_response_created("resp-delivery-target-final"),
+                ev_assistant_message("msg-delivery-target-final", "target final response"),
+                ev_completed("resp-delivery-target-final"),
+            ],
+        ),
+    };
+    let send_args = serde_json::to_string(&json!({
+        "target": target_id,
+        "message": TARGET_PROMPT,
+        "w": policy,
+    }))?;
+    let close_args = serde_json::to_string(&json!({
+        "target": target_id,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, PARENT_PROMPT),
+        sse(vec![
+            ev_response_created("resp-delivery-parent-send"),
+            ev_function_call_with_namespace(
+                SEND_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-delivery-parent-send"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, TARGET_PROMPT) && !body_contains(request, SEND_CALL_ID)
+        },
+        sse_response(sse(target_events)).set_delay(Duration::from_millis(500)),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, SEND_CALL_ID),
+        sse_response(sse(vec![
+            ev_response_created("resp-delivery-parent-close"),
+            ev_function_call_with_namespace(
+                CLOSE_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "close_agent",
+                &close_args,
+            ),
+            ev_completed("resp-delivery-parent-close"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    let observed_parent_request = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, CLOSE_CALL_ID) && body_contains(request, observed_tag)
+        },
+        sse(vec![
+            ev_response_created("resp-delivery-parent-done"),
+            ev_assistant_message("msg-delivery-parent-done", "parent done"),
+            ev_completed("resp-delivery-parent-done"),
+        ]),
+    )
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(10), test.submit_turn(PARENT_PROMPT)).await??;
+
+    let request = wait_for_request_containing_text(&observed_parent_request, observed_tag).await?;
+    assert!(request.body_contains_text(CLOSE_CALL_ID));
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_x_presents_the_child_final_without_injecting_it(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "x",
+        }),
+        ChildResponseTiming::Immediate,
+        /*wait_for_parent_notification*/ false,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let child_thread_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    assert!(matches!(
+        wait_for_terminal_status(&child_thread).await?,
+        AgentStatus::Completed(_)
+    ));
+    let (completion, history_items) =
+        wait_for_persisted_sub_agent_completion(&test, "child done").await?;
+    let (completion_id, status, agent_reference, payload) = completion;
+    assert_eq!(
+        (status, agent_reference, payload,),
+        (
+            SubAgentCompletionStatus::Completed,
+            spawned_id.clone(),
+            "child done".to_string(),
+        )
+    );
+    assert_eq!(
+        sub_agent_completion_model_visibility_from_response_item_id(&completion_id),
+        Some(SubAgentCompletionModelVisibility::NotVisible)
+    );
+    let spawn_observation = history_items
+        .iter()
+        .find_map(|item| {
+            let RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) = item else {
+                return None;
+            };
+            let TurnItem::CollabAgentToolCall(item) = &event.item else {
+                return None;
+            };
+            (item.tool == CollabAgentTool::SpawnAgent)
+                .then_some((item.observe_commentary, item.wake_on_completion))
+        })
+        .expect("spawn lifecycle item");
+    assert_eq!(spawn_observation, (Some(false), None));
+    assert!(history_items.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::AgentResponseObservation(observation)
+                if observation.target_thread_id == child_thread_id
+                    && observation.final_delivery == AgentResponseFinalDelivery::PresentationOnly
+        )
+    }));
+    let rollout_path = test
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+    let rollout = tokio::fs::read_to_string(rollout_path).await?;
+    assert!(rollout.contains("\"type\":\"agent_response_observation\""));
+    assert!(rollout.contains(&spawned_id));
+    let follow_up = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "inspect after fire and forget"),
+        sse(vec![
+            ev_response_created("resp-after-fire-and-forget"),
+            ev_function_call_with_namespace(
+                "wait-after-fire-and-forget",
+                MULTI_AGENT_V1_NAMESPACE,
+                "wait_agent",
+                &serde_json::to_string(&json!({
+                    "targets": [spawned_id.clone()],
+                    "timeout_ms": 1_000,
+                }))?,
+            ),
+            ev_completed("resp-after-fire-and-forget"),
+        ]),
+    )
+    .await;
+    let wait_result = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "wait-after-fire-and-forget")
+                && body_contains(request, "child done")
+        },
+        sse(vec![
+            ev_response_created("resp-wait-after-fire-and-forget"),
+            ev_assistant_message("msg-wait-after-fire-and-forget", "done"),
+            ev_completed("resp-wait-after-fire-and-forget"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("inspect after fire and forget").await?;
+
+    let request =
+        wait_for_request_containing_text(&follow_up, "inspect after fire and forget").await?;
+    assert!(!request.body_contains_text("<subagent_notification>"));
+    assert!(!request.body_contains_text("child done"));
+    let wait_request =
+        wait_for_request_containing_text(&wait_result, "wait-after-fire-and-forget").await?;
+    assert!(wait_request.body_contains_text("child done"));
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_input_x_presents_the_target_turn_without_injecting_it(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let (test, spawned_id, initial_child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "x",
+        }),
+        ChildResponseTiming::Immediate,
+        /*wait_for_parent_notification*/ false,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+    let _ = wait_for_requests(&initial_child_request).await?;
+    let child_thread_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    assert!(matches!(
+        wait_for_terminal_status(&child_thread).await?,
+        AgentStatus::Completed(_)
+    ));
+
+    let send_call_id = "send-presentation-only-final";
+    let send_args = serde_json::to_string(&json!({
+        "target": spawned_id.clone(),
+        "message": "run presentation-only target turn",
+        "w": "x",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "send presentation-only work"),
+        sse(vec![
+            ev_response_created("resp-send-presentation-only"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-send-presentation-only"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, "run presentation-only target turn")
+                && !body_contains(request, send_call_id)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-presentation-only-child"),
+            ev_assistant_message("msg-presentation-only-child", "presentation-only result"),
+            ev_completed("resp-presentation-only-child"),
+        ])),
+    )
+    .await;
+    let parent_after_send = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, send_call_id),
+        sse(vec![
+            ev_response_created("resp-parent-after-presentation-only-send"),
+            ev_assistant_message("msg-parent-after-presentation-only-send", "parent idle"),
+            ev_completed("resp-parent-after-presentation-only-send"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("send presentation-only work").await?;
+
+    let (completion, history_items) =
+        wait_for_persisted_sub_agent_completion(&test, "presentation-only result").await?;
+    let (completion_id, status, agent_reference, payload) = completion;
+    assert_eq!(
+        (status, agent_reference, payload,),
+        (
+            SubAgentCompletionStatus::Completed,
+            spawned_id,
+            "presentation-only result".to_string(),
+        )
+    );
+    assert_eq!(
+        sub_agent_completion_model_visibility_from_response_item_id(&completion_id),
+        Some(SubAgentCompletionModelVisibility::NotVisible)
+    );
+    let parent_after_send =
+        wait_for_request_containing_text(&parent_after_send, send_call_id).await?;
+    assert!(!parent_after_send.body_contains_text("presentation-only result"));
+    let send_observation = history_items
+        .iter()
+        .find_map(|item| {
+            let RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) = item else {
+                return None;
+            };
+            let TurnItem::CollabAgentToolCall(item) = &event.item else {
+                return None;
+            };
+            (item.id == send_call_id).then_some((item.observe_commentary, item.wake_on_completion))
+        })
+        .expect("send-input lifecycle item");
+    assert_eq!(send_observation, (Some(false), None));
+
+    let inspect = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "inspect presentation-only context"),
+        sse(vec![
+            ev_response_created("resp-inspect-presentation-only"),
+            ev_assistant_message("msg-inspect-presentation-only", "inspection complete"),
+            ev_completed("resp-inspect-presentation-only"),
+        ]),
+    )
+    .await;
+    test.submit_turn("inspect presentation-only context")
+        .await?;
+    let inspect =
+        wait_for_request_containing_text(&inspect, "inspect presentation-only context").await?;
+    assert!(!inspect.body_contains_text("presentation-only result"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_lifecycle_tools_reject_self_target_without_shutting_down_thread() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+    let thread_id = test.session_configured.thread_id;
+    let resume_call_id = "resume-self";
+    let close_call_id = "close-self";
+    let resume_args = serde_json::to_string(&json!({
+        "id": thread_id,
+    }))?;
+    let close_args = serde_json::to_string(&json!({
+        "target": thread_id,
+    }))?;
+
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "reject self lifecycle tools"),
+        sse(vec![
+            ev_response_created("resp-resume-self"),
+            ev_function_call_with_namespace(
+                resume_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "resume_agent",
+                &resume_args,
+            ),
+            ev_completed("resp-resume-self"),
+        ]),
+    )
+    .await;
+    let after_resume = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, resume_call_id),
+        sse(vec![
+            ev_response_created("resp-close-self"),
+            ev_function_call_with_namespace(
+                close_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "close_agent",
+                &close_args,
+            ),
+            ev_completed("resp-close-self"),
+        ]),
+    )
+    .await;
+    let after_close = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, close_call_id),
+        sse(vec![
+            ev_response_created("resp-self-lifecycle-finished"),
+            ev_assistant_message("msg-self-lifecycle-finished", "self lifecycle rejected"),
+            ev_completed("resp-self-lifecycle-finished"),
+        ]),
+    )
+    .await;
+    let later_turn = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "continue after self lifecycle"),
+        sse(vec![
+            ev_response_created("resp-after-self-lifecycle"),
+            ev_assistant_message("msg-after-self-lifecycle", "thread remains usable"),
+            ev_completed("resp-after-self-lifecycle"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("reject self lifecycle tools").await?;
+    let request = wait_for_request_containing_text(&after_resume, resume_call_id).await?;
+    assert!(request.body_contains_text("an agent cannot resume itself"));
+    let request = wait_for_request_containing_text(&after_close, close_call_id).await?;
+    assert!(request.body_contains_text("an agent cannot close itself"));
+    assert_eq!(
+        wait_for_terminal_status(test.codex.as_ref()).await?,
+        AgentStatus::Completed(Some("self lifecycle rejected".to_string()))
+    );
+
+    test.submit_turn("continue after self lifecycle").await?;
+    let _ = wait_for_request_containing_text(&later_turn, "continue after self lifecycle").await?;
+    assert_eq!(
+        wait_for_terminal_status(test.codex.as_ref()).await?,
+        AgentStatus::Completed(Some("thread remains usable".to_string()))
+    );
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_agent_revokes_v1_final_wake_before_shutdown(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let (test, spawned_id, _child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "f",
+        }),
+        ChildResponseTiming::Delayed(Duration::from_millis(500)),
+        /*wait_for_parent_notification*/ false,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+    let close_args = serde_json::to_string(&json!({
+        "target": spawned_id,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "close subscribed child"),
+        sse(vec![
+            ev_response_created("resp-close-subscribed-child"),
+            ev_function_call_with_namespace(
+                "close-subscribed-child",
+                MULTI_AGENT_V1_NAMESPACE,
+                "close_agent",
+                &close_args,
+            ),
+            ev_completed("resp-close-subscribed-child"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "close-subscribed-child"),
+        sse(vec![
+            ev_response_created("resp-after-close-subscribed-child"),
+            ev_assistant_message("msg-after-close-subscribed-child", "child closed"),
+            ev_completed("resp-after-close-subscribed-child"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("close subscribed child").await?;
+    sleep(Duration::from_secs(1)).await;
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    assert!(!requests.iter().any(|request| {
+        body_contains(request, "<subagent_notification>") && body_contains(request, "child done")
+    }));
+    let rollout_path = test
+        .codex
+        .rollout_path()
+        .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
+    let rollout = tokio::fs::read_to_string(rollout_path).await?;
+    assert!(!rollout.contains("<subagent_notification>"));
+    assert!(!rollout.contains("child done"));
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn foreign_close_resumes_idle_lifecycle_after_revoking_final_wake(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let (idle_tx, idle_rx) = mpsc::channel();
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdleRecorder(idle_tx)));
+    let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    let target = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            history_mode: Some(history_mode),
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?;
+    let closer = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            history_mode: Some(history_mode),
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?;
+    let send_call_id = "observe-foreign-target";
+    let send_args = serde_json::to_string(&json!({
+        "target": target.thread_id,
+        "message": "foreign target work",
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "observe foreign target"),
+        sse(vec![
+            ev_response_created("resp-observe-foreign-target"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-observe-foreign-target"),
+        ]),
+    )
+    .await;
+    let target_request = mount_response_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, "foreign target work") && !body_contains(request, send_call_id)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-foreign-target-work"),
+            ev_assistant_message("msg-foreign-target-work", "should be cancelled by close"),
+            ev_completed("resp-foreign-target-work"),
+        ]))
+        .set_delay(Duration::from_secs(30)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, send_call_id),
+        sse(vec![
+            ev_response_created("resp-after-observe-foreign-target"),
+            ev_assistant_message("msg-after-observe-foreign-target", "observer idle"),
+            ev_completed("resp-after-observe-foreign-target"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("observe foreign target").await?;
+    let _ = wait_for_request_containing_text(&target_request, "foreign target work").await?;
+    test.codex
+        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+        .await;
+    let parent_thread_id = test.session_configured.thread_id.to_string();
+    assert!(
+        idle_rx
+            .try_iter()
+            .all(|thread_id| thread_id != parent_thread_id),
+        "foreign target wake should defer the idle observer"
+    );
+
+    let close_call_id = "close-foreign-target";
+    let close_args = serde_json::to_string(&json!({
+        "target": target.thread_id,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "close foreign target"),
+        sse(vec![
+            ev_response_created("resp-close-foreign-target"),
+            ev_function_call_with_namespace(
+                close_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "close_agent",
+                &close_args,
+            ),
+            ev_completed("resp-close-foreign-target"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, close_call_id),
+        sse(vec![
+            ev_response_created("resp-after-close-foreign-target"),
+            ev_assistant_message("msg-after-close-foreign-target", "target closed"),
+            ev_completed("resp-after-close-foreign-target"),
+        ]),
+    )
+    .await;
+    let unexpected_wake = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<subagent_notification>")
+                && body_contains(request, "should be cancelled by close")
+        },
+        sse(vec![
+            ev_response_created("resp-unexpected-foreign-close-wake"),
+            ev_assistant_message("msg-unexpected-foreign-close-wake", "unexpected"),
+            ev_completed("resp-unexpected-foreign-close-wake"),
+        ]),
+    )
+    .await;
+
+    submit_turn_on_thread(closer.thread.as_ref(), "close foreign target").await?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if idle_rx
+            .try_iter()
+            .any(|thread_id| thread_id == parent_thread_id)
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("foreign observer idle lifecycle did not resume after close");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        idle_rx
+            .try_iter()
+            .all(|thread_id| thread_id != parent_thread_id),
+        "foreign close should resume the observer idle lifecycle once"
+    );
+    assert!(
+        unexpected_wake.requests().is_empty(),
+        "foreign close should revoke the final wake before target shutdown"
+    );
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_final_wake_survives_a_later_send_input_x(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "x",
+        }),
+        ChildResponseTiming::Immediate,
+        /*wait_for_parent_notification*/ false,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let child_thread_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    assert!(matches!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(_)
+    ));
+
+    let resume_args = serde_json::to_string(&json!({
+        "id": spawned_id,
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "resume then redirect"),
+        sse(vec![
+            ev_response_created("resp-resume-observation"),
+            ev_function_call_with_namespace(
+                "resume-observation-call",
+                MULTI_AGENT_V1_NAMESPACE,
+                "resume_agent",
+                &resume_args,
+            ),
+            ev_completed("resp-resume-observation"),
+        ]),
+    )
+    .await;
+    let send_args = serde_json::to_string(&json!({
+        "target": child_thread_id,
+        "message": "resumed child task",
+        "w": "x",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "resume-observation-call"),
+        sse(vec![
+            ev_response_created("resp-send-after-resume"),
+            ev_function_call_with_namespace(
+                "send-after-resume-call",
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-send-after-resume"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "resumed child task")
+                && !body_contains(request, "send-after-resume-call")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-resumed-child"),
+            ev_assistant_message("msg-resumed-child", "resumed child result"),
+            ev_completed("resp-resumed-child"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "send-after-resume-call"),
+        sse(vec![
+            ev_response_created("resp-parent-after-send"),
+            ev_assistant_message("msg-parent-after-send", "parent idle"),
+            ev_completed("resp-parent-after-send"),
+        ]),
+    )
+    .await;
+    let wake_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<subagent_notification>")
+                && body_contains(request, "resumed child result")
+        },
+        sse(vec![
+            ev_response_created("resp-resume-final-wake"),
+            ev_assistant_message("msg-resume-final-wake", "wake handled"),
+            ev_completed("resp-resume-final-wake"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("resume then redirect").await?;
+
+    let request = wait_for_request_containing_text(&wake_request, "resumed child result").await?;
+    assert!(request.body_contains_text("<subagent_notification>"));
+    assert!(request.body_contains_text("resumed child result"));
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_input_commentary_binds_to_the_interrupt_replacement_turn(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let (test, spawned_id, initial_child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "x",
+        }),
+        ChildResponseTiming::Delayed(Duration::from_secs(30)),
+        /*wait_for_parent_notification*/ false,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+    let _ = wait_for_requests(&initial_child_request).await?;
+
+    let send_call_id = "send-interrupt-observation";
+    let send_args = serde_json::to_string(&json!({
+        "target": spawned_id,
+        "message": "replacement child task",
+        "interrupt": true,
+        "w": "cx",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "redirect the active child"),
+        sse(vec![
+            ev_response_created("resp-send-interrupt"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-send-interrupt"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, "replacement child task")
+                && !body_contains(request, send_call_id)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-replacement-child"),
+            ev_commentary_message("msg-replacement-commentary", "replacement acknowledged"),
+            ev_assistant_message("msg-replacement-final", "replacement complete"),
+            ev_completed("resp-replacement-child"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, send_call_id),
+        sse(vec![
+            ev_response_created("resp-parent-after-interrupt"),
+            ev_assistant_message("msg-parent-after-interrupt", "parent idle"),
+            ev_completed("resp-parent-after-interrupt"),
+        ]),
+    )
+    .await;
+    let commentary_wake = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<subagent_commentary>")
+                && body_contains(request, "replacement acknowledged")
+        },
+        sse(vec![
+            ev_response_created("resp-replacement-commentary-wake"),
+            ev_assistant_message("msg-replacement-commentary-wake", "acknowledgement handled"),
+            ev_completed("resp-replacement-commentary-wake"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("redirect the active child").await?;
+
+    let request =
+        wait_for_request_containing_text(&commentary_wake, "replacement acknowledged").await?;
+    assert!(request.body_contains_text("msg-replacement-commentary"));
+    assert!(!request.body_contains_text("child done"));
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_input_final_observation_wakes_an_idle_parent(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "x",
+        }),
+        ChildResponseTiming::Immediate,
+        /*wait_for_parent_notification*/ false,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let child_thread_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+
+    let send_call_id = "send-final-observation";
+    let send_args = serde_json::to_string(&json!({
+        "target": spawned_id,
+        "message": "final-observed child task",
+        "w": "f",
+    }))?;
+    let send_instruction = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "observe the sent final"),
+        sse(vec![
+            ev_response_created("resp-send-final"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-send-final"),
+        ]),
+    )
+    .await;
+    let child_response = mount_response_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, "final-observed child task")
+                && !body_contains(request, send_call_id)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-final-observed-child"),
+            ev_assistant_message("msg-final-observed-child", "sent final result"),
+            ev_completed("resp-final-observed-child"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    let parent_after_send = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, send_call_id),
+        sse(vec![
+            ev_response_created("resp-parent-after-send-final"),
+            ev_assistant_message("msg-parent-after-send-final", "parent idle"),
+            ev_completed("resp-parent-after-send-final"),
+        ]),
+    )
+    .await;
+    let final_wake = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<subagent_notification>")
+                && body_contains(request, "sent final result")
+        },
+        sse(vec![
+            ev_response_created("resp-send-final-wake"),
+            ev_assistant_message("msg-send-final-wake", "final handled"),
+            ev_completed("resp-send-final-wake"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("observe the sent final").await?;
+
+    let _ = wait_for_request_containing_text(&send_instruction, "observe the sent final").await?;
+    let _ = wait_for_request_containing_text(&parent_after_send, send_call_id).await?;
+    let _ = wait_for_request_containing_text(&child_response, "final-observed child task").await?;
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("sent final result".to_string()))
+    );
+    test.codex.flush_rollout().await?;
+    let response_observations = read_test_rollout_items(&test)?
+        .into_iter()
+        .filter_map(|item| match item {
+            RolloutItem::AgentResponseObservation(observation)
+                if observation.target_thread_id == child_thread_id
+                    && observation.target_turn_id.is_some() =>
+            {
+                Some(observation)
+            }
+            RolloutItem::SessionMeta(_)
+            | RolloutItem::ResponseItem(_)
+            | RolloutItem::Compacted(_)
+            | RolloutItem::InterAgentCommunication(_)
+            | RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::WorldState(_)
+            | RolloutItem::SecurityRiskScore(_)
+            | RolloutItem::TokenUsageRecord(_)
+            | RolloutItem::EventMsg(_)
+            | RolloutItem::RealtimeItem(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        response_observations
+            .iter()
+            .any(|observation| { observation.final_delivery == AgentResponseFinalDelivery::Wake }),
+        "send_input should durably bind Wake to its admitted target turn, got {response_observations:#?}"
+    );
+    let request = wait_for_request_containing_text(&final_wake, "sent final result").await?;
+    assert!(request.body_contains_text("<subagent_notification>"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn final_delivery_persistence_failure_recovers_the_v1_response_observer() -> Result<()> {
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let configured_store_id = store_id.clone();
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+        }),
+        ChildResponseTiming::Immediate,
+        /*wait_for_parent_notification*/ false,
+        move |builder| {
+            builder.with_config(move |config| {
+                config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                    id: configured_store_id,
+                };
+            })
+        },
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let child_thread_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    wait_for_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        child_thread_id,
+    )
+    .await?;
+
+    let send_call_id = "send-final-before-observation-flush-failure";
+    let send_args = serde_json::to_string(&json!({
+        "target": spawned_id,
+        "message": "final result after transient observation failure",
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "observe final across persistence failure")
+        },
+        sse(vec![
+            ev_response_created("resp-send-before-observation-flush-failure"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-send-before-observation-flush-failure"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "final result after transient observation failure")
+                && !body_contains(request, "send-final-before-observation-flush-failure")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-child-after-observation-flush-failure"),
+            ev_assistant_message(
+                "msg-child-after-observation-flush-failure",
+                "result survives observation failure",
+            ),
+            ev_completed("resp-child-after-observation-flush-failure"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, send_call_id),
+        sse(vec![
+            ev_response_created("resp-parent-before-observation-flush-failure"),
+            ev_assistant_message("msg-parent-before-observation-flush-failure", "parent idle"),
+            ev_completed("resp-parent-before-observation-flush-failure"),
+        ]),
+    )
+    .await;
+    let final_wake = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<subagent_notification>")
+                && body_contains(request, "result survives observation failure")
+        },
+        sse(vec![
+            ev_response_created("resp-final-after-observation-flush-failure"),
+            ev_assistant_message(
+                "msg-final-after-observation-flush-failure",
+                "recovered final handled",
+            ),
+            ev_completed("resp-final-after-observation-flush-failure"),
+        ]),
+    )
+    .await;
+    store
+        .fail_agent_response_observation_flushes_after(
+            /*successful_flushes*/ 2, /*failed_flushes*/ 1,
+        )
+        .await;
+
+    test.submit_turn("observe final across persistence failure")
+        .await?;
+
+    let request =
+        wait_for_request_containing_text(&final_wake, "result survives observation failure")
+            .await?;
+    assert!(request.body_contains_text("<subagent_notification>"));
+    test.codex.flush_rollout().await?;
+    assert_eq!(
+        store
+            .load_rollback_history(LoadThreadHistoryParams {
+                thread_id: test.session_configured.thread_id,
+                include_archived: false,
+            })
+            .await?
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::ResponseItem(ResponseItem::AgentMessage { content, .. })
+                        if content.iter().any(|content| {
+                            matches!(
+                                content,
+                                AgentMessageInputContent::InputText { text }
+                                    if text.contains("result survives observation failure")
+                            )
+                        })
+                )
+            })
+            .count(),
+        1
+    );
+    wait_for_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        child_thread_id,
+    )
+    .await?;
+
+    InMemoryThreadStore::remove_id(&store_id);
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy, None; "non_paginated_passive")]
+#[test_case(ThreadHistoryMode::Paginated, None; "paginated_passive")]
+#[test_case(ThreadHistoryMode::Legacy, Some("x"); "non_paginated_presentation_only")]
+#[test_case(ThreadHistoryMode::Paginated, Some("x"); "paginated_presentation_only")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_wait_owns_v1_completion_without_duplicate_background_context(
+    history_mode: ThreadHistoryMode,
+    w: Option<&str>,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut spawn_args = json!({
+        "message": CHILD_PROMPT,
+    });
+    if let Some(w) = w {
+        spawn_args["w"] = json!(w);
+    }
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        spawn_args,
+        ChildResponseTiming::Delayed(Duration::from_secs(5)),
+        /*wait_for_parent_notification*/ false,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+
+    let wait_call_id = "wait-owned-v1-completion";
+    let wait_args = serde_json::to_string(&json!({
+        "targets": [spawned_id],
+        "timeout_ms": 10_000,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "wait before child completion"),
+        sse(vec![
+            ev_response_created("resp-wait-owned-v1-completion"),
+            ev_function_call_with_namespace(
+                wait_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "wait_agent",
+                &wait_args,
+            ),
+            ev_completed("resp-wait-owned-v1-completion"),
+        ]),
+    )
+    .await;
+    let after_wait = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, wait_call_id),
+        sse(vec![
+            ev_response_created("resp-after-wait-owned-v1-completion"),
+            ev_assistant_message("msg-after-wait-owned-v1-completion", "wait handled"),
+            ev_completed("resp-after-wait-owned-v1-completion"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("wait before child completion").await?;
+
+    let after_wait = wait_for_request_containing_text(&after_wait, wait_call_id).await?;
+    assert!(after_wait.body_contains_text("child done"));
+    let history_items = read_test_rollout_items(&test)?;
+    assert!(!history_items.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                if sub_agent_completion_item(&event.item).is_some()
+        )
+    }));
+
+    let follow_up = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "inspect after owned wait"),
+        sse(vec![
+            ev_response_created("resp-inspect-after-owned-wait"),
+            ev_assistant_message("msg-inspect-after-owned-wait", "inspection complete"),
+            ev_completed("resp-inspect-after-owned-wait"),
+        ]),
+    )
+    .await;
+    test.submit_turn("inspect after owned wait").await?;
+    let request = wait_for_request_containing_text(&follow_up, "inspect after owned wait").await?;
+    assert_eq!(subagent_notification_count(&request), 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn timed_out_wait_leaves_v1_final_wake_active() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "f",
+        }),
+        ChildResponseTiming::Delayed(Duration::from_secs(20)),
+        /*wait_for_parent_notification*/ false,
+        |builder| builder.with_history_mode(ThreadHistoryMode::Legacy),
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+
+    let wait_call_id = "timed-out-final-wait";
+    let wait_args = serde_json::to_string(&json!({
+        "targets": [spawned_id],
+        "timeout_ms": 10_000,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "time out before final"),
+        sse(vec![
+            ev_response_created("resp-timed-out-final-wait"),
+            ev_function_call_with_namespace(
+                wait_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "wait_agent",
+                &wait_args,
+            ),
+            ev_completed("resp-timed-out-final-wait"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, wait_call_id),
+        sse(vec![
+            ev_response_created("resp-after-timed-out-final-wait"),
+            ev_assistant_message("msg-after-timed-out-final-wait", "parent idle"),
+            ev_completed("resp-after-timed-out-final-wait"),
+        ]),
+    )
+    .await;
+    let wake = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<subagent_notification>")
+                && body_contains(request, "child done")
+        },
+        sse(vec![
+            ev_response_created("resp-after-timed-out-wake"),
+            ev_assistant_message("msg-after-timed-out-wake", "wake retained"),
+            ev_completed("resp-after-timed-out-wake"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("time out before final").await?;
+
+    let request = wait_for_request_containing_text(&wake, "child done").await?;
+    assert!(request.body_contains_text("<subagent_notification>"));
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_v1_final_wake_survives_parent_compaction(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let compact_prompt = "compact while the child wake remains pending";
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "f",
+        }),
+        ChildResponseTiming::Delayed(Duration::from_secs(10)),
+        /*wait_for_parent_notification*/ false,
+        |builder| {
+            builder
+                .with_history_mode(history_mode)
+                .with_config(move |config| {
+                    config.compact_prompt = Some(compact_prompt.to_string());
+                    let _ = config.features.disable(Feature::RemoteCompaction);
+                })
+        },
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let child_thread = test
+        .thread_manager
+        .get_thread(ThreadId::from_string(&spawned_id)?)
+        .await?;
+
+    let compact = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, compact_prompt),
+        sse(vec![
+            ev_response_created("resp-pending-wake-compact"),
+            ev_assistant_message("msg-pending-wake-compact", "compacted parent context"),
+            ev_completed("resp-pending-wake-compact"),
+        ]),
+    )
+    .await;
+    test.codex.submit(Op::Compact).await?;
+    wait_for_event_match(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_)).then_some(())
+    })
+    .await;
+    let _ = wait_for_request_containing_text(&compact, compact_prompt).await?;
+
+    let wake = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<subagent_notification>")
+                && body_contains(request, "child done")
+        },
+        sse(vec![
+            ev_response_created("resp-post-compact-child-wake"),
+            ev_assistant_message("msg-post-compact-child-wake", "wake handled"),
+            ev_completed("resp-post-compact-child-wake"),
+        ]),
+    )
+    .await;
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("child done".to_string()))
+    );
+    let wake_request = wait_for_request_containing_text(&wake, "child done").await?;
+    assert!(wake_request.body_contains_text("<subagent_notification>"));
+
+    let inspect = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "inspect compacted wake"),
+        sse(vec![
+            ev_response_created("resp-inspect-compacted-wake"),
+            ev_assistant_message("msg-inspect-compacted-wake", "inspection complete"),
+            ev_completed("resp-inspect-compacted-wake"),
+        ]),
+    )
+    .await;
+    test.submit_turn("inspect compacted wake").await?;
+    let inspect_request =
+        wait_for_request_containing_text(&inspect, "inspect compacted wake").await?;
+    assert_eq!(
+        inspect_request
+            .inputs_of_type("agent_message")
+            .iter()
+            .filter(|item| {
+                let item = item.to_string();
+                item.contains("<subagent_notification>") && item.contains("child done")
+            })
+            .count(),
+        1
+    );
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_resume_requires_explicit_agent_reconfiguration(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "w": "cf",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "prepare cold resume boundary"),
+        sse(vec![
+            ev_response_created("resp-cold-boundary-spawn"),
+            ev_function_call_with_namespace(
+                "cold-boundary-spawn",
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-cold-boundary-spawn"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, CHILD_PROMPT) && !body_contains(request, "cold-boundary-spawn")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-cold-boundary-child"),
+            ev_commentary_message("msg-cold-boundary-commentary", "durable acknowledgement"),
+            ev_assistant_message("msg-cold-boundary-final", "durable child final"),
+            ev_completed("resp-cold-boundary-child"),
+        ]))
+        .set_delay(Duration::from_secs(10)),
+    )
+    .await;
+    let initial_parent_followup = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "cold-boundary-spawn"),
+        sse(vec![
+            ev_response_created("resp-cold-boundary-parent-idle"),
+            ev_assistant_message("msg-cold-boundary-parent-idle", "parent idle"),
+            ev_completed("resp-cold-boundary-parent-idle"),
+        ]),
+    )
+    .await;
+
+    let configured_store_id = store_id.clone();
+    let mut builder = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                id: configured_store_id,
+            };
+        });
+    let initial = builder.build_with_auto_env(&server).await?;
+    initial.submit_turn("prepare cold resume boundary").await?;
+    let spawned_id = ThreadId::from_string(&wait_for_spawned_thread_id(&initial).await?)?;
+    let child_thread = initial.thread_manager.get_thread(spawned_id).await?;
+    let _ = wait_for_requests(&initial_parent_followup).await?;
+    let _ = wait_for_terminal_status(initial.codex.as_ref()).await?;
+    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("durable child final".to_string()))
+    );
+
+    let parent_thread_id = initial.session_configured.thread_id;
+    let parent_history_items = match history_mode {
+        ThreadHistoryMode::Legacy => {
+            store
+                .load_latest_model_context(LoadThreadHistoryParams {
+                    thread_id: parent_thread_id,
+                    include_archived: false,
+                })
+                .await?
+                .items
+        }
+        ThreadHistoryMode::Paginated => {
+            store
+                .load_rollback_history(LoadThreadHistoryParams {
+                    thread_id: parent_thread_id,
+                    include_archived: false,
+                })
+                .await?
+                .items
+        }
+    };
+    initial.thread_manager.remove_thread(&spawned_id).await;
+    initial
+        .thread_manager
+        .remove_thread(&parent_thread_id)
+        .await;
+    drop(durable_context_permit);
+
+    let automatic_delivery = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            (body_contains(request, "<subagent_commentary>")
+                || body_contains(request, "<subagent_notification>"))
+                && !body_contains(request, "explicit-cold-boundary-resume")
+        },
+        sse(vec![
+            ev_response_created("resp-unexpected-cold-delivery"),
+            ev_assistant_message("msg-unexpected-cold-delivery", "unexpected"),
+            ev_completed("resp-unexpected-cold-delivery"),
+        ]),
+    )
+    .await;
+    let resumed = initial
+        .thread_manager
+        .resume_thread_with_history(
+            initial.config.clone(),
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: parent_thread_id,
+                history: Arc::new(parent_history_items),
+                rollout_path: None,
+            }),
+            codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test")),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await?;
+    sleep(Duration::from_millis(100)).await;
+    assert!(automatic_delivery.requests().is_empty());
+
+    let resume_call_id = "explicit-cold-boundary-resume";
+    let resume_args = serde_json::to_string(&json!({
+        "id": spawned_id,
+        "w": "f",
+    }))?;
+    let explicit_resume = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "reconfigure agents after cold resume")
+        },
+        sse(vec![
+            ev_response_created("resp-explicit-cold-boundary-resume"),
+            ev_function_call_with_namespace(
+                resume_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "resume_agent",
+                &resume_args,
+            ),
+            ev_completed("resp-explicit-cold-boundary-resume"),
+        ]),
+    )
+    .await;
+    let explicit_result = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, resume_call_id) && body_contains(request, "durable child final")
+        },
+        sse(vec![
+            ev_response_created("resp-after-explicit-cold-boundary-resume"),
+            ev_assistant_message("msg-after-explicit-cold-boundary-resume", "reconfigured"),
+            ev_completed("resp-after-explicit-cold-boundary-resume"),
+        ]),
+    )
+    .await;
+    submit_turn_on_thread(
+        resumed.thread.as_ref(),
+        "reconfigure agents after cold resume",
+    )
+    .await?;
+    let request =
+        wait_for_request_containing_text(&explicit_resume, "reconfigure agents after cold resume")
+            .await?;
+    assert!(!request.body_contains_text("<subagent_commentary>"));
+    assert!(!request.body_contains_text("<subagent_notification>"));
+    assert!(!request.body_contains_text("durable acknowledgement"));
+    assert!(!request.body_contains_text("durable child final"));
+    let _ = wait_for_request_containing_text(&explicit_result, "durable child final").await?;
+
+    InMemoryThreadStore::remove_id(&store_id);
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fork_requires_explicit_agent_reconfiguration(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let configured_store_id = store_id.clone();
+    let (initial, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "cf",
+        }),
+        ChildResponseTiming::Delayed(Duration::from_secs(10)),
+        /*wait_for_parent_notification*/ false,
+        move |builder| {
+            builder
+                .with_history_mode(history_mode)
+                .with_config(move |config| {
+                    config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                        id: configured_store_id,
+                    };
+                })
+        },
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let spawned_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = initial.thread_manager.get_thread(spawned_id).await?;
+    let source_parent_id = initial.session_configured.thread_id;
+    let parent_history = store
+        .load_rollback_history(LoadThreadHistoryParams {
+            thread_id: source_parent_id,
+            include_archived: false,
+        })
+        .await?;
+    let parent_model_context = store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id: source_parent_id,
+            include_archived: false,
+        })
+        .await?;
+    assert!(parent_history.items.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::AgentResponseObservation(observation)
+                if observation.target_thread_id == spawned_id
+                    && observation.pending_commentary
+                    && observation.final_delivery == AgentResponseFinalDelivery::Wake
+        )
+    }));
+    let forked = initial
+        .thread_manager
+        .fork_thread_from_history(
+            codex_core::ForkSnapshot::Interrupted,
+            initial.config.clone(),
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: source_parent_id,
+                history: Arc::new(parent_model_context.items),
+                rollout_path: None,
+            }),
+            /*thread_source*/ None,
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await?;
+    assert_ne!(forked.thread_id, source_parent_id);
+    initial
+        .thread_manager
+        .remove_thread(&source_parent_id)
+        .await;
+
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("child done".to_string()))
+    );
+    sleep(Duration::from_millis(100)).await;
+    let requests_before_explicit_resume = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|request| {
+            body_contains(request, "<subagent_commentary>")
+                || body_contains(request, "<subagent_notification>")
+        })
+        .count();
+    assert_eq!(requests_before_explicit_resume, 0);
+
+    let resume_call_id = "explicit-fork-boundary-resume";
+    let resume_args = serde_json::to_string(&json!({
+        "id": spawned_id,
+        "w": "f",
+    }))?;
+    let explicit_resume = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "reconfigure agents in fork"),
+        sse(vec![
+            ev_response_created("resp-explicit-fork-boundary-resume"),
+            ev_function_call_with_namespace(
+                resume_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "resume_agent",
+                &resume_args,
+            ),
+            ev_completed("resp-explicit-fork-boundary-resume"),
+        ]),
+    )
+    .await;
+    let explicit_result = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, resume_call_id) && body_contains(request, "child done")
+        },
+        sse(vec![
+            ev_response_created("resp-after-explicit-fork-boundary-resume"),
+            ev_assistant_message("msg-after-explicit-fork-boundary-resume", "reconfigured"),
+            ev_completed("resp-after-explicit-fork-boundary-resume"),
+        ]),
+    )
+    .await;
+    submit_turn_on_thread(forked.thread.as_ref(), "reconfigure agents in fork").await?;
+    let request =
+        wait_for_request_containing_text(&explicit_resume, "reconfigure agents in fork").await?;
+    assert!(!request.body_contains_text("<subagent_commentary>"));
+    assert!(!request.body_contains_text("<subagent_notification>"));
+    assert!(!request.body_contains_text("child done"));
+    let _ = wait_for_request_containing_text(&explicit_result, "child done").await?;
+
+    InMemoryThreadStore::remove_id(&store_id);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_input_persistence_failure_rolls_back_response_observation() -> Result<()> {
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let configured_store_id = store_id.clone();
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "x",
+        }),
+        ChildResponseTiming::Immediate,
+        /*wait_for_parent_notification*/ false,
+        move |builder| {
+            builder.with_config(move |config| {
+                config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                    id: configured_store_id,
+                };
+            })
+        },
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let child_thread_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    wait_for_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        child_thread_id,
+    )
+    .await?;
+
+    let send_call_id = "send-observation-persistence-failure";
+    let send_args = serde_json::to_string(&json!({
+        "target": spawned_id,
+        "message": "task whose observation persistence fails",
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "fail send observation persistence"),
+        sse(vec![
+            ev_response_created("resp-fail-send-observation"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-fail-send-observation"),
+        ]),
+    )
+    .await;
+    let child_request = mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "task whose observation persistence fails")
+                && !body_contains(request, "send-observation-persistence-failure")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-child-after-send-observation-failure"),
+            ev_assistant_message(
+                "msg-child-after-send-observation-failure",
+                "unsubscribed send result",
+            ),
+            ev_completed("resp-child-after-send-observation-failure"),
+        ]))
+        .set_delay(Duration::from_secs(1)),
+    )
+    .await;
+    let failure_response = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, send_call_id)
+                && body_contains(request, "failed to persist response observation state")
+        },
+        sse(vec![
+            ev_response_created("resp-send-observation-failure-handled"),
+            ev_assistant_message("msg-send-observation-failure-handled", "failure handled"),
+            ev_completed("resp-send-observation-failure-handled"),
+        ]),
+    )
+    .await;
+    store
+        .fail_next_operation(InMemoryThreadStoreFailure::AgentResponseObservationFlush)
+        .await;
+
+    test.submit_turn("fail send observation persistence")
+        .await?;
+
+    let _ = wait_for_request_containing_text(
+        &failure_response,
+        "failed to persist response observation state",
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if child_thread.agent_status().await
+                == AgentStatus::Completed(Some("unsubscribed send result".to_string()))
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let follow_up = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "after failed send persistence"),
+        sse(vec![
+            ev_response_created("resp-after-failed-send-persistence"),
+            ev_assistant_message("msg-after-failed-send-persistence", "done"),
+            ev_completed("resp-after-failed-send-persistence"),
+        ]),
+    )
+    .await;
+    test.submit_turn("after failed send persistence").await?;
+    let request =
+        wait_for_request_containing_text(&follow_up, "after failed send persistence").await?;
+    assert!(!request.body_contains_text("unsubscribed send result"));
+    test.codex.flush_rollout().await?;
+    assert_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        child_thread_id,
+    )
+    .await?;
+
+    InMemoryThreadStore::remove_id(&store_id);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_response_observation_compensation_quarantines_the_parent() -> Result<()> {
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let configured_store_id = store_id.clone();
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "x",
+        }),
+        ChildResponseTiming::Immediate,
+        /*wait_for_parent_notification*/ false,
+        move |builder| {
+            builder.with_config(move |config| {
+                config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                    id: configured_store_id,
+                };
+            })
+        },
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let child_thread_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    wait_for_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        child_thread_id,
+    )
+    .await?;
+
+    let send_call_id = "send-with-unknown-observation-commit";
+    let send_args = serde_json::to_string(&json!({
+        "target": spawned_id,
+        "message": "task with unknown observation commit",
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "fail observation compensation"),
+        sse(vec![
+            ev_response_created("resp-send-with-unknown-observation-commit"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-send-with-unknown-observation-commit"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "task with unknown observation commit")
+                && !body_contains(request, "send-with-unknown-observation-commit")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-child-with-unknown-observation-commit"),
+            ev_assistant_message(
+                "msg-child-with-unknown-observation-commit",
+                "child result after unknown commit",
+            ),
+            ev_completed("resp-child-with-unknown-observation-commit"),
+        ]))
+        .set_delay(Duration::from_secs(1)),
+    )
+    .await;
+    let failure_response = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, send_call_id)
+                && body_contains(request, "durable subscription outcome is unknown")
+        },
+        sse(vec![
+            ev_response_created("resp-unknown-observation-commit-handled"),
+            ev_assistant_message("msg-unknown-observation-commit-handled", "failure handled"),
+            ev_completed("resp-unknown-observation-commit-handled"),
+        ]),
+    )
+    .await;
+    store
+        .fail_agent_response_observation_flushes_after(
+            /*successful_flushes*/ 0, /*failed_flushes*/ 2,
+        )
+        .await;
+
+    test.submit_turn("fail observation compensation").await?;
+
+    let _ = wait_for_request_containing_text(
+        &failure_response,
+        "durable subscription outcome is unknown",
+    )
+    .await?;
+    let error = test
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "work must remain quarantined".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect_err("parent should reject work after an unknown observation commit");
+    assert_eq!(
+        error.to_string(),
+        "thread history must be reloaded before accepting more work"
+    );
+
+    InMemoryThreadStore::remove_id(&store_id);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_persistence_failure_does_not_subscribe_the_next_target_turn() -> Result<()> {
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let configured_store_id = store_id.clone();
+    let (test, spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "x",
+        }),
+        ChildResponseTiming::Immediate,
+        /*wait_for_parent_notification*/ false,
+        move |builder| {
+            builder.with_config(move |config| {
+                config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                    id: configured_store_id,
+                };
+            })
+        },
+    )
+    .await?;
+    let _ = wait_for_requests(&child_request).await?;
+    let child_thread_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    wait_for_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        child_thread_id,
+    )
+    .await?;
+
+    let resume_call_id = "resume-observation-persistence-failure";
+    let resume_args = serde_json::to_string(&json!({
+        "id": spawned_id,
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "fail resume observation persistence"),
+        sse(vec![
+            ev_response_created("resp-fail-resume-observation"),
+            ev_function_call_with_namespace(
+                resume_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "resume_agent",
+                &resume_args,
+            ),
+            ev_completed("resp-fail-resume-observation"),
+        ]),
+    )
+    .await;
+    let failure_response = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, resume_call_id)
+                && body_contains(request, "failed to persist response observation state")
+        },
+        sse(vec![
+            ev_response_created("resp-resume-observation-failure-handled"),
+            ev_assistant_message("msg-resume-observation-failure-handled", "failure handled"),
+            ev_completed("resp-resume-observation-failure-handled"),
+        ]),
+    )
+    .await;
+    store
+        .fail_next_operation(InMemoryThreadStoreFailure::AgentResponseObservationFlush)
+        .await;
+    test.submit_turn("fail resume observation persistence")
+        .await?;
+    let _ = wait_for_request_containing_text(
+        &failure_response,
+        "failed to persist response observation state",
+    )
+    .await?;
+
+    let send_call_id = "send-after-failed-resume-observation";
+    let send_args = serde_json::to_string(&json!({
+        "target": child_thread_id,
+        "message": "fire and forget after failed resume",
+        "w": "x",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "send after failed resume"),
+        sse(vec![
+            ev_response_created("resp-send-after-failed-resume"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-send-after-failed-resume"),
+        ]),
+    )
+    .await;
+    let child_request = mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "fire and forget after failed resume")
+                && !body_contains(request, "send-after-failed-resume-observation")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-child-after-failed-resume"),
+            ev_assistant_message(
+                "msg-child-after-failed-resume",
+                "unsubscribed resume result",
+            ),
+            ev_completed("resp-child-after-failed-resume"),
+        ]))
+        .set_delay(Duration::from_secs(1)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, send_call_id),
+        sse(vec![
+            ev_response_created("resp-parent-after-failed-resume-send"),
+            ev_assistant_message("msg-parent-after-failed-resume-send", "parent idle"),
+            ev_completed("resp-parent-after-failed-resume-send"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("send after failed resume").await?;
+
+    let _ = wait_for_requests(&child_request).await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if child_thread.agent_status().await
+                == AgentStatus::Completed(Some("unsubscribed resume result".to_string()))
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let follow_up = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "after failed resume persistence"),
+        sse(vec![
+            ev_response_created("resp-after-failed-resume-persistence"),
+            ev_assistant_message("msg-after-failed-resume-persistence", "done"),
+            ev_completed("resp-after-failed-resume-persistence"),
+        ]),
+    )
+    .await;
+    test.submit_turn("after failed resume persistence").await?;
+    let request =
+        wait_for_request_containing_text(&follow_up, "after failed resume persistence").await?;
+    assert!(!request.body_contains_text("unsubscribed resume result"));
+    test.codex.flush_rollout().await?;
+    assert_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        child_thread_id,
+    )
+    .await?;
+
+    InMemoryThreadStore::remove_id(&store_id);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_reports_initial_response_observation_persistence_failure() -> Result<()> {
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "fail observation persistence"),
+        sse(vec![
+            ev_response_created("resp-failing-observation-spawn"),
+            ev_function_call_with_namespace(
+                "failing-observation-spawn",
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-failing-observation-spawn"),
+        ]),
+    )
+    .await;
+    let failure_response = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "failing-observation-spawn")
+                && body_contains(
+                    request,
+                    "failed to persist initial response observation state",
+                )
+        },
+        sse(vec![
+            ev_response_created("resp-observation-persistence-failed"),
+            ev_assistant_message("msg-observation-persistence-failed", "failure handled"),
+            ev_completed("resp-observation-persistence-failed"),
+        ]),
+    )
+    .await;
+
+    let configured_store_id = store_id.clone();
+    let test = test_codex()
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                id: configured_store_id,
+            };
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    store
+        .fail_next_operation(InMemoryThreadStoreFailure::AgentResponseObservationFlush)
+        .await;
+
+    test.submit_turn("fail observation persistence").await?;
+
+    let request = wait_for_request_containing_text(
+        &failure_response,
+        "failed to persist initial response observation state",
+    )
+    .await?;
+    assert!(request.body_contains_text("failed to persist initial response observation state"));
+    assert_eq!(
+        test.thread_manager.list_thread_ids().await,
+        vec![test.session_configured.thread_id]
+    );
+    InMemoryThreadStore::remove_id(&store_id);
+    Ok(())
+}
+
+#[test_case("f", 1; "final wake")]
+#[test_case("x", 0; "fire and forget")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_discards_child_after_post_admission_observation_persistence_failure(
+    w: &str,
+    successful_flushes: usize,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "w": w,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "fail post admission persistence"),
+        sse(vec![
+            ev_response_created("resp-post-admission-observation-spawn"),
+            ev_function_call_with_namespace(
+                "post-admission-observation-spawn",
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-post-admission-observation-spawn"),
+        ]),
+    )
+    .await;
+    let child_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, CHILD_PROMPT)
+                && !body_contains(request, "post-admission-observation-spawn")
+        },
+        sse(vec![
+            ev_response_created("resp-post-admission-observation-child"),
+            ev_assistant_message("msg-post-admission-observation-child", "child ran"),
+            ev_completed("resp-post-admission-observation-child"),
+        ]),
+    )
+    .await;
+    let expected_message = if successful_flushes == 0 {
+        "failed to persist initial response observation state"
+    } else {
+        "failed to persist spawned response observation state"
+    };
+    let failure_response = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, "post-admission-observation-spawn")
+                && body_contains(request, expected_message)
+        },
+        sse(vec![
+            ev_response_created("resp-post-admission-observation-failed"),
+            ev_assistant_message("msg-post-admission-observation-failed", "failure handled"),
+            ev_completed("resp-post-admission-observation-failed"),
+        ]),
+    )
+    .await;
+
+    let configured_store_id = store_id.clone();
+    let test = test_codex()
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                id: configured_store_id,
+            };
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let mut thread_created = test.thread_manager.subscribe_thread_created();
+    store
+        .fail_agent_response_observation_flushes_after(
+            successful_flushes,
+            /*failed_flushes*/ 1,
+        )
+        .await;
+
+    test.submit_turn("fail post admission persistence").await?;
+
+    let _ = wait_for_requests(&child_request).await?;
+    let request = wait_for_request_containing_text(&failure_response, expected_message).await?;
+    assert!(request.body_contains_text(expected_message));
+    assert_eq!(
+        test.thread_manager.list_thread_ids().await,
+        vec![test.session_configured.thread_id]
+    );
+    assert!(matches!(
+        thread_created.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    InMemoryThreadStore::remove_id(&store_id);
     Ok(())
 }
 
@@ -4110,29 +7430,33 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     scenario: CompletionScenario,
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
-    let server = start_mock_server().await;
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
     let spawn_args = serde_json::to_string(&json!({
         "message": "opaque-encrypted-message",
         "task_message": "audit-visible child task",
         "task_name": "worker",
     }))?;
-    mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| {
-            body_contains(req, TURN_1_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
-        },
-        sse(vec![
-            ev_response_created("resp-parent-1"),
-            ev_function_call_with_namespace(
-                SPAWN_CALL_ID,
-                MULTI_AGENT_V2_NAMESPACE,
-                "spawn_agent",
-                &spawn_args,
-            ),
-            ev_completed("resp-parent-1"),
-        ]),
-    )
-    .await;
+    server
+        .mount_response(
+            |request| {
+                request.body_contains_text(TURN_1_PROMPT)
+                    && !request.body_contains_text(SPAWN_CALL_ID)
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-parent-1"),
+                    ev_function_call_with_namespace(
+                        SPAWN_CALL_ID,
+                        MULTI_AGENT_V2_NAMESPACE,
+                        "spawn_agent",
+                        &spawn_args,
+                    ),
+                    ev_completed("resp-parent-1"),
+                ]),
+            }],
+        )
+        .await;
     let child_events = match scenario {
         CompletionScenario::Completed => vec![
             ev_response_created("resp-child-1"),
@@ -4141,43 +7465,44 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         ],
         CompletionScenario::TerminalError => vec![ev_response_created("resp-child-1")],
     };
-    let (child_gate_tx, child_gate_rx) = mpsc::channel();
-    let child_request = mount_responder_once_match(
-        &server,
-        |req: &wiremock::Request| {
-            request_has_agent_message_route(req, "/root", "/root/worker")
-                && decoded_body(req)
-                    .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
-                    .and_then(|body| {
-                        body["client_metadata"]["x-codex-turn-metadata"]
-                            .as_str()
-                            .and_then(|metadata| serde_json::from_str::<Value>(metadata).ok())
-                    })
-                    .is_some_and(|metadata| {
-                        metadata.get("parent_turn_id").is_some_and(Value::is_string)
-                    })
-        },
-        GatedSseResponse {
-            gate_rx: Mutex::new(Some(child_gate_rx)),
-            response: sse(child_events),
-        },
-    )
-    .await;
-    mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| {
-            body_contains(req, SPAWN_CALL_ID)
-                && !request_has_input_type(req, "agent_message")
-                && body_contains(req, "\"type\":\"function_call_output\"")
-                && !body_contains(req, "Message Type: FINAL_ANSWER")
-        },
-        sse(vec![
-            ev_response_created("resp-parent-2"),
-            ev_assistant_message("msg-parent-2", "parent done"),
-            ev_completed("resp-parent-2"),
-        ]),
-    )
-    .await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let mut child_request = server
+        .mount_response(
+            |request| {
+                let body = request.body_json();
+                body_has_agent_message_route(&body, "/root", "/root/worker")
+                    && !request.body_contains_text(SPAWN_CALL_ID)
+                    && body["client_metadata"]["x-codex-turn-metadata"]
+                        .as_str()
+                        .and_then(|metadata| serde_json::from_str::<Value>(metadata).ok())
+                        .is_some_and(|metadata| {
+                            metadata.get("parent_turn_id").is_some_and(Value::is_string)
+                        })
+            },
+            vec![StreamingSseChunk {
+                gate: Some(child_gate_rx),
+                body: sse(child_events),
+            }],
+        )
+        .await;
+    server
+        .mount_response(
+            |request| {
+                request.body_contains_text(SPAWN_CALL_ID)
+                    && inputs_of_type(&request.body_json(), "agent_message").is_empty()
+                    && request.body_contains_text("\"type\":\"function_call_output\"")
+                    && !request.body_contains_text("Message Type: FINAL_ANSWER")
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-parent-2"),
+                    ev_assistant_message("msg-parent-2", "parent done"),
+                    ev_completed("resp-parent-2"),
+                ]),
+            }],
+        )
+        .await;
     let error = "stream disconnected before completion: stream closed before response.completed";
     let payload = match scenario {
         CompletionScenario::Completed => "child done".to_string(),
@@ -4190,38 +7515,44 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     let notification = format!(
         "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\n{payload}"
     );
-    mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| {
-            body_contains(req, TURN_2_NO_WAIT_PROMPT)
-                && !body_contains(req, "Message Type: FINAL_ANSWER")
-        },
-        sse(vec![
-            ev_response_created("resp-parent-3"),
-            ev_function_call_with_namespace(
-                "wait-agent-call",
-                MULTI_AGENT_V2_NAMESPACE,
-                "wait_agent",
-                "{}",
-            ),
-            ev_completed("resp-parent-3"),
-        ]),
-    )
-    .await;
+    server
+        .mount_response(
+            |request| {
+                request.body_contains_text(TURN_2_NO_WAIT_PROMPT)
+                    && !request.body_contains_text("Message Type: FINAL_ANSWER")
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-parent-3"),
+                    ev_function_call_with_namespace(
+                        "wait-agent-call",
+                        MULTI_AGENT_V2_NAMESPACE,
+                        "wait_agent",
+                        "{}",
+                    ),
+                    ev_completed("resp-parent-3"),
+                ]),
+            }],
+        )
+        .await;
     let notification_for_request = notification.clone();
-    let agent_request = mount_sse_once_match(
-        &server,
-        move |req: &wiremock::Request| {
-            body_contains(req, TURN_2_NO_WAIT_PROMPT)
-                && request_has_agent_message_text(req, &notification_for_request)
-        },
-        sse(vec![
-            ev_response_created("resp-parent-4"),
-            ev_assistant_message("msg-parent-4", "done"),
-            ev_completed("resp-parent-4"),
-        ]),
-    )
-    .await;
+    let mut agent_request = server
+        .mount_response(
+            move |request| {
+                request.body_contains_text(TURN_2_NO_WAIT_PROMPT)
+                    && body_has_agent_message_text(&request.body_json(), &notification_for_request)
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-parent-4"),
+                    ev_assistant_message("msg-parent-4", "done"),
+                    ev_completed("resp-parent-4"),
+                ]),
+            }],
+        )
+        .await;
     let test = test_codex()
         .with_model("koffing")
         .with_config(|config| {
@@ -4238,7 +7569,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
             config.model_provider.supports_websockets = false;
         })
         .with_history_mode(history_mode)
-        .build(&server)
+        .build_with_streaming_server_auto_env(&server)
         .await?;
 
     test.codex
@@ -4270,11 +7601,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     })];
     let child_request = diagnostic_stage(
         "plaintext v2 child request",
-        wait_for_agent_messages(
-            &child_request,
-            &expected_child_agent_messages,
-            "expected child agent message request",
-        ),
+        wait_for_streaming_request(&mut child_request),
     )
     .await?;
     let child_body = child_request.body_json();
@@ -4307,6 +7634,10 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     } else {
         None
     };
+    assert_eq!(
+        normalize_agent_messages(inputs_of_type(&child_body, "agent_message")),
+        normalize_agent_messages(expected_child_agent_messages)
+    );
     child_gate_tx
         .send(())
         .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
@@ -4411,15 +7742,11 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
     })];
     let request = diagnostic_stage(
         "plaintext v2 parent completion context request",
-        wait_for_agent_messages(
-            &agent_request,
-            &expected_agent_messages,
-            "expected parent completion agent message request",
-        ),
+        wait_for_streaming_request(&mut agent_request),
     )
     .await?;
     assert_eq!(
-        normalize_agent_messages(request.inputs_of_type("agent_message")),
+        normalize_agent_messages(inputs_of_type(&request.body_json(), "agent_message")),
         normalize_agent_messages(expected_agent_messages)
     );
     diagnostic_stage("plaintext v2 completion flush", test.codex.flush_rollout()).await?;

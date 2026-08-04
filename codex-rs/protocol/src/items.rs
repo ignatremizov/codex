@@ -911,6 +911,7 @@ impl TurnItem {
             TurnItem::AgentMessage(item) => item.has_sub_agent_completion_identity(),
             TurnItem::CollabAgentToolCall(item) => item.owns_completion_presentation(),
             TurnItem::UserMessage(_)
+            | TurnItem::FunctionCallOutput(_)
             | TurnItem::HookPrompt(_)
             | TurnItem::Plan(_)
             | TurnItem::Reasoning(_)

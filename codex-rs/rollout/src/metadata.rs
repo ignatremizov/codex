@@ -73,6 +73,7 @@ pub fn builder_from_items(
         RolloutItem::ResponseItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
+        | RolloutItem::AgentResponseObservation(_)
         | RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
@@ -164,6 +165,7 @@ pub async fn extract_metadata_from_rollout(
             RolloutItem::ResponseItem(_)
             | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::Compacted(_)
             | RolloutItem::TurnContext(_)
             | RolloutItem::WorldState(_)

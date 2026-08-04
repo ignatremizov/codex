@@ -1108,13 +1108,16 @@ impl TranscriptOverlay {
     /// Replace committed transcript cells while keeping any cached in-progress output that is
     /// currently shown at the end of the overlay.
     ///
-    /// This is used when existing history is trimmed (for example after rollback) so the
-    /// transcript overlay immediately reflects the same committed cells as the main transcript.
+    /// This is used when committed history changes outside the overlay. Same-length replacements
+    /// preserve review navigation because existing cell indices remain valid; trims clear it.
     pub(crate) fn replace_cells(&mut self, cells: Vec<Arc<dyn HistoryCell>>) {
         let follow_bottom = self.view.is_scrolled_to_bottom();
         let live_tail = self.take_live_tail_renderable();
+        let cell_count_changed = self.cells.len() != cells.len();
         self.cells = cells;
-        self.browser.clear_review_target();
+        if cell_count_changed {
+            self.browser.clear_review_target();
+        }
         if self
             .highlight_cell
             .is_some_and(|idx| idx >= self.cells.len())

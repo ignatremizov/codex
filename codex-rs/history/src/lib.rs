@@ -14,6 +14,7 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionMeta;
@@ -106,6 +107,7 @@ pub enum RolloutItem {
     InterAgentCommunicationMetadata {
         trigger_turn: bool,
     },
+    AgentResponseObservation(AgentResponseObservation),
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
     TokenUsageRecord(TokenUsageRecord),
@@ -149,8 +151,8 @@ impl JsonSchema for RolloutItem {
 }
 
 mod guardian_history;
-mod rollout_payload;
 pub mod rollout;
+mod rollout_payload;
 
 pub use guardian_history::GuardianHistoryCheckpoint;
 
@@ -473,6 +475,7 @@ fn multi_agent_version_from_items(
             | RolloutItem::ResponseItem(_)
             | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::Compacted(_)
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::WorldState(_)

@@ -146,7 +146,7 @@ async fn handle_spawn_agent(
             .developer_instructions
             .clone_from(&turn.developer_instructions);
     }
-    apply_spawn_agent_service_tier(&session, &mut config).await?;
+    apply_spawn_agent_service_tier(&session, &mut config, args.service_tier.as_deref()).await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
 
     // Remember an applied configured default so cold reload reapplies its restrictions.
@@ -222,6 +222,7 @@ async fn handle_spawn_agent(
                     environments: Some(step_context.environments.to_selections()),
                     multi_agent_v2_usage_hints,
                     cyber_access_program: turn.cyber_access_program,
+                    response_observation: Default::default(),
                 },
             ),
     )
@@ -285,6 +286,7 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<String>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
 }
