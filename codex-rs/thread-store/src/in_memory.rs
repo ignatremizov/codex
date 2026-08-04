@@ -398,14 +398,25 @@ mod tests {
             })
             .await
             .expect("resume should succeed");
-        assert_paginated_threads_unsupported(
-            store
-                .create_thread(create_thread_params(
-                    ThreadId::default(),
-                    ThreadHistoryMode::Paginated,
-                ))
-                .await
-                .expect_err("paginated create should fail"),
+        let created_paginated_thread_id = ThreadId::default();
+        store
+            .create_thread(create_thread_params(
+                created_paginated_thread_id,
+                ThreadHistoryMode::Paginated,
+            ))
+            .await
+            .expect("paginated create should support canonical test storage");
+        let created_paginated_thread = store
+            .read_thread(ReadThreadParams {
+                thread_id: created_paginated_thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read created paginated thread metadata");
+        assert_eq!(
+            created_paginated_thread.history_mode,
+            ThreadHistoryMode::Paginated
         );
     }
 
@@ -620,7 +631,6 @@ impl InMemoryThreadStore {
     }
 
     async fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreResult<()> {
-        reject_paginated_history_mode(params.history_mode)?;
         let mut state = self.state.lock().await;
         state.calls.create_thread += 1;
         let session_meta = SessionMeta {

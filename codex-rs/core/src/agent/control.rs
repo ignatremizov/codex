@@ -106,7 +106,7 @@ impl InitialTerminalObservation {
                 // In that state the active turn and current Running status are authoritative;
                 // reconciling the historical outcome would make live adoption report the wrong
                 // status and enqueue an unsolicited completion for the old turn.
-                if active_turn_id.is_some() {
+                if active_turn_id.is_some() && !crate::agent::status::is_final(&snapshot_status) {
                     InitialTerminalReconciliation {
                         terminal: None,
                         status: snapshot_status,

@@ -923,7 +923,7 @@ async fn setup_turn_one_with_custom_spawned_child(
         }
     };
 
-    let _turn1_followup = mount_sse_once_match(
+    let turn1_followup = mount_sse_once_match(
         server,
         |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
         sse(vec![
@@ -944,6 +944,16 @@ async fn setup_turn_one_with_custom_spawned_child(
     }));
     let test = builder.build_with_auto_env(server).await?;
     test.submit_turn(TURN_1_PROMPT).await?;
+    let spawned_id = wait_for_spawned_thread_id(&test).await?;
+    let _ = wait_for_requests(&turn1_followup).await?;
+    wait_for_event_match(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::TurnComplete(event) if event.last_agent_message.as_deref() == Some("parent done")
+        )
+        .then_some(())
+    })
+    .await;
     if wait_for_initial_notification && wait_for_parent_notification {
         let _ = wait_for_requests(&child_request_log).await?;
         let rollout_path = test
@@ -966,7 +976,6 @@ async fn setup_turn_one_with_custom_spawned_child(
             sleep(Duration::from_millis(10)).await;
         }
     }
-    let spawned_id = wait_for_spawned_thread_id(&test).await?;
 
     Ok((test, spawned_id, child_request_log))
 }
@@ -3923,7 +3932,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         .set_delay(Duration::from_secs(10)),
     )
     .await;
-    mount_sse_once_match(
+    let initial_parent_followup = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, "cold-boundary-spawn"),
         sse(vec![
@@ -3950,6 +3959,15 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     initial.submit_turn("prepare cold resume boundary").await?;
     let spawned_id = ThreadId::from_string(&wait_for_spawned_thread_id(&initial).await?)?;
     let child_thread = initial.thread_manager.get_thread(spawned_id).await?;
+    let _ = wait_for_requests(&initial_parent_followup).await?;
+    wait_for_event_match(&initial.codex, |event| {
+        matches!(
+            event,
+            EventMsg::TurnComplete(event) if event.last_agent_message.as_deref() == Some("parent idle")
+        )
+        .then_some(())
+    })
+    .await;
     let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
     assert_eq!(
         wait_for_terminal_status(child_thread.as_ref()).await?,
