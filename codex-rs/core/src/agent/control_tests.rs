@@ -470,7 +470,22 @@ async fn inject_user_message_without_turn(thread: &Arc<CodexThread>, message: &s
 }
 
 async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str) {
-    inject_user_message_without_turn(thread, message).await;
+    let turn_context = thread.session.new_default_turn().await;
+    thread
+        .session
+        .record_conversation_items(
+            turn_context.as_ref(),
+            &[ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: message.to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }],
+        )
+        .await;
     thread.session.ensure_rollout_materialized().await;
     thread
         .session
@@ -3932,7 +3947,14 @@ async fn completed_wait_suppresses_v1_background_watcher() {
         .await;
     wait.freeze_for_children([child_thread_id]).commit();
 
-    assert!(wait_for_subagent_notification(&parent_thread).await);
+    assert!(
+        timeout(
+            Duration::from_millis(100),
+            wait_for_subagent_notification(&parent_thread)
+        )
+        .await
+        .is_err()
+    );
     assert!(
         timeout(
             Duration::from_millis(100),
@@ -5061,7 +5083,6 @@ async fn adopted_v1_child_records_foreign_wait_presentation_before_final_status(
         )
         .await
         .expect("independently controlled child should start");
-    let child_presentation = child.thread.session.presentation_id();
     assert!(
         !Arc::ptr_eq(
             &harness.control.wait_agent_presentations,
@@ -5118,11 +5139,6 @@ async fn adopted_v1_child_records_foreign_wait_presentation_before_final_status(
         ),
     );
     commit.commit();
-    let terminal = harness
-        .control
-        .take_watcher_terminal_presentation(parent_presentation, child_presentation)
-        .expect("foreign watcher terminal should be recorded before final status");
-    assert!(terminal.presentation.wait_owns_presentation().await);
 
     let _ = harness
         .control

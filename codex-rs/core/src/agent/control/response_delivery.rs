@@ -43,8 +43,14 @@ impl AgentControl {
                 Ok(state) => state.wait_for_agent_lifecycle_change(),
                 Err(_) => return WatcherTerminalPoll::Closed,
             };
+            let watcher_terminal_changed = self
+                .wait_agent_presentations
+                .watcher_terminal_changed
+                .notified();
             tokio::pin!(lifecycle_changed);
+            tokio::pin!(watcher_terminal_changed);
             lifecycle_changed.as_mut().enable();
+            watcher_terminal_changed.as_mut().enable();
             if !self
                 .agent_lifecycle_generation_is_current(child.thread_id, child_lifecycle_generation)
             {
@@ -100,6 +106,7 @@ impl AgentControl {
             let response = match tokio::select! {
                 biased;
                 () = &mut lifecycle_changed => continue,
+                () = &mut watcher_terminal_changed => continue,
                 response = response_rx.recv() => response,
             } {
                 Some(response) => response,

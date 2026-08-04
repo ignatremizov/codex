@@ -29,6 +29,7 @@ pub(in crate::agent::control) use self::response_observation::ResponseObserverRe
 pub(super) struct WaitAgentPresentations {
     state: Mutex<PresentationState>,
     response_observation_changed: Notify,
+    pub(super) watcher_terminal_changed: Notify,
 }
 
 #[derive(Default)]
@@ -403,7 +404,7 @@ impl AgentControl {
             .or_default()
             .insert(turn_id.to_string());
         on_recorded();
-        match delivery {
+        let presentation = match delivery {
             TerminalPresentationDelivery::Direct => Some(presentation),
             TerminalPresentationDelivery::Watcher => {
                 state
@@ -417,7 +418,14 @@ impl AgentControl {
                     });
                 None
             }
+        };
+        drop(state);
+        if delivery == TerminalPresentationDelivery::Watcher {
+            self.wait_agent_presentations
+                .watcher_terminal_changed
+                .notify_waiters();
         }
+        presentation
     }
 
     pub(crate) fn take_watcher_terminal_presentation(

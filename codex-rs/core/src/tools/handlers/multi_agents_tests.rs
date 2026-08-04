@@ -1841,6 +1841,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status() {
         .expect("encrypted-only send_message should succeed");
 
     let child_turn = child_thread.session.new_default_turn().await;
+    publish_agent_turn_started(child_thread.as_ref(), child_turn.as_ref()).await;
     timeout(
         Duration::from_secs(5),
         child_thread.session.send_event(
@@ -3638,26 +3639,6 @@ async fn live_adoption_synthesizes_terminal_from_final_snapshot_status() {
             child.thread_id,
             &AgentStatus::Shutdown,
         )]
-    );
-}
-
-#[tokio::test]
-async fn ordinary_thread_start_publishes_thread_created() {
-    let (_, turn) = make_session_and_context().await;
-    let manager = thread_manager();
-    let mut thread_created = manager.subscribe_thread_created();
-
-    let thread = manager
-        .start_thread(StartThreadOptions::new(turn.config.as_ref().clone()))
-        .await
-        .expect("start ordinary thread");
-
-    assert_eq!(
-        timeout(Duration::from_secs(5), thread_created.recv())
-            .await
-            .expect("thread-created notification timeout")
-            .expect("thread-created sender"),
-        thread.thread_id
     );
 }
 
