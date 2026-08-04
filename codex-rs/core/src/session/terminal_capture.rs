@@ -28,14 +28,52 @@ fn terminal_outcome(event: &EventMsg) -> Option<TerminalPresentationOutcome> {
 }
 
 impl Session {
-    pub(super) fn publish_agent_status_from_event(&self, event: &EventMsg) {
-        let Some(status) = agent_status_from_event(event) else {
-            return;
-        };
+    pub(super) fn publish_agent_status_from_event(&self, envelope: &Event) {
+        let event = &envelope.msg;
+        let status = agent_status_from_event(event);
         let _terminal_guard = self
             .terminal_publication_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self
+            .thread_removal_started
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        let response_turn_id = match event {
+            EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+            EventMsg::TurnComplete(event) => Some(event.turn_id.clone()),
+            EventMsg::TurnAborted(event) => event.turn_id.clone(),
+            EventMsg::Error(_) if status.as_ref().is_some_and(is_final) => {
+                let state = self
+                    .response_observation_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (state.live_turn_id.as_deref() == Some(envelope.id.as_str())
+                    || state.terminal_outcomes.contains_key(&envelope.id))
+                .then(|| envelope.id.clone())
+            }
+            EventMsg::ShutdownComplete if status.as_ref().is_some_and(is_final) => self
+                .response_observation_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .live_turn_id
+                .clone(),
+            _ => None,
+        };
+        let event_turn_id = response_turn_id.as_deref();
+        if let Some(turn_id) = event_turn_id
+            && let Some(status) = status.as_ref().filter(|status| is_final(status))
+        {
+            let outcome = terminal_outcome(event).unwrap_or_else(|| status.clone().into());
+            self.record_agent_response_terminal_observers(turn_id, outcome);
+            if matches!(event, EventMsg::Error(_) | EventMsg::ShutdownComplete) {
+                self.publish_agent_response_terminal(turn_id.to_string(), status.clone());
+            }
+        }
+        self.publish_agent_response_event(event);
+        let Some(status) = status else { return };
         if let EventMsg::TurnStarted(event) = event {
             self.completion_parent
                 .lock()
@@ -43,11 +81,14 @@ impl Session {
                 .live_turn_id = Some(event.turn_id.clone());
         }
         let current_status = self.agent_status.borrow().clone();
-        if matches!(&status, AgentStatus::Running) {
+        let publish_status = event_turn_id
+            .is_none_or(|turn_id| self.response_turn_can_publish_agent_status(turn_id));
+        if publish_status && matches!(&status, AgentStatus::Running) {
             self.terminal_presentation_recorded
                 .store(false, std::sync::atomic::Ordering::Release);
         }
-        if matches!(&status, AgentStatus::Running) || !is_final(&current_status) {
+        if publish_status && (matches!(&status, AgentStatus::Running) || !is_final(&current_status))
+        {
             self.replace_agent_status_locked(status);
         }
         if matches!(
@@ -57,10 +98,13 @@ impl Session {
             .as_ref()
             .is_some_and(is_final)
         {
-            self.completion_parent
+            let mut parent = self
+                .completion_parent
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .live_turn_id = None;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if event_turn_id.is_none_or(|turn_id| parent.live_turn_id.as_deref() == Some(turn_id)) {
+                parent.live_turn_id = None;
+            }
         }
     }
 
@@ -136,6 +180,15 @@ impl Session {
 
     /// Called under terminal_publication_lock. A cold status is never a live turn token.
     pub(super) fn capture_adopted_terminal_locked(&self, outcome: TerminalPresentationOutcome) {
+        let response_turn_id = self
+            .completion_parent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live_turn_id
+            .clone();
+        if let Some(turn_id) = response_turn_id {
+            self.record_agent_response_terminal_observers(&turn_id, outcome.clone());
+        }
         if self.spawn_parent_thread_id.is_some()
             || !self
                 .terminal_presentation_armed
@@ -165,6 +218,7 @@ impl Session {
         } else {
             outcome.status.clone()
         };
+        let publish_status = self.response_turn_can_publish_agent_status(turn_id);
         let _ = binding.owner.record_agent_terminal_presentation(
             parent.session.presentation_id(),
             self.presentation_id(),
@@ -172,9 +226,11 @@ impl Session {
             outcome,
             TerminalPresentationDelivery::Watcher,
             || {
-                self.terminal_presentation_recorded
-                    .store(true, std::sync::atomic::Ordering::Release);
-                self.replace_agent_status_locked(published_status);
+                if publish_status {
+                    self.terminal_presentation_recorded
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    self.replace_agent_status_locked(published_status);
+                }
             },
         );
         state.live_turn_id = None;
@@ -203,6 +259,7 @@ impl Session {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current_status = self.agent_status.borrow().clone();
+        self.record_agent_response_terminal_observers(turn_id, outcome.clone());
         if is_final(&current_status)
             || self
                 .terminal_presentation_recorded
@@ -221,13 +278,16 @@ impl Session {
         } else {
             outcome.status.clone()
         };
+        let publish_status = self.response_turn_can_publish_agent_status(turn_id);
         self.services
             .local_agent_runtime
             .control(self.session_id())
             .record_agent_terminal_presentation(parent, child, turn_id, outcome, delivery, || {
-                self.terminal_presentation_recorded
-                    .store(true, std::sync::atomic::Ordering::Release);
-                self.replace_agent_status_locked(published_status);
+                if publish_status {
+                    self.terminal_presentation_recorded
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    self.replace_agent_status_locked(published_status);
+                }
             })
     }
 
@@ -324,16 +384,29 @@ impl Session {
             }
             return;
         };
-        let generated_turn_id;
-        let turn_id = if event.id.is_empty() {
-            generated_turn_id = uuid::Uuid::now_v7().to_string();
-            generated_turn_id.as_str()
-        } else {
-            event.id.as_str()
+        let turn_id = match &event.msg {
+            EventMsg::TurnComplete(event) => Some(event.turn_id.clone()),
+            EventMsg::TurnAborted(event) => event.turn_id.clone(),
+            EventMsg::Error(_) => {
+                let state = self
+                    .response_observation_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (state.live_turn_id.as_deref() == Some(event.id.as_str())
+                    || state.terminal_outcomes.contains_key(&event.id))
+                .then(|| event.id.clone())
+            }
+            _ => self
+                .completion_parent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .live_turn_id
+                .clone(),
         };
+        let Some(turn_id) = turn_id else { return };
         let _ = self.record_sub_agent_terminal_presentation(
             parent_thread_id,
-            turn_id,
+            &turn_id,
             outcome,
             TerminalPresentationDelivery::Watcher,
         );

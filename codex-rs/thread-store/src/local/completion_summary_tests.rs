@@ -33,6 +33,8 @@ async fn cold_summary_keeps_completion_only_and_owned_orphan_wait_rows() {
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,
             deadline_at_ms: None,
+            observe_commentary: None,
+            wake_on_completion: None,
             sender_thread_id: thread_id,
             receiver_thread_ids: vec![worker_id],
             receiver_agents: Vec::new(),

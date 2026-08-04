@@ -75,6 +75,12 @@ static ACTIVE_TURNS: Gauge = Gauge::new("core.turns.active");
 
 pub(crate) type SessionTaskResult = CodexResult<Option<String>>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TaskFinishAction {
+    Finish,
+    Continue,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InterruptedTurnHistoryMarker {
     Disabled,
@@ -204,6 +210,24 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = SessionTaskResult> + Send;
 
+    /// Whether late input can keep this exact turn alive across finalization.
+    fn supports_pending_input_continuation(&self) -> bool {
+        false
+    }
+
+    /// Continues sampling without repeating the turn-start lifecycle.
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        cancellation_token: CancellationToken,
+    ) -> impl std::future::Future<Output = SessionTaskResult> + Send {
+        async move {
+            let _ = (self, session, ctx, cancellation_token);
+            unreachable!("task does not support pending input continuation")
+        }
+    }
+
     /// Gives the task a chance to perform cleanup after an abort.
     ///
     /// The default implementation is a no-op; override this if additional
@@ -220,6 +244,7 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
     }
 }
 
+/// Object-safe adapter preserving each task implementation's continuation contract.
 pub(crate) trait AnySessionTask: Send + Sync + 'static {
     fn kind(&self) -> TaskKind;
 
@@ -230,6 +255,15 @@ pub(crate) trait AnySessionTask: Send + Sync + 'static {
         session: Arc<Session>,
         ctx: Arc<TurnContext>,
         input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, SessionTaskResult>;
+
+    fn supports_pending_input_continuation(&self) -> bool;
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
         cancellation_token: CancellationToken,
     ) -> BoxFuture<'static, SessionTaskResult>;
 
@@ -260,6 +294,24 @@ where
             session,
             ctx,
             input,
+            cancellation_token,
+        ))
+    }
+
+    fn supports_pending_input_continuation(&self) -> bool {
+        SessionTask::supports_pending_input_continuation(self)
+    }
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, SessionTaskResult> {
+        Box::pin(SessionTask::run_pending_input_continuation(
+            self,
+            session,
+            ctx,
             cancellation_token,
         ))
     }
@@ -312,6 +364,9 @@ impl Session {
         let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
         let span_name = task.span_name();
+        if !self.begin_agent_response_turn(&turn_context.sub_id) {
+            return;
+        }
         let started_at = Instant::now();
         let turn_started_at_unix_ms = turn_context
             .turn_timing_state
@@ -386,7 +441,7 @@ impl Session {
         let storage_originator = AuthStorageOriginator::from_client_name(&turn_context.originator);
         let task_future = async move {
             let ctx_for_finish = Arc::clone(&ctx);
-            let task_result = task_for_run
+            let mut task_result = Arc::clone(&task_for_run)
                 .run(
                     Arc::clone(&session),
                     ctx,
@@ -396,28 +451,45 @@ impl Session {
                 .instrument(trace_span!("session_task.run"))
                 .await;
             let sess = Arc::clone(&session);
-            // Private reviewers save their transcript together with the terminal event.
-            // Errors and cancellation retain their existing save path.
-            if (!sess.is_private_guardian_reviewer().await
-                || task_cancellation_token.is_cancelled()
-                || task_result.is_err())
-                && let Err(err) = sess.flush_rollout().await
-            {
-                warn!("failed to flush rollout before completing turn: {err}");
-                sess.send_event(
-                    ctx_for_finish.as_ref(),
-                    EventMsg::Warning(WarningEvent {
-                        message: format!(
-                            "Failed to save the conversation transcript; Codex will continue retrying. Error: {err}"
-                        ),
-                    }),
-                )
-                .await;
-            }
-            if !task_cancellation_token.is_cancelled() {
-                // Finish uniformly from the spawn site so all tasks share the same lifecycle.
-                sess.on_task_finished(Arc::clone(&ctx_for_finish), task_result)
-                    .await;
+            let mut last_agent_message = None;
+            loop {
+                    if let Ok(Some(message)) = &task_result {
+                        last_agent_message = Some(message.clone());
+                    } else if let (Ok(None), Some(message)) = (&task_result, &last_agent_message) {
+                        task_result = Ok(Some(message.clone()));
+                    }
+                    // Private reviewers save their transcript together with the terminal event.
+                    // Errors and cancellation retain their existing save path.
+                    if (!sess.is_private_guardian_reviewer().await
+                        || task_cancellation_token.is_cancelled()
+                        || task_result.is_err())
+                        && let Err(err) = sess.flush_rollout().await
+                    {
+                        warn!("failed to flush rollout before completing turn: {err}");
+                        sess.send_event(
+                            ctx_for_finish.as_ref(),
+                            EventMsg::Warning(WarningEvent {
+                                message: format!(
+                                    "Failed to save the conversation transcript; Codex will continue retrying. Error: {err}"
+                                ),
+                            }),
+                        )
+                        .await;
+                    }
+                    if task_cancellation_token.is_cancelled() {
+                        break;
+                    }
+                    match sess.on_task_finished(Arc::clone(&ctx_for_finish), task_result).await {
+                        TaskFinishAction::Finish => break,
+                        TaskFinishAction::Continue => {
+                            task_result = Arc::clone(&task_for_run)
+                                .run_pending_input_continuation(
+                                    Arc::clone(&session),
+                                    Arc::clone(&ctx_for_finish),
+                                    task_cancellation_token.child_token(),
+                                ).await;
+                        }
+                    }
             }
             done_clone.notify_waiters();
         }
@@ -477,6 +549,16 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) {
+        if self
+            .app_server_client_metadata()
+            .await
+            .client_name
+            .as_deref()
+            == Some("codex_exec")
+            || self.submission_admission.requires_reload()
+        {
+            return;
+        }
         if !self.input_queue.has_queued_turn_trigger().await
             && !self.input_queue.has_pending_mailbox_items().await
         {
@@ -715,11 +797,18 @@ impl Session {
         }
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the final pending-input check must remain atomic with steering"
+    )]
     pub async fn on_task_finished(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         task_result: SessionTaskResult,
-    ) {
+    ) -> TaskFinishAction {
+        let can_continue = task_result.is_ok()
+            && turn_context.terminal_error.lock().await.is_none()
+            && !self.submission_admission.requires_reload();
         let (last_agent_message, abort_reason) = match task_result {
             Ok(last_agent_message) => (last_agent_message, None),
             Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
@@ -742,25 +831,44 @@ impl Session {
                 (None, None)
             }
         };
-        turn_context
-            .turn_metadata_state
-            .cancel_git_enrichment_task();
-
         let finishing = CancellationToken::new();
         let finish_recording = finishing.clone().drop_guard();
         let turn_state = {
             let mut active = self.active_turn.lock().await;
-            active.as_mut().and_then(|active_turn| {
-                let task = active_turn.task.take()?;
+            let Some(active_turn) = active.as_mut() else {
+                return TaskFinishAction::Finish;
+            };
+            let Some(task) = active_turn.task.as_ref() else {
+                return TaskFinishAction::Finish;
+            };
+            if task.turn_context.sub_id != turn_context.sub_id {
+                return TaskFinishAction::Finish;
+            }
+            if can_continue && task.task.supports_pending_input_continuation() {
+                let state = active_turn.turn_state.lock().await;
+                if state.accepts_mailbox_delivery_for_current_turn()
+                    && state
+                        .pending_input
+                        .as_slice()
+                        .first()
+                        .is_some_and(|input| !crate::session::is_mcp_use_input(input))
+                {
+                    return TaskFinishAction::Continue;
+                }
+            }
+            active_turn.task.take().map(|task| {
                 active_turn.terminal_pending = true;
                 task.handle.detach();
                 active_turn.finishing = Some(finishing);
-                Some(Arc::clone(&active_turn.turn_state))
+                Arc::clone(&active_turn.turn_state)
             })
         };
         let Some(turn_state) = turn_state else {
-            return;
+            return TaskFinishAction::Finish;
         };
+        turn_context
+            .turn_metadata_state
+            .cancel_git_enrichment_task();
         let mut pending_input = self
             .input_queue
             .take_pending_input_for_turn_state(turn_state.as_ref())
@@ -1004,7 +1112,7 @@ impl Session {
             self.active_turn_transition.notify_waiters();
         }
         if !cleared_active_turn {
-            return;
+            return TaskFinishAction::Finish;
         }
         if !queued_follow_up {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
@@ -1012,6 +1120,7 @@ impl Session {
         if !self.submission_admission.requires_reload() {
             self.maybe_start_turn_for_pending_work().await;
         }
+        TaskFinishAction::Finish
     }
 
     pub(crate) async fn close_unified_exec_processes(&self) {

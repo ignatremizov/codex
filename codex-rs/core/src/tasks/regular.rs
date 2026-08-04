@@ -126,4 +126,37 @@ impl SessionTask for RegularTask {
             next_input = Vec::new();
         }
     }
+
+    fn supports_pending_input_continuation(&self) -> bool {
+        true
+    }
+
+    #[tracing::instrument(name = "run_turn", skip_all)]
+    async fn run_pending_input_continuation(
+        self: Arc<Self>,
+        sess: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        let mut mcp_startup_requirements = McpStartupRequirements::default();
+        loop {
+            let last_agent_message = run_turn(
+                Arc::clone(&sess),
+                Arc::clone(&ctx),
+                Vec::new(),
+                &mut mcp_startup_requirements,
+                /*prewarmed_client_session*/ None,
+                cancellation_token.child_token(),
+            )
+            .await?;
+            // Terminal errors are already reported. Let task completion preserve pending
+            // input instead of restarting the failed turn for that same input.
+            if ctx.terminal_error.lock().await.is_some() {
+                return Ok(last_agent_message);
+            }
+            if !sess.input_queue.has_pending_input(&sess.active_turn).await {
+                return Ok(last_agent_message);
+            }
+        }
+    }
 }

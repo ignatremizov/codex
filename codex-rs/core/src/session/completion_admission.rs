@@ -99,6 +99,11 @@ impl SubmissionAdmission {
             tokio::pin!(changed);
             changed.as_mut().enable();
             let order = self.send_lock.lock().await;
+            if self.completion_writer_closed() {
+                return Err(CodexErr::InvalidRequest(
+                    "completion writer is closed".to_string(),
+                ));
+            }
             let ready = match &*self.state.lock().unwrap_or_else(PoisonError::into_inner) {
                 State::Ready => true,
                 State::RollbackPending(_) => false,
