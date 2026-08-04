@@ -223,6 +223,16 @@ pub struct StoredThreadHistory {
     pub revision: Option<String>,
 }
 
+/// Full canonical artifact history in original lineage segments.
+///
+/// Evaluate rollback masks at original positions inside each segment. Neither filtering nor
+/// joining segments may manufacture response/metadata adjacency. Visibility is not a receipt.
+#[derive(Clone, Debug)]
+pub struct StoredCanonicalArtifactSegments {
+    /// Unfiltered canonical records grouped by their original lineage segment.
+    pub segments: Vec<Vec<RolloutItem>>,
+}
+
 /// Persisted rollout items needed to reconstruct the latest model-visible context.
 ///
 /// Local stores may return only a resumable suffix while stores without targeted reads may return

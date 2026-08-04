@@ -71,6 +71,8 @@ impl ToolExecutor<ToolInvocation> for Handler {
             analytics.track_collab_tool_call(
                 turn_id,
                 CollabAgentToolCallItem {
+                    observe_commentary: None,
+                    wake_on_completion: None,
                     id: call_id,
                     tool: CollabAgentTool::SpawnAgent,
                     status,
@@ -137,6 +139,7 @@ async fn handle_spawn_agent(
             fork_mode: fork_mode.clone(),
             agent_type: args.agent_type.clone(),
             model: args.model,
+            service_tier: args.service_tier,
             reasoning_effort: args.reasoning_effort,
         },
     )
@@ -222,6 +225,7 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<String>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
 }

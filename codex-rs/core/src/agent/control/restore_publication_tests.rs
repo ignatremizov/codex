@@ -224,7 +224,8 @@ async fn fixture() -> Fixture {
             client_mcp_extensions_override: Some(ClientMcpExtensions::default()),
         })
         .await
-        .expect("prepare unpublished child");
+        .expect("prepare unpublished child")
+        .into_new_thread();
     assert_eq!(lifecycle.for_thread(parent.thread_id), vec!["ready"]);
     assert!(lifecycle.for_thread(child.thread_id).is_empty());
     graph

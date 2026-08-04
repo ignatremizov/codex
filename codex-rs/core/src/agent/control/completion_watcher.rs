@@ -6,7 +6,7 @@ use crate::codex_thread::CodexThread;
 
 impl LocalAgentControl {
     /// Explicitly adopts only future live V1 completions; no cold status is a receipt.
-    pub(crate) async fn ensure_v1_completion_watcher(
+    pub(crate) async fn ensure_native_v1_completion_watcher(
         &self,
         child_thread_id: ThreadId,
         requested_source: SessionSource,

@@ -291,9 +291,32 @@ async fn child_turn_start_preserves_root_attribution() -> Result<()> {
                 include_archived: false,
             })
             .await?;
-        for item in history.items {
+        let execution_turn_ids: Vec<_> = history
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                codex_history::RolloutItem::TurnContext(context) => context.turn_id.as_deref(),
+                _ => None,
+            })
+            .collect();
+        for item in &history.items {
             if let codex_history::RolloutItem::EventMsg(EventMsg::TurnStarted(event)) = item {
-                starts.push((thread_id, event));
+                if execution_turn_ids.contains(&event.turn_id.as_str()) {
+                    starts.push((thread_id, event.clone()));
+                } else {
+                    // An idle parent can persist a completion-only presentation turn.
+                    assert_eq!(thread_id, test.session_configured.thread_id);
+                    assert_eq!(event.root_turn_id, None);
+                    assert!(
+                        history.items.iter().any(|item| matches!(
+                            item,
+                            codex_history::RolloutItem::EventMsg(EventMsg::ItemCompleted(completed))
+                                if completed.turn_id == event.turn_id
+                                    && completed.item.is_sub_agent_completion_presentation()
+                        )),
+                        "a non-execution turn must contain the child's completion presentation"
+                    );
+                }
             }
         }
     }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::local::rollout_lineage::RolloutLineageSegment;
 use codex_protocol::protocol::ThreadRolledBackEvent;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn exact_model_context_is_masked_before_segment_headers_are_removed() {

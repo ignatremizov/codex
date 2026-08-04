@@ -27,6 +27,21 @@ pub(super) async fn append(
     let items = persisted_rollout_items(&params.items, history_mode);
     state.calls.append_completion_items_and_flush += 1;
     state.calls.persist_thread += 1;
+    if params.items.iter().any(|item| {
+        matches!(
+            item,
+            codex_rollout::RolloutItem::AgentResponseObservation(_)
+        )
+    }) && let Some((remaining, failure)) = state.observation_barrier_failure.as_mut()
+    {
+        if *remaining == 0 {
+            let failure = *failure;
+            state.observation_barrier_failure = None;
+            state.fail_next_operation = Some(failure);
+        } else {
+            *remaining -= 1;
+        }
+    }
     let failure = match state.fail_next_operation {
         Some(
             failure @ (InMemoryThreadStoreFailure::SubAgentCompletionAppend

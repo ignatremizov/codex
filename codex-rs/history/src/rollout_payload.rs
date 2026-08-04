@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use super::AgentResponseObservation;
 use super::CodexHarnessMetadata;
 use super::CompactedItem;
 use super::EventMsg;
@@ -47,6 +48,9 @@ pub(super) enum RolloutItemWire<'a> {
     },
     InterAgentCommunicationMetadata {
         payload: InterAgentCommunicationMetadataPayload,
+    },
+    AgentResponseObservation {
+        payload: Cow<'a, AgentResponseObservation>,
     },
     Compacted {
         payload: Cow<'a, CompactedItem>,
@@ -106,6 +110,9 @@ impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
                     },
                 }
             }
+            RolloutItem::AgentResponseObservation(payload) => Self::AgentResponseObservation {
+                payload: Cow::Borrowed(payload),
+            },
             RolloutItem::Compacted(payload) => Self::Compacted {
                 payload: Cow::Borrowed(payload),
             },
@@ -238,6 +245,9 @@ impl From<RolloutItemWire<'_>> for RolloutItem {
                 Self::InterAgentCommunicationMetadata {
                     trigger_turn: payload.trigger_turn,
                 }
+            }
+            RolloutItemWire::AgentResponseObservation { payload } => {
+                Self::AgentResponseObservation(payload.into_owned())
             }
             RolloutItemWire::Compacted { payload } => {
                 Self::Compacted(Box::new(payload.into_owned()))

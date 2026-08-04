@@ -365,6 +365,7 @@ impl ContextManager {
                 | RolloutItem::ResponseItem(_)
                 | RolloutItem::InterAgentCommunication(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::AgentResponseObservation(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::WorldState(_)
                 | RolloutItem::RetainedContext(_)
@@ -668,6 +669,7 @@ impl ContextManager {
                 RolloutItem::EventMsg(_)
                 | RolloutItem::DynamicToolsUpdated { .. }
                 | RolloutItem::SessionMeta(_)
+                | RolloutItem::AgentResponseObservation(_)
                 | RolloutItem::RealtimeItem(_)
                 | RolloutItem::RetainedContext(_)
                 | RolloutItem::SecurityRiskScore(_)
@@ -881,7 +883,8 @@ impl ContextManager {
                     let response_item = communication.to_model_input_item();
                     history.record_items(std::iter::once(&response_item), truncation_policy);
                 }
-                RolloutItem::InterAgentCommunicationMetadata { .. } => {}
+                RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::AgentResponseObservation(_) => {}
                 RolloutItem::Compacted(compacted) => {
                     if skipped_compacted_items
                         .iter()
@@ -998,6 +1001,7 @@ impl ContextManager {
                 | RolloutItem::ResponseItem(_)
                 | RolloutItem::InterAgentCommunication(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::AgentResponseObservation(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::RealtimeItem(_)
                 | RolloutItem::TokenUsageRecord(_)

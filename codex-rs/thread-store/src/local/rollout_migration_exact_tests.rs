@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn exact_migration_uses_full_canonical_positions_and_preserves_media_timestamps() {

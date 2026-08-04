@@ -124,6 +124,29 @@ impl LocalAgentControl {
         options: SpawnAgentOptions,
     ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
         let membership = self.runtime.admit_start()?;
+        let control = self.clone();
+        tokio::spawn(async move {
+            Box::pin(control.spawn_agent_owned(
+                config,
+                initial_input,
+                session_source,
+                options,
+                membership,
+            ))
+            .await
+        })
+        .await
+        .map_err(|error| CodexErr::Fatal(format!("agent spawn worker failed: {error}")))?
+    }
+
+    async fn spawn_agent_owned(
+        &self,
+        config: Config,
+        initial_input: SpawnInitialInput,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+        membership: AgentTreeMembership,
+    ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
         let spawn_started_at = Instant::now();
         let state = self.runtime.upgrade()?;
         // Resolve the parent before inheriting settings or copying attachments.
@@ -176,6 +199,12 @@ impl LocalAgentControl {
             .runtime
             .registry
             .reserve_spawn_slot(reservation_max_threads)?;
+        // A same-UUID resumed parent is not the parent that requested this spawn.
+        // Capture once and use that exact instance for both native completion and `w`.
+        let completion_parent = match parent_thread_id {
+            Some(parent_id) => Some(state.get_thread(parent_id).await?),
+            None => None,
+        };
         let inherited_environments = match &options.environments {
             Some(environments) => Some(environments.clone()),
             None => {
@@ -236,9 +265,8 @@ impl LocalAgentControl {
             ..StartThreadOptions::new(config.clone())
         };
         if options.environments.is_none()
-            && let Some(parent_thread_id) = parent_thread_id
+            && let Some(parent) = completion_parent.as_ref()
         {
-            let parent = state.get_thread(parent_thread_id).await?;
             let roots = combine_selected_capability_roots(
                 &parent.session.services.selected_capability_roots,
                 start_options
@@ -346,17 +374,19 @@ impl LocalAgentControl {
             .unwrap_or_else(|| new_thread.thread_id.to_string());
         // Attach before exposing the child or submitting its first input so an early failure
         // cannot publish a watcher-owned terminal without a consumer.
-        self.maybe_start_completion_watcher(
-            &new_thread.thread,
-            notification_source.clone(),
-            child_reference,
-            agent_metadata.agent_path.clone(),
-            new_thread
-                .thread
-                .multi_agent_version()
-                .unwrap_or(MultiAgentVersion::V1),
-        )
-        .await;
+        if let (Some(parent), Some(source)) = (&completion_parent, &notification_source) {
+            self.bind_completion_watcher_with_parent(
+                &new_thread.thread,
+                parent,
+                source.clone(),
+                child_reference,
+                agent_metadata.agent_path.clone(),
+                new_thread
+                    .thread
+                    .multi_agent_version()
+                    .unwrap_or(MultiAgentVersion::V1),
+            )?;
+        }
 
         let durability_wait_started_at = Instant::now();
         // Ordinary spawned children also need discoverable rollout metadata before
@@ -386,11 +416,21 @@ impl LocalAgentControl {
             ..Default::default()
         };
         let input_admission_started_at = Instant::now();
-        match initial_input {
+        let submission = match initial_input {
             SpawnInitialInput::UserInput(input) => {
-                self.send_input(new_thread.thread_id, input, start_options)
+                if let Some(observer) = &completion_parent {
+                    self.send_input_observing_response(
+                        new_thread.thread_id,
+                        input,
+                        start_options,
+                        observer.session.presentation_id(),
+                        options.response_observation,
+                    )
                     .await
-                    .map_err(|err| err.with_agent_context(AgentErrorContext::InputAdmission))?;
+                } else {
+                    self.send_input(new_thread.thread_id, input, start_options)
+                        .await
+                }
             }
             SpawnInitialInput::InterAgentCommunication(communication, context) => {
                 self.send_inter_agent_communication_after_capacity_check(
@@ -402,9 +442,11 @@ impl LocalAgentControl {
                     start_options,
                 )
                 .await
-                .map_err(|err| err.with_agent_context(AgentErrorContext::InputAdmission))?;
             }
-        }
+        };
+        // PendingSpawn already owns teardown, discard, and the ordered spawn-edge close
+        // until input acceptance. Do not start a second competing close transaction.
+        submission.map_err(|err| err.with_agent_context(AgentErrorContext::InputAdmission))?;
         let input_admission = input_admission_started_at.elapsed();
         // Keep provisional ownership through the final awaits. Commit and return to the
         // backend caller in one poll; later tool-result publication is outside this boundary.

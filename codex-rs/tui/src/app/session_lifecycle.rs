@@ -190,6 +190,14 @@ impl App {
                     initial_selected_idx = Some(idx);
                 }
                 let name = self.thread_label(thread_id);
+                let name = if self.active_thread_id.is_some_and(|observer| {
+                    self.agent_navigation
+                        .has_wake_subscription(observer, thread_id)
+                }) {
+                    format!("{name} (wake)")
+                } else {
+                    name
+                };
                 let uuid = thread_id.to_string();
                 SelectionItem {
                     name: if is_pending {
@@ -261,11 +269,16 @@ impl App {
         self.agent_navigation
             .upsert(thread_id, agent_nickname, agent_role, is_closed);
         if let Some(entry) = self.agent_navigation.get(&thread_id) {
-            self.chat_widget.set_collab_agent_metadata(
-                thread_id,
-                entry.agent_nickname.clone(),
-                entry.agent_role.clone(),
-            );
+            if self.primary_thread_id == Some(thread_id) {
+                self.chat_widget
+                    .set_primary_collab_agent_metadata(thread_id);
+            } else {
+                self.chat_widget.set_collab_agent_metadata(
+                    thread_id,
+                    entry.agent_nickname.clone(),
+                    entry.agent_role.clone(),
+                );
+            }
         }
     }
 
@@ -552,7 +565,13 @@ impl App {
         chat_widget
             .mention_usage_mut()
             .inherit(self.chat_widget.mention_usage_mut());
+        if let Some(primary_thread_id) = self.primary_thread_id {
+            chat_widget.set_primary_collab_agent_metadata(primary_thread_id);
+        }
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+            if self.primary_thread_id == Some(thread_id) {
+                continue;
+            }
             chat_widget.set_collab_agent_metadata(
                 thread_id,
                 entry.agent_nickname.clone(),

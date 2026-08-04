@@ -76,6 +76,7 @@ use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
 
+mod collab_legacy;
 mod non_paginated_exec;
 use self::non_paginated_exec::NonPaginatedExecHistory;
 
@@ -621,6 +622,7 @@ impl ThreadHistoryBuilder {
                 .non_paginated_exec_history
                 .record_turn_context(context, self.current_rollout_index),
             RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::WorldState(_)
             | RolloutItem::RealtimeItem(_)
@@ -1331,6 +1333,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: Vec::new(),
             prompt: Some(payload.prompt.clone()),
@@ -1340,7 +1344,7 @@ impl ThreadHistoryBuilder {
             agents_states: HashMap::new(),
         };
         let times = ItemTimes::legacy_start(payload.started_at_ms);
-        self.upsert_item(/*turn_id*/ None, item, times);
+        self.upsert_legacy_collab_item(item, times);
     }
 
     fn handle_collab_agent_spawn_end(
@@ -1370,6 +1374,8 @@ impl ThreadHistoryBuilder {
             None => (Vec::new(), Vec::new(), HashMap::new()),
         };
         let item = ThreadItemPayload::CollabAgentToolCall {
+            observe_commentary: None,
+            wake_on_completion: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status,
@@ -1382,7 +1388,7 @@ impl ThreadHistoryBuilder {
             agents_states,
         };
         let times = ItemTimes::legacy_completion(payload.completed_at_ms);
-        self.upsert_item(/*turn_id*/ None, item, times);
+        self.upsert_legacy_collab_item(item, times);
     }
 
     fn handle_collab_agent_interaction_begin(
@@ -1390,6 +1396,8 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabAgentInteractionBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            observe_commentary: None,
+            wake_on_completion: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::InProgress,
@@ -1402,7 +1410,7 @@ impl ThreadHistoryBuilder {
             agents_states: HashMap::new(),
         };
         let times = ItemTimes::legacy_start(payload.started_at_ms);
-        self.upsert_item(/*turn_id*/ None, item, times);
+        self.upsert_legacy_collab_item(item, times);
     }
 
     fn handle_collab_agent_interaction_end(
@@ -1416,6 +1424,8 @@ impl ThreadHistoryBuilder {
         let receiver_id = payload.receiver_thread_id.to_string();
         let received_status = CollabAgentState::from(payload.status.clone());
         let item = ThreadItemPayload::CollabAgentToolCall {
+            observe_commentary: None,
+            wake_on_completion: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status,
@@ -1428,7 +1438,7 @@ impl ThreadHistoryBuilder {
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
         };
         let times = ItemTimes::legacy_completion(payload.completed_at_ms);
-        self.upsert_item(/*turn_id*/ None, item, times);
+        self.upsert_legacy_collab_item(item, times);
     }
 
     fn handle_sub_agent_activity(
@@ -1453,6 +1463,8 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabWaitingBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            observe_commentary: None,
+            wake_on_completion: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::InProgress,
@@ -1469,7 +1481,7 @@ impl ThreadHistoryBuilder {
             agents_states: HashMap::new(),
         };
         let times = ItemTimes::legacy_start(payload.started_at_ms);
-        self.upsert_item(/*turn_id*/ None, item, times);
+        self.upsert_legacy_collab_item(item, times);
     }
 
     fn handle_collab_waiting_end(
@@ -1494,6 +1506,8 @@ impl ThreadHistoryBuilder {
             .map(|(id, status)| (id.to_string(), CollabAgentState::from(status.clone())))
             .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
+            observe_commentary: None,
+            wake_on_completion: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status,
@@ -1506,7 +1520,7 @@ impl ThreadHistoryBuilder {
             agents_states,
         };
         let times = ItemTimes::legacy_completion(payload.completed_at_ms);
-        self.upsert_item(/*turn_id*/ None, item, times);
+        self.upsert_legacy_collab_item(item, times);
     }
 
     fn handle_collab_close_begin(
@@ -1514,6 +1528,8 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabCloseBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            observe_commentary: None,
+            wake_on_completion: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status: CollabAgentToolCallStatus::InProgress,
@@ -1526,7 +1542,7 @@ impl ThreadHistoryBuilder {
             agents_states: HashMap::new(),
         };
         let times = ItemTimes::legacy_start(payload.started_at_ms);
-        self.upsert_item(/*turn_id*/ None, item, times);
+        self.upsert_legacy_collab_item(item, times);
     }
 
     fn handle_collab_close_end(&mut self, payload: &codex_protocol::protocol::CollabCloseEndEvent) {
@@ -1542,6 +1558,8 @@ impl ThreadHistoryBuilder {
         .into_iter()
         .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
+            observe_commentary: None,
+            wake_on_completion: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status,
@@ -1554,7 +1572,7 @@ impl ThreadHistoryBuilder {
             agents_states,
         };
         let times = ItemTimes::legacy_completion(payload.completed_at_ms);
-        self.upsert_item(/*turn_id*/ None, item, times);
+        self.upsert_legacy_collab_item(item, times);
     }
 
     fn handle_collab_resume_begin(
@@ -1562,6 +1580,8 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabResumeBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            observe_commentary: None,
+            wake_on_completion: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status: CollabAgentToolCallStatus::InProgress,
@@ -1574,7 +1594,7 @@ impl ThreadHistoryBuilder {
             agents_states: HashMap::new(),
         };
         let times = ItemTimes::legacy_start(payload.started_at_ms);
-        self.upsert_item(/*turn_id*/ None, item, times);
+        self.upsert_legacy_collab_item(item, times);
     }
 
     fn handle_collab_resume_end(
@@ -1593,6 +1613,8 @@ impl ThreadHistoryBuilder {
         .into_iter()
         .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
+            observe_commentary: None,
+            wake_on_completion: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status,
@@ -1605,7 +1627,7 @@ impl ThreadHistoryBuilder {
             agents_states,
         };
         let times = ItemTimes::legacy_completion(payload.completed_at_ms);
-        self.upsert_item(/*turn_id*/ None, item, times);
+        self.upsert_legacy_collab_item(item, times);
     }
 
     fn handle_context_compacted(&mut self, payload: &ContextCompactedEvent) {
@@ -5480,6 +5502,8 @@ mod tests {
         assert_eq!(
             item.payload,
             ThreadItemPayload::CollabAgentToolCall {
+                observe_commentary: None,
+                wake_on_completion: None,
                 id: "resume-1".into(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::Completed,
@@ -5541,6 +5565,8 @@ mod tests {
         assert_eq!(
             turns[0].items[1].payload,
             ThreadItemPayload::CollabAgentToolCall {
+                observe_commentary: None,
+                wake_on_completion: None,
                 id: "spawn-1".into(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
@@ -5618,6 +5644,8 @@ mod tests {
         assert_eq!(
             turns[0].items[1].payload,
             ThreadItemPayload::CollabAgentToolCall {
+                observe_commentary: None,
+                wake_on_completion: None,
                 id: "send-1".into(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::Completed,
@@ -5945,6 +5973,8 @@ mod tests {
             .expect("terminal completion"),
         );
         let wait = codex_protocol::items::CollabAgentToolCallItem {
+            observe_commentary: None,
+            wake_on_completion: None,
             id: "wait-completion".into(),
             deadline_at_ms: None,
             tool: codex_protocol::items::CollabAgentTool::Wait,

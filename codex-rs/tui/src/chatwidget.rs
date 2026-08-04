@@ -1018,6 +1018,15 @@ impl ChatWidget {
         );
     }
 
+    /// Registers the primary thread under the same stable label used by the agent picker.
+    pub(crate) fn set_primary_collab_agent_metadata(&mut self, thread_id: ThreadId) {
+        self.set_collab_agent_metadata(
+            thread_id,
+            Some("Main".to_string()),
+            Some("default".to_string()),
+        );
+    }
+
     /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.
     fn collab_agent_metadata(&self, thread_id: ThreadId) -> AgentMetadata {
         self.collab_agent_metadata

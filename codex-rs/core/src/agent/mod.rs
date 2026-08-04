@@ -5,6 +5,7 @@ pub(crate) mod control;
 mod history;
 pub(crate) mod host;
 mod registry;
+pub(crate) mod response_observation;
 pub(crate) mod role;
 pub(crate) mod status;
 pub(crate) mod types;
