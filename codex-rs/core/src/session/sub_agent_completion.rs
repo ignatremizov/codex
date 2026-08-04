@@ -73,7 +73,7 @@ impl Session {
         admission: CompletionSubmissionAdmission,
         committed_observations: Vec<AgentResponseObservation>,
     ) -> Result<(), ThreadStoreError> {
-        let _admission_guard = loop {
+        let _admission_guard = {
             let admission_guard = self.submission_admission.send_lock.lock().await;
             if matches!(admission, CompletionSubmissionAdmission::Ordinary)
                 && (self
@@ -95,7 +95,7 @@ impl Session {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match admission_state {
-                super::SubmissionAdmissionState::Ready => break admission_guard,
+                super::SubmissionAdmissionState::Ready => admission_guard,
                 super::SubmissionAdmissionState::RollbackPending
                 | super::SubmissionAdmissionState::RollbackEventPending => {
                     return Err(codex_thread_store::ThreadStoreError::Internal {
