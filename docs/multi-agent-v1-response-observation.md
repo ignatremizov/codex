@@ -82,6 +82,18 @@ but that splits sending and response observation across a larger model-facing co
 V1 can express the useful behavior by keeping one sending operation and adding a compact
 observation policy.
 
+The primary `x` workflow is child-to-parent coordination during a long child turn. A child can
+send an important scope, contract, or implementation update to its parent immediately without
+subscribing itself to the parent's later, usually unrelated completion. The parent otherwise sees
+the child's final response but has no model-visible access to arbitrary mid-turn commentary unless
+it explicitly inspects the child rollout. `cx` adds only the parent's first commentary
+acknowledgement or task-interpretation reply to that one-way update.
+
+Sibling-to-sibling coordination usually uses `cx`: the sending sibling receives the target
+sibling's acknowledgement or task interpretation while continuing its own work, but does not
+subscribe to the target's eventual final response. Use `x` instead when the sibling update is
+strictly one-way.
+
 ## Goals
 
 - Preserve each lifecycle tool's existing behavior when the new field is omitted.
@@ -109,9 +121,10 @@ observation policy.
 ## Proposed tool field
 
 The JSON tool schemas for `spawn_agent`, `send_input`, and `resume_agent` should add the same
-optional compact string field. Its wire name is `w`, meaning the wake/event-handling state for
-responses from the observed agent turn. The model-visible schema description must define that
-meaning explicitly; models should not have to infer it from the single-letter field name.
+optional compact string field. Its wire name is `w`. `send_input.w` carries the full process-focused
+guidance; `spawn_agent.w` and `resume_agent.w` refer to it rather than repeating the same text in
+model context. The schema intentionally leaves `w` as a string instead of enumerating values.
+Runtime parsing remains authoritative for accepted values and model-visible validation errors.
 
 The examples in this proposal use full UUIDs because that is the targeting syntax V1 currently
 accepts. Persisted nicknames may replace them if the parallel short-target proposal is implemented:
@@ -644,10 +657,17 @@ boundary.
 The tool description should convey these rules concisely:
 
 ```text
-Optional w is the wake/event-handling state for observed agent responses: c wakes on the first
-complete commentary reply; f wakes on the final reply; x adds no final subscription. Flags
-combine. A prior f for the same observer and agent turn remains active. Omit w for normal passive
-final delivery. Pending observations do not carry across cold resume or fork.
+Optional response handling for target agent turn. Omit for normal passive delivery. c: receive
+first commentary reply, such as acknowledgement or task interpretation. f: wake on completion,
+like background wait_agent with no deadline. x: do not subscribe this call to final reply; use to
+notify parent mid-turn so parent's later completion is not injected into current task. Can combine
+as cf or cx.
+```
+
+`spawn_agent.w` and `resume_agent.w` use:
+
+```text
+Same response handling as send_input.w.
 ```
 
 Examples:
@@ -665,7 +685,7 @@ Examples:
 ```
 
 ```json
-{"target":"019faa01-bb4e-79d4-8fcb-77de9737beef","message":"I updated the backend contract; no response needed.","w":"x"}
+{"target":"019faa01-bb4e-79d4-8fcb-77de9737beef","message":"The API contract now uses cursor pagination; I am updating callers.","w":"x"}
 ```
 
 ```json
@@ -673,7 +693,7 @@ Examples:
 ```
 
 ```json
-{"target":"019faa01-bb4e-79d4-8fcb-77de9737beef","message":"I found the requested file and will continue independently.","w":"cx"}
+{"target":"019faa01-bb4e-79d4-8fcb-77de9737beef","message":"The shared API shape changed; acknowledge if this conflicts with your plan.","w":"cx"}
 ```
 
 ```json
@@ -764,8 +784,9 @@ Implementation should cover:
 
 ## Decisions from design review
 
-- Keep the compact wire field name `w`. Its model-visible schema description must identify it as
-  wake/event-handling state and define every flag.
+- Keep compact wire field name `w`. Put process-focused flag guidance on `send_input.w`, reference
+  it from `spawn_agent.w` and `resume_agent.w`, and leave runtime parser responsible for validation
+  instead of repeating an enum in every model-visible schema.
 - Apply the same policy to `spawn_agent`, `send_input`, and `resume_agent`; do not retain separate
   implicit listener implementations when the shared observation mechanism can express them.
 - Expose only the first complete commentary item. Streaming commentary and additional progress
