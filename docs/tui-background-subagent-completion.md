@@ -33,12 +33,12 @@ reserved completion-context IDs from rollouts written by older retry behavior.
 
 This is the provenance boundary: ordinary provider output cannot set the typed
 completion metadata, reserved-looking provider IDs are moved out of the
-completion namespace, and a completion-context `amsg_x_<uuid>` identity survives
+completion namespace, and a completion-context `msg_x_<uuid>` identity survives
 input normalization only when core has registered a matching one-shot
-authorization for that exact destination Session instance. The `amsg` prefix
-matches the serialized `agent_message` Responses API item type. Submission
-failure or cancellation rolls the authorization back. Manager removal does not
-revoke completion work
+authorization for that exact destination Session instance. The `msg` prefix
+remains provider-compatible when V1 completion context is serialized as a
+user-role message. Submission failure or cancellation rolls the authorization
+back. Manager removal does not revoke completion work
 the removed Session already accepted; final Session teardown clears only
 capabilities owned by that generation. Delayed shutdown, failed submission, and
 residency cleanup remove a manager entry only when it is still the exact

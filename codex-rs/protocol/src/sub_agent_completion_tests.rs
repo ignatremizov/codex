@@ -48,11 +48,11 @@ fn completion_status_rejects_ordinary_or_malformed_response_item_ids() {
 fn completion_context_ids_are_distinct_and_validated() {
     let id = new_sub_agent_completion_context_response_item_id();
 
-    assert!(id.starts_with("amsg_x_"));
+    assert!(id.starts_with("msg_x_"));
     assert!(id.len() <= 64, "{id}");
     assert!(is_sub_agent_completion_context_response_item_id(&id));
     assert!(!is_sub_agent_completion_context_response_item_id(
-        "amsg_x_not-a-uuid"
+        "msg_x_not-a-uuid"
     ));
 }
 

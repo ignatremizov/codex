@@ -337,7 +337,7 @@ fn assert_input_item_ids_are_provider_compatible(request: &ResponsesRequest) {
                     "message input item ID has invalid provider prefix: {id}"
                 ),
                 Some("agent_message") => assert!(
-                    id.starts_with("amsg"),
+                    id.starts_with("amsg") || is_sub_agent_completion_context_response_item_id(id),
                     "agent message input item ID has invalid provider prefix: {id}"
                 ),
                 _ => {}
@@ -2893,7 +2893,7 @@ async fn spawn_final_wake_starts_an_idle_parent_turn(
         .as_str()
         .expect("completion context should have a response item ID");
     assert!(
-        completion_context_id.starts_with("amsg_x_"),
+        completion_context_id.starts_with("msg_x_"),
         "completion context should retain its API-compatible reserved identity: {completion_context_id}"
     );
     Ok(())
