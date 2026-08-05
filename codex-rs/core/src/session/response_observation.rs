@@ -112,6 +112,10 @@ pub(crate) struct CommunicationDeliveryReceipt {
 }
 
 impl AgentResponseSubscription {
+    pub(crate) fn try_recv(&mut self) -> Option<AgentResponseEvent> {
+        self.receiver.try_recv().ok()
+    }
+
     pub(crate) async fn recv(&mut self) -> Option<AgentResponseEvent> {
         self.receiver.recv().await
     }
