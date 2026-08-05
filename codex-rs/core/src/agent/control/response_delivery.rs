@@ -79,13 +79,7 @@ impl AgentControl {
                     return WatcherTerminalPoll::Retry;
                 }
             }
-            // A final-status callback can queue its watcher presentation before this watcher
-            // consumes response events that were published earlier in the same turn. Preserve
-            // channel order so TurnStarted binds the observation before the terminal is claimed.
-            let ready_response = response_rx.try_recv();
-            if ready_response.is_none()
-                && let Some(terminal) = self.take_watcher_terminal_presentation(parent, child)
-            {
+            if let Some(terminal) = self.take_watcher_terminal_presentation(parent, child) {
                 let Some(_lifecycle_guard) = self
                     .acquire_current_agent_lifecycle(child.thread_id, child_lifecycle_generation)
                     .await
@@ -109,47 +103,44 @@ impl AgentControl {
                     }
                 }
             }
-            let response = match ready_response {
+            let response = match tokio::select! {
+                biased;
+                () = &mut lifecycle_changed => continue,
+                () = &mut watcher_terminal_changed => continue,
+                response = response_rx.recv() => response,
+            } {
                 Some(response) => response,
-                None => match tokio::select! {
-                    biased;
-                    () = &mut lifecycle_changed => continue,
-                    () = &mut watcher_terminal_changed => continue,
-                    response = response_rx.recv() => response,
-                } {
-                    Some(response) => response,
-                    None => {
-                        let Some(terminal) = self.take_watcher_terminal_presentation(parent, child)
-                        else {
-                            return WatcherTerminalPoll::Closed;
-                        };
-                        let Some(_lifecycle_guard) = self
-                            .acquire_current_agent_lifecycle(
-                                child.thread_id,
-                                child_lifecycle_generation,
-                            )
-                            .await
-                        else {
-                            return WatcherTerminalPoll::Closed;
-                        };
-                        return match self
-                            .observe_queued_watcher_terminal(
-                                parent,
-                                child,
-                                terminal,
-                                child_multi_agent_version,
-                            )
-                            .await
-                        {
-                            Ok(Some(terminal)) => WatcherTerminalPoll::Terminal(terminal),
-                            Ok(None) => WatcherTerminalPoll::Closed,
-                            Err(terminal) => {
-                                self.requeue_watcher_terminal_presentation(parent, child, terminal);
-                                WatcherTerminalPoll::Retry
-                            }
-                        };
-                    }
-                },
+                None => {
+                    let Some(terminal) = self.take_watcher_terminal_presentation(parent, child)
+                    else {
+                        return WatcherTerminalPoll::Closed;
+                    };
+                    let Some(_lifecycle_guard) = self
+                        .acquire_current_agent_lifecycle(
+                            child.thread_id,
+                            child_lifecycle_generation,
+                        )
+                        .await
+                    else {
+                        return WatcherTerminalPoll::Closed;
+                    };
+                    return match self
+                        .observe_queued_watcher_terminal(
+                            parent,
+                            child,
+                            terminal,
+                            child_multi_agent_version,
+                        )
+                        .await
+                    {
+                        Ok(Some(terminal)) => WatcherTerminalPoll::Terminal(terminal),
+                        Ok(None) => WatcherTerminalPoll::Closed,
+                        Err(terminal) => {
+                            self.requeue_watcher_terminal_presentation(parent, child, terminal);
+                            WatcherTerminalPoll::Retry
+                        }
+                    };
+                }
             };
             match response {
                 AgentResponseEvent::Commentary {

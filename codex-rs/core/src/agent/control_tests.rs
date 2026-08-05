@@ -3257,7 +3257,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
 async fn v1_observer_of_v2_shutdown_queues_notification_for_direct_parent() {
     let harness = AgentControlHarness::new().await;
     let (_root_thread_id, root_thread) = harness.start_thread().await;
-    let (worker_thread_id, _worker_thread) = harness.start_thread().await;
+    let (worker_thread_id, worker_thread) = harness.start_thread().await;
     let mut tester_config = harness.config.clone();
     let _ = tester_config.features.enable(Feature::MultiAgentV2);
     let worker_path = AgentPath::root().join("worker_a").expect("worker path");
@@ -3308,34 +3308,17 @@ async fn v1_observer_of_v2_shutdown_queues_notification_for_direct_parent() {
         tester_thread_id,
         &AgentStatus::Shutdown,
     );
-    let expected = (
-        worker_thread_id,
-        Op::InterAgentCommunication {
-            communication: InterAgentCommunication::new(
-                tester_path.clone(),
-                worker_path.clone(),
-                Vec::new(),
-                expected_message.clone(),
-                /*trigger_turn*/ false,
-            ),
-        },
-    );
-
-    timeout(Duration::from_secs(5), async {
-        loop {
-            let captured = harness
-                .manager
-                .captured_ops()
-                .into_iter()
-                .any(|entry| is_expected_completion_communication(&entry, &expected));
-            if captured {
-                break;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("completion watcher should queue a direct-parent message");
+    assert!(wait_for_subagent_notification(&worker_thread).await);
+    let worker_history_items = worker_thread
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .to_vec();
+    assert!(history_contains_text(
+        &worker_history_items,
+        &expected_message
+    ));
 
     let root_history_items = root_thread
         .session
@@ -3343,16 +3326,11 @@ async fn v1_observer_of_v2_shutdown_queues_notification_for_direct_parent() {
         .await
         .raw_items()
         .to_vec();
-    assert!(!history_contains_assistant_inter_agent_communication(
+    assert!(!history_contains_text(
         &root_history_items,
-        &InterAgentCommunication::new(
-            tester_path,
-            AgentPath::root(),
-            Vec::new(),
-            expected_message,
-            /*trigger_turn*/ false,
-        )
+        &expected_message
     ));
+    assert!(!has_subagent_notification(&root_history_items));
 }
 
 #[tokio::test]
@@ -3450,7 +3428,7 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
             &child.thread,
             Some(child_source),
             child_path.to_string(),
-            Some(child_path),
+            Some(child_path.clone()),
             ResponseObservationPolicy::from_parts(
                 /*commentary*/ false,
                 FinalResponseObservation::Wake,
@@ -3504,9 +3482,52 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
         )
         .await;
 
+    let expected_message = crate::session_prefix::format_subagent_notification_message(
+        child_path.as_str(),
+        child.thread_id,
+        &AgentStatus::Completed(Some("v2 target done".to_string())),
+    );
+    let expected = (
+        parent.thread_id,
+        Op::InterAgentCommunication {
+            communication: InterAgentCommunication::new(
+                child_path,
+                AgentPath::root(),
+                Vec::new(),
+                expected_message,
+                /*trigger_turn*/ true,
+            ),
+        },
+    );
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if manager
+                .captured_ops()
+                .into_iter()
+                .any(|entry| is_expected_completion_communication(&entry, &expected))
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("V1 observer should receive a waking notification from the V2 target");
+    timeout(Duration::from_secs(5), async {
+        while control.has_bound_final_response_wake(parent_presentation) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("delivered cross-version wake should clear its observation");
+    parent
+        .thread
+        .session
+        .abort_all_tasks(TurnAbortReason::Interrupted)
+        .await;
     timeout(Duration::from_secs(5), idle_rx.recv())
         .await
-        .expect("cross-version wake cleanup should recheck idle lifecycle")
+        .expect("idle lifecycle should resume after the cross-version wake turn ends")
         .expect("idle lifecycle recorder should remain available");
     assert!(!control.has_bound_final_response_wake(parent_presentation));
     assert!(
@@ -3525,7 +3546,7 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
 #[tokio::test]
 async fn v1_observer_of_v2_raw_error_queues_notification_for_direct_parent() {
     let harness = AgentControlHarness::new().await;
-    let (worker_thread_id, _worker_thread) = harness.start_thread().await;
+    let (worker_thread_id, worker_thread) = harness.start_thread().await;
     let worker_path = AgentPath::root().join("worker_a").expect("worker path");
     let tester_path = worker_path.join("tester").expect("tester path");
     let tester_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -3584,34 +3605,17 @@ async fn v1_observer_of_v2_raw_error_queues_notification_for_direct_parent() {
         tester_thread_id,
         &AgentStatus::Errored(error.to_string()),
     );
-    let expected = (
-        worker_thread_id,
-        Op::InterAgentCommunication {
-            communication: InterAgentCommunication::new(
-                tester_path,
-                worker_path,
-                Vec::new(),
-                expected_message,
-                /*trigger_turn*/ false,
-            ),
-        },
-    );
-
-    timeout(Duration::from_secs(5), async {
-        loop {
-            if harness
-                .manager
-                .captured_ops()
-                .into_iter()
-                .any(|entry| is_expected_completion_communication(&entry, &expected))
-            {
-                break;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("raw error watcher should queue a direct-parent message");
+    assert!(wait_for_subagent_notification(&worker_thread).await);
+    let worker_history_items = worker_thread
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .to_vec();
+    assert!(history_contains_text(
+        &worker_history_items,
+        &expected_message
+    ));
 }
 
 #[tokio::test]
