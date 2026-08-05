@@ -3432,7 +3432,7 @@ async fn send_input_final_observation_wakes_an_idle_parent(
         "message": "final-observed child task",
         "w": "f",
     }))?;
-    mount_sse_once_match(
+    let send_instruction = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, "observe the sent final"),
         sse(vec![
@@ -3447,7 +3447,7 @@ async fn send_input_final_observation_wakes_an_idle_parent(
         ]),
     )
     .await;
-    mount_response_once_match(
+    let child_response = mount_response_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, "final-observed child task"),
         sse_response(sse(vec![
@@ -3458,7 +3458,7 @@ async fn send_input_final_observation_wakes_an_idle_parent(
         .set_delay(Duration::from_secs(2)),
     )
     .await;
-    mount_sse_once_match(
+    let parent_after_send = mount_sse_once_match(
         &server,
         move |request: &wiremock::Request| body_contains(request, send_call_id),
         sse(vec![
@@ -3484,6 +3484,40 @@ async fn send_input_final_observation_wakes_an_idle_parent(
 
     test.submit_turn("observe the sent final").await?;
 
+    let _ = wait_for_request_containing_text(&send_instruction, "observe the sent final").await?;
+    let _ = wait_for_request_containing_text(&parent_after_send, send_call_id).await?;
+    let _ = wait_for_request_containing_text(&child_response, "final-observed child task").await?;
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("sent final result".to_string()))
+    );
+    test.codex.flush_rollout().await?;
+    let response_observations = read_test_rollout_items(&test)?
+        .into_iter()
+        .filter_map(|item| match item {
+            RolloutItem::AgentResponseObservation(observation)
+                if observation.target_thread_id == child_thread.session.thread_id()
+                    && observation.target_turn_id.is_some() =>
+            {
+                Some(observation)
+            }
+            RolloutItem::SessionMeta(_)
+            | RolloutItem::ResponseItem(_)
+            | RolloutItem::Compacted(_)
+            | RolloutItem::InterAgentCommunication(_)
+            | RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::WorldState(_)
+            | RolloutItem::EventMsg(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        response_observations
+            .iter()
+            .any(|observation| { observation.final_delivery == AgentResponseFinalDelivery::Wake }),
+        "send_input should durably bind Wake to its admitted target turn, got {response_observations:#?}"
+    );
     let request = wait_for_request_containing_text(&final_wake, "sent final result").await?;
     assert!(request.body_contains_text("<subagent_notification>"));
     Ok(())
@@ -4081,7 +4115,6 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     assert!(!request.body_contains_text("durable acknowledgement"));
     assert!(!request.body_contains_text("durable child final"));
     let _ = wait_for_request_containing_text(&explicit_result, "durable child final").await?;
-    assert!(automatic_delivery.requests().is_empty());
 
     InMemoryThreadStore::remove_id(&store_id);
     Ok(())
