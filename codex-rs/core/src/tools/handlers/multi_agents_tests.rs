@@ -3172,6 +3172,7 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
     let child_thread_id = child.thread_id;
     let parent_session = parent.thread.session.clone();
     let child_turn = child.thread.session.new_default_turn().await;
+    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
 
     let first_resume = tokio::spawn({
         let parent_session = Arc::clone(&parent_session);
@@ -3224,7 +3225,6 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
             }),
         )
         .await;
-    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
     first_resume
         .await
         .expect("first resume task should join")
@@ -3263,7 +3263,7 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
         }
     })
     .await
-    .expect("completion should survive an immediate running transition");
+    .expect("completion should reach the adopting parent");
     assert_eq!(
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
@@ -3473,7 +3473,22 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
     assert!(!submission_id.is_empty());
     assert_eq!(success, Some(true));
 
-    let completion_turn = resumed_thread.session.new_default_turn().await;
+    let admitted_turn_id = timeout(Duration::from_secs(5), async {
+        loop {
+            let (snapshot, subscription) = resumed_thread.session.subscribe_agent_responses();
+            drop(subscription);
+            if let Some(active_turn_id) = snapshot.active_turn_id {
+                break active_turn_id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("send_input should admit a target turn");
+    let completion_turn = resumed_thread
+        .session
+        .new_default_turn_with_sub_id(admitted_turn_id)
+        .await;
     resumed_thread
         .session
         .send_event(
@@ -3489,7 +3504,6 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
             }),
         )
         .await;
-    publish_agent_turn_started(resumed_thread.as_ref(), completion_turn.as_ref()).await;
     timeout(Duration::from_secs(5), async {
         loop {
             if subagent_notification_texts(parent_session.as_ref())
