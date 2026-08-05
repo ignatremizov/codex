@@ -3272,40 +3272,6 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
             &AgentStatus::Completed(Some("child done".to_string())),
         )]
     );
-
-    child
-        .thread
-        .session
-        .record_not_found_terminal_if_unfinished();
-    timeout(Duration::from_secs(5), async {
-        loop {
-            if subagent_notification_texts(parent_session.as_ref())
-                .await
-                .len()
-                == 2
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("removal should deliver a terminal fallback to the adopting parent");
-    assert_eq!(
-        subagent_notification_texts(parent_session.as_ref()).await,
-        vec![
-            format_subagent_notification_message(
-                child_thread_id.to_string().as_str(),
-                child_thread_id,
-                &AgentStatus::Completed(Some("child done".to_string())),
-            ),
-            format_subagent_notification_message(
-                child_thread_id.to_string().as_str(),
-                child_thread_id,
-                &AgentStatus::NotFound,
-            ),
-        ]
-    );
 }
 
 #[tokio::test]

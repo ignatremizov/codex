@@ -435,6 +435,29 @@ async fn wait_for_no_pending_response_observation(
     }
 }
 
+async fn wait_for_store_history_text(
+    store: &InMemoryThreadStore,
+    thread_id: ThreadId,
+    text: &str,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let history = store
+            .load_rollback_history(LoadThreadHistoryParams {
+                thread_id,
+                include_archived: false,
+            })
+            .await?;
+        if serde_json::to_string(&history.items)?.contains(text) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for thread history containing {text:?}");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn response_observation_has_no_pending_work(
     store: &InMemoryThreadStore,
     observer_thread_id: ThreadId,
@@ -946,6 +969,7 @@ async fn setup_turn_one_with_custom_spawned_child(
     test.submit_turn(TURN_1_PROMPT).await?;
     let spawned_id = wait_for_spawned_thread_id(&test).await?;
     let _ = wait_for_requests(&turn1_followup).await?;
+    let _ = wait_for_terminal_status(test.codex.as_ref()).await?;
     if wait_for_initial_notification && wait_for_parent_notification {
         let _ = wait_for_requests(&child_request_log).await?;
         let rollout_path = test
@@ -3616,6 +3640,12 @@ async fn final_delivery_persistence_failure_restarts_the_v1_response_observer() 
     )
     .await;
     submit_turn_on_thread(child_thread.as_ref(), "baseline response after recovery").await?;
+    wait_for_store_history_text(
+        &store,
+        test.session_configured.thread_id,
+        "baseline survived recovery",
+    )
+    .await?;
     wait_for_no_pending_response_observation(
         &store,
         test.session_configured.thread_id,
@@ -3952,6 +3982,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     let spawned_id = ThreadId::from_string(&wait_for_spawned_thread_id(&initial).await?)?;
     let child_thread = initial.thread_manager.get_thread(spawned_id).await?;
     let _ = wait_for_requests(&initial_parent_followup).await?;
+    let _ = wait_for_terminal_status(initial.codex.as_ref()).await?;
     let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
     assert_eq!(
         wait_for_terminal_status(child_thread.as_ref()).await?,
@@ -3975,8 +4006,9 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     let automatic_delivery = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            body_contains(request, "<subagent_commentary>")
-                || body_contains(request, "<subagent_notification>")
+            (body_contains(request, "<subagent_commentary>")
+                || body_contains(request, "<subagent_notification>"))
+                && !body_contains(request, "explicit-cold-boundary-resume")
         },
         sse(vec![
             ev_response_created("resp-unexpected-cold-delivery"),
