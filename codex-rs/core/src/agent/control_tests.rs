@@ -61,7 +61,6 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
-use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::InMemoryThreadStoreFailure;
@@ -170,35 +169,6 @@ fn assistant_message(text: &str, phase: Option<MessagePhase>) -> ResponseItem {
         phase,
         internal_chat_message_metadata_passthrough: None,
     }
-}
-
-fn is_expected_completion_communication(entry: &(ThreadId, Op), expected: &(ThreadId, Op)) -> bool {
-    let (
-        entry_thread_id,
-        Op::InterAgentCommunication {
-            communication: entry_communication,
-        },
-    ) = entry
-    else {
-        return false;
-    };
-    let (
-        expected_thread_id,
-        Op::InterAgentCommunication {
-            communication: expected_communication,
-        },
-    ) = expected
-    else {
-        return false;
-    };
-    let Some(id) = entry_communication.id.as_ref() else {
-        return false;
-    };
-    let mut entry_communication = entry_communication.clone();
-    entry_communication.id = None;
-    entry_thread_id == expected_thread_id
-        && is_sub_agent_completion_context_response_item_id(id)
-        && &entry_communication == expected_communication
 }
 
 #[test]
@@ -3487,50 +3457,6 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
         child.thread_id,
         &AgentStatus::Completed(Some("v2 target done".to_string())),
     );
-    let communication = timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(communication) =
-                manager
-                    .captured_ops()
-                    .into_iter()
-                    .find_map(|(thread_id, op)| match op {
-                        Op::InterAgentCommunication { communication }
-                            if thread_id == parent.thread_id =>
-                        {
-                            Some(communication)
-                        }
-                        _ => None,
-                    })
-            {
-                break communication;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    let communication = match communication {
-        Ok(communication) => communication,
-        Err(err) => {
-            let observations =
-                control.response_observation_snapshots(parent_presentation, child_presentation);
-            let parent_history = parent.thread.session.clone_history().await;
-            let child_history = child.thread.session.clone_history().await;
-            let child_status = child.thread.agent_status().await;
-            panic!(
-                "V1 observer should receive a waking notification from the V2 target: {err:?}\n\
-                 observations: {observations:#?}\n\
-                 captured ops: {:#?}\n\
-                 parent history: {:#?}\n\
-                 child history: {:#?}\n\
-                 child status: {child_status:#?}",
-                manager.captured_ops(),
-                parent_history.raw_items(),
-                child_history.raw_items(),
-            );
-        }
-    };
-    assert!(communication.trigger_turn);
-    assert_eq!(communication.content, expected_message);
     timeout(Duration::from_secs(5), async {
         while control.has_bound_final_response_wake(parent_presentation) {
             sleep(Duration::from_millis(10)).await;
@@ -3538,6 +3464,15 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
     })
     .await
     .expect("delivered cross-version wake should clear its observation");
+    let parent_history = parent.thread.session.clone_history().await;
+    assert!(history_contains_text(
+        parent_history.raw_items(),
+        &expected_message
+    ));
+    assert!(
+        parent.thread.session.active_turn.lock().await.is_some(),
+        "waking notification should start an observer turn"
+    );
     parent
         .thread
         .session
