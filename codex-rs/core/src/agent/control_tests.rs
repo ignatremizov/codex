@@ -3507,8 +3507,28 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
             sleep(Duration::from_millis(10)).await;
         }
     })
-    .await
-    .expect("V1 observer should receive a waking notification from the V2 target");
+    .await;
+    let communication = match communication {
+        Ok(communication) => communication,
+        Err(err) => {
+            let observations =
+                control.response_observation_snapshots(parent_presentation, child_presentation);
+            let parent_history = parent.thread.session.clone_history().await;
+            let child_history = child.thread.session.clone_history().await;
+            let child_status = child.thread.agent_status().await;
+            panic!(
+                "V1 observer should receive a waking notification from the V2 target: {err:?}\n\
+                 observations: {observations:#?}\n\
+                 captured ops: {:#?}\n\
+                 parent history: {:#?}\n\
+                 child history: {:#?}\n\
+                 child status: {child_status:#?}",
+                manager.captured_ops(),
+                parent_history.raw_items(),
+                child_history.raw_items(),
+            );
+        }
+    };
     assert!(communication.trigger_turn);
     assert_eq!(communication.content, expected_message);
     timeout(Duration::from_secs(5), async {
