@@ -316,11 +316,16 @@ fn assert_input_item_ids_are_provider_compatible(request: &ResponsesRequest) {
     for item in body["input"].as_array().into_iter().flatten() {
         if let Some(id) = item["id"].as_str() {
             assert!(id.len() <= 64, "input item ID exceeds provider limit: {id}");
-            if item["type"].as_str() == Some("message") {
-                assert!(
+            match item["type"].as_str() {
+                Some("message") => assert!(
                     id.starts_with("msg"),
                     "message input item ID has invalid provider prefix: {id}"
-                );
+                ),
+                Some("agent_message") => assert!(
+                    id.starts_with("amsg"),
+                    "agent message input item ID has invalid provider prefix: {id}"
+                ),
+                _ => {}
             }
         }
     }
@@ -2855,6 +2860,27 @@ async fn spawn_final_wake_starts_an_idle_parent_turn(
         wait_for_request_containing_text(&wake_request, "<subagent_notification>").await?;
     assert!(request.body_contains_text("<subagent_notification>"));
     assert!(request.body_contains_text("wake result"));
+    assert_input_item_ids_are_provider_compatible(&request);
+    let completion_context = request
+        .inputs_of_type("agent_message")
+        .into_iter()
+        .find(|item| {
+            item["content"].as_array().is_some_and(|content| {
+                content.iter().any(|part| {
+                    part["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("<subagent_notification>"))
+                })
+            })
+        })
+        .expect("wake request should contain completion context as an agent message");
+    let completion_context_id = completion_context["id"]
+        .as_str()
+        .expect("completion context should have a response item ID");
+    assert!(
+        completion_context_id.starts_with("amsg_x_"),
+        "completion context should retain its API-compatible reserved identity: {completion_context_id}"
+    );
     Ok(())
 }
 

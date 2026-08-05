@@ -11,7 +11,7 @@ use serde::Serialize;
 use ts_rs::TS;
 
 const SUB_AGENT_COMPLETION_ID_PREFIX: &str = "msg";
-const SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX: &str = "msg_x";
+const SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX: &str = "amsg_x";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_PREFIX: &str = "Agent final answer from `";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
 
@@ -71,9 +71,10 @@ fn new_sub_agent_completion_response_item_id(status: SubAgentCompletionStatus) -
 
 /// Creates the model-context item ID paired with a terminal presentation token.
 ///
-/// Both legacy user-role notifications and v2 inter-agent messages use this reserved identity,
-/// paired with rollout delivery metadata, so exact rollback can preserve core-authored completion
-/// context without trusting message text.
+/// Both v1 notification envelopes and v2 inter-agent messages are serialized as `AgentMessage`
+/// model input and use this reserved identity, paired with rollout delivery metadata, so exact
+/// rollback can preserve core-authored completion context without trusting message text. The
+/// `amsg` prefix must continue to match that outbound Responses API item type.
 pub fn new_sub_agent_completion_context_response_item_id() -> ResponseItemId {
     ResponseItemId::new(SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX)
 }
