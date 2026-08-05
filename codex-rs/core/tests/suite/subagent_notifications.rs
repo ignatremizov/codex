@@ -3269,7 +3269,10 @@ async fn resume_final_wake_survives_a_later_send_input_x(
     .await;
     mount_response_once_match(
         &server,
-        |request: &wiremock::Request| body_contains(request, "resumed child task"),
+        |request: &wiremock::Request| {
+            body_contains(request, "resumed child task")
+                && !body_contains(request, "send-after-resume-call")
+        },
         sse_response(sse(vec![
             ev_response_created("resp-resumed-child"),
             ev_assistant_message("msg-resumed-child", "resumed child result"),
@@ -3356,7 +3359,10 @@ async fn send_input_commentary_binds_to_the_interrupt_replacement_turn(
     .await;
     mount_response_once_match(
         &server,
-        |request: &wiremock::Request| body_contains(request, "replacement child task"),
+        move |request: &wiremock::Request| {
+            body_contains(request, "replacement child task")
+                && !body_contains(request, send_call_id)
+        },
         sse_response(sse(vec![
             ev_response_created("resp-replacement-child"),
             ev_commentary_message("msg-replacement-commentary", "replacement acknowledged"),
@@ -3447,7 +3453,10 @@ async fn send_input_final_observation_wakes_an_idle_parent(
     .await;
     let child_response = mount_response_once_match(
         &server,
-        |request: &wiremock::Request| body_contains(request, "final-observed child task"),
+        move |request: &wiremock::Request| {
+            body_contains(request, "final-observed child task")
+                && !body_contains(request, send_call_id)
+        },
         sse_response(sse(vec![
             ev_response_created("resp-final-observed-child"),
             ev_assistant_message("msg-final-observed-child", "sent final result"),
@@ -3581,6 +3590,7 @@ async fn final_delivery_persistence_failure_restarts_the_v1_response_observer() 
         &server,
         |request: &wiremock::Request| {
             body_contains(request, "final result after transient observation failure")
+                && !body_contains(request, "send-final-before-observation-flush-failure")
         },
         sse_response(sse(vec![
             ev_response_created("resp-child-after-observation-flush-failure"),
@@ -4313,6 +4323,7 @@ async fn send_input_persistence_failure_rolls_back_response_observation() -> Res
         &server,
         |request: &wiremock::Request| {
             body_contains(request, "task whose observation persistence fails")
+                && !body_contains(request, "send-observation-persistence-failure")
         },
         sse_response(sse(vec![
             ev_response_created("resp-child-after-send-observation-failure"),
@@ -4447,6 +4458,7 @@ async fn failed_response_observation_compensation_quarantines_the_parent() -> Re
         &server,
         |request: &wiremock::Request| {
             body_contains(request, "task with unknown observation commit")
+                && !body_contains(request, "send-with-unknown-observation-commit")
         },
         sse_response(sse(vec![
             ev_response_created("resp-child-with-unknown-observation-commit"),
@@ -4612,7 +4624,10 @@ async fn resume_persistence_failure_does_not_subscribe_the_next_target_turn() ->
     .await;
     let child_request = mount_response_once_match(
         &server,
-        |request: &wiremock::Request| body_contains(request, "fire and forget after failed resume"),
+        |request: &wiremock::Request| {
+            body_contains(request, "fire and forget after failed resume")
+                && !body_contains(request, "send-after-failed-resume-observation")
+        },
         sse_response(sse(vec![
             ev_response_created("resp-child-after-failed-resume"),
             ev_assistant_message(
