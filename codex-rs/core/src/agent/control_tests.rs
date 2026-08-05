@@ -3334,7 +3334,7 @@ async fn v1_observer_of_v2_shutdown_queues_notification_for_direct_parent() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_target_wake_downgrades_for_idle_v1_exec_observer() {
+async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
     struct IdleRecorder(tokio::sync::mpsc::UnboundedSender<()>);
 
     impl codex_extension_api::ThreadLifecycleContributor<Config> for IdleRecorder {
@@ -3487,24 +3487,39 @@ async fn multi_agent_v2_target_wake_downgrades_for_idle_v1_exec_observer() {
         child.thread_id,
         &AgentStatus::Completed(Some("v2 target done".to_string())),
     );
-    assert!(wait_for_subagent_notification(&parent.thread).await);
-    let parent_history_items = parent.thread.session.clone_history().await;
-    assert!(history_contains_text(
-        parent_history_items.raw_items(),
-        &expected_message
-    ));
-    assert!(!manager.captured_ops().into_iter().any(|(thread_id, op)| {
-        thread_id == parent.thread_id
-            && matches!(
-                op,
-                Op::InterAgentCommunication { communication }
-                    if communication.trigger_turn
-                        && communication.content == expected_message
-            )
-    }));
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if manager.captured_ops().into_iter().any(|(thread_id, op)| {
+                thread_id == parent.thread_id
+                    && matches!(
+                        op,
+                        Op::InterAgentCommunication { communication }
+                            if communication.trigger_turn
+                                && communication.content == expected_message
+                    )
+            }) {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("V1 observer should receive a waking notification from the V2 target");
+    timeout(Duration::from_secs(5), async {
+        while control.has_bound_final_response_wake(parent_presentation) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("delivered cross-version wake should clear its observation");
+    parent
+        .thread
+        .session
+        .abort_all_tasks(TurnAbortReason::Interrupted)
+        .await;
     timeout(Duration::from_secs(5), idle_rx.recv())
         .await
-        .expect("passive exec delivery should resume idle lifecycle")
+        .expect("idle lifecycle should resume after the cross-version wake turn ends")
         .expect("idle lifecycle recorder should remain available");
     assert!(!control.has_bound_final_response_wake(parent_presentation));
     assert!(
