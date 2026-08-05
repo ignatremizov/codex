@@ -3464,11 +3464,17 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
     })
     .await
     .expect("delivered cross-version wake should clear its observation");
-    let parent_history = parent.thread.session.clone_history().await;
-    assert!(history_contains_text(
-        parent_history.raw_items(),
-        &expected_message
-    ));
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let parent_history = parent.thread.session.clone_history().await;
+            if history_contains_text(parent_history.raw_items(), &expected_message) {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("waking notification should become visible in observer history");
     assert!(
         parent.thread.session.active_turn.lock().await.is_some(),
         "waking notification should start an observer turn"
