@@ -3467,7 +3467,15 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
     timeout(Duration::from_secs(5), async {
         loop {
             let parent_history = parent.thread.session.clone_history().await;
-            if history_contains_text(parent_history.raw_items(), &expected_message) {
+            if parent_history.raw_items().iter().any(|item| {
+                matches!(
+                    item,
+                    ResponseItem::AgentMessage { content, .. }
+                        if codex_protocol::models::plaintext_agent_message_content(content)
+                            .as_deref()
+                            == Some(expected_message.as_str())
+                )
+            }) {
                 break;
             }
             sleep(Duration::from_millis(10)).await;
