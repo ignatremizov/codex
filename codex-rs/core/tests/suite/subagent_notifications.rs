@@ -3880,6 +3880,7 @@ async fn pending_v1_final_wake_survives_parent_compaction(
                 .with_history_mode(history_mode)
                 .with_config(move |config| {
                     config.compact_prompt = Some(compact_prompt.to_string());
+                    config.features.disable(Feature::RemoteCompaction);
                 })
         },
     )
@@ -4578,10 +4579,7 @@ async fn resume_persistence_failure_does_not_subscribe_the_next_target_turn() ->
         &server,
         move |request: &wiremock::Request| {
             body_contains(request, resume_call_id)
-                && body_contains(
-                    request,
-                    "failed to persist initial response observation state",
-                )
+                && body_contains(request, "failed to persist response observation state")
         },
         sse(vec![
             ev_response_created("resp-resume-observation-failure-handled"),
@@ -4597,7 +4595,7 @@ async fn resume_persistence_failure_does_not_subscribe_the_next_target_turn() ->
         .await?;
     let _ = wait_for_request_containing_text(
         &failure_response,
-        "failed to persist initial response observation state",
+        "failed to persist response observation state",
     )
     .await?;
 
