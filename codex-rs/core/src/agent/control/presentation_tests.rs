@@ -1,6 +1,9 @@
 use super::*;
+use crate::agent::control::response_observer::CompletionWatcherLifecycleGuard;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -1472,12 +1475,8 @@ async fn permanent_watcher_teardown_revokes_its_bound_wake() {
             ResponseObservationPersistence::Durable,
         )
         .expect("watcher registration");
-    let watcher_guard = super::response_observer::CompletionWatcherLifecycleGuard::new(
-        control.clone(),
-        watcher_registration,
-        parent,
-        child,
-    );
+    let watcher_guard =
+        CompletionWatcherLifecycleGuard::new(control.clone(), watcher_registration, parent, child);
 
     assert!(control.has_bound_final_response_wake(parent));
 
