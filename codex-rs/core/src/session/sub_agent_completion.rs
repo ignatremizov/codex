@@ -418,11 +418,17 @@ impl Session {
         else {
             return None;
         };
+        let uses_durable_response_observer = self
+            .services
+            .agent_control
+            .completion_uses_durable_response_observer(self.presentation_id(), *parent_thread_id);
         let delivery = match (turn_context.multi_agent_version, event) {
             (
                 codex_protocol::protocol::MultiAgentVersion::V2,
                 EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_),
-            ) if agent_path.is_some() => TerminalPresentationDelivery::Direct,
+            ) if agent_path.is_some() && !uses_durable_response_observer => {
+                TerminalPresentationDelivery::Direct
+            }
             _ => TerminalPresentationDelivery::Watcher,
         };
         let status = if delivery == TerminalPresentationDelivery::Direct {

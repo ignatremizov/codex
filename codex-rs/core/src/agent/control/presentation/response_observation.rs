@@ -121,6 +121,29 @@ enum CompletionDeliveryAdmissionRegistration {
 }
 
 impl AgentControl {
+    /// Returns whether a V2 child completion should use the watcher-owned V1 delivery path.
+    ///
+    /// Native V2 parent/child relationships are runtime-only and keep direct completion
+    /// publication. A V1 caller observing that same target owns durable response state, so its
+    /// terminal publication must enter the watcher path before final status becomes visible.
+    pub(crate) fn completion_uses_durable_response_observer(
+        &self,
+        child: SessionPresentationId,
+        declared_parent_thread_id: ThreadId,
+    ) -> bool {
+        let Some(parent) = self.completion_parent_for_child(child, declared_parent_thread_id)
+        else {
+            return false;
+        };
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(parent, child))
+            .is_some_and(|relationship| {
+                relationship.persistence == ResponseObservationPersistence::Durable
+            })
+    }
+
     /// Returns whether `observer` has a wake-capable final observation bound to concrete work.
     ///
     /// Pending next-turn policies do not count: an idle target may never start that turn, so
