@@ -169,11 +169,26 @@ impl AgentControl {
         // schedule V1 watcher recovery for a later runtime with the same rollout thread ID.
         // Persisted descendant edges deliberately remain Open: explicitly resuming the closed
         // target may reopen its prior subtree, but every response relationship below is fresh.
+        let mut affected_wake_observers = HashSet::new();
         for closed_thread_id in std::iter::once(agent_id).chain(descendant_ids.iter().copied()) {
             state.advance_agent_lifecycle_generation(closed_thread_id);
-            self.revoke_response_observations_for_child(closed_thread_id);
+            affected_wake_observers
+                .extend(self.revoke_response_observations_for_child(closed_thread_id));
         }
-        match Box::pin(self.shutdown_agent_tree_with_descendants(agent_id, descendant_ids)).await {
+        let result =
+            Box::pin(self.shutdown_agent_tree_with_descendants(agent_id, descendant_ids)).await;
+        drop(_descendant_lifecycle_guards);
+        drop(_lifecycle_guard);
+
+        // A foreign observer may already be idle when this close removes its last outstanding
+        // wake. Re-run idle lifecycle after shutdown so automatic work such as an active goal
+        // cannot remain deferred indefinitely. Observers that are active, replaced, or themselves
+        // part of the closed subtree reject the callback through the ordinary lifecycle gates.
+        for observer in affected_wake_observers {
+            self.recheck_thread_idle_lifecycle(observer).await;
+        }
+
+        match result {
             Err(err)
                 if known_agent
                     && matches!(

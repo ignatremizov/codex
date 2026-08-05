@@ -3345,6 +3345,174 @@ async fn multi_agent_v2_shutdown_watcher_queues_message_for_direct_parent() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_runtime_wake_cleanup_rechecks_idle_v1_observer() {
+    struct IdleRecorder(tokio::sync::mpsc::UnboundedSender<()>);
+
+    impl codex_extension_api::ThreadLifecycleContributor<Config> for IdleRecorder {
+        fn on_thread_idle<'a>(
+            &'a self,
+            _input: codex_extension_api::ThreadIdleInput<'a>,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                let _ = self.0.send(());
+            })
+        }
+    }
+
+    let (_home, mut config) = test_config().await;
+    config
+        .features
+        .enable(Feature::Collab)
+        .expect("test config should enable multi-agent v1");
+    let mut child_config = config.clone();
+    child_config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test child config should enable multi-agent v2");
+    let (idle_tx, mut idle_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(IdleRecorder(idle_tx)));
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let manager = ThreadManager::new(
+        &config,
+        Arc::clone(&auth_manager),
+        crate::thread_manager::build_models_manager(&config, auth_manager),
+        crate::CodexAppsToolsCache::default(),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Arc::new(extensions.build()),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        crate::thread_manager::thread_store_from_config(&config, /*state_db*/ None),
+        /*agent_graph_store*/ None,
+        uuid::Uuid::new_v4().to_string(),
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    );
+    let control = manager.agent_control();
+    let state = control.upgrade().expect("thread manager should be live");
+    let parent = state
+        .spawn_new_thread_with_source(
+            config,
+            control.clone(),
+            SessionSource::Exec,
+            /*history_mode*/ None,
+            /*parent_thread_id*/ None,
+            /*forked_from_thread_id*/ None,
+            /*thread_source*/ None,
+            /*metrics_service_name*/ None,
+            /*inherited_environments*/ None,
+            /*inherited_exec_policy*/ None,
+            /*environments*/ None,
+        )
+        .await
+        .expect("start v1 observer");
+    control.register_session_root(parent.thread_id, /*current_parent_thread_id*/ None);
+    let parent_presentation = parent.thread.session.presentation_id();
+    let child_path = AgentPath::root().join("worker").expect("child path");
+    let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: parent.thread_id,
+        depth: 1,
+        agent_path: Some(child_path.clone()),
+        agent_nickname: None,
+        agent_role: Some("worker".to_string()),
+    });
+    let child = state
+        .spawn_new_thread_with_source(
+            child_config,
+            control.clone(),
+            child_source.clone(),
+            /*history_mode*/ None,
+            Some(parent.thread_id),
+            /*forked_from_thread_id*/ None,
+            Some(ThreadSource::Subagent),
+            /*metrics_service_name*/ None,
+            /*inherited_environments*/ None,
+            /*inherited_exec_policy*/ None,
+            /*environments*/ None,
+        )
+        .await
+        .expect("start v2 target");
+    let child_presentation = child.thread.session.presentation_id();
+    control
+        .maybe_start_completion_watcher(
+            &child.thread,
+            Some(child_source),
+            child_path.to_string(),
+            Some(child_path),
+            MultiAgentVersion::V2,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::Wake,
+            ),
+            InitialTerminalObservation::FutureTurnsOnly,
+        )
+        .await
+        .expect("start v1 observation of v2 target");
+
+    let child_turn = child.thread.session.new_default_turn().await;
+    child
+        .thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: child_turn.sub_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+        )
+        .await;
+    timeout(Duration::from_secs(5), async {
+        while !control.has_bound_final_response_wake(parent_presentation) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("v2 target turn should bind the final wake");
+    assert!(
+        idle_rx.try_recv().is_err(),
+        "bound wake should keep the v1 observer's idle lifecycle deferred"
+    );
+
+    child
+        .thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("v2 target done".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    timeout(Duration::from_secs(5), idle_rx.recv())
+        .await
+        .expect("runtime-only wake cleanup should recheck idle lifecycle")
+        .expect("idle lifecycle recorder should remain available");
+    assert!(!control.has_bound_final_response_wake(parent_presentation));
+    assert!(
+        control
+            .response_observation_relationship_snapshot(parent_presentation, child_presentation)
+            .is_some(),
+        "runtime-only watcher relationship should remain available for later target turns"
+    );
+
+    let shutdown = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert!(shutdown.timed_out.is_empty());
+}
+
+#[tokio::test]
 async fn multi_agent_v2_raw_error_watcher_queues_message_for_direct_parent() {
     let harness = AgentControlHarness::new().await;
     let (worker_thread_id, _worker_thread) = harness.start_thread().await;

@@ -40,9 +40,10 @@ impl Session {
     /// is allowed for the current session state.
     ///
     /// This is the shared gate for extension-initiated idle work. It refuses to
-    /// start a turn when user/client-triggered work is queued, any task is still
-    /// active, or the session is currently in Plan mode. Active Review tasks are
-    /// covered by the active-task check because Review turns are not steerable.
+    /// start a turn when user/client-triggered work or a subscribed agent wake
+    /// is pending, any task is still active, or the session is currently in
+    /// Plan mode. Active Review tasks are covered by the active-task check
+    /// because Review turns are not steerable.
     pub(crate) async fn try_start_turn_if_idle(
         self: &Arc<Self>,
         input: Vec<ResponseItem>,
@@ -71,6 +72,39 @@ impl Session {
             ));
         }
 
+        // Linearize automatic work against response delivery and late target-turn binding.
+        // Lifecycle delivery takes the destination mailbox before the observer transaction, so
+        // idle reservation follows the same order. Whichever side publishes first owns the next
+        // turn: an already-bound `f` wake wins, while a policy bound after the placeholder is
+        // installed may steer the automatic turn that was already reserved.
+        let Ok(_mailbox_submission_permit) = self
+            .services
+            .agent_control
+            .acquire_mailbox_submission_permit(self.thread_id)
+            .await
+        else {
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::Busy,
+                input,
+            ));
+        };
+        let _response_observation_transaction = self
+            .services
+            .agent_control
+            .acquire_response_observation_transaction(self.presentation_id())
+            .await;
+        if self.input_queue.has_trigger_turn_mailbox_items().await
+            || self
+                .services
+                .agent_control
+                .has_bound_final_response_wake(self.presentation_id())
+        {
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
+                input,
+            ));
+        }
+
         let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
@@ -82,6 +116,8 @@ impl Session {
             let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
             Arc::clone(&active_turn.turn_state)
         };
+        drop(_response_observation_transaction);
+        drop(_mailbox_submission_permit);
         // The active-turn placeholder now prevents another turn from starting. Release any
         // extension-owned state lease before turn-start lifecycle runs so contributors may
         // reacquire their own state locks without deadlocking.

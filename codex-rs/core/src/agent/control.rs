@@ -275,7 +275,7 @@ impl AgentControl {
         self.rollout_budget.as_ref()
     }
 
-    async fn acquire_mailbox_submission_permit(
+    pub(crate) async fn acquire_mailbox_submission_permit(
         &self,
         agent_id: ThreadId,
     ) -> CodexResult<tokio::sync::OwnedSemaphorePermit> {
@@ -1260,8 +1260,13 @@ impl AgentControl {
         let child_rollout_thread_trace = child_thread.session.services.rollout_thread_trace.clone();
         let control = self.clone();
         tokio::spawn(async move {
-            let watcher_registration = watcher_registration;
             let child_lifecycle_generation = watcher_registration.child_lifecycle_generation();
+            let mut watcher_guard = self::response_observer::CompletionWatcherLifecycleGuard::new(
+                control.clone(),
+                watcher_registration,
+                parent,
+                child,
+            );
             loop {
                 let terminal = match control
                     .next_watcher_terminal(
@@ -1304,7 +1309,7 @@ impl AgentControl {
                             && control.response_observer_can_retry(parent).await
                         {
                             control.restart_v1_response_observer_after_runtime_end(
-                                Some(watcher_registration),
+                                watcher_guard.take_registration(),
                                 parent,
                                 child,
                             );
@@ -1469,13 +1474,26 @@ impl AgentControl {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                 } else {
+                    let _transaction_permit = control
+                        .acquire_response_observation_transaction(parent)
+                        .await;
+                    let removed_bound_wake = control
+                        .response_observation_turn_has_bound_final_wake(
+                            parent,
+                            child,
+                            &terminal.turn_id,
+                        );
                     control.finish_response_observation_turn(parent, child, &terminal.turn_id);
+                    drop(_transaction_permit);
+                    if removed_bound_wake {
+                        control.recheck_thread_idle_lifecycle(parent).await;
+                    }
                 }
                 if matches!(status, AgentStatus::Shutdown | AgentStatus::NotFound) {
                     control.finish_watcher_terminal_presentation(parent, child, &terminal.turn_id);
                     if child_multi_agent_version == MultiAgentVersion::V1 {
                         control.restart_v1_response_observer_after_runtime_end(
-                            Some(watcher_registration),
+                            watcher_guard.take_registration(),
                             parent,
                             child,
                         );

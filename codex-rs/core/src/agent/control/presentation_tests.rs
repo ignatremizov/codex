@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
 use std::collections::HashSet;
+use std::time::Duration;
 
 fn completed_status() -> AgentStatus {
     AgentStatus::Completed(Some("done".to_string()))
@@ -850,7 +851,7 @@ fn closing_child_revokes_its_unclaimed_completion_context() {
     let id = presentation.completion_context_response_item_id();
     control.authorize_pending_completion_context(parent, &presentation);
 
-    control.revoke_response_observations_for_child(child_thread_id);
+    let _ = control.revoke_response_observations_for_child(child_thread_id);
 
     assert!(!control.claim_completion_context_response_item_id(parent, &id));
     assert!(
@@ -1288,6 +1289,201 @@ fn fire_and_forget_audit_snapshot_preserves_an_existing_final_wake() {
         turn.final_delivery,
         codex_protocol::protocol::AgentResponseFinalDelivery::Wake
     );
+}
+
+#[test]
+fn only_bound_final_wakes_defer_automatic_idle_work() {
+    let control = AgentControl::default();
+    let parent = session_presentation_id(ThreadId::new());
+    let child = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    let _registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::Wake,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            /*target_turn_id*/ None,
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("watcher registration");
+
+    assert!(!control.has_bound_final_response_wake(parent));
+
+    control.bind_response_observation_turn(
+        parent,
+        child,
+        "turn-1",
+        ResponseObservationBinding::NextTurn,
+    );
+
+    assert!(control.has_bound_final_response_wake(parent));
+
+    let _ = control.finish_response_observation_turn(parent, child, "turn-1");
+
+    assert!(!control.has_bound_final_response_wake(parent));
+
+    let _ = control.register_response_watcher_with_admission(
+        child,
+        parent,
+        &admission,
+        ResponseObservationPolicy::from_parts(
+            /*commentary*/ false,
+            FinalResponseObservation::Wake,
+        ),
+        /*retain_passive_completion_relationship*/ false,
+        Some("turn-2".to_string()),
+        ResponseObservationBinding::NextTurn,
+        ResponseObservationPersistence::Durable,
+    );
+
+    assert!(control.has_bound_final_response_wake(parent));
+    assert!(control.revoke_response_observation_for_presentation(parent, child));
+    assert!(!control.has_bound_final_response_wake(parent));
+
+    let _replacement_registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::Wake,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            Some("turn-3".to_string()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("replacement watcher registration");
+
+    assert!(control.has_bound_final_response_wake(parent));
+    assert_eq!(
+        control.revoke_response_observations_for_child(child.thread_id),
+        vec![parent]
+    );
+    assert!(!control.has_bound_final_response_wake(parent));
+}
+
+#[tokio::test]
+async fn idle_turn_reservation_rechecks_a_wake_bound_after_idle_detection() {
+    let (session, _turn_context) = crate::session::tests::make_session_and_context().await;
+    let session = Arc::new(session);
+    let control = session.services.agent_control.clone();
+    control.state.register_root_thread(session.thread_id);
+    let parent = session.presentation_id();
+    let child = session_presentation_id(ThreadId::new());
+    let response_observation_transaction = control
+        .acquire_response_observation_transaction(parent)
+        .await;
+    let automatic_session = Arc::clone(&session);
+    let automatic_turn = tokio::spawn(async move {
+        automatic_session
+            .try_start_turn_if_idle(vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "continue active goal".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }])
+            .await
+    });
+
+    // The automatic reservation holds the mailbox while it waits for the observation transaction,
+    // proving its initial idle checks have completed before this test binds the wake.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match tokio::time::timeout(
+                Duration::from_millis(10),
+                control.acquire_mailbox_submission_permit(parent.thread_id),
+            )
+            .await
+            {
+                Err(_) => break,
+                Ok(Ok(permit)) => {
+                    drop(permit);
+                    tokio::task::yield_now().await;
+                }
+                Ok(Err(err)) => panic!("mailbox reservation failed: {err}"),
+            }
+        }
+    })
+    .await
+    .expect("automatic turn should reach the observation transaction");
+
+    let _watcher_registration = control
+        .restore_response_watcher_with_admission(
+            child,
+            parent,
+            &session.submission_admission,
+            &codex_protocol::protocol::AgentResponseObservation {
+                observer_thread_id: parent.thread_id,
+                target_thread_id: child.thread_id,
+                target_turn_id: Some("late-bound-turn".to_string()),
+                pending_commentary: false,
+                commentary_after_sequences: Vec::new(),
+                commentary_admissions: Vec::new(),
+                commentary_delivery: None,
+                baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
+                final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::Wake,
+                final_delivery_response_item_id: None,
+                committed_delivery_response_item_ids: Vec::new(),
+            },
+        )
+        .expect("late-bound watcher registration");
+    drop(response_observation_transaction);
+
+    let rejection = automatic_turn
+        .await
+        .expect("automatic reservation task")
+        .expect_err("late-bound wake should win the idle reservation");
+    assert_eq!(
+        rejection.reason(),
+        crate::codex_thread::TryStartTurnIfIdleRejectionReason::PendingTriggerTurn
+    );
+    assert!(session.active_turn.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn permanent_watcher_teardown_revokes_its_bound_wake() {
+    let control = AgentControl::default();
+    let parent = session_presentation_id(ThreadId::new());
+    let child = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    let watcher_registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::Wake,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            Some("turn-1".to_string()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("watcher registration");
+    let watcher_guard = super::response_observer::CompletionWatcherLifecycleGuard::new(
+        control.clone(),
+        watcher_registration,
+        parent,
+        child,
+    );
+
+    assert!(control.has_bound_final_response_wake(parent));
+
+    drop(watcher_guard);
+
+    assert!(!control.has_bound_final_response_wake(parent));
 }
 
 #[test]

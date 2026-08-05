@@ -121,6 +121,46 @@ enum CompletionDeliveryAdmissionRegistration {
 }
 
 impl AgentControl {
+    /// Returns whether `observer` has a wake-capable final observation bound to concrete work.
+    ///
+    /// Pending next-turn policies do not count: an idle target may never start that turn, so
+    /// treating an unbound policy as pending work could indefinitely defer other automatic work.
+    pub(crate) fn has_bound_final_response_wake(&self, observer: SessionPresentationId) -> bool {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .iter()
+            .any(|((parent, _), relationship)| {
+                *parent == observer && relationship_has_bound_final_response_wake(relationship)
+            })
+    }
+
+    pub(in crate::agent::control) fn has_bound_final_response_wake_for_target(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+    ) -> bool {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(observer, target))
+            .is_some_and(relationship_has_bound_final_response_wake)
+    }
+
+    pub(in crate::agent::control) fn response_observation_turn_has_bound_final_wake(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+        turn_id: &str,
+    ) -> bool {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(observer, target))
+            .and_then(|relationship| relationship.turns.get(turn_id))
+            .is_some_and(|observation| observation.final_response == FinalResponseObservation::Wake)
+    }
+
     pub(in crate::agent::control) fn response_observation_relationship_snapshot(
         &self,
         parent: SessionPresentationId,
@@ -441,4 +481,11 @@ impl AgentControl {
             .response_observation_by_observer_child
             .remove(&(parent, child));
     }
+}
+
+fn relationship_has_bound_final_response_wake(relationship: &ResponseObserverRelationship) -> bool {
+    relationship
+        .turns
+        .values()
+        .any(|observation| observation.final_response == FinalResponseObservation::Wake)
 }

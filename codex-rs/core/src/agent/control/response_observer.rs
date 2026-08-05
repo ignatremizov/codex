@@ -5,6 +5,54 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 use std::collections::HashSet;
 
+pub(super) struct CompletionWatcherLifecycleGuard {
+    control: AgentControl,
+    registration: Option<super::presentation::CompletionWatcherRegistration>,
+    parent: SessionPresentationId,
+    child: SessionPresentationId,
+}
+
+impl CompletionWatcherLifecycleGuard {
+    pub(super) fn new(
+        control: AgentControl,
+        registration: super::presentation::CompletionWatcherRegistration,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+    ) -> Self {
+        Self {
+            control,
+            registration: Some(registration),
+            parent,
+            child,
+        }
+    }
+
+    pub(super) fn take_registration(
+        &mut self,
+    ) -> Option<super::presentation::CompletionWatcherRegistration> {
+        self.registration.take()
+    }
+}
+
+impl Drop for CompletionWatcherLifecycleGuard {
+    fn drop(&mut self) {
+        let Some(registration) = self.registration.take() else {
+            return;
+        };
+        let removed_bound_wake = self
+            .control
+            .has_bound_final_response_wake_for_target(self.parent, self.child);
+        drop(registration);
+        if removed_bound_wake && let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
+            let control = self.control.clone();
+            let parent = self.parent;
+            runtime_handle.spawn(async move {
+                control.recheck_thread_idle_lifecycle(parent).await;
+            });
+        }
+    }
+}
+
 async fn validate_response_observation_endpoints(
     state: &Arc<ThreadManagerState>,
     parent: SessionPresentationId,
@@ -31,8 +79,15 @@ impl AgentControl {
         parent: SessionPresentationId,
         previous_child: Option<SessionPresentationId>,
     ) {
-        if let Some(previous_child) = previous_child {
-            self.revoke_response_observation_for_presentation(parent, previous_child);
+        if let Some(previous_child) = previous_child
+            && self.revoke_response_observation_for_presentation(parent, previous_child)
+        {
+            // The explicit close may belong to another AgentControl. Re-check this observer's
+            // local idle lifecycle after its generation listener revokes the old wake.
+            let control = self.clone();
+            tokio::spawn(async move {
+                control.recheck_thread_idle_lifecycle(parent).await;
+            });
         }
     }
 
@@ -314,8 +369,13 @@ impl AgentControl {
     ) {
         let control = self.clone();
         tokio::spawn(async move {
-            let watcher_registration = watcher_registration;
             let child_lifecycle_generation = watcher_registration.child_lifecycle_generation();
+            let mut watcher_guard = CompletionWatcherLifecycleGuard::new(
+                control.clone(),
+                watcher_registration,
+                parent,
+                child,
+            );
             loop {
                 let terminal = match control
                     .next_watcher_terminal(
@@ -356,7 +416,7 @@ impl AgentControl {
                     WatcherTerminalPoll::Closed => {
                         if control.response_observer_can_retry(parent).await {
                             control.restart_v1_response_observer_after_runtime_end(
-                                Some(watcher_registration),
+                                watcher_guard.take_registration(),
                                 parent,
                                 child,
                             );
@@ -413,7 +473,7 @@ impl AgentControl {
                 if matches!(status, AgentStatus::Shutdown | AgentStatus::NotFound) {
                     control.finish_watcher_terminal_presentation(parent, child, &terminal.turn_id);
                     control.restart_v1_response_observer_after_runtime_end(
-                        Some(watcher_registration),
+                        watcher_guard.take_registration(),
                         parent,
                         child,
                     );
@@ -450,6 +510,14 @@ impl AgentControl {
         let child_lifecycle_generation = watcher_registration.child_lifecycle_generation();
         if !self.agent_lifecycle_generation_is_current(child.thread_id, child_lifecycle_generation)
         {
+            // Dropping the stale registration revokes this control tree's relationship directly,
+            // before recovery can use the per-presentation revocation path below.
+            let _watcher_guard = CompletionWatcherLifecycleGuard::new(
+                self.clone(),
+                watcher_registration,
+                parent,
+                child,
+            );
             return;
         }
         let observations = self.response_observation_snapshots(parent, child);
@@ -748,6 +816,12 @@ impl AgentControl {
             }
         }
         drop(lifecycle_guard);
+        // Replaying recovered output can await persistence and destination delivery. Guard the
+        // registration during that window so every permanent early exit both revokes its bound
+        // wake and rechecks an idle observer, just like the eventual live watcher task.
+        let mut watcher_guard = watcher_registration.map(|watcher_registration| {
+            CompletionWatcherLifecycleGuard::new(self.clone(), watcher_registration, parent, child)
+        });
 
         for turn_id in observations
             .iter()
@@ -922,14 +996,25 @@ impl AgentControl {
 
         if recovered_only {
             let remaining_observations = self.response_observation_snapshots(parent, child);
-            drop(watcher_registration);
             if !response_observations_have_work(&remaining_observations) {
                 return;
             }
+            // Keep the recovered relationship visible while waiting for a live replacement. A
+            // bound wake must continue suppressing idle automation across this runtime-only gap.
+            let mut watcher_registration = watcher_guard
+                .as_mut()
+                .and_then(CompletionWatcherLifecycleGuard::take_registration);
+            if let Some(watcher_registration) = watcher_registration.as_mut() {
+                watcher_registration.preserve_state_for_replacement_on_drop();
+            }
+            drop(watcher_registration);
+            let previous_child = Some(child);
             loop {
-                if !self.agent_lifecycle_generation_is_current(
+                if !self.response_observer_generation_is_current(
+                    parent,
                     target_thread_id,
                     target_lifecycle_generation,
+                    previous_child,
                 ) {
                     return;
                 }
@@ -948,7 +1033,10 @@ impl AgentControl {
                     return;
                 }
                 tokio::select! {
-                    () = observer_termination.clone() => return,
+                    () = observer_termination.clone() => {
+                        self.revoke_previous_response_observation(parent, previous_child);
+                        return;
+                    },
                     () = state.wait_for_agent_lifecycle_change() => {}
                     () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
                     created = thread_created.recv() => match created {
@@ -961,13 +1049,18 @@ impl AgentControl {
         }
         if stop_watcher {
             self.restart_v1_response_observer_after_runtime_end(
-                watcher_registration.take(),
+                watcher_guard
+                    .as_mut()
+                    .and_then(CompletionWatcherLifecycleGuard::take_registration),
                 parent,
                 child,
             );
             return;
         }
-        if let (Some(watcher_registration), Some(response_rx)) = (watcher_registration, response_rx)
+        if let Some(response_rx) = response_rx
+            && let Some(watcher_registration) = watcher_guard
+                .as_mut()
+                .and_then(CompletionWatcherLifecycleGuard::take_registration)
         {
             self.start_v1_response_watcher(
                 watcher_registration,

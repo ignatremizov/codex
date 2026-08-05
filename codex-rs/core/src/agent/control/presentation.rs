@@ -1,4 +1,5 @@
 use super::AgentControl;
+use crate::agent::response_observation::FinalResponseObservation;
 use crate::session::AcceptedCompletionDelivery;
 use crate::session::SubmissionAdmission;
 use codex_protocol::ResponseItemId;
@@ -212,18 +213,43 @@ impl AgentControl {
     /// V1 watcher recovery deliberately survives transient runtime shutdowns. Explicit close is
     /// different: it revokes that recovery state so an old subscription cannot attach itself to a
     /// later runtime with the same rollout thread ID.
-    pub(crate) fn revoke_response_observations_for_child(&self, child_thread_id: ThreadId) {
+    ///
+    /// Returns observers whose bound final wake was removed so their idle lifecycle can be
+    /// re-evaluated.
+    pub(crate) fn revoke_response_observations_for_child(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> Vec<SessionPresentationId> {
         self.wait_agent_presentations
-            .revoke_response_observations_for_child(child_thread_id);
+            .revoke_response_observations_for_child(child_thread_id)
     }
 
+    /// Returns whether this exact presentation relationship had a bound final wake.
     pub(crate) fn revoke_response_observation_for_presentation(
         &self,
         parent: SessionPresentationId,
         child: SessionPresentationId,
-    ) {
+    ) -> bool {
         self.wait_agent_presentations
-            .revoke_response_observation_for_presentation(parent, child);
+            .revoke_response_observation_for_presentation(parent, child)
+    }
+
+    /// Re-emits idle lifecycle only for the still-current live observer presentation.
+    pub(crate) async fn recheck_thread_idle_lifecycle(&self, observer: SessionPresentationId) {
+        if !self.response_observer_can_retry(observer).await {
+            return;
+        }
+        let Some(state) = self.manager.upgrade() else {
+            return;
+        };
+        if let Ok(thread) = state.get_thread(observer.thread_id).await
+            && thread.session.presentation_id() == observer
+        {
+            // This callback is level-triggered and may also be probed by normal turn completion.
+            // GoalRuntime serializes its state transition, and idle-turn reservation atomically
+            // prevents two probes from starting duplicate goal turns.
+            thread.emit_thread_idle_lifecycle_if_idle().await;
+        }
     }
 
     pub(crate) fn agent_lifecycle_generation(&self, thread_id: ThreadId) -> u64 {
@@ -1048,8 +1074,22 @@ impl WaitAgentPresentations {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn revoke_response_observations_for_child(&self, child_thread_id: ThreadId) {
+    fn revoke_response_observations_for_child(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> Vec<SessionPresentationId> {
         let mut state = self.state();
+        let affected_wake_observers = state
+            .response_observation_by_observer_child
+            .iter()
+            .filter_map(|((parent, child), relationship)| {
+                (child.thread_id == child_thread_id
+                    && relationship.turns.values().any(|observation| {
+                        observation.final_response == FinalResponseObservation::Wake
+                    }))
+                .then_some(*parent)
+            })
+            .collect::<HashSet<_>>();
         state
             .completion_watcher_sessions
             .retain(|(_, child)| child.thread_id != child_thread_id);
@@ -1087,15 +1127,25 @@ impl WaitAgentPresentations {
         }
         drop(state);
         self.response_observation_changed.notify_waiters();
+        affected_wake_observers.into_iter().collect()
     }
 
     fn revoke_response_observation_for_presentation(
         &self,
         parent: SessionPresentationId,
         child: SessionPresentationId,
-    ) {
+    ) -> bool {
         let mut state = self.state();
         let observer_child = (parent, child);
+        let removed_bound_wake = state
+            .response_observation_by_observer_child
+            .get(&observer_child)
+            .is_some_and(|relationship| {
+                relationship
+                    .turns
+                    .values()
+                    .any(|observation| observation.final_response == FinalResponseObservation::Wake)
+            });
         state.completion_watcher_sessions.remove(&observer_child);
         if let Some(parents) = state.completion_observers_by_child.get_mut(&child) {
             parents.remove(&parent);
@@ -1130,6 +1180,7 @@ impl WaitAgentPresentations {
         }
         drop(state);
         self.response_observation_changed.notify_waiters();
+        removed_bound_wake
     }
 
     fn freeze_wait(

@@ -2,8 +2,13 @@ use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::config::AgentRoleConfig;
+use codex_core::config::Config;
 use codex_core::config::MultiAgentMessageDelivery;
 use codex_core::config::ThreadStoreConfig;
+use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ThreadIdleInput;
+use codex_extension_api::ThreadLifecycleContributor;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
@@ -113,6 +118,16 @@ enum ChildResponseTiming {
 struct GatedSseResponse {
     gate_rx: Mutex<Option<mpsc::Receiver<()>>>,
     response: String,
+}
+
+struct ThreadIdleRecorder(mpsc::Sender<String>);
+
+impl ThreadLifecycleContributor<Config> for ThreadIdleRecorder {
+    fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let _ = self.0.send(input.thread_store.level_id().to_string());
+        })
+    }
 }
 
 impl Respond for GatedSseResponse {
@@ -2885,6 +2900,134 @@ async fn spawn_final_wake_starts_an_idle_parent_turn(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn final_wake_defers_idle_lifecycle_automation_until_wake_turn_finishes() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "defer idle automation"),
+        sse(vec![
+            ev_response_created("resp-idle-deferral-spawn"),
+            ev_function_call_with_namespace(
+                "idle-deferral-spawn",
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-idle-deferral-spawn"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, CHILD_PROMPT) && !body_contains(request, "idle-deferral-spawn")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-idle-deferral-child"),
+            ev_assistant_message("msg-idle-deferral-child", "deferred wake result"),
+            ev_completed("resp-idle-deferral-child"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "idle-deferral-spawn"),
+        sse(vec![
+            ev_response_created("resp-idle-deferral-parent-done"),
+            ev_assistant_message("msg-idle-deferral-parent-done", "parent idle"),
+            ev_completed("resp-idle-deferral-parent-done"),
+        ]),
+    )
+    .await;
+    let (wake_gate_tx, wake_gate_rx) = mpsc::channel();
+    let wake_request = mount_responder_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<subagent_notification>")
+                && body_contains(request, "deferred wake result")
+        },
+        GatedSseResponse {
+            gate_rx: Mutex::new(Some(wake_gate_rx)),
+            response: sse(vec![
+                ev_response_created("resp-idle-deferral-wake"),
+                ev_assistant_message("msg-idle-deferral-wake", "wake handled"),
+                ev_completed("resp-idle-deferral-wake"),
+            ]),
+        },
+    )
+    .await;
+
+    let (idle_tx, idle_rx) = mpsc::channel();
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdleRecorder(idle_tx)));
+    let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    let parent_thread_id = test.session_configured.thread_id.to_string();
+
+    test.submit_turn("defer idle automation").await?;
+    // TurnComplete is emitted before the task's idle lifecycle opportunity. Probe the same gate
+    // explicitly so this absence assertion cannot run before an incorrect callback is emitted.
+    test.codex.emit_thread_idle_lifecycle_if_idle().await;
+
+    assert!(
+        idle_rx
+            .try_iter()
+            .all(|thread_id| thread_id != parent_thread_id),
+        "parent idle automation should remain deferred while final wake is outstanding"
+    );
+
+    let _ = wait_for_request_containing_text(&wake_request, "deferred wake result").await?;
+    let wake_turn_id = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    test.codex.emit_thread_idle_lifecycle_if_idle().await;
+    assert!(
+        idle_rx
+            .try_iter()
+            .all(|thread_id| thread_id != parent_thread_id),
+        "parent idle automation should remain deferred while the wake turn is active"
+    );
+    wake_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("wake response gate should remain open"))?;
+    wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnComplete(event) if event.turn_id == wake_turn_id => Some(()),
+        _ => None,
+    })
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if idle_rx
+            .try_iter()
+            .any(|thread_id| thread_id == parent_thread_id)
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("parent idle lifecycle did not resume after wake turn completed");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawn_final_wake_does_not_start_a_later_codex_exec_turn() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -3223,6 +3366,170 @@ async fn close_agent_revokes_v1_final_wake_before_shutdown(
     let rollout = tokio::fs::read_to_string(rollout_path).await?;
     assert!(!rollout.contains("<subagent_notification>"));
     assert!(!rollout.contains("child done"));
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn foreign_close_resumes_idle_lifecycle_after_revoking_final_wake(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let (idle_tx, idle_rx) = mpsc::channel();
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdleRecorder(idle_tx)));
+    let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    let target = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            history_mode: Some(history_mode),
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?;
+    let closer = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            history_mode: Some(history_mode),
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?;
+    let send_call_id = "observe-foreign-target";
+    let send_args = serde_json::to_string(&json!({
+        "target": target.thread_id,
+        "message": "foreign target work",
+        "w": "f",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "observe foreign target"),
+        sse(vec![
+            ev_response_created("resp-observe-foreign-target"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-observe-foreign-target"),
+        ]),
+    )
+    .await;
+    let target_request = mount_response_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, "foreign target work") && !body_contains(request, send_call_id)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-foreign-target-work"),
+            ev_assistant_message("msg-foreign-target-work", "should be cancelled by close"),
+            ev_completed("resp-foreign-target-work"),
+        ]))
+        .set_delay(Duration::from_secs(30)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, send_call_id),
+        sse(vec![
+            ev_response_created("resp-after-observe-foreign-target"),
+            ev_assistant_message("msg-after-observe-foreign-target", "observer idle"),
+            ev_completed("resp-after-observe-foreign-target"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("observe foreign target").await?;
+    let _ = wait_for_request_containing_text(&target_request, "foreign target work").await?;
+    test.codex.emit_thread_idle_lifecycle_if_idle().await;
+    let parent_thread_id = test.session_configured.thread_id.to_string();
+    assert!(
+        idle_rx
+            .try_iter()
+            .all(|thread_id| thread_id != parent_thread_id),
+        "foreign target wake should defer the idle observer"
+    );
+
+    let close_call_id = "close-foreign-target";
+    let close_args = serde_json::to_string(&json!({
+        "target": target.thread_id,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "close foreign target"),
+        sse(vec![
+            ev_response_created("resp-close-foreign-target"),
+            ev_function_call_with_namespace(
+                close_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "close_agent",
+                &close_args,
+            ),
+            ev_completed("resp-close-foreign-target"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, close_call_id),
+        sse(vec![
+            ev_response_created("resp-after-close-foreign-target"),
+            ev_assistant_message("msg-after-close-foreign-target", "target closed"),
+            ev_completed("resp-after-close-foreign-target"),
+        ]),
+    )
+    .await;
+    let unexpected_wake = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<subagent_notification>")
+                && body_contains(request, "should be cancelled by close")
+        },
+        sse(vec![
+            ev_response_created("resp-unexpected-foreign-close-wake"),
+            ev_assistant_message("msg-unexpected-foreign-close-wake", "unexpected"),
+            ev_completed("resp-unexpected-foreign-close-wake"),
+        ]),
+    )
+    .await;
+
+    submit_turn_on_thread(closer.thread.as_ref(), "close foreign target").await?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if idle_rx
+            .try_iter()
+            .any(|thread_id| thread_id == parent_thread_id)
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("foreign observer idle lifecycle did not resume after close");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        idle_rx
+            .try_iter()
+            .all(|thread_id| thread_id != parent_thread_id),
+        "foreign close should resume the observer idle lifecycle once"
+    );
+    assert!(
+        unexpected_wake.requests().is_empty(),
+        "foreign close should revoke the final wake before target shutdown"
+    );
     Ok(())
 }
 

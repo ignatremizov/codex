@@ -676,11 +676,19 @@ impl AgentControl {
     ) -> bool {
         let _transaction_permit = self.acquire_response_observation_transaction(parent).await;
         let previous_relationship = self.response_observation_relationship_snapshot(parent, child);
+        let removed_bound_wake =
+            self.response_observation_turn_has_bound_final_wake(parent, child, turn_id);
         let observation_updates = self.finish_response_observation_turn(parent, child, turn_id);
         if self
             .persist_response_observation_updates(parent, observation_updates)
             .await
         {
+            drop(_transaction_permit);
+            if removed_bound_wake {
+                // Persistence can finish after the wake turn already returned to idle. Re-check
+                // now that the durable wake record no longer suppresses idle contributors.
+                self.recheck_thread_idle_lifecycle(parent).await;
+            }
             true
         } else {
             self.restore_response_observation_relationship_snapshot(

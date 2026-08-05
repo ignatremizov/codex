@@ -37,6 +37,10 @@ delivery state separate:
 - `core/src/session/response_observation/` publishes only complete commentary items and final
   response events, resolves input admission to an exact target turn, and reconstructs target
   response state for live watcher replacement.
+- Core treats a bound `f` wake as pending automatic work when deciding whether to emit the
+  thread-idle lifecycle callback used by active goals. Automatic idle-turn reservation repeats
+  that check while holding the destination mailbox permit and observer transaction, so a target
+  turn that binds during goal bookkeeping still wins before the active-turn placeholder.
 - `RolloutItem::AgentResponseObservation` stores canonical, model-hidden observer UUID, target
   UUID, target turn, effective disposition, pending commentary admission cursors, and committed
   delivery IDs. A cursor combines a runtime event watermark with the preceding canonical
@@ -377,6 +381,37 @@ Cold resume and fork are different. They restore conversational and audit histor
 pending commentary observations and passive or wake-capable final relationships. The user or model
 must explicitly call `resume_agent`, `send_input`, or `spawn_agent` after evaluating the current
 situation.
+
+## Interaction with active goals
+
+An active goal normally starts its next automatic turn as soon as the current thread becomes idle.
+When an `f` observation is already bound to a concrete target turn, that immediate continuation
+would race the subscribed result and often cause an unnecessary `wait_agent` turn.
+
+While such a bound wake remains outstanding, Core defers the thread-idle lifecycle callback. The
+target's final response then starts the observer's next turn directly, with both the subscribed
+result and active-goal context available to the model. When that turn finishes, normal goal
+continuation resumes if no other bound final wake remains.
+
+The idle callback's initial check is only a fast path. Before reserving an automatic turn, Core
+serializes with target-turn binding and response delivery, rechecks both trigger mail and bound
+final wakes, and only then installs the active-turn placeholder. A wake bound after that
+placeholder was installed belongs to work that became observable later and may steer the already
+reserved turn.
+
+This deferral does not apply to an unbound `resume_agent(w: "f")` policy waiting for an idle
+target's hypothetical next turn. That target may never start more work, so an unbound policy
+cannot indefinitely suppress goal progress. Commentary-only `c` and passive final relationships
+also do not defer goal continuation because neither guarantees a future result that can replace
+it. Explicitly closing a target revokes its wake and re-evaluates idle lifecycle for affected live
+observers, including observers other than the agent that issued `close_agent`.
+
+Thread-idle lifecycle is level-triggered rather than an exactly-once event stream. Observation
+cleanup and ordinary turn completion may both probe the same idle state. Active goals remain
+single-flight because `GoalRuntime` holds its goal-state permit through the continuation decision,
+and Core atomically reserves the idle turn before releasing that permit. A second probe therefore
+either sees the active turn or loses the same reservation race; it cannot start a duplicate goal
+turn.
 
 ## One-shot `codex exec` lifecycle
 
@@ -764,6 +799,11 @@ Implementation should cover:
 - A timed-out wait leaving the final wake active.
 - A wait called after automatic delivery being allowed to return/render the completed result
   again.
+- A bound final wake deferring thread-idle goal continuation through the complete wake turn, then
+  resuming it after observation cleanup even when persistence finishes later.
+- Explicit close and permanent watcher teardown removing the last bound wake from an idle foreign
+  observer and re-evaluating its level-triggered idle lifecycle without starting duplicate goal
+  turns.
 - Explicit `wait_agent` retrieving a result after an `x` call.
 - `codex exec` accepting mid-turn commentary and final delivery, exiting at primary-turn
   completion instead of honoring a later `f` wake, and retrieving results through an in-turn

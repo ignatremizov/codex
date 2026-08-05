@@ -91,8 +91,8 @@ pub struct ThreadConfigSnapshot {
 /// idle turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TryStartTurnIfIdleRejectionReason {
-    /// User/client-triggered mailbox work is already queued and must take
-    /// priority over extension-initiated idle work.
+    /// User/client-triggered mailbox work or a subscribed agent wake is already
+    /// pending and must take priority over extension-initiated idle work.
     PendingTriggerTurn,
     /// The thread is in Plan mode, where automatic idle work must not start a
     /// new model turn.
@@ -362,11 +362,10 @@ impl CodexThread {
     /// Starts an automatic regular turn with model-visible items only when idle
     /// work is allowed for this thread.
     ///
-    /// This is the required entry point for extensions that want to launch
-    /// model-visible work from `ThreadLifecycleContributor::on_thread_idle`.
-    /// The call succeeds only if no user/client-triggered turn is queued, no
-    /// task is currently active, and the thread is not in Plan mode. Active
-    /// Review tasks are rejected by the active-task check because Review turns
+    /// This is the required entry point for extensions that want to launch model-visible work from
+    /// `ThreadLifecycleContributor::on_thread_idle`. The call succeeds only if no user/client turn
+    /// or subscribed agent wake is pending, no task is currently active, and the thread is not in
+    /// Plan mode. Active Review tasks are rejected by the active-task check because Review turns
     /// are not steerable.
     ///
     /// On rejection, the returned error includes a stable reason and carries
