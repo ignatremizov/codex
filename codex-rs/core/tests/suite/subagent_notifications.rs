@@ -3420,10 +3420,8 @@ async fn send_input_final_observation_wakes_an_idle_parent(
     )
     .await?;
     let _ = wait_for_requests(&child_request).await?;
-    let child_thread = test
-        .thread_manager
-        .get_thread(ThreadId::from_string(&spawned_id)?)
-        .await?;
+    let child_thread_id = ThreadId::from_string(&spawned_id)?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
     let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
 
     let send_call_id = "send-final-observation";
@@ -3496,7 +3494,7 @@ async fn send_input_final_observation_wakes_an_idle_parent(
         .into_iter()
         .filter_map(|item| match item {
             RolloutItem::AgentResponseObservation(observation)
-                if observation.target_thread_id == child_thread.session.thread_id()
+                if observation.target_thread_id == child_thread_id
                     && observation.target_turn_id.is_some() =>
             {
                 Some(observation)
