@@ -3880,7 +3880,7 @@ async fn pending_v1_final_wake_survives_parent_compaction(
                 .with_history_mode(history_mode)
                 .with_config(move |config| {
                     config.compact_prompt = Some(compact_prompt.to_string());
-                    config.features.disable(Feature::RemoteCompaction);
+                    let _ = config.features.disable(Feature::RemoteCompaction);
                 })
         },
     )
