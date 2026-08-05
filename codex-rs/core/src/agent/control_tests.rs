@@ -3492,6 +3492,7 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
         .session
         .abort_all_tasks(TurnAbortReason::Interrupted)
         .await;
+    parent.thread.emit_thread_idle_lifecycle_if_idle().await;
     timeout(Duration::from_secs(5), idle_rx.recv())
         .await
         .expect("idle lifecycle should resume after the cross-version wake turn ends")
