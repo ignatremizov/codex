@@ -3254,7 +3254,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_shutdown_watcher_queues_message_for_direct_parent() {
+async fn v1_observer_of_v2_shutdown_queues_notification_for_direct_parent() {
     let harness = AgentControlHarness::new().await;
     let (_root_thread_id, root_thread) = harness.start_thread().await;
     let (worker_thread_id, _worker_thread) = harness.start_thread().await;
@@ -3269,7 +3269,7 @@ async fn multi_agent_v2_shutdown_watcher_queues_message_for_direct_parent() {
         agent_nickname: None,
         agent_role: Some("explorer".to_string()),
     });
-    let (_tester_thread_id, tester_thread) = harness
+    let (tester_thread_id, tester_thread) = harness
         .start_thread_with_source(tester_config.clone(), tester_source.clone())
         .await;
     harness
@@ -3279,7 +3279,6 @@ async fn multi_agent_v2_shutdown_watcher_queues_message_for_direct_parent() {
             Some(tester_source),
             tester_path.to_string(),
             Some(tester_path.clone()),
-            MultiAgentVersion::V2,
             ResponseObservationPolicy::default(),
             InitialTerminalObservation::FutureTurnsOnly,
         )
@@ -3291,12 +3290,11 @@ async fn multi_agent_v2_shutdown_watcher_queues_message_for_direct_parent() {
         .send_event(tester_turn.as_ref(), EventMsg::ShutdownComplete)
         .await;
 
-    let expected_message = crate::session_prefix::format_inter_agent_completion_message(
-        worker_path.clone(),
-        tester_path.clone(),
+    let expected_message = crate::session_prefix::format_subagent_notification_message(
+        tester_path.as_str(),
+        tester_thread_id,
         &AgentStatus::Shutdown,
-    )
-    .expect("shutdown status should render");
+    );
     let expected = (
         worker_thread_id,
         Op::InterAgentCommunication {
@@ -3345,7 +3343,7 @@ async fn multi_agent_v2_shutdown_watcher_queues_message_for_direct_parent() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_runtime_wake_cleanup_rechecks_idle_v1_observer() {
+async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
     struct IdleRecorder(tokio::sync::mpsc::UnboundedSender<()>);
 
     impl codex_extension_api::ThreadLifecycleContributor<Config> for IdleRecorder {
@@ -3440,7 +3438,6 @@ async fn multi_agent_v2_runtime_wake_cleanup_rechecks_idle_v1_observer() {
             Some(child_source),
             child_path.to_string(),
             Some(child_path),
-            MultiAgentVersion::V2,
             ResponseObservationPolicy::from_parts(
                 /*commentary*/ false,
                 FinalResponseObservation::Wake,
@@ -3496,14 +3493,14 @@ async fn multi_agent_v2_runtime_wake_cleanup_rechecks_idle_v1_observer() {
 
     timeout(Duration::from_secs(5), idle_rx.recv())
         .await
-        .expect("runtime-only wake cleanup should recheck idle lifecycle")
+        .expect("cross-version wake cleanup should recheck idle lifecycle")
         .expect("idle lifecycle recorder should remain available");
     assert!(!control.has_bound_final_response_wake(parent_presentation));
     assert!(
         control
             .response_observation_relationship_snapshot(parent_presentation, child_presentation)
             .is_some(),
-        "runtime-only watcher relationship should remain available for later target turns"
+        "watcher relationship should remain available for later target turns"
     );
 
     let shutdown = manager
@@ -3513,7 +3510,7 @@ async fn multi_agent_v2_runtime_wake_cleanup_rechecks_idle_v1_observer() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_raw_error_watcher_queues_message_for_direct_parent() {
+async fn v1_observer_of_v2_raw_error_queues_notification_for_direct_parent() {
     let harness = AgentControlHarness::new().await;
     let (worker_thread_id, _worker_thread) = harness.start_thread().await;
     let worker_path = AgentPath::root().join("worker_a").expect("worker path");
@@ -3527,7 +3524,7 @@ async fn multi_agent_v2_raw_error_watcher_queues_message_for_direct_parent() {
     });
     let mut tester_config = harness.config.clone();
     let _ = tester_config.features.enable(Feature::MultiAgentV2);
-    let (_tester_thread_id, tester_thread) = harness
+    let (tester_thread_id, tester_thread) = harness
         .start_thread_with_source(tester_config, tester_source.clone())
         .await;
     harness
@@ -3537,7 +3534,6 @@ async fn multi_agent_v2_raw_error_watcher_queues_message_for_direct_parent() {
             Some(tester_source),
             tester_path.to_string(),
             Some(tester_path.clone()),
-            MultiAgentVersion::V2,
             ResponseObservationPolicy::default(),
             InitialTerminalObservation::FutureTurnsOnly,
         )
@@ -3556,12 +3552,11 @@ async fn multi_agent_v2_raw_error_watcher_queues_message_for_direct_parent() {
         })
         .await;
 
-    let expected_message = crate::session_prefix::format_inter_agent_completion_message(
-        worker_path.clone(),
-        tester_path.clone(),
+    let expected_message = crate::session_prefix::format_subagent_notification_message(
+        tester_path.as_str(),
+        tester_thread_id,
         &AgentStatus::Errored(error.to_string()),
-    )
-    .expect("errored status should render");
+    );
     let expected = (
         worker_thread_id,
         Op::InterAgentCommunication {
@@ -3613,7 +3608,6 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
             /*session_source*/ Some(child_source),
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
-            MultiAgentVersion::V1,
             ResponseObservationPolicy::default(),
             InitialTerminalObservation::FutureTurnsOnly,
         )
@@ -3663,7 +3657,6 @@ async fn removing_child_notifies_parent_while_another_thread_arc_is_retained() {
             Some(child_source),
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
-            MultiAgentVersion::V1,
             ResponseObservationPolicy::default(),
             InitialTerminalObservation::FutureTurnsOnly,
         )
@@ -3938,7 +3931,6 @@ async fn removing_child_publishes_not_found_to_an_already_active_wait() {
             /*session_source*/ Some(child_source),
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
-            MultiAgentVersion::V1,
             ResponseObservationPolicy::default(),
             InitialTerminalObservation::FutureTurnsOnly,
         )
@@ -3992,7 +3984,6 @@ async fn completion_watcher_starts_once_for_the_same_session() {
                 Some(child_source.clone()),
                 child_thread_id.to_string(),
                 /*child_agent_path*/ None,
-                MultiAgentVersion::V1,
                 ResponseObservationPolicy::default(),
                 InitialTerminalObservation::FutureTurnsOnly,
             )
@@ -4044,7 +4035,6 @@ async fn cancelled_wait_releases_v1_completion_to_background_watcher() {
             Some(child_source),
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
-            MultiAgentVersion::V1,
             ResponseObservationPolicy::default(),
             InitialTerminalObservation::FutureTurnsOnly,
         )
@@ -4092,7 +4082,6 @@ async fn completed_wait_suppresses_v1_background_watcher() {
             Some(child_source),
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
-            MultiAgentVersion::V1,
             ResponseObservationPolicy::default(),
             InitialTerminalObservation::FutureTurnsOnly,
         )
@@ -4154,7 +4143,6 @@ async fn late_wait_does_not_suppress_v1_background_watcher() {
             Some(child_source),
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
-            MultiAgentVersion::V1,
             ResponseObservationPolicy::default(),
             InitialTerminalObservation::FutureTurnsOnly,
         )
@@ -5059,7 +5047,6 @@ async fn assert_close_wins_lifecycle_race_and_revokes_observation(
             Some(child_source.clone()),
             agent_path.to_string(),
             Some(agent_path),
-            multi_agent_version,
             ResponseObservationPolicy::default(),
             InitialTerminalObservation::FutureTurnsOnly,
         )

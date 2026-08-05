@@ -1150,7 +1150,6 @@ impl AgentControl {
         session_source: Option<SessionSource>,
         child_reference: String,
         child_agent_path: Option<AgentPath>,
-        child_multi_agent_version: MultiAgentVersion,
         response_observation: ResponseObservationPolicy,
         initial_terminal_observation: InitialTerminalObservation,
     ) -> CodexResult<AgentStatus> {
@@ -1171,10 +1170,13 @@ impl AgentControl {
         let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
             return Ok(child_thread.agent_status().await);
         };
+        let observer_multi_agent_version = parent_thread
+            .multi_agent_version()
+            .unwrap_or(MultiAgentVersion::V1);
         let parent = parent_thread.session.presentation_id();
         let child = child_thread.session.presentation_id();
         let child_thread_id = child.thread_id;
-        let (response_snapshot, mut response_rx) = match child_multi_agent_version {
+        let (response_snapshot, mut response_rx) = match observer_multi_agent_version {
             MultiAgentVersion::V1 | MultiAgentVersion::Disabled => {
                 let terminal_control = self.clone();
                 let terminal_lifecycle_generation =
@@ -1198,9 +1200,8 @@ impl AgentControl {
                         );
                     })
             }
-            // Native V2 completion remains direct. Installing a watcher callback here would
-            // preempt that direct presentation through the shared final-outcome presentation
-            // deduplication state.
+            // Native V2 completion remains direct. A V1 observer of a V2 target takes the
+            // watcher branch above so the caller receives V1 delivery and durability semantics.
             MultiAgentVersion::V2 => child_thread.session.subscribe_agent_responses(),
         };
         let initial_reconciliation = initial_terminal_observation.reconcile(
@@ -1218,7 +1219,7 @@ impl AgentControl {
             /*retain_passive_completion_relationship*/ true,
             target_turn_id.clone(),
             ResponseObservationBinding::NextTurn,
-            match child_multi_agent_version {
+            match observer_multi_agent_version {
                 MultiAgentVersion::V1 => ResponseObservationPersistence::Durable,
                 MultiAgentVersion::V2 | MultiAgentVersion::Disabled => {
                     ResponseObservationPersistence::RuntimeOnly
@@ -1227,7 +1228,7 @@ impl AgentControl {
             response_snapshot.next_event_sequence,
             response_snapshot.last_commentary_item_id,
         );
-        if child_multi_agent_version == MultiAgentVersion::V1
+        if observer_multi_agent_version == MultiAgentVersion::V1
             && !self
                 .persist_response_observation_snapshot(parent, child)
                 .await
@@ -1274,7 +1275,7 @@ impl AgentControl {
                         child,
                         child_reference.as_str(),
                         &mut response_rx,
-                        child_multi_agent_version,
+                        observer_multi_agent_version,
                         child_lifecycle_generation,
                     )
                     .await
@@ -1305,7 +1306,7 @@ impl AgentControl {
                         continue;
                     }
                     WatcherTerminalPoll::Closed => {
-                        if child_multi_agent_version == MultiAgentVersion::V1
+                        if observer_multi_agent_version == MultiAgentVersion::V1
                             && control.response_observer_can_retry(parent).await
                         {
                             control.restart_v1_response_observer_after_runtime_end(
@@ -1318,7 +1319,7 @@ impl AgentControl {
                     }
                 };
                 let status = terminal.status.clone();
-                if child_multi_agent_version == MultiAgentVersion::V2 {
+                if observer_multi_agent_version == MultiAgentVersion::V2 {
                     let Some(_lifecycle_guard) = control
                         .acquire_current_agent_lifecycle(
                             child.thread_id,
@@ -1455,7 +1456,7 @@ impl AgentControl {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                 }
-                if child_multi_agent_version == MultiAgentVersion::V1 {
+                if observer_multi_agent_version == MultiAgentVersion::V1 {
                     while !control
                         .finish_and_persist_response_observation_turn(
                             parent,
@@ -1491,7 +1492,7 @@ impl AgentControl {
                 }
                 if matches!(status, AgentStatus::Shutdown | AgentStatus::NotFound) {
                     control.finish_watcher_terminal_presentation(parent, child, &terminal.turn_id);
-                    if child_multi_agent_version == MultiAgentVersion::V1 {
+                    if observer_multi_agent_version == MultiAgentVersion::V1 {
                         control.restart_v1_response_observer_after_runtime_end(
                             watcher_guard.take_registration(),
                             parent,

@@ -14,7 +14,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
@@ -251,7 +250,6 @@ async fn interrupted_v2_residency_eviction_does_not_notify_parent() {
             Some(child_source),
             child_path.to_string(),
             Some(child_path),
-            MultiAgentVersion::V2,
             ResponseObservationPolicy::default(),
             InitialTerminalObservation::FutureTurnsOnly,
         )

@@ -771,7 +771,6 @@ impl AgentControl {
                         Some(notification_source),
                         child_reference,
                         child_agent_path,
-                        MultiAgentVersion::V2,
                         ResponseObservationPolicy::default(),
                         InitialTerminalObservation::FutureTurnsOnly,
                     )
@@ -1018,7 +1017,6 @@ impl AgentControl {
                 notification_source.clone(),
                 child_reference,
                 agent_metadata.agent_path.clone(),
-                child_multi_agent_version,
                 options.response_observation,
                 InitialTerminalObservation::FutureTurnsOnly,
             )
@@ -1846,10 +1844,6 @@ impl AgentControl {
                 Some(notification_source.clone()),
                 child_reference,
                 agent_metadata.agent_path.clone(),
-                resumed_thread
-                    .thread
-                    .multi_agent_version()
-                    .unwrap_or(MultiAgentVersion::V1),
                 response_observation,
                 InitialTerminalObservation::FutureTurnsOnly,
             )
