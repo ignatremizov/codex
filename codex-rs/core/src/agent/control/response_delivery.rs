@@ -534,13 +534,13 @@ impl AgentControl {
                     .client_name
                     .as_deref()
                     == Some("codex_exec")
-                    && !parent_thread
+                    && parent_thread
                         .session
                         .active_turn
                         .lock()
                         .await
                         .as_ref()
-                        .is_some_and(|active_turn| active_turn.task.is_some());
+                        .is_none_or(|active_turn| active_turn.task.is_none());
                 if is_idle_codex_exec {
                     // A one-shot exec host exits after its primary turn and cannot consume a
                     // synthetic wake. Persist the subscribed result through the passive path so
