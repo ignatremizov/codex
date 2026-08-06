@@ -19521,6 +19521,13 @@
                   "null"
                 ]
               },
+              "observeCommentary": {
+                "description": "Whether this V1 lifecycle call requested the target turn's first commentary response. `null` means the tool does not expose V1 response observation.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
               "prompt": {
                 "description": "Prompt text sent as part of the collab tool call, when available.",
                 "type": [
@@ -19579,17 +19586,26 @@
                 ],
                 "title": "CollabAgentToolCallThreadItemType",
                 "type": "string"
+              },
+              "wakeOnCompletion": {
+                "description": "Whether this V1 lifecycle call requested an idle wake when its target turn completes. `null` means the tool does not expose V1 response observation.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               }
             },
             "required": [
               "agentsStates",
               "id",
+              "observeCommentary",
               "receiverAgents",
               "receiverThreadIds",
               "senderThreadId",
               "status",
               "tool",
-              "type"
+              "type",
+              "wakeOnCompletion"
             ],
             "title": "CollabAgentToolCallThreadItem",
             "type": "object"

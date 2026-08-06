@@ -4583,6 +4583,8 @@ async fn turn_event_counts_completed_tool_items() {
             id: "collab-1".to_string(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::Completed,
+            observe_commentary: None,
+            wake_on_completion: None,
             sender_thread_id: "thread-2".to_string(),
             receiver_thread_ids: vec!["thread-child".to_string()],
             receiver_agents: Vec::new(),

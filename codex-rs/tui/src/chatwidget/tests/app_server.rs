@@ -453,6 +453,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 id: "call-spawn".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::InProgress,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
@@ -473,6 +475,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 id: "call-spawn".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![spawned_thread_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -499,8 +503,11 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
         .join("\n");
 
     assert!(
-        rendered.contains("Spawned Robie [explorer] (gpt-5 high)"),
-        "expected spawn line to include agent metadata and requested model, got {rendered:?}"
+        rendered.contains(
+            "Spawned Robie [explorer] (gpt-5 high) \
+             (no commentary · no wake on completion)"
+        ),
+        "expected spawn line to include agent metadata, requested model, and response observation, got {rendered:?}"
     );
 }
 
@@ -683,8 +690,15 @@ async fn live_app_server_inter_agent_message_renders_in_transcript() {
 }
 
 #[tokio::test]
-async fn live_app_server_subagent_commentary_renders_with_provenance() {
+async fn live_app_server_subagent_commentary_renders_as_agent_notification() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let agent_id =
+        ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad").expect("valid thread id");
+    chat.set_collab_agent_metadata(
+        agent_id,
+        Some("Russell".to_string()),
+        Some("default".to_string()),
+    );
 
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -693,15 +707,7 @@ async fn live_app_server_subagent_commentary_renders_with_provenance() {
             completed_at_ms: 0,
             item: AppServerThreadItem::AgentMessage {
                 id: "item-stable".to_string(),
-                text: concat!(
-                    "Agent message from `/root/reviewer`:\n\n",
-                    "<subagent_commentary>\n",
-                    "{\"agent_id\":\"019faa07-aa3d-78d3-9eca-66cd8626adad\",",
-                    "\"agent_path\":\"/root/reviewer\",\"item_id\":\"commentary-1\",",
-                    "\"message\":\"Acknowledged.\",\"turn_id\":\"turn-child\"}\n",
-                    "</subagent_commentary>",
-                )
-                .to_string(),
+                text: format!("Agent commentary from `{agent_id}`:\n\nAcknowledged."),
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
             },
@@ -713,7 +719,7 @@ async fn live_app_server_subagent_commentary_renders_with_provenance() {
     assert_eq!(cells.len(), 1);
     let rendered = lines_to_single_string(&cells[0]).replace("  \n", "\n");
     insta::assert_snapshot!(
-        "live_app_server_subagent_commentary_renders_with_provenance",
+        "live_app_server_subagent_commentary_renders_as_agent_notification",
         rendered
     );
 }
@@ -1238,6 +1244,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                 id: "wait-1".to_string(),
                 tool: AppServerCollabAgentTool::Wait,
                 status: AppServerCollabAgentToolCallStatus::InProgress,
+                observe_commentary: None,
+                wake_on_completion: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![
                     receiver_thread_id.to_string(),
@@ -1262,6 +1270,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                 id: "wait-1".to_string(),
                 tool: AppServerCollabAgentTool::Wait,
                 status: AppServerCollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![
                     receiver_thread_id.to_string(),
@@ -1318,6 +1328,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 id: "spawn-1".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::InProgress,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
@@ -1339,6 +1351,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 id: "spawn-1".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![spawned_thread_id.to_string()],
                 receiver_agents: Vec::new(),

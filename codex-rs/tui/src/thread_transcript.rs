@@ -1,5 +1,6 @@
 //! Render persisted thread turns into history-cell building blocks.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::app_server_session::AppServerSession;
@@ -11,6 +12,10 @@ use crate::history_cell::ReasoningSummaryCell;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::split_reasoning_summary_parts;
 use crate::inline_visualization::InlineVisualizationContext;
+use crate::multi_agents::AgentMetadata;
+use crate::multi_agents::background_commentary_history_cell_from_agent_message;
+use crate::multi_agents::background_completion_history_cell_from_agent_message;
+use crate::multi_agents::parse_thread_id;
 use crate::multi_agents::sub_agent_activity_summary;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
@@ -57,6 +62,26 @@ pub(crate) fn thread_to_transcript_cells(
             .and_then(|thread_id| InlineVisualizationContext::new(codex_home, thread_id))
     });
     let mut cells: TranscriptCells = Vec::new();
+    let mut collab_agent_metadata = HashMap::<ThreadId, AgentMetadata>::new();
+    for item in thread.turns.iter().flat_map(|turn| &turn.items) {
+        if let ThreadItem::CollabAgentToolCall {
+            receiver_agents, ..
+        } = item
+        {
+            for receiver in receiver_agents {
+                let Some(thread_id) = parse_thread_id(&receiver.thread_id) else {
+                    continue;
+                };
+                let metadata = collab_agent_metadata.entry(thread_id).or_default();
+                if receiver.agent_nickname.is_some() {
+                    metadata.agent_nickname = receiver.agent_nickname.clone();
+                }
+                if receiver.agent_role.is_some() {
+                    metadata.agent_role = receiver.agent_role.clone();
+                }
+            }
+        }
+    }
     for item in thread.turns.into_iter().flat_map(|turn| turn.items) {
         match item {
             ThreadItem::UserMessage {
@@ -90,7 +115,38 @@ pub(crate) fn thread_to_transcript_cells(
                     remote_image_urls: item.image_urls(),
                 }));
             }
-            ThreadItem::AgentMessage { text, .. } => {
+            ThreadItem::AgentMessage {
+                id, text, phase, ..
+            } => {
+                let collab_cell = background_completion_history_cell_from_agent_message(
+                    &id,
+                    &text,
+                    phase.as_ref(),
+                    /*agent_response_preview_lines*/ 0,
+                    |thread_id| {
+                        collab_agent_metadata
+                            .get(&thread_id)
+                            .cloned()
+                            .unwrap_or_default()
+                    },
+                )
+                .or_else(|| {
+                    background_commentary_history_cell_from_agent_message(
+                        &text,
+                        phase.as_ref(),
+                        /*agent_response_preview_lines*/ 0,
+                        |thread_id| {
+                            collab_agent_metadata
+                                .get(&thread_id)
+                                .cloned()
+                                .unwrap_or_default()
+                        },
+                    )
+                });
+                if let Some(cell) = collab_cell {
+                    cells.push(Arc::new(cell));
+                    continue;
+                }
                 let parsed = parse_assistant_markdown(&text, cwd.as_path());
                 if !parsed.visible_markdown.trim().is_empty() {
                     cells.push(Arc::new(AgentMarkdownCell::new_with_inline_visualizations(
@@ -214,8 +270,28 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
                 .unwrap_or_else(|| tool.clone());
             vec![format!("tool: {name} · {status:?}").dim().into()]
         }
-        ThreadItem::CollabAgentToolCall { tool, status, .. } => {
-            vec![format!("agent tool: {tool:?} · {status:?}").dim().into()]
+        ThreadItem::CollabAgentToolCall {
+            tool,
+            status,
+            observe_commentary,
+            wake_on_completion,
+            ..
+        } => {
+            let commentary = match observe_commentary {
+                Some(true) => " · receive commentary",
+                Some(false) => " · no commentary",
+                None => "",
+            };
+            let wake = match wake_on_completion {
+                Some(true) => " · wake on completion",
+                Some(false) => " · no wake on completion",
+                None => "",
+            };
+            vec![
+                format!("agent tool: {tool:?} · {status:?}{commentary}{wake}")
+                    .dim()
+                    .into(),
+            ]
         }
         ThreadItem::SubAgentActivity {
             kind, agent_path, ..
@@ -258,3 +334,7 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
     };
     (!lines.is_empty()).then(|| PlainHistoryCell::new(lines))
 }
+
+#[cfg(test)]
+#[path = "thread_transcript_tests.rs"]
+mod tests;

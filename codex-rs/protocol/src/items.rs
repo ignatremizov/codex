@@ -299,6 +299,18 @@ pub struct CollabAgentToolCallItem {
     pub id: String,
     pub tool: CollabAgentTool,
     pub status: CollabAgentToolCallStatus,
+    /// Whether this V1 lifecycle call requested the target turn's first commentary response.
+    ///
+    /// `None` means the tool does not expose V1 response observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub observe_commentary: Option<bool>,
+    /// Whether this V1 lifecycle call requested an idle wake when its target turn completes.
+    ///
+    /// `None` means the tool does not expose V1 response observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wake_on_completion: Option<bool>,
     /// Unix timestamp in milliseconds when a wait-agent call should report back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

@@ -32,6 +32,12 @@ impl CompletionWatcherLifecycleGuard {
     ) -> Option<super::presentation::CompletionWatcherRegistration> {
         self.registration.take()
     }
+
+    pub(super) fn retire_if_observation_idle(&mut self) -> bool {
+        self.registration.as_mut().is_none_or(
+            super::presentation::CompletionWatcherRegistration::retire_if_observation_idle,
+        )
+    }
 }
 
 impl Drop for CompletionWatcherLifecycleGuard {
@@ -193,7 +199,7 @@ impl AgentControl {
             parent_thread.session.presentation_id(),
             child_lifecycle_generation,
             response_observation,
-            /*retain_passive_completion_relationship*/ true,
+            /*retain_passive_completion_relationship*/ false,
             ResponseObservationBinding::NextTurn,
             InitialTerminalObservation::ReconcileIfAdvancedFrom(observed_status),
         )
@@ -469,6 +475,9 @@ impl AgentControl {
                         return;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                if watcher_guard.retire_if_observation_idle() {
+                    return;
                 }
                 if matches!(status, AgentStatus::Shutdown | AgentStatus::NotFound) {
                     control.finish_watcher_terminal_presentation(parent, child, &terminal.turn_id);

@@ -81,6 +81,8 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
                 id: "wait-1".to_string(),
                 tool: AppServerCollabAgentTool::Wait,
                 status: AppServerCollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -152,6 +154,8 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             id: "spawn-1".to_string(),
             tool: AppServerCollabAgentTool::SpawnAgent,
             status: AppServerCollabAgentToolCallStatus::Completed,
+            observe_commentary: Some(false),
+            wake_on_completion: Some(false),
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
@@ -178,6 +182,8 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             id: "send-1".to_string(),
             tool: AppServerCollabAgentTool::SendInput,
             status: AppServerCollabAgentToolCallStatus::Completed,
+            observe_commentary: Some(false),
+            wake_on_completion: Some(false),
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {

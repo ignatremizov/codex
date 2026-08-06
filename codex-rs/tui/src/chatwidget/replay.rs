@@ -99,15 +99,22 @@ impl ChatWidget {
                 phase,
                 memory_citation,
             } => {
-                if let Some(cell) =
-                    multi_agents::background_completion_history_cell_from_agent_message(
-                        &id,
+                let cell = multi_agents::background_completion_history_cell_from_agent_message(
+                    &id,
+                    &text,
+                    phase.as_ref(),
+                    self.config.tui_agent_response_preview_lines,
+                    |thread_id| self.collab_agent_metadata(thread_id),
+                )
+                .or_else(|| {
+                    multi_agents::background_commentary_history_cell_from_agent_message(
                         &text,
                         phase.as_ref(),
                         self.config.tui_agent_response_preview_lines,
                         |thread_id| self.collab_agent_metadata(thread_id),
                     )
-                {
+                });
+                if let Some(cell) = cell {
                     self.on_collab_event(cell);
                 } else {
                     self.on_agent_message_item_completed(
@@ -231,6 +238,8 @@ impl ChatWidget {
                 id,
                 tool,
                 status,
+                observe_commentary,
+                wake_on_completion,
                 sender_thread_id,
                 receiver_thread_ids,
                 receiver_agents,
@@ -243,6 +252,8 @@ impl ChatWidget {
                     id,
                     tool,
                     status,
+                    observe_commentary,
+                    wake_on_completion,
                     sender_thread_id,
                     receiver_thread_ids,
                     receiver_agents,

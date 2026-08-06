@@ -1453,6 +1453,8 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 id: "wait-1".to_string(),
                 tool: codex_app_server_protocol::CollabAgentTool::Wait,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+                observe_commentary: None,
+                wake_on_completion: None,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
@@ -1495,6 +1497,8 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 id: "send-1".to_string(),
                 tool: codex_app_server_protocol::CollabAgentTool::SendInput,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -7232,6 +7236,8 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                             tool: codex_app_server_protocol::CollabAgentTool::Wait,
                             status:
                                 codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+                            observe_commentary: None,
+                            wake_on_completion: None,
                             sender_thread_id: ThreadId::new().to_string(),
                             receiver_thread_ids: vec![receiver_thread_id.to_string()],
                             receiver_agents: Vec::new(),
@@ -7283,6 +7289,8 @@ async fn metadata_free_collab_notification_preserves_cached_agent_label() {
                 id: "send-1".to_string(),
                 tool: codex_app_server_protocol::CollabAgentTool::SendInput,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {

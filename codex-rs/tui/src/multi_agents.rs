@@ -27,8 +27,10 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use std::collections::HashSet;
 
+mod background_commentary;
 mod background_completion;
 
+pub(crate) use background_commentary::background_commentary_history_cell_from_agent_message;
 pub(crate) use background_completion::background_completion_history_cell_from_agent_message;
 
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
@@ -369,6 +371,8 @@ pub(crate) fn tool_call_history_cell(
     let ThreadItem::CollabAgentToolCall {
         tool,
         status,
+        observe_commentary,
+        wake_on_completion,
         receiver_thread_ids,
         prompt,
         agents_states,
@@ -382,6 +386,10 @@ pub(crate) fn tool_call_history_cell(
         .first()
         .and_then(|id| parse_thread_id(id));
     let prompt = prompt.as_deref().unwrap_or_default();
+    let response_observation = V1ResponseObservation {
+        observe_commentary: *observe_commentary,
+        wake_on_completion: *wake_on_completion,
+    };
 
     match tool {
         CollabAgentTool::SpawnAgent => {
@@ -394,6 +402,7 @@ pub(crate) fn tool_call_history_cell(
                 first_receiver,
                 prompt,
                 spawn_request,
+                response_observation,
                 agent_prompt_preview_lines,
                 &mut agent_metadata,
             ))
@@ -406,6 +415,7 @@ pub(crate) fn tool_call_history_cell(
                 interaction_end(
                     receiver_thread_id,
                     prompt,
+                    response_observation,
                     agent_prompt_preview_lines,
                     &mut agent_metadata,
                 )
@@ -413,13 +423,18 @@ pub(crate) fn tool_call_history_cell(
         }
         CollabAgentTool::ResumeAgent => first_receiver.map(|receiver_thread_id| {
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
-                resume_begin(receiver_thread_id, &mut agent_metadata)
+                resume_begin(
+                    receiver_thread_id,
+                    response_observation,
+                    &mut agent_metadata,
+                )
             } else {
                 let state = first_agent_state(receiver_thread_ids, agents_states);
                 resume_end(
                     receiver_thread_id,
                     state,
                     "Agent resume failed",
+                    response_observation,
                     &mut agent_metadata,
                 )
             }
@@ -551,16 +566,21 @@ fn spawn_end(
     new_thread_id: Option<ThreadId>,
     prompt: &str,
     spawn_request: Option<&SpawnRequestSummary>,
+    response_observation: V1ResponseObservation,
     agent_prompt_preview_lines: usize,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> CollabAgentHistoryCell {
     let title = match new_thread_id {
-        Some(thread_id) => title_with_agent(
+        Some(thread_id) => lifecycle_title_with_agent(
             "Spawned",
             agent_label(thread_id, &agent_metadata(thread_id)),
             spawn_request,
+            response_observation,
         ),
-        None => title_text("Agent spawn failed"),
+        None => append_response_observation_to_title(
+            title_text("Agent spawn failed"),
+            response_observation,
+        ),
     };
 
     let details = prompt_lines(prompt, agent_prompt_preview_lines);
@@ -570,13 +590,15 @@ fn spawn_end(
 fn interaction_end(
     receiver_thread_id: ThreadId,
     prompt: &str,
+    response_observation: V1ResponseObservation,
     agent_prompt_preview_lines: usize,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> CollabAgentHistoryCell {
-    let title = title_with_agent(
+    let title = lifecycle_title_with_agent(
         "Sent input to",
         agent_label(receiver_thread_id, &agent_metadata(receiver_thread_id)),
         /*spawn_request*/ None,
+        response_observation,
     );
 
     let details = prompt_lines(prompt, agent_prompt_preview_lines);
@@ -646,13 +668,15 @@ fn close_end(
 
 fn resume_begin(
     receiver_thread_id: ThreadId,
+    response_observation: V1ResponseObservation,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> CollabAgentHistoryCell {
     collab_event(
-        title_with_agent(
+        lifecycle_title_with_agent(
             "Resuming",
             agent_label(receiver_thread_id, &agent_metadata(receiver_thread_id)),
             /*spawn_request*/ None,
+            response_observation,
         ),
         Vec::new(),
     )
@@ -662,13 +686,15 @@ fn resume_end(
     receiver_thread_id: ThreadId,
     status: Option<&CollabAgentState>,
     fallback_error: &str,
+    response_observation: V1ResponseObservation,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> CollabAgentHistoryCell {
     collab_event(
-        title_with_agent(
+        lifecycle_title_with_agent(
             "Resumed",
             agent_label(receiver_thread_id, &agent_metadata(receiver_thread_id)),
             /*spawn_request*/ None,
+            response_observation,
         ),
         fixed_details(vec![status_summary_line(status, fallback_error)]),
     )
@@ -699,6 +725,61 @@ fn title_with_agent(
     spans.extend(agent_label_spans(agent));
     spans.extend(spawn_request_spans(spawn_request));
     title_spans_line(spans)
+}
+
+fn lifecycle_title_with_agent(
+    prefix: &str,
+    agent: AgentLabel<'_>,
+    spawn_request: Option<&SpawnRequestSummary>,
+    response_observation: V1ResponseObservation,
+) -> Line<'static> {
+    append_response_observation_to_title(
+        title_with_agent(prefix, agent, spawn_request),
+        response_observation,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct V1ResponseObservation {
+    observe_commentary: Option<bool>,
+    wake_on_completion: Option<bool>,
+}
+
+fn append_response_observation_to_title(
+    mut title: Line<'static>,
+    response_observation: V1ResponseObservation,
+) -> Line<'static> {
+    let mut labels = Vec::new();
+    if let Some(observe_commentary) = response_observation.observe_commentary {
+        labels.push(if observe_commentary {
+            "receive commentary"
+        } else {
+            "no commentary"
+        });
+    }
+    if let Some(wake_on_completion) = response_observation.wake_on_completion {
+        labels.push(if wake_on_completion {
+            "wake on completion"
+        } else {
+            "no wake on completion"
+        });
+    }
+    if labels.is_empty() {
+        return title;
+    }
+
+    let label = format!("({})", labels.join(" · "));
+    title.spans.push(Span::from(" ").dim());
+    title.spans.push(
+        if response_observation.observe_commentary == Some(true)
+            || response_observation.wake_on_completion == Some(true)
+        {
+            label.magenta()
+        } else {
+            label.dim()
+        },
+    );
+    title
 }
 
 fn title_spans_line(mut spans: Vec<Span<'static>>) -> Line<'static> {
@@ -1038,6 +1119,8 @@ mod tests {
                 id: "call-spawn".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(true),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1061,6 +1144,8 @@ mod tests {
                 id: "call-send".to_string(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(true),
+                wake_on_completion: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1084,6 +1169,8 @@ mod tests {
                 id: "call-wait".to_string(),
                 tool: CollabAgentTool::Wait,
                 status: CollabAgentToolCallStatus::InProgress,
+                observe_commentary: None,
+                wake_on_completion: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1104,6 +1191,8 @@ mod tests {
                 id: "call-wait".to_string(),
                 tool: CollabAgentTool::Wait,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string(), bob_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1133,6 +1222,8 @@ mod tests {
                 id: "call-close".to_string(),
                 tool: CollabAgentTool::CloseAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1196,6 +1287,8 @@ mod tests {
             id: "call-wait".to_string(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,
+            observe_commentary: None,
+            wake_on_completion: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![robie_id.to_string()],
             receiver_agents: Vec::new(),
@@ -1260,6 +1353,8 @@ mod tests {
             id: "call-spawn".to_string(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::Completed,
+            observe_commentary: Some(false),
+            wake_on_completion: Some(false),
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![robie_id.to_string()],
             receiver_agents: Vec::new(),
@@ -1297,13 +1392,13 @@ mod tests {
         assert_snapshot!(
             snapshot,
             @r###"
-        • Spawned Robie [explorer] (gpt-5 high)
+        • Spawned Robie [explorer] (gpt-5 high) (no commentary · no wake on completion)
           └ Review the change.
             Focus on regressions.
             Do not run tests.
             Report findings.
 
-        • Spawned Robie [explorer] (gpt-5 high)
+        • Spawned Robie [explorer] (gpt-5 high) (no commentary · no wake on completion)
           └ Review the change.
             … +3 rows hidden
         "###
@@ -1323,6 +1418,8 @@ mod tests {
                 id: "call-spawn".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1346,6 +1443,8 @@ mod tests {
                 id: "call-wait".to_string(),
                 tool: CollabAgentTool::Wait,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1454,6 +1553,8 @@ mod tests {
                 id: "call-spawn".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1496,6 +1597,8 @@ mod tests {
                 id: "call-resume".to_string(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(true),
+                wake_on_completion: Some(true),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),

@@ -15,15 +15,14 @@ The proposed model-facing flags are:
 
 - `c`: observe the first subsequent commentary response.
 - `f`: observe the target turn's final response and wake the sender if it is idle.
-- `x`: do not add a final-response subscription for this lifecycle operation.
+- `x`: do not add final-response observation for this lifecycle operation.
 
-The field is additive. Omitting it preserves each tool's current behavior: the final response is
-delivered passively when the observer has a completion relationship, but it does not wake an idle
-observer merely because the tool established or reused that relationship.
+The field is additive. Omitting it preserves each tool's current behavior for the selected target
+turn: the final response is delivered passively, but it does not wake an idle observer.
 
 This is a compatible v1 extension, not a new multi-agent v3 contract. It keeps the existing
 lifecycle tools, `wait_agent`, canonical thread UUIDs, and active-turn steering behavior. A mailbox
-or subscription registry may implement the behavior internally without becoming another
+or observation registry may implement the behavior internally without becoming another
 model-facing communication API.
 
 ## Implementation
@@ -102,14 +101,14 @@ strictly one-way.
 
 - Preserve each lifecycle tool's existing behavior when the new field is omitted.
 - Let a sender receive the first coherent commentary response to a steer.
-- Let a final-response subscription survive the sender completing or starting other turns.
+- Let a target-turn final observation survive the sender completing or starting other turns.
 - Let informational messages avoid adding an unsolicited final response to model context.
 - Keep explicit `wait_agent` useful for deadlines, multi-target waits, and late inspection.
 - Support multiple observers of the same target turn independently.
 - Preserve complete TUI, transcript, and rollout auditability even when model delivery is
   suppressed.
 - Resolve all model-facing target aliases to canonical thread UUIDs before registering
-  subscriptions.
+  observations.
 - Keep the tool-call representation compact enough to save output tokens in routine orchestration.
 
 ## Non-goals
@@ -196,9 +195,9 @@ The final dispositions mean:
 - `passive`: make the final response available through the current non-waking delivery behavior.
 - `wake`: deliver the final response and start a sender turn if the sender is idle.
 
-`x` suppresses model-context injection only when no earlier or concurrent relationship already
-requests final delivery for that observer and target turn. It does not hide completion from the
-TUI or persisted history.
+`x` suppresses model-context injection only when no earlier or concurrent call already requests
+final delivery for that observer and target turn. It does not hide completion from the TUI or
+persisted history.
 
 ## Commentary observation
 
@@ -245,7 +244,7 @@ rather than forwarding all commentary by default. It also supports observing the
 item: the immediate acknowledgement sometimes enables course correction, while later progress
 messages are usually noise.
 
-## Live durable final subscriptions
+## Live durable target-turn observations
 
 Final observation is aggregated over:
 
@@ -265,24 +264,25 @@ none < passive < wake
 ```
 
 Once any accepted lifecycle operation contributes `wake`, later `x`, `cx`, passive, or omitted
-calls cannot downgrade it. There is no implicit unsubscribe.
+calls bound to the same target turn cannot downgrade it.
 
-Explicit `close_agent` is the unsubscribe boundary. It revokes passive and wake observation for
-the closed target and its live descendants across every live observer, so shutdown cannot deliver
-a final response or silently recover an old V1 watcher. Child publication and reopening serialize
+The observation ends automatically after that target turn reaches a terminal state and its
+requested delivery is durably handled. A later turn started directly in the target thread is not
+delivered to the old observer. The observer must use a new `spawn_agent`, `send_input`, or
+`resume_agent` call to observe that later work.
+
+Explicit `close_agent` revokes any still-pending passive or wake observation for the closed target
+and its live descendants across every live observer. Shutdown therefore cannot deliver a queued
+final response or silently recover an old V1 watcher. Child publication and reopening serialize
 with the direct parent's close boundary, preventing a late child runtime from remaining beneath a
-closed parent. The manager-wide lifecycle notification also stops observers owned by another
-`AgentControl` when an already-final runtime remains retained and therefore emits no shutdown
-response event. A later explicit `resume_agent` starts a fresh relationship only for the caller
-that resumed the target. It does not restore pre-close descendant subscriptions. The same close
-rule applies when the target uses the v2 orchestration path.
+closed parent. The same close rule applies when the target uses the v2 orchestration path.
 Revocation also removes any still-unclaimed completion-context authorization owned by the closed
-child, so a queued wake cannot become model-visible after close has superseded the subscription.
+child, so a queued wake cannot become model-visible after close supersedes it.
 
 If close invalidates a lifecycle generation after a foreign observer has already scheduled watcher
 recovery, that recovery revokes only its obsolete presentation before stopping. A fresh
-post-close presentation for the same canonical thread UUID is a separate explicit relationship
-and remains intact.
+post-close presentation for the same canonical thread UUID is a separate explicit observation and
+remains intact.
 
 For example:
 
@@ -304,8 +304,9 @@ This creates a durable final wake for the target's active turn. A later update m
 }
 ```
 
-The second call requests a commentary acknowledgement and contributes no new final subscription.
-It does not cancel the earlier `f`. The target's final response still wakes the observer.
+When both calls bind to the same target turn, the second requests a commentary acknowledgement and
+contributes no new final delivery. It does not cancel the earlier `f`; that turn's final response
+still wakes the observer.
 
 The aggregate is cleared only after that target turn reaches a final state and its requested
 delivery has been durably handled. Inputs admitted to a later target turn start with a fresh
@@ -331,7 +332,7 @@ For `send_input`, admission-time binding matters when:
 - An interrupt aborts the current turn and the input starts its replacement.
 - Several queued inputs are accepted together at a safe boundary.
 
-The subscription registry should use the resolved target turn ID returned by admission. It must
+The observation registry should use the resolved target turn ID returned by admission. It must
 not guess from a status snapshot taken before submission.
 
 Turn admission records that canonical ID and `Running` status in the target's live response state
@@ -358,7 +359,7 @@ response. The observer receives that response once according to the aggregate di
 ## Sender lifecycle
 
 Within one live orchestration instance, the observer's turn lifecycle does not cancel a
-target-turn subscription:
+target-turn observation:
 
 - If the observer is active when commentary or a subscribed final arrives, inject it into that
   turn like a steer.
@@ -366,7 +367,7 @@ target-turn subscription:
 - If the observer completed and the user later resumed it, inject into the newly active turn or
   wake it again if it has returned to idle.
 - If the observer is compacted or a live watcher is replaced before delivery, restore the
-  outstanding subscription and its delivered/not-delivered state within that live instance.
+  outstanding observation and its delivered/not-delivered state within that live instance.
 
 Restoration must be idempotent. A stable delivery identity such as:
 
@@ -378,7 +379,7 @@ should prevent duplicate automatic injection after rollback, compaction, or live
 replacement.
 
 Cold resume and fork are different. They restore conversational and audit history, but discard
-pending commentary observations and passive or wake-capable final relationships. The user or model
+pending commentary observations and passive or wake-capable final observations. The user or model
 must explicitly call `resume_agent`, `send_input`, or `spawn_agent` after evaluating the current
 situation.
 
@@ -401,7 +402,7 @@ reserved turn.
 
 This deferral does not apply to an unbound `resume_agent(w: "f")` policy waiting for an idle
 target's hypothetical next turn. That target may never start more work, so an unbound policy
-cannot indefinitely suppress goal progress. Commentary-only `c` and passive final relationships
+cannot indefinitely suppress goal progress. Commentary-only `c` and passive final observations
 also do not defer goal continuation because neither guarantees a future result that can replace
 it. Explicitly closing a target revokes its wake and re-evaluates idle lifecycle for affected live
 observers, including observers other than the agent that issued `close_agent`.
@@ -434,30 +435,31 @@ the `f` portion cannot wake the process after primary-turn completion. Long-runn
 orchestration should keep the primary turn active with explicit waits or use a host that remains
 attached to the thread.
 
-## Existing completion relationships
+## Existing target-turn observations
 
 Spawn, input, and resume must use one observation mechanism rather than maintaining special-case
-listeners for each tool. A spawning parent or a thread that explicitly resumed an agent may
-already have a passive or wake-capable relationship with the target.
+listeners for each tool. Several lifecycle calls may bind passive or wake-capable observation to
+the same target turn.
 
-All relationships for the same observer and target turn should participate in the same monotonic
+All calls for the same observer and target turn should participate in the same monotonic
 aggregate. Therefore:
 
-- `x` means "this operation adds no final subscription."
-- `x` does not cancel a completion relationship created by spawn, resume, or an earlier input.
+- `x` means "this operation adds no final observation."
+- `x` does not cancel final observation created by spawn, resume, or an earlier input for that
+  target turn.
 - A true fire-and-forget result occurs when the effective aggregate remains `none`.
 
-Using `w: "x"` on `spawn_agent` explicitly creates fire-and-forget work without a parent
-completion subscription. Using `w: "x"` on `resume_agent` restores the target runtime without
-subscribing the observer to its future final response. A later `send_input` with `w: "f"` may still
-upgrade that observer's disposition for the bound target turn.
+Using `w: "x"` on `spawn_agent` explicitly creates fire-and-forget work without parent final
+delivery for the initial target turn. Using `w: "x"` on `resume_agent` restores the target runtime
+without observing the selected active or next target turn's final response. A later `send_input`
+with `w: "f"` may still upgrade that observer's disposition if it binds to the same target turn.
 
 Overloading a later `send_input` with `w: "x"` as an unsubscribe would remain surprising and
 unsafe.
 
 ## Multiple observers
 
-Subscriptions are per observer. One target turn may deliver its commentary or final response to
+Observations are per observer. One target turn may deliver its commentary or final response to
 the spawning parent, a user-resumed agent, and one or more sibling agents.
 
 One observer's `x` must not suppress another observer's delivery. One observer's `f` must not wake
@@ -493,7 +495,7 @@ This boundary is intentional:
 A fork receives a new orchestrator thread UUID, so its old observation records do not identify the
 new observer. However, collaboration tool history can still contain the full UUIDs of child
 rollouts created before the boundary. Those UUIDs are historical references, not inherited
-subscriptions.
+observations.
 
 An explicit lifecycle call may deliberately reuse one of those UUIDs. `resume_agent` then resumes
 the original child rollout rather than cloning it, so the original thread and multiple forks can
@@ -513,7 +515,7 @@ children are separate capabilities and are outside this proposal.
 An active `wait_agent` for the same observer and target turn should claim that final-response
 delivery.
 If the wait returns the target's final response, it satisfies the outstanding `f` without starting
-another automatic wake. If the wait times out, the subscription remains active.
+another automatic wake. If the wait times out, the target-turn observation remains active.
 
 This arbitration also applies when the child and observer use distinct `AgentControl` instances,
 such as a V1 parent adopting an independently resumed child. The child records each live
@@ -525,16 +527,16 @@ A watcher final-outcome presentation remains claimable after the delivery worker
 the queue and while that worker is blocked on persistence, mailbox admission, or scheduling. The
 presentation atomically commits either wait ownership or automatic ownership before emission,
 closing the final race between the ownership check and rendering. Final-status observer
-subscription and its status snapshot are serialized with the same final-outcome publication
+registration and its status snapshot are serialized with the same final-outcome publication
 boundary, including live watcher recovery.
 
-The final-status subscription carries the target turn ID as well as its status. If several turns
+The final-status observation carries the target turn ID as well as its status. If several turns
 from one child still have queued or in-flight presentations, `wait_agent` claims presentations
 only for the exact turn it returned. Older subscribed finals remain available to their automatic
 delivery workers.
 
 Final-outcome deduplication is keyed by observer presentation, child presentation, and target turn
-for the lifetime of the live watcher relationship. A newer turn therefore cannot make a delayed
+for the lifetime of the target-turn observation. A newer turn therefore cannot make a delayed
 durable event recreate an older turn's presentation. If recovery temporarily reconstructs more
 than one presentation for the exact returned turn, `wait_agent` claims every copy but renders and
 persists that canonical `(child thread UUID, turn ID)` target once, including when the copies came
@@ -549,7 +551,7 @@ Only an idle target without an active response-stream turn receives a synthetic 
 ID.
 
 Temporary residency unload deliberately suppresses final-outcome presentation and preserves the
-observation relationship for reload. Removal still closes the old runtime's observer streams so a
+target-turn observation for reload. Removal still closes the old runtime's observer streams so a
 foreign observer can enter reload recovery when another `Arc` retains that runtime; it does not
 advance the explicit-close lifecycle generation or inject a teardown result.
 Residency eviction must first acquire the candidate's lifecycle boundary without blocking. A
@@ -584,14 +586,20 @@ Regardless of `w`:
 
 - The target input remains in the target rollout.
 - The canonical collaboration tool item records the resolved sender and receiver UUIDs.
+- V1 spawn, input, and resume items record whether the effective policy receives first commentary
+  and wakes on completion; app-server exposes these as `observeCommentary` and
+  `wakeOnCompletion`, and the TUI states both decisions.
 - Commentary and final responses remain available to the user through the target transcript.
 - Completion status remains visible through agent inspection.
 - TUI presentation must not imply that an `x` completion was delivered to the observer model.
 
 When commentary or a final response is injected into an observer, use a provenance-bearing
 inter-agent envelope. Do not inject it as an unlabelled user message.
+The exact commentary envelope remains in durable model context, while app-server transcript
+projection converts it to a plain source-agent label and message. The TUI resolves that source UUID
+to current agent metadata and must not expose the internal tag or JSON payload.
 
-Legacy and paginated rollouts should preserve the same canonical observation and delivery
+Non-paginated and paginated rollouts should preserve the same canonical observation and delivery
 information. Raw function-call arguments alone are not sufficient because they contain the
 model-authored target reference and cannot represent the eventual target-turn binding or resolved
 UUID.
@@ -625,7 +633,7 @@ reference may be added if it:
 The model-facing `spawn_agent` result may eventually prefer the compact reference, while canonical
 events, TUI metadata, client APIs, and rollout audit records retain the UUID.
 
-Persisting an identity mapping across cold resume does not reactivate any observation relationship
+Persisting an identity mapping across cold resume does not reactivate any observation
 that previously referred to that identity.
 
 ## Relationship to multi-agent v2
@@ -642,7 +650,7 @@ justify another configured multi-agent version.
 
 ## Persistence and recovery requirements
 
-Outstanding wake subscriptions must remain valid until their target turn terminates, including
+Outstanding wake observations must remain valid until their target turn terminates, including
 across:
 
 - Observer turn completion.
@@ -670,7 +678,7 @@ state:
 - If the target completed and delivery was not committed, perform the requested delivery once.
 - If delivery was committed, do not inject it again.
 - If the target or its turn cannot be recovered in the live instance, retain an auditable warning
-  and allow explicit UUID-based inspection rather than retargeting the subscription.
+  and allow explicit UUID-based inspection rather than retargeting the observation.
 
 Transient canonical-history read failures are retryable while the observer and target lifecycle
 generation remain current. Recovery uses capped backoff rather than treating a store failure as an
@@ -684,7 +692,7 @@ unauditable intermediate text is not required for final-response delivery livene
 
 On cold resume or fork, persisted observation records remain model-hidden audit and idempotency
 history only. Do not turn pending records into watchers, automatic model-context items, or child
-runtime reconstruction. An explicit lifecycle tool call establishes any new relationship after the
+runtime reconstruction. An explicit lifecycle tool call establishes any new observation after the
 boundary.
 
 ## Suggested model guidance
@@ -759,7 +767,11 @@ Implementation should cover:
 - `fx` behaving like omitted mode and `cfx` behaving like `c`.
 - An omitted or passive call not downgrading an existing `f`.
 - A final target response being delivered once after several inputs in the same target turn.
-- Subscription state clearing at the target turn boundary.
+- Observation state and its watcher clearing at the target turn boundary.
+- A later turn started directly in the target thread not reaching the old observer, followed by a
+  fresh lifecycle call observing a subsequent turn.
+- Watcher retirement racing a new lifecycle call preserving the newly admitted target-turn
+  observation.
 - An input racing target completion binding to the turn that actually accepts it.
 - Interrupt input binding to the replacement target turn rather than the aborted turn.
 - Multiple observers receiving independent delivery according to their own aggregates.
@@ -777,8 +789,8 @@ Implementation should cover:
   newer admitted turn's `Running` or completed status, both live and after reconstruction.
 - Removal overtaking durable publication after final-outcome presentation settling the same final
   turn in response state rather than leaving it active.
-- Explicit close waking a foreign-control watcher for an already-final child even while another
-  `Arc` retains the old runtime and its completed status.
+- Completed target-turn delivery retiring a foreign-control watcher even while another `Arc`
+  retains the old runtime and its completed status.
 - Explicit close invalidating an already-scheduled foreign recovery without deleting a fresh
   post-close presentation for the same thread UUID.
 - Temporary V2 residency unload closing a retained old runtime's observer streams and rebinding a
@@ -792,35 +804,40 @@ Implementation should cover:
 - Live watcher recovery preserving the pre-status callback for independently controlled children.
 - Live watcher recovery retrying a transient canonical-history read and delivering the durable
   completion without requiring target reload.
-- Pending final wake delivery surviving actual parent compaction in legacy and paginated history.
+- Pending final wake delivery surviving actual parent compaction in non-paginated and paginated
+  history.
 - A fork leaving inherited commentary/final observation records inert until the fork explicitly
-  reuses the original child UUID, in legacy and paginated history.
+  reuses the original child UUID, in non-paginated and paginated history.
 - A V1 observer applying `c`/`f` policy to a live V2 target addressed by canonical UUID.
 - A timed-out wait leaving the final wake active.
 - A wait called after automatic delivery being allowed to return/render the completed result
   again.
 - A bound final wake deferring thread-idle goal continuation through the complete wake turn, then
   resuming it after observation cleanup even when persistence finishes later.
-- Explicit close and permanent watcher teardown removing the last bound wake from an idle foreign
-  observer and re-evaluating its level-triggered idle lifecycle without starting duplicate goal
-  turns.
+- Explicit close and ordinary target-turn watcher teardown removing the last bound wake from an
+  idle foreign observer and re-evaluating its level-triggered idle lifecycle without starting
+  duplicate goal turns.
 - Explicit `wait_agent` retrieving a result after an `x` call.
 - `codex exec` accepting mid-turn commentary and final delivery, exiting at primary-turn
   completion instead of honoring a later `f` wake, and retrieving results through an in-turn
   `wait_agent`.
 - Full UUID targets being registered canonically; when nickname or compact targeting is added, its
-  resolver must run before subscription registration.
-- Legacy and paginated rollouts reconstructing equivalent observation state and transcript
+  resolver must run before observation registration.
+- Non-paginated and paginated rollouts reconstructing equivalent observation state and transcript
   presentation.
 - Resume and fork reconstruction excluding response events removed by exact rollback ranges.
 - Cold resume and fork not reactivating pending commentary, passive final delivery, or final wake.
-- Explicit `resume_agent`, `send_input`, or `spawn_agent` establishing a fresh relationship after
+- Explicit `resume_agent`, `send_input`, or `spawn_agent` establishing a fresh observation after
   a cold-resume or fork boundary.
 - Historical child UUIDs in forked history remaining inert until explicitly reused, with explicit
   reuse addressing the original shared child rollout rather than cloning it.
 - Registration persistence failures restoring and durably superseding the pre-call observation
   state for both `send_input` and `resume_agent`.
 - Delivery deduplication across rollback, compaction, and live watcher replacement.
+- V1 spawn, input, and resume history rows showing commentary and completion-wake decisions
+  independently; non-V1 observation tools leaving both fields unavailable.
+- V1 commentary rendering as a normal named-agent notification in live, replayed, and
+  full-transcript TUI history without exposing the model-context envelope or its JSON payload.
 
 ## Decisions from design review
 

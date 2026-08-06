@@ -31,6 +31,10 @@ impl ResponseObservationPolicy {
         self.final_response
     }
 
+    pub(crate) fn wake_on_completion(self) -> bool {
+        self.final_response == FinalResponseObservation::Wake
+    }
+
     fn from_wire(value: &str) -> Result<Self, String> {
         match value {
             "c" => Ok(Self {

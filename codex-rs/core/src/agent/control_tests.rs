@@ -5326,7 +5326,7 @@ async fn adopted_v1_child_records_foreign_wait_presentation_before_final_status(
 }
 
 #[tokio::test]
-async fn closing_completed_child_wakes_foreign_watcher_with_retained_runtime() {
+async fn completed_child_releases_foreign_watcher_with_retained_runtime() {
     let harness = AgentControlHarness::new().await;
     let (parent_thread_id, parent_thread) = harness.start_thread().await;
     let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -5396,16 +5396,6 @@ async fn closing_completed_child_wakes_foreign_watcher_with_retained_runtime() {
         .await;
     assert!(wait_for_subagent_notification(&parent_thread).await);
     assert!(wait_for_subagent_completion_item(&parent_thread).await);
-    assert!(
-        harness
-            .control
-            .has_completion_watcher(parent_presentation, child_presentation)
-    );
-
-    child_owner
-        .close_agent(child.thread_id)
-        .await
-        .expect("owner should close its completed child");
     timeout(Duration::from_secs(5), async {
         while harness
             .control
@@ -5415,13 +5405,17 @@ async fn closing_completed_child_wakes_foreign_watcher_with_retained_runtime() {
         }
     })
     .await
-    .expect("lifecycle notification should stop the foreign watcher");
+    .expect("one-shot watcher should stop after delivering the observed target turn");
     assert_eq!(
         retained_child.agent_status().await,
         AgentStatus::Completed(Some("completed before close".to_string())),
-        "explicit close must not rewrite the retained runtime's completed status"
+        "watcher retirement must not rewrite the retained runtime's completed status"
     );
 
+    let _ = child_owner
+        .shutdown_live_agent(child.thread_id)
+        .await
+        .expect("child shutdown should succeed");
     let _ = harness
         .control
         .shutdown_live_agent(parent_thread_id)
@@ -5663,6 +5657,16 @@ async fn v1_observer_honors_response_policy_for_a_v2_target() {
     );
     commit.commit();
     drop(observation_transaction);
+    timeout(Duration::from_secs(5), async {
+        while harness
+            .control
+            .has_completion_watcher(parent_presentation, child_presentation)
+        {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("V1 observation should end after the selected V2 target turn");
 
     let _ = harness
         .control

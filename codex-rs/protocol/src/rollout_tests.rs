@@ -108,6 +108,8 @@ fn completion_wait_event(turn_id: &str) -> RolloutItem {
             id: "wait-agent-call".to_string(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,
+            observe_commentary: None,
+            wake_on_completion: None,
             deadline_at_ms: None,
             sender_thread_id: crate::ThreadId::new(),
             receiver_thread_ids: vec![child_thread_id],

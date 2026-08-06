@@ -3152,6 +3152,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         "message": CHILD_PROMPT,
         "model": REQUESTED_MODEL,
         "reasoning_effort": REQUESTED_REASONING_EFFORT,
+        "w": "c",
     }))?;
     let _parent_turn = responses::mount_sse_once_match(
         &server,
@@ -3240,6 +3241,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             id: SPAWN_CALL_ID.to_string(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: Some(true),
+            wake_on_completion: Some(false),
             sender_thread_id: thread.id.clone(),
             receiver_thread_ids: Vec::new(),
             receiver_agents: Vec::new(),
@@ -3266,6 +3269,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         id,
         tool,
         status,
+        observe_commentary,
+        wake_on_completion,
         sender_thread_id,
         receiver_thread_ids,
         receiver_agents,
@@ -3284,6 +3289,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(id, SPAWN_CALL_ID);
     assert_eq!(tool, CollabAgentTool::SpawnAgent);
     assert_eq!(status, CollabAgentToolCallStatus::Completed);
+    assert_eq!(observe_commentary, Some(true));
+    assert_eq!(wake_on_completion, Some(false));
     assert_eq!(sender_thread_id, thread.id);
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
     assert_eq!(receiver_agents.len(), 1);
@@ -3619,6 +3626,8 @@ config_file = "./custom-role.toml"
         id,
         tool,
         status,
+        observe_commentary,
+        wake_on_completion,
         sender_thread_id,
         receiver_thread_ids,
         receiver_agents,
@@ -3637,6 +3646,8 @@ config_file = "./custom-role.toml"
     assert_eq!(id, SPAWN_CALL_ID);
     assert_eq!(tool, CollabAgentTool::SpawnAgent);
     assert_eq!(status, CollabAgentToolCallStatus::Completed);
+    assert_eq!(observe_commentary, Some(false));
+    assert_eq!(wake_on_completion, Some(false));
     assert_eq!(sender_thread_id, thread.id);
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
     assert_eq!(receiver_agents.len(), 1);

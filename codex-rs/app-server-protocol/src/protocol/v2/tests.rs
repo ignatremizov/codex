@@ -151,6 +151,40 @@ fn plaintext_inter_agent_message_becomes_labeled_agent_transcript_item() {
 }
 
 #[test]
+fn v1_subagent_commentary_becomes_plain_labeled_transcript_item() {
+    let agent_id =
+        ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad").expect("valid thread id");
+    let item = ResponseItem::AgentMessage {
+        id: Some(ResponseItemId::with_suffix("amsg", "commentary")),
+        author: "/root/reviewer".to_string(),
+        recipient: "/root".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: format!(
+                "<subagent_commentary>\n{}\n</subagent_commentary>",
+                serde_json::json!({
+                    "agent_path": "/root/reviewer",
+                    "agent_id": agent_id,
+                    "turn_id": "turn-child",
+                    "item_id": "commentary-1",
+                    "message": "Acknowledged.",
+                })
+            ),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    assert_eq!(
+        inter_agent_message_thread_item(&item),
+        Some(ThreadItem::AgentMessage {
+            id: "amsg_commentary".to_string(),
+            text: format!("Agent commentary from `{agent_id}`:\n\nAcknowledged."),
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+        })
+    );
+}
+
+#[test]
 fn final_answer_inter_agent_message_collapses_redundant_envelope() {
     let item = ResponseItem::AgentMessage {
         id: Some(ResponseItemId::with_suffix("amsg", "result")),
@@ -3220,6 +3254,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         id: "collab-1".to_string(),
         tool: CoreCollabAgentTool::SendInput,
         status: CoreCollabAgentToolCallStatus::Completed,
+        observe_commentary: Some(true),
+        wake_on_completion: Some(true),
         deadline_at_ms: None,
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
@@ -3239,6 +3275,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             id: "collab-1".to_string(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::Completed,
+            observe_commentary: Some(true),
+            wake_on_completion: Some(true),
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![CollabAgentRef {

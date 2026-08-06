@@ -125,6 +125,8 @@ fn completed_wait_item(
         id: item_id.to_string(),
         tool: CollabAgentTool::Wait,
         status: CollabAgentToolCallStatus::Completed,
+        observe_commentary: None,
+        wake_on_completion: None,
         deadline_at_ms: None,
         sender_thread_id,
         receiver_thread_ids: vec![child_thread_id],

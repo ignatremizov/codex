@@ -471,6 +471,7 @@ impl AgentControl {
             parent,
             child_lifecycle_generation: self.agent_lifecycle_generation(child.thread_id),
             preserve_state_for_replacement_on_drop: false,
+            active: true,
         })
     }
 

@@ -1959,6 +1959,55 @@ fn permanently_dropped_watcher_discards_queued_terminal_and_marker() {
 }
 
 #[test]
+fn retiring_completed_turn_does_not_remove_newly_admitted_observation() {
+    let control = AgentControl::default();
+    let parent = session_presentation_id(ThreadId::new());
+    let child = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    let mut registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::default(),
+            /*retain_passive_completion_relationship*/ false,
+            Some("turn-1".to_string()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("first watcher registration");
+    control.finish_response_observation_turn(parent, child, "turn-1");
+
+    assert!(
+        control
+            .register_response_watcher_with_admission(
+                child,
+                parent,
+                &admission,
+                ResponseObservationPolicy::from_parts(
+                    /*commentary*/ false,
+                    FinalResponseObservation::Wake,
+                ),
+                /*retain_passive_completion_relationship*/ false,
+                Some("turn-2".to_string()),
+                ResponseObservationBinding::NextTurn,
+                ResponseObservationPersistence::Durable,
+            )
+            .is_none(),
+        "the existing watcher should own the newly admitted turn"
+    );
+
+    assert!(!registration.retire_if_observation_idle());
+    assert!(control.has_completion_watcher(parent, child));
+    assert!(
+        control
+            .response_observation_snapshots(parent, child)
+            .iter()
+            .any(|snapshot| snapshot.target_turn_id.as_deref() == Some("turn-2"))
+    );
+}
+
+#[test]
 fn one_complete_commentary_satisfies_all_pending_commentary_requests() {
     let control = AgentControl::default();
     let parent = session_presentation_id(ThreadId::new());

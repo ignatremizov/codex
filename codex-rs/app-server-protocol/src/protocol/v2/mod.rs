@@ -40,6 +40,7 @@ pub use experimental_feature::*;
 pub use feedback::*;
 pub use fs::*;
 pub use hook::*;
+pub use inter_agent_message::sub_agent_commentary_transcript_parts;
 pub use item::*;
 pub use mcp::*;
 pub use model::*;

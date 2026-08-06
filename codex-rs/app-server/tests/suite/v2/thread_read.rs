@@ -2312,6 +2312,8 @@ async fn persist_exact_rollback_completion_thread(
         id: "wait-agent-call".to_string(),
         tool: codex_protocol::items::CollabAgentTool::Wait,
         status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+        observe_commentary: None,
+        wake_on_completion: None,
         deadline_at_ms: None,
         sender_thread_id: thread_id,
         receiver_thread_ids: vec![child_thread_id],

@@ -1211,12 +1211,14 @@ impl AgentControl {
         );
         let target_turn_id = response_snapshot.active_turn_id.clone();
         let previous_relationship = self.response_observation_relationship_snapshot(parent, child);
+        let retain_passive_completion_relationship =
+            observer_multi_agent_version != MultiAgentVersion::V1;
         let watcher_registration = self.register_response_watcher_with_admission_at_sequence(
             child,
             parent,
             &parent_thread.session.submission_admission,
             response_observation,
-            /*retain_passive_completion_relationship*/ true,
+            retain_passive_completion_relationship,
             target_turn_id.clone(),
             ResponseObservationBinding::NextTurn,
             match observer_multi_agent_version {
@@ -1473,6 +1475,9 @@ impl AgentControl {
                             return;
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    if watcher_guard.retire_if_observation_idle() {
+                        return;
                     }
                 } else {
                     let _transaction_permit = control

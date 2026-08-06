@@ -104,6 +104,7 @@ pub(crate) struct CompletionWatcherRegistration {
     parent: SessionPresentationId,
     child_lifecycle_generation: u64,
     preserve_state_for_replacement_on_drop: bool,
+    active: bool,
 }
 
 struct CompletionDeliveryAdmission {
@@ -820,7 +821,21 @@ impl Drop for WaitAgentPresentationGuard {
 
 impl Drop for CompletionWatcherRegistration {
     fn drop(&mut self) {
-        let mut state = self.presentations.state();
+        if !self.active {
+            return;
+        }
+        let presentations = Arc::clone(&self.presentations);
+        let mut state = presentations.state();
+        self.remove_from_state(&mut state);
+    }
+}
+
+impl CompletionWatcherRegistration {
+    fn remove_from_state(&mut self, state: &mut PresentationState) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
         let observer_child = (self.parent, self.child);
         state.completion_watcher_sessions.remove(&observer_child);
         if let Some(parents) = state.completion_observers_by_child.get_mut(&self.child) {
@@ -852,9 +867,27 @@ impl Drop for CompletionWatcherRegistration {
                 .remove(&observer_child);
         }
     }
-}
 
-impl CompletionWatcherRegistration {
+    /// Atomically retires a one-shot watcher only when no target-turn observation was admitted
+    /// while its previous terminal-state delivery was being committed.
+    pub(crate) fn retire_if_observation_idle(&mut self) -> bool {
+        if !self.active {
+            return true;
+        }
+        let presentations = Arc::clone(&self.presentations);
+        let mut state = presentations.state();
+        let observer_child = (self.parent, self.child);
+        if state
+            .response_observation_by_observer_child
+            .get(&observer_child)
+            .is_some_and(response_observer_relationship_has_work)
+        {
+            return false;
+        }
+        self.remove_from_state(&mut state);
+        true
+    }
+
     pub(crate) fn preserve_state_for_replacement_on_drop(&mut self) {
         self.preserve_state_for_replacement_on_drop = true;
     }
@@ -862,6 +895,13 @@ impl CompletionWatcherRegistration {
     pub(crate) fn child_lifecycle_generation(&self) -> u64 {
         self.child_lifecycle_generation
     }
+}
+
+fn response_observer_relationship_has_work(relationship: &ResponseObserverRelationship) -> bool {
+    relationship.baseline_final_response != FinalResponseObservation::None
+        || relationship.pending_next_turn.is_some()
+        || !relationship.pending_admissions.is_empty()
+        || !relationship.turns.is_empty()
 }
 
 impl WaitAgentPresentationCommit {

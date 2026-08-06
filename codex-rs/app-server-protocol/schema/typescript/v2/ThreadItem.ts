@@ -92,6 +92,16 @@ tool: CollabAgentTool,
  */
 status: CollabAgentToolCallStatus,
 /**
+ * Whether this V1 lifecycle call requested the target turn's first commentary response.
+ * `null` means the tool does not expose V1 response observation.
+ */
+observeCommentary: boolean | null,
+/**
+ * Whether this V1 lifecycle call requested an idle wake when its target turn completes.
+ * `null` means the tool does not expose V1 response observation.
+ */
+wakeOnCompletion: boolean | null,
+/**
  * Thread ID of the agent issuing the collab request.
  */
 senderThreadId: string,
