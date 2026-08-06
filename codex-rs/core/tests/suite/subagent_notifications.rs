@@ -18,7 +18,6 @@ use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
