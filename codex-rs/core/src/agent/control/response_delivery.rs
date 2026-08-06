@@ -205,7 +205,11 @@ impl AgentControl {
                     }
                 }
                 AgentResponseEvent::TurnAborted { turn_id, .. } => {
-                    if child_multi_agent_version == MultiAgentVersion::V1 {
+                    if child_multi_agent_version == MultiAgentVersion::V1
+                        && self
+                            .await_response_observation_event_match(parent, child, &turn_id)
+                            .await
+                    {
                         let Some(_lifecycle_guard) = self
                             .acquire_current_agent_lifecycle(
                                 child.thread_id,
@@ -215,15 +219,18 @@ impl AgentControl {
                         else {
                             return WatcherTerminalPoll::Closed;
                         };
-                        while !self
-                            .finish_and_persist_response_observation_turn(parent, child, &turn_id)
-                            .await
-                        {
-                            if !self.response_observer_can_retry(parent).await {
-                                return WatcherTerminalPoll::Closed;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        }
+                        // TurnAborted is the selected V1 turn's final outcome. The normal session
+                        // publication path records this presentation before publishing the response
+                        // event, but synthesize it here as well so abort setup races cannot clear
+                        // one-shot observation state before Interrupted is delivered.
+                        let _ = self.record_agent_terminal_presentation(
+                            parent,
+                            child,
+                            &turn_id,
+                            AgentStatus::Interrupted,
+                            TerminalPresentationDelivery::Watcher,
+                            || {},
+                        );
                     }
                 }
                 AgentResponseEvent::TurnStarted { turn_id, sequence } => {

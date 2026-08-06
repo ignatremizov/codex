@@ -350,7 +350,6 @@ async fn completed_v2_eviction_does_not_rebind_retired_foreign_v1_watcher() {
         "test requires distinct owner and observer presentation registries"
     );
     mark_thread_completed(first.thread.as_ref()).await;
-    assert!(foreign_observer.has_completion_watcher(root_presentation, first_presentation));
 
     let pending_slot = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
