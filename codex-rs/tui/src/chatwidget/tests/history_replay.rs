@@ -76,6 +76,45 @@ async fn resumed_initial_messages_render_history() {
 }
 
 #[tokio::test]
+async fn replayed_command_execution_is_visible_in_transcript() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.replay_thread_turns(
+        vec![AppServerTurn {
+            id: "turn-1".to_string(),
+            items: vec![AppServerThreadItem::CommandExecution {
+                id: "exec-1".to_string(),
+                plugin_id: None,
+                script_path: None,
+                command: "sleep 20".to_string(),
+                cwd: test_path_buf("/home/user/project").abs().into(),
+                process_id: None,
+                source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                status: AppServerCommandExecutionStatus::Completed,
+                command_actions: vec![AppServerCommandAction::Unknown {
+                    command: "sleep 20".to_string(),
+                }],
+                aggregated_output: None,
+                exit_code: Some(0),
+                duration_ms: Some(20_000),
+            }],
+            items_view: codex_app_server_protocol::TurnItemsView::Full,
+            status: AppServerTurnStatus::Completed,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        }],
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<String>();
+    insta::assert_snapshot!(rendered, @"• Ran sleep 20\n");
+}
+
+#[tokio::test]
 async fn replayed_failed_turns_preserve_overload_warnings_between_retries() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     let prompt = "The workspace also looks super confusing with its separator.";

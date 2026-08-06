@@ -68,6 +68,11 @@ use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
 
+mod non_paginated_exec;
+
+use self::non_paginated_exec::NonPaginatedExecHistory;
+use self::non_paginated_exec::NonPaginatedExecItemUpdate;
+
 #[cfg(test)]
 use crate::protocol::v2::CommandAction;
 #[cfg(test)]
@@ -284,6 +289,7 @@ pub struct ThreadHistoryBuilder {
     turns: Vec<Turn>,
     current_turn: Option<PendingTurn>,
     turn_rollout_start_indices: Vec<usize>,
+    non_paginated_exec_history: NonPaginatedExecHistory,
     next_item_index: i64,
     current_rollout_index: usize,
     next_rollout_index: usize,
@@ -302,6 +308,7 @@ impl ThreadHistoryBuilder {
             turns: Vec::new(),
             current_turn: None,
             turn_rollout_start_indices: Vec::new(),
+            non_paginated_exec_history: NonPaginatedExecHistory::default(),
             next_item_index: 1,
             current_rollout_index: 0,
             next_rollout_index: 0,
@@ -461,11 +468,18 @@ impl ThreadHistoryBuilder {
             RolloutItem::InterAgentCommunication(communication) => {
                 self.handle_response_item(&communication.to_model_input_item());
             }
+            RolloutItem::TurnContext(context) => {
+                let active_turn_id = self.active_turn_id().map(str::to_string);
+                self.non_paginated_exec_history
+                    .record_turn_context(context, active_turn_id.as_deref());
+            }
+            RolloutItem::SessionMeta(meta) => {
+                self.non_paginated_exec_history
+                    .record_session_meta(&meta.meta);
+            }
             RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::AgentResponseObservation(_)
-            | RolloutItem::TurnContext(_)
-            | RolloutItem::WorldState(_)
-            | RolloutItem::SessionMeta(_) => {}
+            | RolloutItem::WorldState(_) => {}
         }
     }
 
@@ -514,6 +528,11 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_response_item(&mut self, item: &codex_protocol::models::ResponseItem) {
+        if let Some(update) = self.non_paginated_exec_history.handle_response_item(item) {
+            self.upsert_non_paginated_exec_item(update);
+            return;
+        }
+
         if self.handle_inter_agent_response_item(item, item.turn_id()) {
             return;
         }
@@ -541,6 +560,20 @@ impl ThreadHistoryBuilder {
                 .map(crate::protocol::v2::HookPromptFragment::from)
                 .collect(),
         });
+    }
+
+    fn upsert_non_paginated_exec_item(&mut self, update: NonPaginatedExecItemUpdate) {
+        if let Some(turn_id) = update.turn_id.as_deref()
+            && (self
+                .current_turn
+                .as_ref()
+                .is_some_and(|turn| turn.id == turn_id)
+                || self.turns.iter().any(|turn| turn.id == turn_id))
+        {
+            self.upsert_item_in_turn_id(turn_id, update.item);
+        } else {
+            self.upsert_item_in_current_turn(update.item);
+        }
     }
 
     fn handle_inter_agent_response_item(
@@ -1506,6 +1539,8 @@ impl ThreadHistoryBuilder {
                 .map(|turn| turn.id.clone())
                 .collect()
         };
+        self.non_paginated_exec_history
+            .remove_turns(&removed_turn_ids);
         self.record_removed_turn_ids(removed_turn_ids);
 
         if n >= self.turns.len() {
