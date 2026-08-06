@@ -111,7 +111,7 @@ async fn replayed_command_execution_is_visible_in_transcript() {
         .into_iter()
         .map(|lines| lines_to_single_string(&lines))
         .collect::<String>();
-    insta::assert_snapshot!(rendered, @"• Ran sleep 20\n");
+    insta::assert_snapshot!(rendered, @"• Ran sleep 20\n  └ (no output)\n");
 }
 
 #[tokio::test]
