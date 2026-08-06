@@ -483,29 +483,6 @@ async fn wait_for_no_pending_response_observation(
     }
 }
 
-async fn wait_for_store_history_text(
-    store: &InMemoryThreadStore,
-    thread_id: ThreadId,
-    text: &str,
-) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let history = store
-            .load_rollback_history(LoadThreadHistoryParams {
-                thread_id,
-                include_archived: false,
-            })
-            .await?;
-        if serde_json::to_string(&history.items)?.contains(text) {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            anyhow::bail!("timed out waiting for thread history containing {text:?}");
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-}
-
 async fn response_observation_has_no_pending_work(
     store: &InMemoryThreadStore,
     observer_thread_id: ThreadId,
