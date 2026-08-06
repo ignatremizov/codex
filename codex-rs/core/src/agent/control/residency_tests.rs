@@ -280,7 +280,7 @@ async fn interrupted_v2_residency_eviction_does_not_notify_parent() {
 }
 
 #[tokio::test]
-async fn retained_v2_eviction_rebinds_foreign_v1_watcher_after_reload() {
+async fn completed_v2_eviction_does_not_rebind_retired_foreign_v1_watcher() {
     let mut config = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.max_concurrent_threads_per_session = 2;
@@ -393,24 +393,21 @@ async fn retained_v2_eviction_rebinds_foreign_v1_watcher_after_reload() {
         .expect("reloaded child should be live");
     let reloaded_presentation = reloaded.session.presentation_id();
     assert_ne!(reloaded_presentation, first_presentation);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !foreign_observer.has_completion_watcher(root_presentation, reloaded_presentation) {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("foreign watcher should rebind to the reloaded runtime");
+    assert!(
+        !foreign_observer.has_completion_watcher(root_presentation, reloaded_presentation),
+        "completed one-shot V1 observation must not subscribe to a later reloaded runtime"
+    );
     assert!(
         foreign_observer
             .response_observation_snapshots(root_presentation, first_presentation)
             .is_empty(),
-        "rebind should remove observation state for the evicted presentation"
+        "retirement should remove observation state for the evicted presentation"
     );
     assert!(
-        !foreign_observer
+        foreign_observer
             .response_observation_snapshots(root_presentation, reloaded_presentation)
             .is_empty(),
-        "rebind should retain observation state on the reloaded presentation"
+        "reload must not recreate observation state for a completed one-shot subscription"
     );
 }
 

@@ -117,8 +117,14 @@ impl InitialTerminalObservation {
                         status,
                     }
                 } else if crate::agent::status::is_final(&snapshot_status) {
+                    // Raw lifecycle events such as ShutdownComplete can make the session final
+                    // without publishing a response-stream terminal. Preserve the active turn
+                    // identity when one exists so an already-bound one-shot observation can
+                    // reconcile that outcome instead of ignoring a synthetic unrelated turn.
+                    let turn_id =
+                        active_turn_id.unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
                     InitialTerminalReconciliation {
-                        terminal: Some((uuid::Uuid::now_v7().to_string(), snapshot_status.clone())),
+                        terminal: Some((turn_id, snapshot_status.clone())),
                         status: snapshot_status,
                     }
                 } else {

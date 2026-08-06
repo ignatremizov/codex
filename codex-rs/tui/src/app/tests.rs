@@ -7336,7 +7336,7 @@ async fn metadata_free_collab_notification_preserves_cached_agent_label() {
     assert_snapshot!(
         rendered,
         @r"
-    • Sent input to Herschel [default]
+    • Sent input to Herschel [default] (no commentary · no wake on completion)
       └ Return the special word.
     "
     );

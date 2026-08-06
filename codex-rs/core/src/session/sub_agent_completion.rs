@@ -484,8 +484,22 @@ impl Session {
         let Some(parent_thread_id) = self.spawn_parent_thread_id else {
             return;
         };
+        let observed_turn_id = if matches!(&event.msg, EventMsg::ShutdownComplete) {
+            self.response_observation_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active_turn_id
+                .clone()
+        } else {
+            None
+        };
         let generated_turn_id;
-        let turn_id = if event.id.is_empty() {
+        let turn_id = if let Some(observed_turn_id) = observed_turn_id.as_deref() {
+            // Shutdown can cancel an admitted turn without publishing TurnAborted. Attribute its
+            // final lifecycle outcome to that turn so a one-shot response observer receives the
+            // subscribed outcome before retiring.
+            observed_turn_id
+        } else if event.id.is_empty() {
             generated_turn_id = uuid::Uuid::now_v7().to_string();
             generated_turn_id.as_str()
         } else {

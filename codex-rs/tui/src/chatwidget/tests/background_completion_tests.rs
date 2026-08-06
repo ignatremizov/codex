@@ -224,11 +224,11 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
     assert_snapshot!(
         rendered,
     @r"
-    • Spawned Herschel [default]
+    • Spawned Herschel [default] (no commentary · no wake on completion)
       └ Review the metadata presentation change.
 
 
-    • Sent input to Herschel [default]
+    • Sent input to Herschel [default] (no commentary · no wake on completion)
       └ Give me one random ingredient.
 
 

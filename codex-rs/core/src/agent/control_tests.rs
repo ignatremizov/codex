@@ -3520,8 +3520,8 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
     assert!(
         control
             .response_observation_relationship_snapshot(parent_presentation, child_presentation)
-            .is_some(),
-        "watcher relationship should remain available for later target turns"
+            .is_none(),
+        "one-shot V1 observation should retire after the selected V2 target turn"
     );
 
     let shutdown = manager

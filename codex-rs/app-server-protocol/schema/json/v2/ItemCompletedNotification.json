@@ -1123,14 +1123,12 @@
           "required": [
             "agentsStates",
             "id",
-            "observeCommentary",
             "receiverAgents",
             "receiverThreadIds",
             "senderThreadId",
             "status",
             "tool",
-            "type",
-            "wakeOnCompletion"
+            "type"
           ],
           "title": "CollabAgentToolCallThreadItem",
           "type": "object"
