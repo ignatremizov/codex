@@ -599,6 +599,22 @@ impl AgentControl {
             terminal.presentation.child().thread_id,
             &terminal.status,
         );
+        let Some(child_agent_path) =
+            self.observation_agent_path(terminal.presentation.child().thread_id)
+        else {
+            return false;
+        };
+        let Some(parent_agent_path) = self.observation_agent_path(parent_thread_id) else {
+            return false;
+        };
+        let mut communication = InterAgentCommunication::new(
+            child_agent_path,
+            parent_agent_path,
+            Vec::new(),
+            message,
+            /*trigger_turn*/ false,
+        );
+        communication.id = Some(response_item_id.clone());
         let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
             return false;
         };
@@ -624,9 +640,8 @@ impl AgentControl {
         };
         if !parent_thread
             .persist_sub_agent_notification_without_turn(
-                message,
+                communication,
                 admission,
-                response_item_id,
                 committed_observations,
             )
             .await

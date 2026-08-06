@@ -1,4 +1,3 @@
-use codex_protocol::ResponseItemId;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
@@ -131,17 +130,15 @@ impl CodexThread {
 
     pub(crate) async fn persist_sub_agent_notification_without_turn(
         &self,
-        message: String,
+        communication: InterAgentCommunication,
         admission: CompletionSubmissionAdmission,
-        response_item_id: ResponseItemId,
         committed_observations: Vec<AgentResponseObservation>,
     ) -> bool {
         let session = Arc::clone(&self.session);
         let result = tokio::select! {
             _ = self.io.session_loop_termination.clone() => return false,
             result = session.record_sub_agent_notification_with_observation_commit(
-                message,
-                response_item_id,
+                communication,
                 admission,
                 committed_observations,
             ) => result,

@@ -8,12 +8,12 @@ use crate::agent::status::is_final;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::ResponseItemId;
 use codex_protocol::items::TurnItem;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::RolloutItem;
@@ -68,8 +68,7 @@ impl Session {
     )]
     pub(crate) async fn record_sub_agent_notification_with_observation_commit(
         self: &std::sync::Arc<Self>,
-        message: String,
-        response_item_id: ResponseItemId,
+        mut communication: InterAgentCommunication,
         admission: CompletionSubmissionAdmission,
         committed_observations: Vec<AgentResponseObservation>,
     ) -> Result<(), ThreadStoreError> {
@@ -110,16 +109,41 @@ impl Session {
                 }
             }
         };
+        let Some(response_item_id) = communication
+            .id
+            .as_ref()
+            .filter(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
+            .cloned()
+        else {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: "subagent notification requires a reserved response item ID".to_string(),
+            });
+        };
+        if communication.trigger_turn {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: "passive subagent notification cannot trigger a turn".to_string(),
+            });
+        }
         let turn_context = self.new_default_turn().await;
-        self.record_durable_context_items_with_rollout_suffix(
+        communication.set_turn_id_if_missing(&turn_context.sub_id);
+        let response_item = communication.to_model_input_item();
+        let mut items = self
+            .prepare_conversation_items_for_history(
+                turn_context.as_ref(),
+                std::slice::from_ref(&response_item),
+            )
+            .into_owned();
+        let Some(ResponseItem::AgentMessage { id, .. }) = items.first_mut() else {
+            return Err(ThreadStoreError::Internal {
+                message: "subagent notification did not produce an agent message".to_string(),
+            });
+        };
+        // Preparation normalizes caller-provided agent-message IDs. Restore the reserved
+        // completion identity only inside this trusted watcher commit.
+        *id = Some(response_item_id);
+        self.record_prepared_durable_context_items_with_rollout_suffix(
             turn_context,
-            vec![ResponseItem::Message {
-                id: Some(response_item_id),
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText { text: message }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            }],
+            items,
             /*acknowledgement*/ None,
             committed_observations
                 .into_iter()

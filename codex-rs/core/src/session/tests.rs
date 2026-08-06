@@ -2635,10 +2635,9 @@ async fn completion_communication_commit_survives_caller_cancellation() {
 
 #[tokio::test]
 async fn passive_observed_completion_retry_reconciles_an_append_after_commit_failure() {
-    let (mut session, turn_context) = make_session_and_context().await;
+    let (mut session, _turn_context) = make_session_and_context().await;
     let store = attach_in_memory_thread_store(&mut session).await;
     let session = Arc::new(session);
-    let turn_context = Arc::new(turn_context);
     let response_item_id = new_sub_agent_completion_context_response_item_id();
     let child_thread_id = ThreadId::new();
     let observation = codex_protocol::protocol::AgentResponseObservation {
@@ -2654,18 +2653,14 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
         final_delivery_response_item_id: Some(response_item_id.clone()),
         committed_delivery_response_item_ids: vec![response_item_id.clone()],
     };
-    let item = ResponseItem::Message {
-        id: Some(response_item_id.clone()),
-        role: "user".to_string(),
-        content: vec![ContentItem::InputText {
-            text: "child done".to_string(),
-        }],
-        phase: None,
-        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
-            turn_id: Some(turn_context.sub_id.clone()),
-            executed_tool_calls: None,
-        }),
-    };
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(response_item_id.clone());
     store
         .fail_agent_response_observation_flushes_after(
             /*successful_flushes*/ 0, /*failed_flushes*/ 1,
@@ -2673,25 +2668,22 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
         .await;
 
     session
-        .record_durable_context_items_with_rollout_suffix(
-            Arc::clone(&turn_context),
-            vec![item.clone()],
-            /*acknowledgement*/ None,
-            vec![RolloutItem::AgentResponseObservation(observation.clone())],
+        .record_sub_agent_notification_with_observation_commit(
+            communication.clone(),
+            CompletionSubmissionAdmission::Ordinary,
+            vec![observation.clone()],
         )
         .await
         .expect_err("first append should report its injected post-commit failure");
     session
-        .record_durable_context_items_with_rollout_suffix(
-            turn_context,
-            vec![item.clone()],
-            /*acknowledgement*/ None,
-            vec![RolloutItem::AgentResponseObservation(observation.clone())],
+        .record_sub_agent_notification_with_observation_commit(
+            communication,
+            CompletionSubmissionAdmission::Ordinary,
+            vec![observation.clone()],
         )
         .await
         .expect("retry should reconcile the committed delivery");
 
-    assert_eq!(session.clone_history().await.raw_items(), &[item]);
     let history = session
         .services
         .thread_store
@@ -2702,6 +2694,21 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
         .await
         .expect("load canonical history");
     let history = codex_protocol::rollout::rollout_without_exact_rollback_ranges(&history.items);
+    let persisted_item = history
+        .iter()
+        .find_map(|rollout_item| match rollout_item {
+            RolloutItem::ResponseItem(response_item)
+                if response_item.id() == Some(&response_item_id) =>
+            {
+                Some(response_item)
+            }
+            _ => None,
+        })
+        .expect("persisted passive completion context");
+    assert_eq!(
+        session.clone_history().await.raw_items(),
+        std::slice::from_ref(persisted_item)
+    );
     assert_eq!(
         history
             .iter()

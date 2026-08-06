@@ -9,14 +9,17 @@ use crate::state::TaskKind;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
 use crate::tasks::SessionTaskResult;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
 use codex_protocol::items::CollabAgentToolCallStatus;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -33,6 +36,21 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
 struct BlockingTask;
+
+fn v1_completion_communication(
+    content: &str,
+    response_item_id: ResponseItemId,
+) -> InterAgentCommunication {
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::try_from("/root/worker").expect("child agent path"),
+        AgentPath::try_from("/root").expect("parent agent path"),
+        Vec::new(),
+        content.to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(response_item_id);
+    communication
+}
 
 impl SessionTask for BlockingTask {
     fn kind(&self) -> TaskKind {
@@ -350,8 +368,10 @@ async fn active_turn_abort_preserves_durable_v1_subagent_notification() {
 
     session
         .record_sub_agent_notification_with_observation_commit(
-            notification.to_string(),
-            new_sub_agent_completion_context_response_item_id(),
+            v1_completion_communication(
+                notification,
+                new_sub_agent_completion_context_response_item_id(),
+            ),
             CompletionSubmissionAdmission::Ordinary,
             Vec::new(),
         )
@@ -368,10 +388,10 @@ async fn active_turn_abort_preserves_durable_v1_subagent_notification() {
             .iter()
             .any(|item| matches!(
                 item,
-                ResponseItem::Message { content, .. }
+                ResponseItem::AgentMessage { content, .. }
                     if content.iter().any(|content| matches!(
                         content,
-                        ContentItem::InputText { text } if text == notification
+                        AgentMessageInputContent::InputText { text } if text == notification
                     ))
             ))
     );
@@ -390,8 +410,10 @@ async fn observed_notification_try_admission_does_not_wait_for_rollback() {
     let result = timeout(
         Duration::from_millis(50),
         session.record_sub_agent_notification_with_observation_commit(
-            "child done".to_string(),
-            new_sub_agent_completion_context_response_item_id(),
+            v1_completion_communication(
+                "child done",
+                new_sub_agent_completion_context_response_item_id(),
+            ),
             CompletionSubmissionAdmission::Ordinary,
             Vec::new(),
         ),
@@ -611,15 +633,8 @@ async fn v1_completion_context_reuses_a_previously_committed_response_item() {
     attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
     let notification = "<subagent_notification>durable child result</subagent_notification>";
     let response_item_id = new_sub_agent_completion_context_response_item_id();
-    let response_item = ResponseItem::Message {
-        id: Some(response_item_id.clone()),
-        role: "user".to_string(),
-        content: vec![ContentItem::InputText {
-            text: notification.to_string(),
-        }],
-        phase: None,
-        internal_chat_message_metadata_passthrough: None,
-    };
+    let communication = v1_completion_communication(notification, response_item_id.clone());
+    let response_item = communication.to_model_input_item();
     session
         .live_thread()
         .expect("live thread")
@@ -634,8 +649,7 @@ async fn v1_completion_context_reuses_a_previously_committed_response_item() {
 
     session
         .record_sub_agent_notification_with_observation_commit(
-            notification.to_string(),
-            response_item_id.clone(),
+            communication,
             CompletionSubmissionAdmission::Ordinary,
             Vec::new(),
         )

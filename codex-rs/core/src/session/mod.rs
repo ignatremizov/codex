@@ -4611,9 +4611,25 @@ impl Session {
         acknowledgement: Option<TurnInputContributionAcknowledgement>,
         rollout_suffix: Vec<RolloutItem>,
     ) -> Result<(), ThreadStoreError> {
-        let mut items = self
+        let items = self
             .prepare_conversation_items_for_history(turn_context.as_ref(), &items)
             .into_owned();
+        self.record_prepared_durable_context_items_with_rollout_suffix(
+            turn_context,
+            items,
+            acknowledgement,
+            rollout_suffix,
+        )
+        .await
+    }
+
+    async fn record_prepared_durable_context_items_with_rollout_suffix(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        mut items: Vec<ResponseItem>,
+        acknowledgement: Option<TurnInputContributionAcknowledgement>,
+        rollout_suffix: Vec<RolloutItem>,
+    ) -> Result<(), ThreadStoreError> {
         let sess = Arc::clone(self);
         tokio::spawn(async move {
             let _permit = sess.durable_context_lock.acquire().await.map_err(|err| {
