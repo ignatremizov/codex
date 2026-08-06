@@ -171,6 +171,12 @@ impl ChatWidget {
                 status: codex_app_server_protocol::CommandExecutionStatus::InProgress,
                 ..
             } => self.on_command_execution_started(item, /*deadline_at_ms*/ None),
+            item @ ThreadItem::CommandExecution { .. } if from_replay => {
+                // Persisted turns contain the final command item without a preceding in-progress
+                // item. Bypass live unified-exec bookkeeping, which intentionally drops late
+                // completions after the live task indicator stops.
+                self.handle_command_execution_completed_now(item);
+            }
             item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_completed(item),
             ThreadItem::FileChange {
                 changes,
