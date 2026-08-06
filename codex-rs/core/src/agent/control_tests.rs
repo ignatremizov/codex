@@ -37,6 +37,7 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::PermissionProfile;
@@ -331,18 +332,36 @@ async fn persisted_originator(thread: &CodexThread) -> String {
 }
 
 fn has_subagent_notification(history_items: &[ResponseItem]) -> bool {
+    subagent_notification_text_matches(history_items, SubagentNotification::matches_text)
+}
+
+fn subagent_notification_history_contains_text(
+    history_items: &[ResponseItem],
+    needle: &str,
+) -> bool {
+    subagent_notification_text_matches(history_items, |text| text.contains(needle))
+}
+
+fn subagent_notification_text_matches(
+    history_items: &[ResponseItem],
+    mut predicate: impl FnMut(&str) -> bool,
+) -> bool {
     history_items.iter().any(|item| {
-        let ResponseItem::Message { role, content, .. } = item else {
+        if let ResponseItem::Message { role, content, .. } = item {
+            return role == "user"
+                && content.iter().any(|content_item| match content_item {
+                    ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                        predicate(text)
+                    }
+                    ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => false,
+                });
+        }
+        let ResponseItem::AgentMessage { content, .. } = item else {
             return false;
         };
-        if role != "user" {
-            return false;
-        }
         content.iter().any(|content_item| match content_item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                SubagentNotification::matches_text(text)
-            }
-            ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => false,
+            AgentMessageInputContent::InputText { text } => predicate(text),
+            AgentMessageInputContent::EncryptedContent { .. } => false,
         })
     })
 }
@@ -3285,7 +3304,7 @@ async fn v1_observer_of_v2_shutdown_queues_notification_for_direct_parent() {
         .await
         .raw_items()
         .to_vec();
-    assert!(history_contains_text(
+    assert!(subagent_notification_history_contains_text(
         &worker_history_items,
         &expected_message
     ));
@@ -3296,7 +3315,7 @@ async fn v1_observer_of_v2_shutdown_queues_notification_for_direct_parent() {
         .await
         .raw_items()
         .to_vec();
-    assert!(!history_contains_text(
+    assert!(!subagent_notification_history_contains_text(
         &root_history_items,
         &expected_message
     ));
@@ -3580,7 +3599,7 @@ async fn v1_observer_of_v2_raw_error_queues_notification_for_direct_parent() {
         .await
         .raw_items()
         .to_vec();
-    assert!(history_contains_text(
+    assert!(subagent_notification_history_contains_text(
         &worker_history_items,
         &expected_message
     ));
@@ -3623,14 +3642,14 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
         .raw_items()
         .to_vec();
     assert_eq!(
-        history_contains_text(
+        subagent_notification_history_contains_text(
             &history_items,
             &format!("\"agent_path\":\"{child_thread_id}\"")
         ),
         true
     );
     assert_eq!(
-        history_contains_text(&history_items, "\"status\":\"not_found\""),
+        subagent_notification_history_contains_text(&history_items, "\"status\":\"not_found\""),
         true
     );
 }
@@ -3769,7 +3788,7 @@ async fn removing_running_child_delivers_not_found_for_bound_response_observatio
     assert!(wait_for_subagent_notification(&parent_thread).await);
     assert!(wait_for_subagent_completion_item(&parent_thread).await);
     assert!(
-        history_contains_text(
+        subagent_notification_history_contains_text(
             parent_thread.session.clone_history().await.raw_items(),
             "\"status\":\"not_found\"",
         ),
