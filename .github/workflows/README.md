@@ -32,3 +32,10 @@ The workflows in this directory are split so that pull requests get fast, review
 - If a build/test/clippy check can be expressed in Bazel, prefer putting the PR-time version in `bazel.yml`.
 - Keep `rust-ci.yml` fast enough that it usually does not dominate PR latency.
 - Reserve `rust-ci-full.yml` for heavyweight Cargo-native coverage that Bazel does not replace yet.
+
+## Manual Verify and Build
+
+Run `scripts/run-manual-ci.sh` to dispatch `manual-verify.yml`, start
+`manual-release-build.yml` after workspace Clippy succeeds, and monitor both workflows. The script
+uses long polls, retries pre-execution GitHub Actions infrastructure failures, and can attach to
+existing runs with `--verify-run` and `--build-run`.
