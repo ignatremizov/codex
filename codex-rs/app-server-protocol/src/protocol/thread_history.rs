@@ -4894,33 +4894,48 @@ mod tests {
 
     #[test]
     fn canonical_sub_agent_completion_survives_rollout_replay() {
-        let completion = CoreTurnItem::AgentMessage(
-            sub_agent_completion_item(
-                "/root/reviewer",
-                &AgentStatus::Completed(Some("Finished reviewing.".to_string())),
-            )
-            .expect("terminal status"),
-        );
-        let expected_item = ThreadItem::from(completion.clone());
-        let mut builder = ThreadHistoryBuilder::new();
-        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
-            turn_id: "completion-turn".into(),
-            trace_id: None,
-            started_at: None,
-            model_context_window: None,
-            collaboration_mode_kind: Default::default(),
-        }));
-        builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
-            thread_id: ThreadId::new(),
-            turn_id: "completion-turn".into(),
-            item: completion,
-            started_at_ms: None,
-            completed_at_ms: 0,
-        }));
-        assert_eq!(
-            builder.active_turn_snapshot().expect("active turn").items,
-            vec![expected_item]
-        );
+        for model_visibility in [
+            codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
+            codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible,
+        ] {
+            let completion = CoreTurnItem::AgentMessage(
+                codex_protocol::protocol::sub_agent_completion_item_with_visibility(
+                    "/root/reviewer",
+                    &AgentStatus::Completed(Some("Finished reviewing.".to_string())),
+                    model_visibility,
+                )
+                .expect("terminal status"),
+            );
+            let expected_item = ThreadItem::from(completion.clone());
+            let ThreadItem::AgentMessage { id, .. } = &expected_item else {
+                panic!("expected agent message");
+            };
+            assert_eq!(
+                codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id(
+                    id
+                ),
+                Some(model_visibility)
+            );
+            let mut builder = ThreadHistoryBuilder::new();
+            builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "completion-turn".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }));
+            builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: ThreadId::new(),
+                turn_id: "completion-turn".into(),
+                item: completion,
+                started_at_ms: None,
+                completed_at_ms: 0,
+            }));
+            assert_eq!(
+                builder.active_turn_snapshot().expect("active turn").items,
+                vec![expected_item]
+            );
+        }
     }
 
     #[test]

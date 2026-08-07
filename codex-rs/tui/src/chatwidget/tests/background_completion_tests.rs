@@ -1,5 +1,7 @@
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::sub_agent_completion_transcript;
+use codex_protocol::protocol::sub_agent_completion_transcript_with_visibility;
 
 use super::*;
 
@@ -54,8 +56,51 @@ async fn completion_requires_canonical_phase_and_replays_with_wait_rendering() {
     assert_snapshot!(
         lines_to_single_string(&cells[1]),
         @r"
-    • Agent finished
+    • Agent finished (visible)
       └ /root/reviewer: Completed - Finished reviewing the change.
+    "
+    );
+}
+
+#[tokio::test]
+async fn background_completion_shows_parent_model_visibility() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let receiver_thread_id =
+        ThreadId::from_string("019fc1b4-78ea-7481-97ac-ff423900cc6a").expect("valid thread");
+    chat.set_collab_agent_metadata(
+        receiver_thread_id,
+        Some("Herschel".to_string()),
+        Some("default".to_string()),
+    );
+    for model_visibility in [
+        SubAgentCompletionModelVisibility::Visible,
+        SubAgentCompletionModelVisibility::NotVisible,
+    ] {
+        let (id, text) = sub_agent_completion_transcript_with_visibility(
+            &receiver_thread_id.to_string(),
+            &AgentStatus::Completed(Some("Finished.".to_string())),
+            model_visibility,
+        )
+        .expect("terminal status");
+        chat.handle_server_notification(
+            completion_notification(id.to_string(), text, MessagePhase::Commentary),
+            /*replay_kind*/ None,
+        );
+    }
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!(
+        rendered,
+        @r"
+    • Agent finished (visible)
+      └ Herschel [default]: Completed - Finished.
+
+    • Agent finished (not visible)
+      └ Herschel [default]: Completed - Finished.
     "
     );
 }
@@ -134,7 +179,7 @@ async fn background_completion_resolves_thread_id_from_cached_agent_metadata() {
     assert_snapshot!(
         lines_to_single_string(&cells[0]),
         @r"
-    • Agent finished
+    • Agent finished (visible)
       └ Herschel [default]: Completed - Cinnamon
     "
     );
@@ -232,7 +277,7 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
       └ Give me one random ingredient.
 
 
-    • Agent finished
+    • Agent finished (visible)
       └ Herschel [default]: Completed - Cinnamon
     "
     );

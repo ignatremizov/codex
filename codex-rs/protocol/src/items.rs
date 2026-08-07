@@ -135,7 +135,7 @@ pub struct AgentMessageItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub memory_citation: Option<MemoryCitation>,
-    /// Core-authored provenance for a visible background subagent completion.
+    /// Core-authored provenance for a client-visible background subagent completion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub sub_agent_completion: Option<SubAgentCompletionMetadata>,
@@ -305,9 +305,11 @@ pub struct CollabAgentToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub observe_commentary: Option<bool>,
-    /// Whether this V1 lifecycle call requested an idle wake when its target turn completes.
+    /// Final-response handling requested by this V1 lifecycle call.
     ///
-    /// `None` means the tool does not expose V1 response observation.
+    /// `Some(true)` requests an idle wake, `Some(false)` requests passive model delivery, and
+    /// `None` paired with `observe_commentary: Some(_)` records explicit presentation-only `x`
+    /// handling. Both fields are `None` when the tool does not expose V1 response observation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub wake_on_completion: Option<bool>,

@@ -52,14 +52,14 @@ fn wire_policies_map_to_commentary_and_final_dispositions() {
             Some("x"),
             ResponseObservationPolicy {
                 commentary: false,
-                final_response: FinalResponseObservation::None,
+                final_response: FinalResponseObservation::PresentationOnly,
             },
         ),
         (
             Some("cx"),
             ResponseObservationPolicy {
                 commentary: true,
-                final_response: FinalResponseObservation::None,
+                final_response: FinalResponseObservation::PresentationOnly,
             },
         ),
         (

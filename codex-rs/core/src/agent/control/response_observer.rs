@@ -268,6 +268,7 @@ impl AgentControl {
             .get_agent_metadata(child_thread_id)
             .and_then(|metadata| metadata.agent_path)
             .map_or_else(|| child_thread_id.to_string(), |path| path.to_string());
+        let observes_future_turns = initial_terminal_observation.observes_future_turns();
         let terminal_control = self.clone();
         let (response_snapshot, response_rx) = child_thread
             .session
@@ -287,15 +288,53 @@ impl AgentControl {
                     || {},
                 );
             });
+        // A full-history fork can expose the parent's still-active turn in the new child snapshot.
+        // Future-only observation begins after that snapshot boundary, so leave it pending until a
+        // subsequent target turn is admitted instead of attaching it to inherited history.
+        let mut target_turn_id = match binding {
+            ResponseObservationBinding::NextTurn => initial_terminal_observation
+                .target_turn_id(response_snapshot.active_turn_id.clone()),
+            ResponseObservationBinding::ExplicitAdmission(_) => None,
+        };
         let initial_reconciliation = initial_terminal_observation.reconcile(
             response_snapshot.active_turn_id.clone(),
             response_snapshot.last_terminal.clone(),
             response_snapshot.status.clone(),
         );
-        let target_turn_id = match binding {
-            ResponseObservationBinding::NextTurn => response_snapshot.active_turn_id,
-            ResponseObservationBinding::ExplicitAdmission(_) => None,
-        };
+        if target_turn_id.is_none()
+            && !observes_future_turns
+            && let Some((turn_id, _)) = initial_reconciliation.terminal.as_ref()
+        {
+            // Live adoption can read Running immediately before this atomic subscription snapshot
+            // observes the terminal outcome. Bind that reconciled turn so presentation-only
+            // delivery is published instead of being mistaken for an idle bare-x audit tombstone.
+            target_turn_id = Some(turn_id.clone());
+        }
+        if response_observation.final_response() == FinalResponseObservation::PresentationOnly
+            && !response_observation.commentary()
+            && target_turn_id.is_none()
+            && !observes_future_turns
+        {
+            validate_response_observation_endpoints(
+                state,
+                parent,
+                child,
+                child_lifecycle_generation,
+            )
+            .await?;
+            if !self
+                .persist_response_observation_updates(
+                    parent,
+                    self.response_observation_audit_snapshots(parent, child, target_turn_id),
+                )
+                .await
+            {
+                return Err(CodexErr::Fatal(
+                    "failed to persist response observation audit state".to_string(),
+                ));
+            }
+            return Ok(initial_reconciliation.status);
+        }
         let previous_relationship = self.response_observation_relationship_snapshot(parent, child);
         let watcher_registration = self.register_response_watcher_with_admission_at_sequence(
             child,

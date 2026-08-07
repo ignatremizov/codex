@@ -2,7 +2,8 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_protocol::protocol::sub_agent_completion_item;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
+use codex_protocol::protocol::sub_agent_completion_item_with_visibility;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,10 +52,12 @@ impl CodexThread {
         &self,
         agent_reference: &str,
         status: &AgentStatus,
+        model_visibility: SubAgentCompletionModelVisibility,
     ) {
         self.emit_sub_agent_completion_with_admission(
             agent_reference,
             status,
+            model_visibility,
             CompletionEmissionAdmission::Ordinary,
         )
         .await;
@@ -64,11 +67,13 @@ impl CodexThread {
         &self,
         agent_reference: &str,
         status: &AgentStatus,
+        model_visibility: SubAgentCompletionModelVisibility,
         completion_delivery: AcceptedCompletionDelivery,
     ) {
         self.emit_sub_agent_completion_with_admission(
             agent_reference,
             status,
+            model_visibility,
             CompletionEmissionAdmission::Accepted(completion_delivery),
         )
         .await;
@@ -78,9 +83,12 @@ impl CodexThread {
         &self,
         agent_reference: &str,
         status: &AgentStatus,
+        model_visibility: SubAgentCompletionModelVisibility,
         admission: CompletionEmissionAdmission,
     ) {
-        let Some(item) = sub_agent_completion_item(agent_reference, status) else {
+        let Some(item) =
+            sub_agent_completion_item_with_visibility(agent_reference, status, model_visibility)
+        else {
             return;
         };
         let accepted_completion_delivery = match admission {

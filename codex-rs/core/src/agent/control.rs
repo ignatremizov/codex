@@ -38,6 +38,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
@@ -88,6 +89,17 @@ struct InitialTerminalReconciliation {
 }
 
 impl InitialTerminalObservation {
+    fn observes_future_turns(&self) -> bool {
+        matches!(self, Self::FutureTurnsOnly)
+    }
+
+    fn target_turn_id(&self, active_turn_id: Option<String>) -> Option<String> {
+        match self {
+            Self::FutureTurnsOnly => None,
+            Self::ReconcileIfAdvancedFrom(_) => active_turn_id,
+        }
+    }
+
     fn reconcile(
         self,
         active_turn_id: Option<String>,
@@ -1210,12 +1222,13 @@ impl AgentControl {
             // watcher branch above so the caller receives V1 delivery and durability semantics.
             MultiAgentVersion::V2 => child_thread.session.subscribe_agent_responses(),
         };
+        let target_turn_id =
+            initial_terminal_observation.target_turn_id(response_snapshot.active_turn_id.clone());
         let initial_reconciliation = initial_terminal_observation.reconcile(
             response_snapshot.active_turn_id.clone(),
             response_snapshot.last_terminal.clone(),
             response_snapshot.status.clone(),
         );
-        let target_turn_id = response_snapshot.active_turn_id.clone();
         let previous_relationship = self.response_observation_relationship_snapshot(parent, child);
         let retain_passive_completion_relationship =
             observer_multi_agent_version != MultiAgentVersion::V1;
@@ -1405,6 +1418,7 @@ impl AgentControl {
                                     .emit_accepted_sub_agent_completion_without_turn(
                                         &child_reference,
                                         &status,
+                                        SubAgentCompletionModelVisibility::Visible,
                                         completion_delivery,
                                     )
                                     .await;
@@ -1414,6 +1428,7 @@ impl AgentControl {
                                     .emit_sub_agent_completion_without_turn(
                                         &child_reference,
                                         &status,
+                                        SubAgentCompletionModelVisibility::Visible,
                                     )
                                     .await;
                             }

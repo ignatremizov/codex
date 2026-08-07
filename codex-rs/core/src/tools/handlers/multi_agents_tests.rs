@@ -57,11 +57,13 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::TempDirExt;
@@ -3577,6 +3579,96 @@ async fn live_adoption_reconciles_terminal_that_raced_observed_running_status() 
             child.thread_id,
             &AgentStatus::Completed(Some("completed during adoption".to_string())),
         )]
+    );
+}
+
+#[tokio::test]
+async fn live_adoption_publishes_presentation_only_terminal_that_raced_running_status() {
+    let (_, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let child = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start child thread");
+    let child_turn = child.thread.session.new_default_turn().await;
+    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+    child
+        .thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("completed during presentation-only adoption".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let adopted_status = manager
+        .agent_control()
+        .ensure_v1_completion_watcher(
+            child.thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            crate::agent::response_observation::ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                crate::agent::response_observation::FinalResponseObservation::PresentationOnly,
+            ),
+            AgentStatus::Running,
+        )
+        .await
+        .expect("adopt completed child for presentation-only delivery");
+    assert_eq!(
+        adopted_status,
+        AgentStatus::Completed(Some(
+            "completed during presentation-only adoption".to_string()
+        ))
+    );
+
+    let completion_visibility = timeout(Duration::from_secs(5), async {
+        loop {
+            let event = parent
+                .thread
+                .next_event()
+                .await
+                .expect("parent completion event");
+            let EventMsg::ItemCompleted(event) = event.msg else {
+                continue;
+            };
+            let TurnItem::AgentMessage(item) = event.item else {
+                continue;
+            };
+            if let Some(visibility) =
+                sub_agent_completion_model_visibility_from_response_item_id(&item.id)
+            {
+                break visibility;
+            }
+        }
+    })
+    .await
+    .expect("presentation-only completion should reach the adopting parent");
+    assert_eq!(
+        completion_visibility,
+        SubAgentCompletionModelVisibility::NotVisible
+    );
+    assert_eq!(
+        subagent_notification_texts(parent.thread.session.as_ref()).await,
+        Vec::<String>::new()
     );
 }
 

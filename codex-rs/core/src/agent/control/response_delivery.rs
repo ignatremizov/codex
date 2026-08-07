@@ -6,6 +6,7 @@ use crate::session::AgentResponseEvent;
 use crate::session::AgentResponseSubscription;
 use crate::session_prefix::format_subagent_commentary_message;
 use crate::session_prefix::format_subagent_notification_message;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use std::collections::HashSet;
 
 pub(super) enum WatcherTerminalPoll {
@@ -514,17 +515,20 @@ impl AgentControl {
         if final_response_observation != FinalResponseObservation::None
             && terminal.presentation.wait_owns_presentation().await
         {
-            self.commit_final_response_observation_delivery(
-                terminal.presentation.parent(),
-                terminal.presentation.child(),
-                &terminal.turn_id,
-            );
-            return self
-                .persist_response_observation_snapshot(
+            if final_response_observation != FinalResponseObservation::PresentationOnly {
+                self.commit_final_response_observation_delivery(
                     terminal.presentation.parent(),
                     terminal.presentation.child(),
-                )
-                .await;
+                    &terminal.turn_id,
+                );
+                return self
+                    .persist_response_observation_snapshot(
+                        terminal.presentation.parent(),
+                        terminal.presentation.child(),
+                    )
+                    .await;
+            }
+            return true;
         }
         let final_response_observation =
             if final_response_observation == FinalResponseObservation::Wake {
@@ -562,6 +566,47 @@ impl AgentControl {
             };
         match final_response_observation {
             FinalResponseObservation::None => return true,
+            FinalResponseObservation::PresentationOnly => {
+                // `x` still owns the canonical client-visible completion item. That item is
+                // persisted as an ItemCompleted event rather than conversation context, so TUI
+                // replay remains complete without exposing the payload to a later model request.
+                // For a terminal admitted before shutdown, the emission worker takes the
+                // presentation's accepted-delivery token before returning from its first attempt.
+                // Graceful shutdown waits for that token, so a failed append keeps retrying with
+                // stable item and turn IDs before termination even though the observation
+                // relationship can now retire.
+                let Ok(state) = self.upgrade() else {
+                    return false;
+                };
+                let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
+                    return false;
+                };
+                if parent_thread.session.presentation_id() != terminal.presentation.parent() {
+                    return false;
+                }
+                match terminal.presentation.take_accepted_completion_delivery() {
+                    Some(completion_delivery) => {
+                        parent_thread
+                            .emit_accepted_sub_agent_completion_without_turn(
+                                child_reference,
+                                &terminal.status,
+                                SubAgentCompletionModelVisibility::NotVisible,
+                                completion_delivery,
+                            )
+                            .await;
+                    }
+                    None => {
+                        parent_thread
+                            .emit_sub_agent_completion_without_turn(
+                                child_reference,
+                                &terminal.status,
+                                SubAgentCompletionModelVisibility::NotVisible,
+                            )
+                            .await;
+                    }
+                }
+                return true;
+            }
             FinalResponseObservation::Wake => {
                 let Some(response_item_id) = response_item_id else {
                     return false;
@@ -667,13 +712,18 @@ impl AgentControl {
                         .emit_accepted_sub_agent_completion_without_turn(
                             child_reference,
                             &terminal.status,
+                            SubAgentCompletionModelVisibility::Visible,
                             completion_delivery,
                         )
                         .await;
                 }
                 None => {
                     parent_thread
-                        .emit_sub_agent_completion_without_turn(child_reference, &terminal.status)
+                        .emit_sub_agent_completion_without_turn(
+                            child_reference,
+                            &terminal.status,
+                            SubAgentCompletionModelVisibility::Visible,
+                        )
                         .await;
                 }
             }
@@ -794,13 +844,18 @@ impl AgentControl {
                     .emit_accepted_sub_agent_completion_without_turn(
                         child_reference,
                         &terminal.status,
+                        SubAgentCompletionModelVisibility::Visible,
                         completion_delivery,
                     )
                     .await;
             }
             None => {
                 parent_thread
-                    .emit_sub_agent_completion_without_turn(child_reference, &terminal.status)
+                    .emit_sub_agent_completion_without_turn(
+                        child_reference,
+                        &terminal.status,
+                        SubAgentCompletionModelVisibility::Visible,
+                    )
                     .await;
             }
         }

@@ -757,12 +757,14 @@ fn append_response_observation_to_title(
             "no commentary"
         });
     }
-    if let Some(wake_on_completion) = response_observation.wake_on_completion {
-        labels.push(if wake_on_completion {
-            "wake on completion"
-        } else {
-            "no wake on completion"
-        });
+    match (
+        response_observation.observe_commentary,
+        response_observation.wake_on_completion,
+    ) {
+        (_, Some(true)) => labels.push("wake on completion"),
+        (_, Some(false)) => labels.push("no wake on completion"),
+        (Some(_), None) => labels.push("ignore final reply"),
+        (None, None) => {}
     }
     if labels.is_empty() {
         return title;
@@ -1164,6 +1166,31 @@ mod tests {
         )
         .expect("send-input item renders");
 
+        let send_x = tool_call_history_cell(
+            &ThreadItem::CollabAgentToolCall {
+                id: "call-send-x".to_string(),
+                tool: CollabAgentTool::SendInput,
+                status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: None,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![robie_id.to_string()],
+                receiver_agents: Vec::new(),
+                prompt: Some("Record this update without returning your final.".to_string()),
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    robie_id.to_string(),
+                    agent_state(CollabAgentStatus::Running, /*message*/ None),
+                )]),
+            },
+            /*cached_spawn_request*/ None,
+            UNLIMITED_AGENT_PREVIEW_ROWS,
+            UNLIMITED_AGENT_PREVIEW_ROWS,
+            |thread_id| metadata_for(thread_id, robie_id, bob_id),
+        )
+        .expect("send-input x item renders");
+
         let waiting = tool_call_history_cell(
             &ThreadItem::CollabAgentToolCall {
                 id: "call-wait".to_string(),
@@ -1242,7 +1269,7 @@ mod tests {
         )
         .expect("close item renders");
 
-        let snapshot = [spawn, send, waiting, finished, close]
+        let snapshot = [spawn, send, send_x, waiting, finished, close]
             .iter()
             .map(cell_to_text)
             .collect::<Vec<_>>()

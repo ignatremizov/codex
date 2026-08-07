@@ -15,7 +15,7 @@ The proposed model-facing flags are:
 
 - `c`: observe the first subsequent commentary response.
 - `f`: observe the target turn's final response and wake the sender if it is idle.
-- `x`: do not add final-response observation for this lifecycle operation.
+- `x`: keep the final response in the transcript without adding it to model context.
 
 The field is additive. Omitting it preserves each tool's current behavior for the selected target
 turn: the final response is delivered passively, but it does not wake an idle observer.
@@ -46,12 +46,26 @@ delivery state separate:
   commentary item ID; live recovery uses the item boundary because paginated model context does
   not preserve absolute rollout ordinals.
 
-Delivery and its committed observation suffix are flushed together. Compaction and rollback append
-the current snapshots so a live orchestration instance can replace a watcher without losing or
-duplicating delivery. Cold resume and fork restore history but deliberately do not reactivate
-pending observations, recreate child runtimes, or inspect child history to complete an old
-delivery. Fire-and-forget `x` calls persist a no-delivery tombstone with resolved canonical
-identity even though they create no watcher.
+Model-context delivery and its committed observation suffix are flushed together. Compaction and
+rollback append the current snapshots so a live orchestration instance can replace a watcher
+without losing or duplicating delivery. An `x` observation instead emits the same canonical
+model-hidden completion presentation used by passive and waking delivery, then records a
+no-pending-delivery tombstone. The user, transcript, rollout, and client APIs retain the final
+status and payload even though a later parent request does not include them in model context. Cold
+resume and fork restore history but deliberately do not reactivate pending observations, recreate
+child runtimes, or inspect child history to complete an old delivery.
+
+Canonical completion rows state their relationship to the observer's model context:
+
+- `Agent finished (visible)` means the final response was added to this parent thread's model
+  context through passive or waking delivery.
+- `Agent finished (not visible)` means `x` retained the final response only for the parent
+  transcript and clients.
+
+The label is observer-relative. It does not claim that the response is hidden from the child
+thread, user, rollout, or another observer. When an explicit `wait_agent` owns the completion, its
+model-visible `Finished waiting` result owns presentation instead of emitting a duplicate
+`Agent finished` row.
 
 V1 currently accepts full thread UUIDs as lifecycle targets. The names in prose examples are
 descriptive labels only; nickname or compact-reference input remains owned by the parallel
@@ -76,7 +90,8 @@ three gaps:
 2. The sender cannot request an automatic wake when an important target finishes after the sender
    has become idle.
 3. The sender cannot state that a message is informational and that the target's eventual,
-   potentially unrelated final response should not be injected into the sender's model context.
+   potentially unrelated final response should remain user-visible without being injected into
+   the sender's model context.
 
 These gaps encourage unnecessary `wait_agent` polling and make sibling communication awkward.
 V2 addresses related concerns with separate message, follow-up-task, wait, and mailbox concepts,
@@ -85,12 +100,14 @@ but that splits sending and response observation across a larger model-facing co
 V1 can express the useful behavior by keeping one sending operation and adding a compact
 observation policy.
 
-The primary `x` workflow is child-to-parent coordination during a long child turn. A child can
-send an important scope, contract, or implementation update to its parent immediately without
-subscribing itself to the parent's later, usually unrelated completion. The parent otherwise sees
-the child's final response but has no model-visible access to arbitrary mid-turn commentary unless
-it explicitly inspects the child rollout. `cx` adds only the parent's first commentary
-acknowledgement or task-interpretation reply to that one-way update.
+The primary `x` workflow is child-to-parent coordination during a long child turn. A child can send
+an important scope, contract, or implementation update to its parent immediately without
+subscribing itself to the parent's later, usually unrelated completion. The completion remains
+visible in the child's observer transcript for audit and manual inspection, but is not injected
+into the observer's later model context. The parent otherwise sees the child's final response but
+has no model-visible access to arbitrary mid-turn commentary unless it explicitly inspects the
+child rollout. `cx` adds only the parent's first commentary acknowledgement or task-interpretation
+reply to that one-way update.
 
 Sibling-to-sibling coordination usually uses `cx`: the sending sibling receives the target
 sibling's acknowledgement or task interpretation while continuing its own work, but does not
@@ -164,7 +181,8 @@ All three tools should route through the same observation-policy parser and regi
 - `spawn_agent.w` observes the spawned agent's initial turn.
 - `send_input.w` observes the target turn that accepts the input.
 - `resume_agent.w` observes the target's active turn, or its next turn if the resumed target is
-  currently idle or already completed.
+  currently idle or already completed and the policy requests commentary or model delivery. A
+  bare `x` returns the synchronous status without retaining a next-turn observer.
 
 The synchronous tool result remains available regardless of `w`. For example, `resume_agent` may
 return the saved result of a previously completed turn; `x` controls future event delivery and
@@ -180,8 +198,8 @@ Each accepted call contributes a commentary request and a final-delivery disposi
 | `c` | first subsequent commentary | passive |
 | `f` | none | wake |
 | `cf` | first subsequent commentary | wake |
-| `x` | none | none |
-| `cx` | first subsequent commentary | none |
+| `x` | none | presentation-only |
+| `cx` | first subsequent commentary | presentation-only |
 | `fx` | none | passive |
 | `cfx` | first subsequent commentary | passive |
 
@@ -191,7 +209,8 @@ remain harmless, but tool guidance should recommend the shorter canonical equiva
 
 The final dispositions mean:
 
-- `none`: this call adds no automatic final delivery.
+- `presentation-only`: publish the final response to clients and durable history without adding it
+  to model context.
 - `passive`: make the final response available through the current non-waking delivery behavior.
 - `wake`: deliver the final response and start a sender turn if the sender is idle.
 
@@ -260,7 +279,7 @@ boundary and does not restore that wake.
 For one observer and target turn, aggregate final dispositions monotonically:
 
 ```text
-none < passive < wake
+presentation-only < passive < wake
 ```
 
 Once any accepted lifecycle operation contributes `wake`, later `x`, `cx`, passive, or omitted
@@ -271,13 +290,13 @@ requested delivery is durably handled. A later turn started directly in the targ
 delivered to the old observer. The observer must use a new `spawn_agent`, `send_input`, or
 `resume_agent` call to observe that later work.
 
-Explicit `close_agent` revokes any still-pending passive or wake observation for the closed target
-and its live descendants across every live observer. Shutdown therefore cannot deliver a queued
-final response or silently recover an old V1 watcher. Child publication and reopening serialize
-with the direct parent's close boundary, preventing a late child runtime from remaining beneath a
-closed parent. The same close rule applies when the target uses the v2 orchestration path.
-Revocation also removes any still-unclaimed completion-context authorization owned by the closed
-child, so a queued wake cannot become model-visible after close supersedes it.
+Explicit `close_agent` revokes any still-pending presentation-only, passive, or wake observation
+for the closed target and its live descendants across every live observer. Shutdown therefore
+cannot deliver a queued final response or silently recover an old V1 watcher. Child publication
+and reopening serialize with the direct parent's close boundary, preventing a late child runtime
+from remaining beneath a closed parent. The same close rule applies when the target uses the v2
+orchestration path. Revocation also removes any still-unclaimed completion-context authorization
+owned by the closed child, so a queued wake cannot become model-visible after close supersedes it.
 
 If close invalidates a lifecycle generation after a foreign observer has already scheduled watcher
 recovery, that recovery revokes only its obsolete presentation before stopping. A fresh
@@ -305,8 +324,8 @@ This creates a durable final wake for the target's active turn. A later update m
 ```
 
 When both calls bind to the same target turn, the second requests a commentary acknowledgement and
-contributes no new final delivery. It does not cancel the earlier `f`; that turn's final response
-still wakes the observer.
+contributes a presentation-only final disposition. It does not cancel the earlier `f`; that turn's
+final response still wakes the observer.
 
 The aggregate is cleared only after that target turn reaches a final state and its requested
 delivery has been durably handled. Inputs admitted to a later target turn start with a fresh
@@ -320,7 +339,15 @@ the observer's current turn:
 - `spawn_agent` binds when the initial child turn is created.
 - `send_input` binds when the input is admitted to a target turn, not when the tool call begins.
 - `resume_agent` binds immediately when the target has an active turn. If the target is idle or
-  completed, it retains the requested policy and binds it to the next target turn that starts.
+  completed, it retains commentary, passive, or wake handling for the next target turn that
+  starts. A bare presentation-only `x` records the synchronous status and does not retain a
+  next-turn observer.
+
+A full-history spawn can expose the parent's active turn in the child history while the initial
+child input is still being admitted. Future-turn observation remains pending across that inherited
+turn and binds only to the new child turn. This includes omitted `w`: the child's final response is
+delivered passively without starting a parent turn, and the next user-initiated parent turn receives
+it in model context.
 
 A completed result replayed synchronously by `resume_agent` is historical tool output, not a new
 target-turn completion, and does not consume the policy intended for the next turn.
@@ -379,9 +406,9 @@ should prevent duplicate automatic injection after rollback, compaction, or live
 replacement.
 
 Cold resume and fork are different. They restore conversational and audit history, but discard
-pending commentary observations and passive or wake-capable final observations. The user or model
-must explicitly call `resume_agent`, `send_input`, or `spawn_agent` after evaluating the current
-situation.
+pending commentary observations and presentation-only, passive, or wake-capable final
+observations. The user or model must explicitly call `resume_agent`, `send_input`, or `spawn_agent`
+after evaluating the current situation.
 
 ## Interaction with active goals
 
@@ -438,21 +465,24 @@ attached to the thread.
 ## Existing target-turn observations
 
 Spawn, input, and resume must use one observation mechanism rather than maintaining special-case
-listeners for each tool. Several lifecycle calls may bind passive or wake-capable observation to
-the same target turn.
+listeners for each tool. Several lifecycle calls may bind presentation-only, passive, or
+wake-capable observation to the same target turn.
 
 All calls for the same observer and target turn should participate in the same monotonic
 aggregate. Therefore:
 
-- `x` means "this operation adds no final observation."
+- `x` means "this operation keeps final presentation out of model context."
 - `x` does not cancel final observation created by spawn, resume, or an earlier input for that
   target turn.
-- A true fire-and-forget result occurs when the effective aggregate remains `none`.
+- A model-context fire-and-forget result occurs when the effective aggregate remains
+  `presentation-only`.
 
-Using `w: "x"` on `spawn_agent` explicitly creates fire-and-forget work without parent final
-delivery for the initial target turn. Using `w: "x"` on `resume_agent` restores the target runtime
-without observing the selected active or next target turn's final response. A later `send_input`
-with `w: "f"` may still upgrade that observer's disposition if it binds to the same target turn.
+Using `w: "x"` on `spawn_agent` explicitly creates model-context fire-and-forget work while keeping
+the initial target turn's final response visible to the parent transcript. Using `w: "x"` on
+`resume_agent` presents an active target turn's final response without injecting it; when the
+target is already idle or completed, bare `x` returns its synchronous status without retaining a
+next-turn observer. A later `send_input` with `w: "f"` may still upgrade that observer's
+disposition if it binds to the same target turn.
 
 Overloading a later `send_input` with `w: "x"` as an unsubscribe would remain surprising and
 unsafe.
@@ -685,10 +715,16 @@ generation remain current. Recovery uses capped backoff rather than treating a s
 empty history and waiting indefinitely for an unrelated runtime reload.
 
 If persisting a target final-response event fails while the process remains live, publish that
-final outcome to existing response observers so their passive or wake delivery does not remain
-blocked forever. The observer-side delivery must still pass its own durable commit boundary.
-Commentary remains unobservable when its source item was not persisted, because forwarding
-unauditable intermediate text is not required for final-response delivery liveness.
+final outcome to existing response observers so their presentation-only, passive, or wake delivery
+does not remain blocked forever. The observer-side delivery must still pass its own durable commit
+boundary. Commentary remains unobservable when its source item was not persisted, because
+forwarding unauditable intermediate text is not required for final-response delivery liveness.
+
+Once a target terminal event reserves accepted completion delivery, its canonical presentation
+retry retains that reservation. Graceful shutdown waits for the retry to persist the stable
+presentation item before terminating, including for presentation-only `x` delivery. This is
+distinct from reconstructing an unresolved observation after the process has already crossed a
+cold boundary.
 
 On cold resume or fork, persisted observation records remain model-hidden audit and idempotency
 history only. Do not turn pending records into watchers, automatic model-context items, or child

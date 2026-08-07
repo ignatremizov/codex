@@ -10,6 +10,7 @@ pub use agent_path::AgentPath;
 pub use response_item_id::ResponseItemId;
 pub use session_id::SessionId;
 pub use sub_agent_completion::SubAgentCompletionMetadata;
+pub use sub_agent_completion::SubAgentCompletionModelVisibility;
 pub use thread_id::ThreadId;
 pub use tool_name::ToolName;
 pub mod approvals;

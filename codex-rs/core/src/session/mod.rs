@@ -134,6 +134,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
@@ -3168,13 +3169,18 @@ impl Session {
                         .emit_accepted_sub_agent_completion_without_turn(
                             child_agent_path.as_str(),
                             &status,
+                            SubAgentCompletionModelVisibility::Visible,
                             completion_delivery,
                         )
                         .await;
                 }
                 None => {
                     parent_thread
-                        .emit_sub_agent_completion_without_turn(child_agent_path.as_str(), &status)
+                        .emit_sub_agent_completion_without_turn(
+                            child_agent_path.as_str(),
+                            &status,
+                            SubAgentCompletionModelVisibility::Visible,
+                        )
                         .await;
                 }
             }

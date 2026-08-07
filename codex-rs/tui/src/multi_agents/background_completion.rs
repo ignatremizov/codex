@@ -1,7 +1,9 @@
 use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::SubAgentCompletionStatus;
+use codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_transcript_parts;
 use ratatui::style::Stylize;
@@ -27,6 +29,7 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
         return None;
     }
     let completion_status = sub_agent_completion_status_from_response_item_id(id)?;
+    let model_visibility = sub_agent_completion_model_visibility_from_response_item_id(id)?;
     let (agent_reference, payload) = sub_agent_completion_transcript_parts(text)?;
     let (status, message) = match completion_status {
         SubAgentCompletionStatus::Completed => (
@@ -49,8 +52,12 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
         vec![Span::from(agent_reference.to_string()).cyan()]
     };
     let status = CollabAgentState { status, message };
+    let title = match model_visibility {
+        SubAgentCompletionModelVisibility::Visible => "Agent finished (visible)",
+        SubAgentCompletionModelVisibility::NotVisible => "Agent finished (not visible)",
+    };
     Some(collab_event(
-        title_text("Agent finished"),
+        title_text(title),
         completion_agent_lines(label, &status, agent_response_preview_lines),
     ))
 }

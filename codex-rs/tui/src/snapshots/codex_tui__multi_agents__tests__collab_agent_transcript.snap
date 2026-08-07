@@ -8,6 +8,9 @@ expression: snapshot
 • Sent input to Robie [explorer] (receive commentary · no wake on completion)
   └ Please continue and return the answer only.
 
+• Sent input to Robie [explorer] (no commentary · ignore final reply)
+  └ Record this update without returning your final.
+
 • Waiting for Robie [explorer]
 
 • Finished waiting

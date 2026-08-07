@@ -142,7 +142,10 @@ impl AgentControl {
             return (FinalResponseObservation::None, None);
         };
         let final_response = observation.final_response;
-        if final_response == FinalResponseObservation::None {
+        if matches!(
+            final_response,
+            FinalResponseObservation::None | FinalResponseObservation::PresentationOnly
+        ) {
             return (final_response, None);
         }
         let response_item_id = observation

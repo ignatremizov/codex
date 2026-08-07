@@ -155,7 +155,7 @@ fn full_transcript_renders_collab_messages_with_persisted_agent_metadata_snapsho
         @r"
     • Agent message from Robie [explorer]
       └ I found the relevant path.
-    • Agent finished
+    • Agent finished (visible)
       └ Robie [explorer]: Completed - Finished the review.
     "
     );
