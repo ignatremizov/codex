@@ -3477,7 +3477,14 @@ async fn spawn_x_presents_the_child_final_without_injecting_it(
         sub_agent_completion_model_visibility_from_response_item_id(&completion_id),
         Some(SubAgentCompletionModelVisibility::NotVisible)
     );
-    let history = test.codex.load_history(/*include_archived*/ false).await?;
+    let history = match history_mode {
+        ThreadHistoryMode::Legacy => test.codex.load_history(/*include_archived*/ false).await?,
+        ThreadHistoryMode::Paginated => {
+            test.codex
+                .load_rollback_history(/*include_archived*/ false)
+                .await?
+        }
+    };
     let spawn_observation = history
         .items
         .iter()
@@ -3639,7 +3646,14 @@ async fn send_input_x_presents_the_target_turn_without_injecting_it(
     let parent_after_send =
         wait_for_request_containing_text(&parent_after_send, send_call_id).await?;
     assert!(!parent_after_send.body_contains_text("presentation-only result"));
-    let history = test.codex.load_history(/*include_archived*/ false).await?;
+    let history = match history_mode {
+        ThreadHistoryMode::Legacy => test.codex.load_history(/*include_archived*/ false).await?,
+        ThreadHistoryMode::Paginated => {
+            test.codex
+                .load_rollback_history(/*include_archived*/ false)
+                .await?
+        }
+    };
     let send_observation = history
         .items
         .iter()
@@ -4445,7 +4459,14 @@ async fn active_wait_owns_v1_completion_without_duplicate_background_context(
 
     let after_wait = wait_for_request_containing_text(&after_wait, wait_call_id).await?;
     assert!(after_wait.body_contains_text("child done"));
-    let history = test.codex.load_history(/*include_archived*/ false).await?;
+    let history = match history_mode {
+        ThreadHistoryMode::Legacy => test.codex.load_history(/*include_archived*/ false).await?,
+        ThreadHistoryMode::Paginated => {
+            test.codex
+                .load_rollback_history(/*include_archived*/ false)
+                .await?
+        }
+    };
     assert!(!history.items.iter().any(|item| {
         matches!(
             item,
@@ -4713,12 +4734,25 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     );
 
     let parent_thread_id = initial.session_configured.thread_id;
-    let parent_model_context = store
-        .load_latest_model_context(LoadThreadHistoryParams {
-            thread_id: parent_thread_id,
-            include_archived: false,
-        })
-        .await?;
+    let parent_model_context = match history_mode {
+        ThreadHistoryMode::Legacy => {
+            store
+                .load_latest_model_context(LoadThreadHistoryParams {
+                    thread_id: parent_thread_id,
+                    include_archived: false,
+                })
+                .await?
+        }
+        ThreadHistoryMode::Paginated => {
+            store
+                .load_rollback_history(LoadThreadHistoryParams {
+                    thread_id: parent_thread_id,
+                    include_archived: false,
+                })
+                .await?
+                .items
+        }
+    };
     initial.thread_manager.remove_thread(&spawned_id).await;
     initial
         .thread_manager
@@ -5484,14 +5518,16 @@ async fn spawn_discards_child_after_post_admission_observation_persistence_failu
         ]),
     )
     .await;
+    let expected_message = if successful_flushes == 0 {
+        "failed to persist initial response observation state"
+    } else {
+        "failed to persist spawned response observation state"
+    };
     let failure_response = mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| {
+        move |request: &wiremock::Request| {
             body_contains(request, "post-admission-observation-spawn")
-                && body_contains(
-                    request,
-                    "failed to persist spawned response observation state",
-                )
+                && body_contains(request, expected_message)
         },
         sse(vec![
             ev_response_created("resp-post-admission-observation-failed"),
@@ -5525,12 +5561,8 @@ async fn spawn_discards_child_after_post_admission_observation_persistence_failu
     test.submit_turn("fail post admission persistence").await?;
 
     let _ = wait_for_requests(&child_request).await?;
-    let request = wait_for_request_containing_text(
-        &failure_response,
-        "failed to persist spawned response observation state",
-    )
-    .await?;
-    assert!(request.body_contains_text("failed to persist spawned response observation state"));
+    let request = wait_for_request_containing_text(&failure_response, expected_message).await?;
+    assert!(request.body_contains_text(expected_message));
     assert_eq!(
         test.thread_manager.list_thread_ids().await,
         vec![test.session_configured.thread_id]
