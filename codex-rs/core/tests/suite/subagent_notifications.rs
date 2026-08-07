@@ -3492,7 +3492,7 @@ async fn spawn_x_presents_the_child_final_without_injecting_it(
         })
         .expect("spawn lifecycle item");
     assert_eq!(spawn_observation, (Some(false), None));
-    assert!(history.items.iter().any(|item| {
+    assert!(history_items.iter().any(|item| {
         matches!(
             item,
             RolloutItem::AgentResponseObservation(observation)
