@@ -3477,16 +3477,8 @@ async fn spawn_x_presents_the_child_final_without_injecting_it(
         sub_agent_completion_model_visibility_from_response_item_id(&completion_id),
         Some(SubAgentCompletionModelVisibility::NotVisible)
     );
-    let history = match history_mode {
-        ThreadHistoryMode::Legacy => test.codex.load_history(/*include_archived*/ false).await?,
-        ThreadHistoryMode::Paginated => {
-            test.codex
-                .load_rollback_history(/*include_archived*/ false)
-                .await?
-        }
-    };
-    let spawn_observation = history
-        .items
+    let history_items = read_test_rollout_items(&test)?;
+    let spawn_observation = history_items
         .iter()
         .find_map(|item| {
             let RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) = item else {
@@ -3646,16 +3638,8 @@ async fn send_input_x_presents_the_target_turn_without_injecting_it(
     let parent_after_send =
         wait_for_request_containing_text(&parent_after_send, send_call_id).await?;
     assert!(!parent_after_send.body_contains_text("presentation-only result"));
-    let history = match history_mode {
-        ThreadHistoryMode::Legacy => test.codex.load_history(/*include_archived*/ false).await?,
-        ThreadHistoryMode::Paginated => {
-            test.codex
-                .load_rollback_history(/*include_archived*/ false)
-                .await?
-        }
-    };
-    let send_observation = history
-        .items
+    let history_items = read_test_rollout_items(&test)?;
+    let send_observation = history_items
         .iter()
         .find_map(|item| {
             let RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) = item else {
@@ -4459,15 +4443,8 @@ async fn active_wait_owns_v1_completion_without_duplicate_background_context(
 
     let after_wait = wait_for_request_containing_text(&after_wait, wait_call_id).await?;
     assert!(after_wait.body_contains_text("child done"));
-    let history = match history_mode {
-        ThreadHistoryMode::Legacy => test.codex.load_history(/*include_archived*/ false).await?,
-        ThreadHistoryMode::Paginated => {
-            test.codex
-                .load_rollback_history(/*include_archived*/ false)
-                .await?
-        }
-    };
-    assert!(!history.items.iter().any(|item| {
+    let history_items = read_test_rollout_items(&test)?;
+    assert!(!history_items.iter().any(|item| {
         matches!(
             item,
             RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
@@ -4734,7 +4711,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     );
 
     let parent_thread_id = initial.session_configured.thread_id;
-    let parent_model_context = match history_mode {
+    let parent_history_items = match history_mode {
         ThreadHistoryMode::Legacy => {
             store
                 .load_latest_model_context(LoadThreadHistoryParams {
@@ -4742,6 +4719,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
                     include_archived: false,
                 })
                 .await?
+                .items
         }
         ThreadHistoryMode::Paginated => {
             store
@@ -4780,7 +4758,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
             initial.config.clone(),
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: parent_thread_id,
-                history: Arc::new(parent_model_context.items),
+                history: Arc::new(parent_history_items),
                 rollout_path: None,
             }),
             codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test")),
