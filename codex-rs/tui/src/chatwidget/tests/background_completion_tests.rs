@@ -94,15 +94,15 @@ async fn background_completion_shows_parent_model_visibility() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_snapshot!(
-                rendered,
-                @r"
+        rendered,
+        @r"
     • Agent finished (visible)
       └ Herschel [default]: Completed - Finished.
 
     • Agent finished (not visible)
       └ Herschel [default]: Completed - Finished.
 "
-            );
+    );
 }
 
 #[tokio::test]
