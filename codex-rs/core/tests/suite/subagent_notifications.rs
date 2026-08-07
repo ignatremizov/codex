@@ -140,9 +140,7 @@ impl Respond for GatedSseResponse {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
-            // Wiremock's responder API is synchronous. Mark this receive as blocking so Tokio can
-            // keep serving parent requests while a child response is held at the test gate.
-            let _ = tokio::task::block_in_place(|| gate_rx.recv());
+            let _ = gate_rx.recv();
         }
         sse_response(self.response.clone())
     }
