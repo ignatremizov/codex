@@ -134,25 +134,18 @@ impl ThreadLifecycleContributor<Config> for ThreadIdleRecorder {
 
 impl Respond for GatedSseResponse {
     fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
-        if let Some(gate_rx) = self
+        let is_open = self
             .gate_rx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            if tokio::runtime::Handle::try_current()
-                .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
-            {
-                let _ =
-                    tokio::task::block_in_place(|| gate_rx.recv_timeout(Duration::from_secs(120)));
-            } else {
-                let _ = std::thread::spawn(move || {
-                    let _ = gate_rx.recv_timeout(Duration::from_secs(120));
-                })
-                .join();
-            }
+            .as_mut()
+            .is_some_and(|gate_rx| gate_rx.try_recv().is_ok());
+        let response = sse_response(self.response.clone());
+        if is_open {
+            response
+        } else {
+            response.set_delay(Duration::from_secs(5))
         }
-        sse_response(self.response.clone())
     }
 }
 const ROLE_MODEL: &str = "gpt-5.4";
