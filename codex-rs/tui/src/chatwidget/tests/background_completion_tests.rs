@@ -99,6 +99,7 @@ async fn background_completion_shows_parent_model_visibility() {
     • Agent finished (visible)
       └ Herschel [default]: Completed - Finished.
 
+
     • Agent finished (not visible)
       └ Herschel [default]: Completed - Finished.
     "
