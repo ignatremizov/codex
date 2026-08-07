@@ -140,10 +140,17 @@ impl Respond for GatedSseResponse {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
-            let _ = std::thread::spawn(move || {
-                let _ = gate_rx.recv_timeout(Duration::from_secs(120));
-            })
-            .join();
+            if tokio::runtime::Handle::try_current()
+                .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+            {
+                let _ =
+                    tokio::task::block_in_place(|| gate_rx.recv_timeout(Duration::from_secs(120)));
+            } else {
+                let _ = std::thread::spawn(move || {
+                    let _ = gate_rx.recv_timeout(Duration::from_secs(120));
+                })
+                .join();
+            }
         }
         sse_response(self.response.clone())
     }
