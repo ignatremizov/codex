@@ -141,7 +141,7 @@ impl Respond for GatedSseResponse {
             .take()
         {
             let _ = std::thread::spawn(move || {
-                let _ = gate_rx.recv_timeout(Duration::from_secs(30));
+                let _ = gate_rx.recv_timeout(Duration::from_secs(120));
             })
             .join();
         }
