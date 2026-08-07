@@ -9,6 +9,13 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+> [!IMPORTANT]
+> This personal fork does not guarantee wire compatibility with ChatGPT web or
+> mobile clients that connect to a remote Codex app-server. Those clients may
+> expect the JSON-RPC schema from the latest upstream OpenAI Codex release. Use
+> a matching upstream build for that integration; this fork is intended for
+> direct CLI/TUI use, including through a remote terminal or SSH connection.
+
 ## OpenAI Build Week: Auditable Codex Multi-Agent V2
 
 This fork contains **Auditable Codex Multi-Agent V2**, a Developer Tools entry
