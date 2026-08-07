@@ -140,7 +140,10 @@ impl Respond for GatedSseResponse {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
-            let _ = std::thread::spawn(move || gate_rx.recv()).join();
+            let _ = std::thread::spawn(move || {
+                let _ = gate_rx.recv_timeout(Duration::from_secs(30));
+            })
+            .join();
         }
         sse_response(self.response.clone())
     }
