@@ -766,7 +766,7 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
 }
 
 #[tokio::test]
-async fn live_app_server_user_message_omits_unsupported_media() {
+async fn live_app_server_user_message_renders_audio_markers() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     chat.handle_server_notification(
@@ -797,9 +797,49 @@ async fn live_app_server_user_message_omits_unsupported_media() {
     let inserted = drain_insert_history(&mut rx);
     assert_eq!(inserted.len(), 1);
     assert_chatwidget_snapshot!(
-        "live_app_server_user_message_omits_unsupported_media",
+        "live_app_server_user_message_renders_audio_markers",
         lines_to_single_string(&inserted[0]),
     );
+    let item = AppServerThreadItem::UserMessage {
+        id: "historical-audio".into(),
+        client_id: None,
+        content: vec![
+            AppServerUserInput::Text {
+                text: "Please inspect the attachments.".into(),
+                text_elements: Vec::new(),
+            },
+            AppServerUserInput::Audio {
+                url: "https://example.com/one.wav".into(),
+            },
+            AppServerUserInput::LocalAudio {
+                path: test_path_buf("/tmp/two.wav"),
+            },
+        ],
+    };
+    let cold = crate::thread_transcript::thread_items_to_transcript_cells(
+        /*thread_id*/ None,
+        &chat.config.cwd,
+        [item.clone()],
+        crate::thread_transcript::RawReasoningVisibility::Hidden,
+        Some(&chat.config),
+    );
+    assert_eq!(cold.len(), 1);
+    assert!(
+        cold[0]
+            .raw_lines()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<String>()
+            .contains("[audio]")
+    );
+    chat.replay_thread_item(
+        item,
+        "history-turn".into(),
+        ReplayKind::ResumeInitialMessages,
+    );
+    let replayed = drain_insert_history(&mut rx);
+    assert_eq!(replayed, inserted);
+    assert_eq!(cold[0].display_lines(/*width*/ 80), inserted[0]);
 }
 
 #[tokio::test]

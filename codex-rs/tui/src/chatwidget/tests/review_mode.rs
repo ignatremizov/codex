@@ -366,6 +366,7 @@ async fn restore_thread_input_state_restores_pending_steers_without_downgrading_
     let expected_compare_key = PendingSteerCompareKey {
         message: "hidden IDE context\npending steer".to_string(),
         image_count: 0,
+        audio_count: 2,
     };
     let expected_pending = PendingSteer {
         client_id: "saved-submission".to_string(),
@@ -642,8 +643,14 @@ async fn item_completed_pops_pending_steer_with_local_image_and_text_elements() 
     let pending = chat.input_queue.pending_steers.front().unwrap();
     assert_eq!(pending.user_message.local_images.len(), 1);
     assert_eq!(pending.user_message.text_elements.len(), 1);
-    assert_eq!(pending.compare_key.message, text);
-    assert_eq!(pending.compare_key.image_count, 1);
+    assert_eq!(
+        pending.compare_key,
+        PendingSteerCompareKey {
+            message: text.clone(),
+            image_count: 1,
+            audio_count: 0,
+        }
+    );
 
     complete_user_message_for_inputs(
         &mut chat,
