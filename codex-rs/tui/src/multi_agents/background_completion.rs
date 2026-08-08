@@ -1,4 +1,3 @@
-use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::SubAgentCompletionModelVisibility;
@@ -11,12 +10,13 @@ use ratatui::text::Span;
 
 use super::AgentMetadata;
 use super::CollabAgentHistoryCell;
+use super::CollabDetail;
 use super::agent_label;
 use super::agent_label_spans;
 use super::collab_event;
-use super::completion_agent_lines;
 use super::parse_thread_id;
-use super::title_text;
+use super::preview_source_lines;
+use super::title_spans_line;
 
 pub(crate) fn background_completion_history_cell_from_agent_message(
     id: &str,
@@ -51,13 +51,39 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
     } else {
         vec![Span::from(agent_reference.to_string()).cyan()]
     };
-    let status = CollabAgentState { status, message };
-    let title = match model_visibility {
-        SubAgentCompletionModelVisibility::Visible => "Agent finished (visible)",
-        SubAgentCompletionModelVisibility::NotVisible => "Agent finished (not visible)",
+    let details = message
+        .as_deref()
+        .map(preview_source_lines)
+        .filter(|lines| !lines.is_empty())
+        .map(|lines| vec![CollabDetail::preview(lines, agent_response_preview_lines)])
+        .unwrap_or_default();
+    let visibility = match model_visibility {
+        SubAgentCompletionModelVisibility::Visible => "visible",
+        SubAgentCompletionModelVisibility::NotVisible => "not visible",
     };
-    Some(collab_event(
-        title_text(title),
-        completion_agent_lines(label, &status, agent_response_preview_lines),
-    ))
+    let mut title = label;
+    title.push(Span::from(" ").dim());
+    title.push(completion_status_verb(&status));
+    title.push(
+        Span::from(format!(
+            " ({visibility}){}",
+            if details.is_empty() { "" } else { ":" }
+        ))
+        .bold(),
+    );
+    Some(collab_event(title_spans_line(title), details))
+}
+
+fn completion_status_verb(status: &CollabAgentStatus) -> Span<'static> {
+    match status {
+        CollabAgentStatus::PendingInit => "pending initialization".cyan(),
+        CollabAgentStatus::Running => "running".cyan().bold(),
+        // Allow `.yellow()`
+        #[allow(clippy::disallowed_methods)]
+        CollabAgentStatus::Interrupted => "interrupted".yellow(),
+        CollabAgentStatus::Completed => "completed".green(),
+        CollabAgentStatus::Errored => "errored".red(),
+        CollabAgentStatus::Shutdown => "shut down".into(),
+        CollabAgentStatus::NotFound => "not found".red(),
+    }
 }

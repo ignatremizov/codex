@@ -153,10 +153,10 @@ fn full_transcript_renders_collab_messages_with_persisted_agent_metadata_snapsho
     insta::assert_snapshot!(
         rendered,
         @r"
-    • Agent message from Robie [explorer]
+    • Robie [explorer] sends:
       └ I found the relevant path.
-    • Agent finished (visible)
-      └ Robie [explorer]: Completed - Finished the review.
+    • Robie [explorer] completed (visible):
+      └ Finished the review.
     "
     );
 }

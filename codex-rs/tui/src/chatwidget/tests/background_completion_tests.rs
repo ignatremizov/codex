@@ -56,8 +56,8 @@ async fn completion_requires_canonical_phase_and_replays_with_wait_rendering() {
     assert_snapshot!(
         lines_to_single_string(&cells[1]),
         @r"
-    • Agent finished (visible)
-      └ /root/reviewer: Completed - Finished reviewing the change.
+    • /root/reviewer completed (visible):
+      └ Finished reviewing the change.
     "
     );
 }
@@ -96,12 +96,68 @@ async fn background_completion_shows_parent_model_visibility() {
     assert_snapshot!(
         rendered,
         @r"
-    • Agent finished (visible)
-      └ Herschel [default]: Completed - Finished.
+    • Herschel [default] completed (visible):
+      └ Finished.
 
 
-    • Agent finished (not visible)
-      └ Herschel [default]: Completed - Finished.
+    • Herschel [default] completed (not visible):
+      └ Finished.
+    "
+    );
+}
+
+#[tokio::test]
+async fn background_completion_moves_terminal_status_to_agent_title() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let receiver_thread_id =
+        ThreadId::from_string("019fc1b4-78ea-7481-97ac-ff423900cc6a").expect("valid thread");
+    chat.set_collab_agent_metadata(
+        receiver_thread_id,
+        Some("Herschel".to_string()),
+        Some("default".to_string()),
+    );
+    for status in [
+        AgentStatus::Completed(Some("Finished.".to_string())),
+        AgentStatus::Errored("API failed.".to_string()),
+        AgentStatus::Shutdown,
+    ] {
+        let (id, text) = sub_agent_completion_transcript(&receiver_thread_id.to_string(), &status)
+            .expect("terminal status");
+        chat.handle_server_notification(
+            completion_notification(id.to_string(), text, MessagePhase::Commentary),
+            /*replay_kind*/ None,
+        );
+    }
+    let missing_thread_id =
+        ThreadId::from_string("019fc1b4-78ea-7481-97ac-ff423900cc6b").expect("valid thread");
+    let (id, text) =
+        sub_agent_completion_transcript(&missing_thread_id.to_string(), &AgentStatus::NotFound)
+            .expect("terminal status");
+    chat.handle_server_notification(
+        completion_notification(id.to_string(), text, MessagePhase::Commentary),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!(
+        rendered,
+        @r"
+    • Herschel [default] completed (visible):
+      └ Finished.
+
+
+    • Herschel [default] errored (visible):
+      └ API failed.
+
+
+    • Herschel [default] shut down (visible)
+
+
+    • 019fc1b4-78ea-7481-97ac-ff423900cc6b not found (visible)
     "
     );
 }
@@ -152,7 +208,7 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
         .map(|lines| lines_to_single_string(&lines))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("Agent finished"));
+    assert!(rendered.contains("/root/reviewer completed (visible)"));
     assert!(rendered.contains("Finished waiting"));
     let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
     assert_eq!(normalized.matches(response).count(), 2);
@@ -180,8 +236,8 @@ async fn background_completion_resolves_thread_id_from_cached_agent_metadata() {
     assert_snapshot!(
         lines_to_single_string(&cells[0]),
         @r"
-    • Agent finished (visible)
-      └ Herschel [default]: Completed - Cinnamon
+    • Herschel [default] completed (visible):
+      └ Cinnamon
     "
     );
 }
@@ -278,8 +334,8 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
       └ Give me one random ingredient.
 
 
-    • Agent finished (visible)
-      └ Herschel [default]: Completed - Cinnamon
+    • Herschel [default] completed (visible):
+      └ Cinnamon
     "
     );
 }
