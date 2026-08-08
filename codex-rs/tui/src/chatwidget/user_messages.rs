@@ -657,6 +657,7 @@ pub(crate) fn mention_bindings_from_user_inputs(
 pub(super) struct PendingSteerCompareKey {
     pub(super) message: String,
     pub(super) image_count: usize,
+    pub(super) audio_count: usize,
 }
 
 impl ChatWidget {
@@ -699,41 +700,36 @@ impl ChatWidget {
     /// Build the compare key for a submitted pending steer without invoking the
     /// expensive request-serialization path. Pending steers only need to match the
     /// committed app-server `UserMessage` item emitted after input drains, which
-    /// preserves flattened text and total image count.
+    /// preserves flattened text and total attachment counts.
     pub(super) fn pending_steer_compare_key_from_items(
         items: &[UserInput],
     ) -> PendingSteerCompareKey {
         let mut message = String::new();
         let mut image_count = 0;
+        let mut audio_count = 0;
 
         for item in items {
             match item {
                 UserInput::Text { text, .. } => message.push_str(text),
                 UserInput::Image { .. } | UserInput::LocalImage { .. } => image_count += 1,
-                UserInput::Audio { .. } // TODO: Include audio inputs in pending steer comparison.
-                | UserInput::LocalAudio { .. } // TODO: Include audio inputs in pending steer comparison.
-                | UserInput::Skill { .. }
-                | UserInput::Mention { .. } => {}
+                UserInput::Audio { .. } | UserInput::LocalAudio { .. } => audio_count += 1,
+                UserInput::Skill { .. } | UserInput::Mention { .. } => {}
             }
         }
 
         PendingSteerCompareKey {
             message,
             image_count,
+            audio_count,
         }
     }
 
     pub(crate) fn user_message_display_from_inputs(items: &[UserInput]) -> UserMessageDisplay {
-        if items
-            .iter()
-            .any(|item| matches!(item, UserInput::Audio { .. } | UserInput::LocalAudio { .. }))
-        {
-            tracing::warn!("audio user inputs are not supported by the TUI and will be omitted");
-        }
         let mut message = String::new();
         let mut remote_image_urls = Vec::new();
         let mut local_images = Vec::new();
         let mut text_elements = Vec::new();
+        let mut audio_count = 0;
 
         for item in items {
             match item {
@@ -758,20 +754,25 @@ impl ChatWidget {
                 ),
                 UserInput::Image { url, .. } => remote_image_urls.push(url.clone()),
                 UserInput::LocalImage { path, .. } => local_images.push(path.clone()),
-                UserInput::Audio { .. } // TODO: Include audio inputs in the user message display.
-                | UserInput::LocalAudio { .. } // TODO: Include audio inputs in the user message display.
-                | UserInput::Skill { .. }
-                | UserInput::Mention { .. } => {}
+                UserInput::Audio { .. } | UserInput::LocalAudio { .. } => audio_count += 1,
+                UserInput::Skill { .. } | UserInput::Mention { .. } => {}
             }
         }
 
         (message, text_elements) = crate::task_mentions::decode_task_links(&message, text_elements);
 
-        Self::user_message_display_from_parts(
+        let mut display = Self::user_message_display_from_parts(
             message,
             text_elements,
             local_images,
             remote_image_urls,
-        )
+        );
+        for _ in 0..audio_count {
+            if !display.message.is_empty() {
+                display.message.push('\n');
+            }
+            display.message.push_str("[audio]");
+        }
+        display
     }
 }

@@ -521,6 +521,7 @@ impl ChatWidget {
                                 message: user_message.text.clone(),
                                 image_count: user_message.local_images.len()
                                     + user_message.remote_image_urls.len(),
+                                audio_count: 0,
                             }
                         }),
                         history_record,

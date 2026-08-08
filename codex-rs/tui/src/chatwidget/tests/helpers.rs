@@ -960,6 +960,7 @@ pub(super) fn pending_steer(text: &str) -> PendingSteer {
         compare_key: PendingSteerCompareKey {
             message: text.to_string(),
             image_count: 0,
+            audio_count: 0,
         },
     }
 }
