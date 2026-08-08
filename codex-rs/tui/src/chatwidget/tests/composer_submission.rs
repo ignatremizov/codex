@@ -2124,6 +2124,12 @@ fn user_message_display_from_inputs_matches_flattened_user_message_shape() {
             path: local_image.clone(),
             detail: None,
         },
+        UserInput::Audio {
+            url: "data:audio/wav;base64,remote".to_string(),
+        },
+        UserInput::LocalAudio {
+            path: PathBuf::from("/tmp/local.wav"),
+        },
         UserInput::Skill {
             name: "demo".to_string(),
             path: PathBuf::from("/tmp/skill/SKILL.md"),
@@ -2141,7 +2147,7 @@ fn user_message_display_from_inputs_matches_flattened_user_message_shape() {
     assert_eq!(
         rendered,
         ChatWidget::user_message_display_from_parts(
-            "hello world".to_string(),
+            "hello world\n[audio]\n[audio]".to_string(),
             vec![
                 TextElement::new((0..5).into(), Some("hello".to_string())),
                 TextElement::new((6..11).into(), Some("planet".to_string())),
@@ -2150,6 +2156,41 @@ fn user_message_display_from_inputs_matches_flattened_user_message_shape() {
             vec!["https://example.com/remote.png".to_string()],
         )
     );
+}
+
+#[test]
+fn pending_steer_compare_key_distinguishes_native_audio_from_dictation_text() {
+    let text = UserInput::Text {
+        text: "spoken words".into(),
+        text_elements: Vec::new(),
+    };
+    let mut items = vec![text];
+    assert_eq!(
+        ChatWidget::pending_steer_compare_key_from_items(&items),
+        PendingSteerCompareKey {
+            message: "spoken words".into(),
+            image_count: 0,
+            audio_count: 0,
+        },
+    );
+    items.extend([
+        UserInput::Audio {
+            url: "data:audio/wav;base64,audio".into(),
+        },
+        UserInput::LocalAudio {
+            path: test_path_buf("/tmp/native.wav"),
+        },
+    ]);
+    assert_eq!(
+        ChatWidget::pending_steer_compare_key_from_items(&items),
+        PendingSteerCompareKey {
+            message: "spoken words".into(),
+            image_count: 0,
+            audio_count: 2,
+        },
+    );
+    let display = ChatWidget::user_message_display_from_inputs(&items[1..]);
+    assert_eq!(display.message, "[audio]\n[audio]");
 }
 
 #[test]
