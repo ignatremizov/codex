@@ -121,6 +121,7 @@ mod tests {
             compare_key: crate::chatwidget::user_messages::PendingSteerCompareKey {
                 message: "pending".to_string(),
                 image_count: 0,
+                audio_count: 0,
             },
         });
 

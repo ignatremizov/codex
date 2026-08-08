@@ -566,7 +566,7 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
 }
 
 #[tokio::test]
-async fn live_app_server_user_message_omits_unsupported_media() {
+async fn live_app_server_user_message_renders_audio_markers() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     chat.handle_server_notification(
@@ -597,7 +597,7 @@ async fn live_app_server_user_message_omits_unsupported_media() {
     let inserted = drain_insert_history(&mut rx);
     assert_eq!(inserted.len(), 1);
     assert_chatwidget_snapshot!(
-        "live_app_server_user_message_omits_unsupported_media",
+        "live_app_server_user_message_renders_audio_markers",
         lines_to_single_string(&inserted[0]),
     );
 }
