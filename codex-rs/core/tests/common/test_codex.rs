@@ -506,6 +506,26 @@ impl TestCodexBuilder {
         .await
     }
 
+    pub async fn build_with_streaming_server_auto_env(
+        &mut self,
+        server: &StreamingSseServer,
+    ) -> anyhow::Result<TestCodex> {
+        let base_url = server.uri();
+        let home = match self.home.clone() {
+            Some(home) => home,
+            None => Arc::new(TempDir::new()?),
+        };
+        let test_env = test_env().await?;
+        Box::pin(self.build_with_home_and_base_url(
+            format!("{base_url}/v1"),
+            home,
+            /*resume_from*/ None,
+            test_env,
+            /*include_local_environment*/ false,
+        ))
+        .await
+    }
+
     pub async fn build_with_websocket_server(
         &mut self,
         server: &WebSocketTestServer,
@@ -533,6 +553,24 @@ impl TestCodexBuilder {
     pub async fn resume(
         &mut self,
         server: &wiremock::MockServer,
+        home: Arc<TempDir>,
+        rollout_path: PathBuf,
+    ) -> anyhow::Result<TestCodex> {
+        let base_url = format!("{}/v1", server.uri());
+        let test_env = TestEnv::local().await?;
+        Box::pin(self.build_with_home_and_base_url(
+            base_url,
+            home,
+            Some(rollout_path),
+            test_env,
+            /*include_local_environment*/ false,
+        ))
+        .await
+    }
+
+    pub async fn resume_with_streaming_server(
+        &mut self,
+        server: &StreamingSseServer,
         home: Arc<TempDir>,
         rollout_path: PathBuf,
     ) -> anyhow::Result<TestCodex> {
