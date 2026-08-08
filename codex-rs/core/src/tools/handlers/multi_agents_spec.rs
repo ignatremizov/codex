@@ -19,7 +19,7 @@ const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
     "Model override for the new agent. Omit unless an explicit override is needed.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
-const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional response handling for target agent turn. Omit for normal passive delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: wake on completion, like background wait_agent with no deadline. x: do not subscribe this call to final reply; use to notify parent mid-turn so parent's later completion is not injected into current task. Can combine as cf or cx.";
+const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional response handling for target agent turn. Omit for normal passive delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: wake on completion like background wait_agent with no deadline. x: do not subscribe this call to final reply; use to notify parent mid-turn so parent's later completion is not injected into current task. Can combine as cf or cx.";
 const RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION: &str = "Same response handling as send_input.w.";
 const MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION: usize = 5;
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
@@ -315,7 +315,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
         description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "wait_agent".to_string(),
-            description: "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status."
+            description: "Wait when a result is required before next action or a timeout is useful. Returns when any target reaches final status or timeout expires; completed status includes final message. Do not call immediately after another agent tool with w containing f for same target; yield turn or continue parallel work."
                 .to_string(),
             strict: false,
             defer_loading: None,
