@@ -812,11 +812,12 @@ pub struct Tui {
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub show_compact_summary: bool,
-    /// Controls whether the TUI uses the terminal's alternate screen buffer.
+    /// Controls whether temporary TUI surfaces may use the terminal's alternate screen buffer.
     ///
-    /// - `auto` (default): Use alternate screen.
-    /// - `always`: Always use alternate screen.
-    /// - `never`: Never use alternate screen (inline mode only, preserves scrollback).
+    /// The normal conversation remains inline and writes to terminal scrollback in every mode.
+    /// - `auto` (default): Allow temporary full-screen surfaces to use alternate screen.
+    /// - `always`: Enable every alternate-screen transition requested by the TUI.
+    /// - `never`: Never enter alternate screen.
     #[serde(default)]
     pub alternate_screen: AltScreenMode,
 

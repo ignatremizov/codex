@@ -2074,13 +2074,15 @@ impl Drop for TerminalRestoreGuard {
     }
 }
 
-/// Determine whether to use the terminal's alternate screen buffer.
+/// Determine whether temporary surfaces may use the terminal's alternate screen buffer.
 ///
 /// - If `--no-alt-screen` is explicitly passed, always disable alternate screen
 /// - Otherwise, respect the `tui.alternate_screen` config setting:
-///   - `always`: Use alternate screen
-///   - `never`: Inline mode only, preserves scrollback
-///   - `auto` (default): Use alternate screen
+///   - `always`: Enable every requested alternate-screen transition
+///   - `never`: Keep every surface in the inline terminal buffer
+///   - `auto` (default): Allow temporary full-screen surfaces to use alternate screen
+///
+/// The normal conversation uses an inline viewport regardless of this setting.
 fn determine_alt_screen_mode(no_alt_screen: bool, tui_alternate_screen: AltScreenMode) -> bool {
     if no_alt_screen {
         return false;
@@ -2729,7 +2731,7 @@ mod tests {
     }
 
     #[test]
-    fn alternate_screen_auto_uses_alt_screen() {
+    fn alternate_screen_modes_gate_temporary_surfaces() {
         assert!(determine_alt_screen_mode(
             /*no_alt_screen*/ false,
             AltScreenMode::Auto,

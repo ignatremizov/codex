@@ -811,12 +811,13 @@ pub struct Config {
 
     /// Start the TUI in the specified collaboration mode (plan/default).
 
-    /// Controls whether the TUI uses the terminal's alternate screen buffer.
+    /// Controls whether temporary TUI surfaces may use the terminal's alternate screen buffer.
     ///
     /// This is the same `tui.alternate_screen` value from `config.toml`.
-    /// - `auto` (default): Use alternate screen.
-    /// - `always`: Always use alternate screen.
-    /// - `never`: Never use alternate screen (inline mode, preserves scrollback).
+    /// The normal conversation remains inline and writes to terminal scrollback in every mode.
+    /// - `auto` (default): Allow temporary full-screen surfaces to use alternate screen.
+    /// - `always`: Enable every alternate-screen transition requested by the TUI.
+    /// - `never`: Never enter alternate screen.
     pub tui_alternate_screen: AltScreenMode,
     /// Ordered list of status line item identifiers for the TUI.
     ///
