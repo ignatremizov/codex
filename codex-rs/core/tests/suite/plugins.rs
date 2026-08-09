@@ -27,6 +27,7 @@ use codex_protocol::config_types::TrustLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::HostSkillsLoadInput;
@@ -297,6 +298,7 @@ async fn build_apps_enabled_plugin_test_codex(
     let mut builder = test_codex()
         .with_home(codex_home)
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_extensions(skills_extensions())
         .with_config(move |config| {
             config
                 .features

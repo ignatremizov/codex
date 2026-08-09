@@ -34,6 +34,7 @@ use serde_json::json;
 
 use super::rmcp_client::remote_aware_environment_id;
 use super::rmcp_client::remote_aware_stdio_server_bin;
+use super::rmcp_client::remote_aware_stdio_server_cwd;
 
 const RMCP_SERVER: &str = "rmcp";
 const RMCP_PREFIXED_NAMESPACE: &str = "mcp__rmcp";
@@ -273,6 +274,7 @@ fn read_hook_inputs(home: &Path, log_name: &str) -> Result<Vec<Value>> {
 fn insert_rmcp_test_server(
     config: &mut Config,
     command: String,
+    cwd: Option<LegacyAppPathString>,
     approval_mode: AppToolApproval,
     environment_id: String,
 ) {
@@ -286,7 +288,7 @@ fn insert_rmcp_test_server(
                 args: Vec::new(),
                 env: None,
                 env_vars: Vec::new(),
-                cwd: Some(LegacyAppPathString::from_path(config.cwd.as_path())),
+                cwd,
             },
             environment_id,
             enabled: true,
@@ -323,6 +325,7 @@ fn enable_hooks_and_rmcp_server(
     insert_rmcp_test_server(
         config,
         rmcp_test_server_bin,
+        /*cwd*/ None,
         approval_mode,
         codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
     );
@@ -355,6 +358,8 @@ async fn run_mcp_permission_request_hook_test(outcome: PermissionRequestHookOutc
     };
     let arguments = json!({ "message": RMCP_ECHO_MESSAGE }).to_string();
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+    let rmcp_test_server_cwd =
+        remote_aware_stdio_server_cwd().map(LegacyAppPathString::from_string);
     let mut builder = test_codex()
         .with_pre_build_hook(move |home| {
             write_permission_request_hook(home, outcome)
@@ -366,6 +371,7 @@ async fn run_mcp_permission_request_hook_test(outcome: PermissionRequestHookOutc
             insert_rmcp_test_server(
                 config,
                 rmcp_test_server_bin,
+                rmcp_test_server_cwd,
                 AppToolApproval::Prompt,
                 remote_aware_environment_id(),
             );

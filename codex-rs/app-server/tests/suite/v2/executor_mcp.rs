@@ -953,7 +953,7 @@ startup_timeout_sec = 10
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2);
-    assert!(requests[0].tool_by_name(&namespace, "echo").is_none());
+    assert!(requests[0].tool_by_name(&namespace, "echo").is_some());
     let output = requests[1].function_call_output(TOOL_CALL_ID);
     let output = output
         .get("output")

@@ -25,9 +25,12 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
+use codex_models_manager::model_info::model_info_from_slug;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::openai_models::ModelVisibility;
+use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::PLUGINS_INSTRUCTIONS_OPEN_TAG;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
@@ -59,6 +62,8 @@ const SKILL_NAME: &str = "executor-demo:deploy";
 const SKILL_DESCRIPTION: &str = "Deploy through the selected executor.";
 const SKILL_BODY_MARKER: &str = "SELECTED_EXECUTOR_SKILL_BODY";
 const LOCAL_SKILL_BODY_MARKER: &str = "COLLIDING_LOCAL_SKILL_BODY";
+const VISIBLE_SKILL_NAME: &str = "executor-demo:status";
+const VISIBLE_SKILL_DESCRIPTION: &str = "Inspect selected executor status.";
 const NO_SELECTED_SKILLS_MESSAGE: &str = "No selected-environment skills are currently available.";
 const MCP_SERVER_NAME: &str = "executor_probe";
 const MCP_CALL_ID: &str = "selected-executor-mcp-call";
@@ -154,6 +159,17 @@ async fn managed_plugins_requirement_disables_selected_executor_plugin_capabilit
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn selected_capability_stack_tracks_environment_availability_and_resume() -> Result<()> {
     let responses_server = responses::start_mock_server().await;
+    let mut model_info = model_info_from_slug("mock-model");
+    model_info.include_plugin_usage_instructions = true;
+    model_info.visibility = ModelVisibility::List;
+    model_info.used_fallback_model_metadata = false;
+    let _models_mock = responses::mount_models_once(
+        &responses_server,
+        ModelsResponse {
+            models: vec![model_info],
+        },
+    )
+    .await;
     let (apps_url, apps_server_handle) = start_apps_server_with_delays(
         vec![AppInfo {
             id: CONNECTOR_ID.to_string(),
@@ -265,6 +281,7 @@ async fn selected_capability_stack_tracks_environment_availability_and_resume() 
     )
     .await?;
     let first_mcp_pid = wait_for_pid_file(&fixture.pid_file).await?;
+    assert_promoted_skill_inventory_is_retained(&response_mock.requests()[1]);
 
     run_turn(
         &mut app_server,
@@ -274,6 +291,7 @@ async fn selected_capability_stack_tracks_environment_availability_and_resume() 
     )
     .await?;
     assert_eq!(first_mcp_pid, wait_for_pid_file(&fixture.pid_file).await?);
+    assert_promoted_skill_inventory_is_retained(&response_mock.requests()[3]);
 
     exec_server.kill().await?;
     drop(app_server);
@@ -336,7 +354,9 @@ async fn selected_capability_stack_tracks_environment_availability_and_resume() 
         assert_selected_plugin_direct_tools(request);
         assert_plugin_guidance_count(request, /*expected_count*/ 1);
     }
-    assert_plugin_guidance_count(&requests[4], /*expected_count*/ 0);
+    // Generic plugin guidance is durable world state even while the selected
+    // executor and its callable tools are temporarily unavailable.
+    assert_plugin_guidance_count(&requests[4], /*expected_count*/ 1);
     assert_promoted_skill_inventory_is_retained(&requests[4]);
     assert_selected_skill_is_available(&requests[5]);
     assert_selected_plugin_direct_tools(&requests[5]);
@@ -358,6 +378,17 @@ async fn selected_capabilities_become_available_between_samples_in_one_turn() ->
     const USER_INPUT_CALL_ID: &str = "pause-for-environment";
 
     let responses_server = responses::start_mock_server().await;
+    let mut model_info = model_info_from_slug("mock-model");
+    model_info.include_plugin_usage_instructions = true;
+    model_info.visibility = ModelVisibility::List;
+    model_info.used_fallback_model_metadata = false;
+    let _models_mock = responses::mount_models_once(
+        &responses_server,
+        ModelsResponse {
+            models: vec![model_info],
+        },
+    )
+    .await;
     let (apps_url, apps_server_handle) = start_apps_server_with_delays(
         vec![AppInfo {
             id: CONNECTOR_ID.to_string(),
@@ -447,7 +478,7 @@ async fn selected_capabilities_become_available_between_samples_in_one_turn() ->
     .await?;
     let turn_start_id = app_server
         .send_turn_start_request(TurnStartParams {
-            thread_id,
+            thread_id: thread_id.clone(),
             input: vec![UserInput::Text {
                 text: "Use the executor when it becomes ready.".to_string(),
                 text_elements: Vec::new(),
@@ -485,7 +516,7 @@ async fn selected_capabilities_become_available_between_samples_in_one_turn() ->
     let mut exec_server =
         spawn_exec_server(fixture.codex_home.path(), &fixture.exec_server_url).await?;
     add_environment(&mut app_server, &fixture.exec_server_url).await?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for_selected_mcp_server(&mut app_server, &thread_id).await?;
     app_server
         .send_response(
             request_id,
@@ -563,7 +594,6 @@ fn selected_capability_fixture(
             .chatgpt_account_id("account-123"),
         AuthCredentialsStoreMode::File,
     )?;
-
     // Reserve the URL before app-server starts. The configured environment initially fails to
     // connect, then environment/add points the same stable ID at the same URL once it is live.
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -612,7 +642,7 @@ fn selected_capability_fixture(
     // an explicit availability update while `deploy` exercises durable explicit-only promotion.
     std::fs::write(
         visible_skill_dir.join("SKILL.md"),
-        "---\nname: status\ndescription: Inspect selected executor status.\n---\n",
+        format!("---\nname: status\ndescription: {VISIBLE_SKILL_DESCRIPTION}\n---\n"),
     )?;
     std::fs::write(
         plugin.path().join(".app.json"),
@@ -658,7 +688,7 @@ fn assert_selected_capabilities_absent(request: &ResponsesRequest) {
         request
             .message_input_texts("developer")
             .into_iter()
-            .all(|text| !text.contains(SKILL_DESCRIPTION))
+            .all(|text| !text.contains(VISIBLE_SKILL_DESCRIPTION))
     );
     assert_selected_plugin_tools_absent(request);
     assert_plugin_guidance_count(request, /*expected_count*/ 0);
@@ -707,18 +737,24 @@ fn assert_selected_skill_is_available(request: &ResponsesRequest) {
 }
 
 fn assert_promoted_skill_inventory_is_retained(request: &ResponsesRequest) {
+    let developer_messages = request.message_input_texts("developer");
     assert!(
-        request
-            .message_input_texts("developer")
-            .into_iter()
-            .any(|text| text.contains("<promoted_skills>[{"))
+        developer_messages
+            .iter()
+            .any(|text| text.contains("<promoted_skills>[{")),
+        "expected a non-empty promoted skills inventory, got {developer_messages:#?}"
     );
 }
 
 fn assert_selected_skill_catalog_available(request: &ResponsesRequest) {
-    let catalog_fragment = latest_selected_skill_update(request)
-        .expect("selected skill catalog update should be model-visible");
-    assert!(catalog_fragment.contains(SKILL_DESCRIPTION));
+    let Some(catalog_fragment) = latest_selected_skill_update(request) else {
+        panic!(
+            "selected skill catalog update should be model-visible; developer messages: {:#?}",
+            request.message_input_texts("developer")
+        );
+    };
+    assert!(catalog_fragment.contains(VISIBLE_SKILL_NAME));
+    assert!(catalog_fragment.contains(VISIBLE_SKILL_DESCRIPTION));
     assert!(catalog_fragment.contains("executor package:"));
 }
 
@@ -726,14 +762,16 @@ fn latest_selected_skill_update(request: &ResponsesRequest) -> Option<String> {
     request
         .message_input_texts("developer")
         .into_iter()
-        .rfind(|text| text.contains(SKILL_DESCRIPTION) || text.contains(NO_SELECTED_SKILLS_MESSAGE))
+        .rfind(|text| {
+            text.contains(VISIBLE_SKILL_DESCRIPTION) || text.contains(NO_SELECTED_SKILLS_MESSAGE)
+        })
 }
 
 fn assert_selected_plugin_direct_tools(request: &ResponsesRequest) {
     assert!(
         request
             .tool_by_name(&format!("mcp__{MCP_SERVER_NAME}"), "echo")
-            .is_none()
+            .is_some()
     );
     let connector = request
         .tool_by_name("mcp__codex_apps__calendar", "connector_calendar")

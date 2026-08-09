@@ -1501,9 +1501,10 @@ async fn run_subagent_global_instruction_case(fork_context: bool) -> Result<()> 
     )?;
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
-        .with_config(|config| {
+        .with_config(move |config| {
             let _ = config.features.enable(Feature::Collab);
             let _ = config.features.disable(Feature::EnableRequestCompression);
+            config.agent_allow_history_forks = fork_context;
         });
     let test = builder.build(&server).await?;
 

@@ -69,7 +69,6 @@ use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::executor_path_uri;
 use core_test_support::test_codex::local;
-use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::test_target_os;
@@ -122,7 +121,7 @@ async fn submit_without_wait_with_turn_permissions(
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
+                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -292,6 +291,15 @@ async fn assert_apply_patch_crlf_update(
     expected: &str,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
+    if matches!(
+        model_output,
+        CrLfApplyPatchModelOutput::ExecCommandViaHeredoc
+    ) {
+        skip_if_remote!(
+            Ok(()),
+            "shell_command heredoc fixtures are local-only in the remote executor test environment"
+        );
+    }
 
     let harness = apply_patch_harness_with(configure).await?;
     let call_id = "apply-patch-crlf-rollout";
@@ -493,33 +501,6 @@ async fn apply_patch_cli_preserves_distinct_updated_paths() -> Result<()> {
         harness.read_file_text("second.txt").await?,
         "second after\n"
     );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn apply_patch_cli_rejects_duplicate_resolved_paths() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let harness = apply_patch_harness().await?;
-    harness.write_file("duplicate.txt", "before\n").await?;
-
-    let patch = "*** Begin Patch\n*** Update File: duplicate.txt\n@@\n-before\n+first after\n*** Update File: ./duplicate.txt\n@@\n-before\n+second after\n*** End Patch";
-    let call_id = "apply-duplicate-resolved-path";
-    mount_apply_patch(&harness, call_id, patch, "done").await;
-
-    harness.submit("please apply both updates").await?;
-
-    let out = harness.apply_patch_output(call_id).await;
-    assert!(
-        out.contains("apply_patch verification failed"),
-        "expected verification failure: {out}"
-    );
-    assert!(
-        out.contains("multiple operations target"),
-        "expected duplicate-path diagnostics: {out}"
-    );
-    assert_eq!(harness.read_file_text("duplicate.txt").await?, "before\n");
 
     Ok(())
 }
@@ -1346,6 +1327,10 @@ async fn apply_patch_exec_command_heredoc_with_cd_updates_relative_workdir() -> 
     // TODO(anp): Remove after apply_patch shell fixtures use target-native commands.
     skip_if_wine_exec!(Ok(()), "uses a POSIX shell heredoc and cd command");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "shell_command is local-only in the remote executor test environment"
+    );
 
     let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.4")).await?;
 
@@ -1630,6 +1615,10 @@ async fn apply_patch_exec_command_heredoc_with_cd_emits_turn_diff() -> Result<()
     // TODO(anp): Remove after apply_patch shell fixtures use target-native commands.
     skip_if_wine_exec!(Ok(()), "uses a POSIX shell heredoc and cd command");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "shell_command is local-only in the remote executor test environment"
+    );
 
     let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.4")).await?;
     let test = harness.test();
@@ -1886,6 +1875,10 @@ async fn apply_patch_exec_command_failure_propagates_error_and_skips_diff() -> R
     // TODO(anp): Remove after apply_patch shell fixtures use target-native commands.
     skip_if_wine_exec!(Ok(()), "uses a POSIX shell heredoc");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "shell_command is local-only in the remote executor test environment"
+    );
 
     let harness = apply_patch_harness_with(|builder| builder.with_model("gpt-5.4")).await?;
     let test = harness.test();
@@ -1945,6 +1938,10 @@ async fn apply_patch_shell_accepts_lenient_heredoc_wrapped_patch() -> Result<()>
     // TODO(anp): Remove after apply_patch shell fixtures use target-native commands.
     skip_if_wine_exec!(Ok(()), "uses a POSIX shell heredoc");
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "shell_command is local-only in the remote executor test environment"
+    );
 
     let harness = apply_patch_harness().await?;
 

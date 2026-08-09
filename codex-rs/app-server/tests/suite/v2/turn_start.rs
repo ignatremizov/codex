@@ -6,6 +6,7 @@ use app_test_support::create_apply_patch_sse_response;
 use app_test_support::create_command_execution_sse_response;
 use app_test_support::create_escalated_command_execution_sse_response;
 use app_test_support::create_exec_command_sse_response;
+use app_test_support::create_exec_command_sse_response_with_command;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::create_mock_responses_server_sequence;
@@ -2727,15 +2728,14 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
     let tmp = TempDir::new()?;
     let codex_home = tmp.path().to_path_buf();
     let bearer_token = "example_bearer_token_1234567890";
-    let first_shell_command = vec![
+    let first_shell_command = [
         "python3".to_string(),
         "-c".to_string(),
         "import sys, time; time.sleep(0.5); print(sys.argv[1].endswith('7890'))".to_string(),
         format!("Authorization: Bearer {bearer_token}"),
     ];
-    let expected_approval_command = format_with_current_shell_display(&shlex::try_join(
-        first_shell_command.iter().map(String::as_str),
-    )?);
+    let first_command = shlex::try_join(first_shell_command.iter().map(String::as_str))?;
+    let expected_approval_command = format_with_current_shell_display(&first_command);
     let expected_display_command =
         expected_approval_command.replace(bearer_token, "[REDACTED_SECRET]");
 
@@ -2745,7 +2745,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         create_escalated_command_execution_sse_response(
             first_shell_command,
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call1",
         )?,
         create_final_assistant_message_sse_response("done 1")?,
@@ -2756,7 +2756,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
                 "print(42)".to_string(),
             ],
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call2",
         )?,
         create_final_assistant_message_sse_response("done 2")?,
@@ -2980,15 +2980,14 @@ async fn run_turn_start_exec_approval_rejection_v2(
     let tmp = TempDir::new()?;
     let codex_home = tmp.path().to_path_buf();
     let bearer_token = "example_bearer_token_1234567890";
-    let shell_command = vec![
+    let shell_command = [
         "python3".to_string(),
         "-c".to_string(),
         "print(42)".to_string(),
         format!("Authorization: Bearer {bearer_token}"),
     ];
-    let expected_approval_command = format_with_current_shell_display(&shlex::try_join(
-        shell_command.iter().map(String::as_str),
-    )?);
+    let command = shlex::try_join(shell_command.iter().map(String::as_str))?;
+    let expected_approval_command = format_with_current_shell_display(&command);
     let expected_display_command =
         expected_approval_command.replace(bearer_token, "[REDACTED_SECRET]");
 
@@ -2996,7 +2995,7 @@ async fn run_turn_start_exec_approval_rejection_v2(
         create_escalated_command_execution_sse_response(
             shell_command,
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call-decline",
         )?,
         create_final_assistant_message_sse_response("done")?,
@@ -5302,7 +5301,7 @@ async fn command_execution_notifications_include_trusted_plugin_id() -> Result<(
                 script_path.to_string_lossy().into_owned(),
             ],
             /*workdir*/ None,
-            /*timeout_ms*/ None,
+            /*yield_time_ms*/ None,
             "plugin-command",
         )?,
         create_final_assistant_message_sse_response("done")?,

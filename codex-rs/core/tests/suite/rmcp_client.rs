@@ -212,6 +212,10 @@ pub(super) fn remote_aware_environment_id() -> String {
     }
 }
 
+pub(super) fn remote_aware_stdio_server_cwd() -> Option<String> {
+    is_remote_test_environment().then(|| REMOTE_MCP_TEST_ENV_DIR.to_string())
+}
+
 /// Returns the stdio MCP test server command path for the active test placement.
 ///
 /// Local test runs can execute the host-built test binary directly. Remote-aware
@@ -355,8 +359,9 @@ fn insert_mcp_server(
     if options.environment_id == REMOTE_MCP_ENVIRONMENT
         && let McpServerTransportConfig::Stdio { cwd, .. } = &mut transport
         && cwd.is_none()
+        && let Some(remote_cwd) = remote_aware_stdio_server_cwd()
     {
-        *cwd = Some(LegacyAppPathString::from_path(config.cwd.as_path()));
+        *cwd = Some(LegacyAppPathString::from_path(Path::new(&remote_cwd)));
     }
     let mut servers = config.mcp_servers.get().clone();
     servers.insert(

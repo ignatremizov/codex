@@ -79,6 +79,7 @@ use std::time::Duration;
 
 use super::rmcp_client::remote_aware_environment_id;
 use super::rmcp_client::remote_aware_stdio_server_bin;
+use super::rmcp_client::remote_aware_stdio_server_cwd;
 
 const SEARCH_TOOL_DESCRIPTION_SNIPPETS: [&str; 2] = [
     "You have access to tools from the following sources",
@@ -1308,6 +1309,8 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
     .await;
 
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+    let rmcp_test_server_cwd =
+        remote_aware_stdio_server_cwd().map(LegacyAppPathString::from_string);
     let environment_id = remote_aware_environment_id();
     let mut builder =
         configured_builder(apps_server.chatgpt_base_url.clone()).with_config(move |config| {
@@ -1321,7 +1324,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                         args: Vec::new(),
                         env: None,
                         env_vars: Vec::new(),
-                        cwd: Some(LegacyAppPathString::from_path(config.cwd.as_path())),
+                        cwd: rmcp_test_server_cwd,
                     },
                     environment_id,
                     enabled: true,
@@ -1442,6 +1445,8 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
     .await;
 
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+    let rmcp_test_server_cwd =
+        remote_aware_stdio_server_cwd().map(LegacyAppPathString::from_string);
     let environment_id = remote_aware_environment_id();
     let mut builder =
         configured_builder(apps_server.chatgpt_base_url.clone()).with_config(move |config| {
@@ -1455,7 +1460,7 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                         args: Vec::new(),
                         env: None,
                         env_vars: Vec::new(),
-                        cwd: Some(LegacyAppPathString::from_path(config.cwd.as_path())),
+                        cwd: rmcp_test_server_cwd,
                     },
                     environment_id,
                     enabled: true,
@@ -1592,6 +1597,8 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
     .await;
 
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
+    let rmcp_test_server_cwd =
+        remote_aware_stdio_server_cwd().map(LegacyAppPathString::from_string);
     let environment_id = remote_aware_environment_id();
     let mut builder =
         configured_builder(apps_server.chatgpt_base_url.clone()).with_config(move |config| {
@@ -1605,7 +1612,7 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                         args: Vec::new(),
                         env: None,
                         env_vars: Vec::new(),
-                        cwd: Some(LegacyAppPathString::from_path(config.cwd.as_path())),
+                        cwd: rmcp_test_server_cwd,
                     },
                     environment_id,
                     enabled: true,

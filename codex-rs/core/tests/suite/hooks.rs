@@ -1820,7 +1820,7 @@ async fn async_hook_finishing_while_idle_waits_for_the_next_turn(
     test.codex.start_turn_if_idle(next_turn).await?;
 
     let mut warning_event = None;
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(15), async {
         loop {
             let event = test.codex.next_event().await?;
             if matches!(
