@@ -1,132 +1,75 @@
-# TUI Alternate Screen and Terminal Multiplexers
+# TUI Alternate Screen and Scrollback
 
-## Overview
+## Normal conversation output
 
-Codex can render in an owned alternate screen or inline in the terminal. The
-current `auto` setting enables the alternate screen, including under Zellij;
-it does not detect a multiplexer to choose inline mode. Use `never` or
-`--no-alt-screen` when terminal scrollback is required.
+Codex can render the conversation inline on the terminal's primary screen or in the owned transcript viewport. Inline finalized transcript rows are written to ordinary terminal scrollback, while the owned transcript can use the alternate screen when `tui.fullscreen_transcript` is enabled.
 
-## The Problem
+Codex also retains source-backed transcript cells. When the terminal width changes, the resize-reflow path can rebuild previously emitted rows at the new width instead of relying on the terminal to rewrap already-rendered text.
 
-### Fullscreen TUI Benefits
+This is separate from the terminal's alternate screen:
 
-Codex's TUI uses the terminal's **alternate screen buffer** to provide a clean fullscreen experience. This approach:
+- **Inline conversation:** primary screen, terminal-native scrollback, source-backed resize reflow.
+- **Owned transcript or temporary full-screen surfaces:** alternate screen when enabled, isolated from terminal scrollback.
 
-- Uses the entire viewport without polluting the terminal's scrollback history
-- Provides a dedicated environment for the chat interface
-- Mirrors the behavior of other terminal applications (vim, tmux, etc.)
+Temporary full-screen surfaces include the transcript pager, diff view, full-screen approval views, resume picker, and model-migration prompt. Leaving one of these surfaces restores the conversation viewport: inline sessions return to the primary buffer, while owned-transcript sessions retain their screen.
 
-### Historical Zellij motivation
+## `tui.alternate_screen`
 
-Earlier Codex designs treated alternate-screen scrollback limitations in Zellij
-as a reason to select inline mode automatically. The discussion referenced:
+The `tui.alternate_screen` setting controls whether the TUI may enter the alternate screen. Temporary surfaces and the owned transcript (when `tui.fullscreen_transcript` is enabled) use that gate.
 
-- **Zellij PR:** https://github.com/zellij-org/zellij/pull/1032
-- **Rationale:** The xterm spec explicitly states that alternate screen mode disallows scrollback
+| Value | Current behavior |
+| --- | --- |
+| `auto` (default) | Allow requested alternate-screen transitions, including the owned transcript when enabled. |
+| `always` | Enable every alternate-screen transition requested by the TUI; it currently has the same gate behavior as `auto`. |
+| `never` | Never enter the alternate screen; use the inline conversation mode and render temporary surfaces in the primary buffer. |
 
-Terminal scrollback and Codex's own transcript navigation are separate. The
-owned viewport can navigate conversation history even when the terminal does
-not expose alternate-screen scrollback.
-
-## Current configuration
-
-Three modes are accepted by `tui.alternate_screen` in `config.toml`:
-
-### 1. `auto` (default)
-
-- **Behavior:** Enable alternate screen mode.
-- **Multiplexers:** No Zellij-specific exception is applied.
-
-### 2. `always`
-
-- **Behavior:** Always use alternate screen mode (original behavior)
-- **Use case:** Users who prefer fullscreen and don't use Zellij, or who have found a workaround
-
-### 3. `never`
-
-- **Behavior:** Never use alternate screen mode (inline mode)
-- **Use case:** Users who always want scrollback history preserved
-- **Trade-off:** Pollutes the terminal scrollback with TUI output
-
-## Runtime Override
-
-The `--no-alt-screen` CLI flag can override the config setting at runtime:
-
-```bash
-codex --no-alt-screen
-```
-
-This runs the TUI in inline mode regardless of the configuration, useful for:
-
-- One-off sessions where scrollback is critical
-- Debugging terminal-related issues
-- Testing alternate screen behavior
-
-## Implementation Details
-
-### Mode selection
-
-`determine_alt_screen_mode()` in `codex-rs/tui/src/lib.rs` applies the CLI
-override first. Otherwise it enables the alternate screen unless the setting
-is `never`:
-
-```rust
-if no_alt_screen {
-    return false;
-}
-tui_alternate_screen != AltScreenMode::Never
-```
-
-### Configuration Schema
-
-The `AltScreenMode` enum is defined in `codex-rs/protocol/src/config_types.rs` and serializes to lowercase TOML:
+Configure it in `config.toml`:
 
 ```toml
 [tui]
-# Options: auto, always, never
 alternate_screen = "auto"
 ```
 
-The old multiplexer-detection snippet is not part of this selection path.
-Configuration remains explicit so callers can choose inline rendering without
-depending on multiplexer detection.
+The `--no-alt-screen` runtime flag overrides the configured value and `fullscreen_transcript`, forcing inline conversation mode and keeping temporary surfaces in the primary buffer.
 
-## Related Issues and References
+## Scrollback and resize reflow
 
-- **Original Issue:** [GitHub #2558](https://github.com/openai/codex/issues/2558) - "No scrollback in Zellij"
-- **Implementation PR:** [GitHub #8555](https://github.com/openai/codex/pull/8555)
-- **Zellij PR:** https://github.com/zellij-org/zellij/pull/1032 (why scrollback is disabled)
-- **xterm Spec:** Alternate screen buffers should not have scrollback
+Terminal scrollback capacity is controlled by the terminal emulator. Codex separately limits how many source-backed transcript rows it rebuilds during initial replay and terminal resize.
 
-## Historical alternatives
+The `tui.terminal_resize_reflow_max_rows` setting controls the source-backed replay cap for the inline path:
 
-### Alternative Approaches Considered
+- Omit it to use terminal-specific automatic defaults.
+- Set a positive integer to choose an explicit row cap.
+- Set it to `0` to disable the Codex row cap and retain all available source-backed rows.
 
-Earlier design notes considered custom TUI scrollback, a multiplexer option, and
-unconditionally disabling the alternate screen. Those notes predate the owned
-transcript viewport and do not describe missing capabilities in the current UI.
+The automatic fallback is 1,000 rows for terminals without a dedicated value, including Ghostty. This cap does not create terminal scrollback or change the terminal emulator's own retention limit.
 
-## Transcript navigation
+When switching threads or agents in inline mode, the TUI reconstructs only a recent native-scrollback tail, bounded by `max(160, terminal height × 5)` rows. This switch budget is independent of the resize-reflow cap and does not remove retained history or restrict the transcript pager.
 
-The owned alternate-screen viewport supports transcript navigation directly.
-The `global.open_transcript` action defaults to Ctrl+T; the runtime keymap can
-remap it. Transcript presentation and terminal scrollback are distinct surfaces.
+Alternate-screen surfaces do not have standard terminal scrollback. They provide their own navigation over the content they render; for example, the transcript pager opened with Ctrl+T navigates Codex's retained transcript.
 
-In inline mode, switching threads or agents reconstructs only a recent tail of native terminal scrollback: at most `max(160, terminal height × 5)` rows, including the wrapped earlier-history notice. This one-time switch budget is independent of `tui.terminal_resize_reflow_max_rows`, including when ordinary resize replay is uncapped. It does not remove retained history or restrict the transcript pager, and later ordinary resize replay continues to use the configured limit. The owned alternate-screen viewport does not perform this native-scrollback reconstruction.
+## Terminal multiplexers
 
-## For Developers
+Multiplexers such as Zellij may strictly disable scrollback while an application is in the alternate screen. That affects the owned transcript and temporary alternate-screen surfaces, not the inline conversation.
 
-Transcript overlays share the main conversation viewport and its bounded layout caches. Static text pagers separately cache wrapped rows for their current width and paint only the visible slice, using logical row offsets that can exceed terminal-coordinate limits. Other static widgets retain a bounded scratch-buffer fallback unless they implement direct viewport rendering; they are not automatically fully virtualized.
+Set `tui.alternate_screen = "never"` or pass `--no-alt-screen` when buffer switching itself is undesirable in a terminal or multiplexer.
 
-When modifying TUI code, remember:
+## Implementation notes
 
-- The `determine_alt_screen_mode()` function encapsulates all the logic
-- Configuration is in `config.tui_alternate_screen`
-- CLI flag is in `cli.no_alt_screen`
-- The resolved mode configures alternate-screen and owned-viewport setup.
+- `tui::init()` creates an inline viewport on the primary screen.
+- Startup resolves `TranscriptMode` from `fullscreen_transcript` and alternate-screen permission, then configures screen ownership.
+- `determine_alt_screen_mode()` decides whether calls to `Tui::enter_alt_screen()` are enabled.
+- `Tui::enter_alt_screen()` and `Tui::leave_alt_screen()` bracket temporary full-screen surfaces.
+- `app/resize_reflow.rs` rebuilds normal terminal scrollback from retained transcript cells.
+- `resize_reflow_cap.rs` resolves the configured or terminal-specific replay cap.
 
-If you encounter issues with terminal state after running Codex, you can restore your terminal with:
+Related history:
+
+- [GitHub issue #2558](https://github.com/openai/codex/issues/2558)
+- [GitHub pull request #8555](https://github.com/openai/codex/pull/8555)
+- [Zellij pull request #1032](https://github.com/zellij-org/zellij/pull/1032)
+
+If terminal state is not restored after an abnormal exit, run:
 
 ```bash
 reset

@@ -2105,13 +2105,16 @@ impl Drop for TerminalRestoreGuard {
     }
 }
 
-/// Determine whether to use the terminal's alternate screen buffer.
+/// Determine whether the transcript and temporary surfaces may use the alternate screen buffer.
 ///
 /// - If `--no-alt-screen` is explicitly passed, always disable alternate screen
 /// - Otherwise, respect the `tui.alternate_screen` config setting:
-///   - `always`: Use alternate screen
-///   - `never`: Inline mode only, preserves scrollback
-///   - `auto` (default): Use alternate screen
+///   - `always`: Enable every requested alternate-screen transition
+///   - `never`: Keep every surface in the inline terminal buffer
+///   - `auto` (default): Allow requested alternate-screen transitions, like `always`
+///
+/// `TranscriptMode::resolve` combines this permission with `tui.fullscreen_transcript`.
+/// Without both, conversation output stays inline; this gate also controls temporary surfaces.
 fn determine_alt_screen_mode(no_alt_screen: bool, tui_alternate_screen: AltScreenMode) -> bool {
     if no_alt_screen {
         return false;
@@ -2893,7 +2896,7 @@ requires_openai_auth = {requires_openai_auth}
     }
 
     #[test]
-    fn alternate_screen_auto_uses_alt_screen() {
+    fn alternate_screen_modes_gate_transcript_and_temporary_surfaces() {
         assert!(determine_alt_screen_mode(
             /*no_alt_screen*/ false,
             AltScreenMode::Auto,
@@ -2909,6 +2912,14 @@ requires_openai_auth = {requires_openai_auth}
         assert!(!determine_alt_screen_mode(
             /*no_alt_screen*/ true,
             AltScreenMode::Auto,
+        ));
+        assert!(!determine_alt_screen_mode(
+            /*no_alt_screen*/ true,
+            AltScreenMode::Always,
+        ));
+        assert!(!determine_alt_screen_mode(
+            /*no_alt_screen*/ true,
+            AltScreenMode::Never,
         ));
     }
 
