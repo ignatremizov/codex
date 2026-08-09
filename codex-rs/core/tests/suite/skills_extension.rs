@@ -305,6 +305,7 @@ async fn wait_for_analytics_events(
     server: &MockServer,
     event_type: &str,
     expected_count: usize,
+    matches: impl Fn(&Value) -> bool,
 ) -> Vec<Value> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -316,7 +317,7 @@ async fn wait_for_analytics_events(
             .filter(|request| request.url.path() == "/codex/analytics-events/events")
             .filter_map(|request| serde_json::from_slice::<Value>(&request.body).ok())
             .flat_map(|payload| payload["events"].as_array().cloned().unwrap_or_default())
-            .filter(|event| event["event_type"] == event_type)
+            .filter(|event| event["event_type"] == event_type && matches(event))
             .collect::<Vec<_>>();
         if events.len() >= expected_count {
             return events;
@@ -1025,33 +1026,29 @@ text({ names: result.skills.map(skill => skill.name), warnings: result.warnings,
             "model-visible skills should include `{name}`: {developer_messages:?}"
         );
     }
-    assert!(
-        developer_messages
-            .iter()
-            .all(|message| !message.contains("- demo:explicit-only:")),
-        "model-visible skills should omit the explicit-only skill: {developer_messages:?}"
-    );
-    let user_messages = request.message_input_texts("user");
-    let skill_instructions = user_messages
+    let initial_catalog = developer_messages
         .iter()
         .find(|message| {
-            message.contains("<name>demo:explicit-only</name>")
-                && message.contains("# Explicit-only instructions")
-                && message.contains(REFERENCED_RESOURCE)
+            message.contains("<promoted_skills>[]</promoted_skills>")
+                && message.contains("- demo:visible:")
         })
-        .expect("explicit invocation should inject the hidden skill instructions and reference");
-    let resource_access = skill_instructions
-        .split_once("<resource_access>")
-        .and_then(|(_, remainder)| remainder.split_once("</resource_access>"))
-        .map(|(metadata, _)| metadata)
-        .expect("hidden orchestrator skills should include resource-access metadata");
-    assert_eq!(
-        serde_json::from_str::<Value>(resource_access)?,
-        json!({
-            "authority": { "kind": "orchestrator" },
-            "package": SKILL_PACKAGE,
-            "main_resource": MAIN_RESOURCE,
-        })
+        .expect("initial skill catalog should remain model-visible");
+    assert!(
+        !initial_catalog.contains("- demo:explicit-only:"),
+        "initial skill catalog should omit the explicit-only skill: {initial_catalog}"
+    );
+    assert!(
+        developer_messages.iter().any(|message| {
+            message.contains("<promoted_skills>[{") && message.contains("- demo:explicit-only:")
+        }),
+        "explicit invocation should promote the hidden skill into the refreshed catalog: {developer_messages:?}"
+    );
+    assert!(
+        request
+            .message_input_texts("user")
+            .iter()
+            .all(|message| !message.contains("# Explicit-only instructions")),
+        "orchestrator skill bodies should remain behind the promoted skills.read route"
     );
     let first_output = requests[1]
         .function_call_output_text(READ_CALL_ID)
@@ -1089,7 +1086,13 @@ text({ names: result.skills.map(skill => skill.name), warnings: result.warnings,
             "next_cursor": null,
         })
     );
-    let events = wait_for_analytics_events(&server, "skill_invocation", /*expected_count*/ 1).await;
+    let events = wait_for_analytics_events(
+        &server,
+        "skill_invocation",
+        /*expected_count*/ 1,
+        |event| event["event_params"]["invoke_type"] == "explicit",
+    )
+    .await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["skill_name"], "demo:explicit-only");
     assert_eq!(events[0]["event_params"]["invoke_type"], "explicit");
@@ -1182,14 +1185,20 @@ text({ names: result.skills.map(skill => skill.name), warnings: result.warnings,
         );
     }
 
-    let events = wait_for_analytics_events(&server, "skill_invocation", /*expected_count*/ 2).await;
-    assert_eq!(events.len(), 2, "repeated main reads must be deduplicated");
-    assert_eq!(events[1]["skill_name"], "demo:explicit-only");
+    let events = wait_for_analytics_events(
+        &server,
+        "skill_invocation",
+        /*expected_count*/ 1,
+        |event| event["event_params"]["invoke_type"] == "implicit",
+    )
+    .await;
+    assert_eq!(events.len(), 1, "repeated main reads must be deduplicated");
+    assert_eq!(events[0]["skill_name"], "demo:explicit-only");
     assert_eq!(
-        events[1]["skill_id"],
+        events[0]["skill_id"],
         format!("{:x}", sha1::Sha1::digest(MAIN_RESOURCE.as_bytes()))
     );
-    assert_eq!(events[1]["event_params"]["invoke_type"], "implicit");
+    assert_eq!(events[0]["event_params"]["invoke_type"], "implicit");
 
     for (name, has_more) in [
         ("visible", true),
@@ -2350,7 +2359,13 @@ async fn executor_skill_invocation_is_environment_scoped_and_deduplicated() -> R
         );
     }
 
-    let events = wait_for_analytics_events(&server, "skill_invocation", /*expected_count*/ 1).await;
+    let events = wait_for_analytics_events(
+        &server,
+        "skill_invocation",
+        /*expected_count*/ 1,
+        |_| true,
+    )
+    .await;
     assert_eq!(events.len(), 1, "executor skill should be counted once");
     assert_eq!(events[0]["skill_name"], "selected-environment-skill");
     assert_eq!(
@@ -2885,8 +2900,13 @@ async fn production_turn_uses_provider_host_catalog_and_core_snapshot_injection(
     let user_text = request.message_input_texts("user").join("\n");
     assert!(user_text.contains(&snapshot_contents));
     assert!(!user_text.contains(provider_contents));
-    let app_mentioned_events =
-        wait_for_analytics_events(&server, "codex_app_mentioned", /*expected_count*/ 1).await;
+    let app_mentioned_events = wait_for_analytics_events(
+        &server,
+        "codex_app_mentioned",
+        /*expected_count*/ 1,
+        |_| true,
+    )
+    .await;
     let app_mentioned_event = &app_mentioned_events[0];
     assert_eq!(
         app_mentioned_event["event_params"]["connector_id"],

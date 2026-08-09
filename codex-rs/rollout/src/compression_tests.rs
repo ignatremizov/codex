@@ -695,6 +695,26 @@ async fn find_thread_path_by_id_recovers_media_vacuum_backup() -> anyhow::Result
     let thread_id = ThreadId::from_string(&uuid.to_string())?;
     let rollout_path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
     write_rollout(&rollout_path, thread_id, "media vacuum recovery lookup")?;
+    append_rollout_item_to_path(
+        &rollout_path,
+        &RolloutItem::Compacted(crate::CompactedItem {
+            message: "checkpointless media vacuum source".to_string(),
+            replacement_history: Some(vec![crate::ResponseItemEnvelope::new(
+                codex_protocol::models::ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![codex_protocol::models::ContentItem::InputImage {
+                        image_url: "data:image/png;base64,recoverable".to_string(),
+                        detail: None,
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            )]),
+            ..Default::default()
+        }),
+    )
+    .await?;
     let file_name = rollout_path
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
@@ -715,7 +735,7 @@ async fn find_thread_path_by_id_recovers_media_vacuum_backup() -> anyhow::Result
         Some(rollout_path.clone())
     );
     assert!(rollout_path.exists());
-    assert!(backup_path.exists());
+    assert!(!backup_path.exists());
     Ok(())
 }
 

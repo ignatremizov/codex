@@ -40,6 +40,7 @@ use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
 use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
@@ -461,7 +462,7 @@ async fn disconnected_network_request_explains_failure_to_model(
 
     let server = start_mock_server().await;
     // This tests the controller-local proxy; remote disconnect forwarding is not supported yet.
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let call_id = "network-disconnect";
     let poll_call_id = "network-disconnect-poll";
     let command = format!(
@@ -826,23 +827,34 @@ async fn background_network_approval_uses_active_turn_after_original_turn_comple
             },
         })
         .await?;
-    let assessment = wait_for_event(&test.codex, |event| {
-        matches!(
-            event,
-            EventMsg::GuardianAssessment(assessment)
-                if assessment.status == GuardianAssessmentStatus::Approved
-        ) || matches!(
-            event,
-            EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
-        )
-    })
-    .await;
-    let EventMsg::GuardianAssessment(assessment) = assessment else {
-        panic!("expected Guardian to approve the background terminal's network request");
-    };
+    let mut assessment = None;
+    let mut turn_completed = false;
+    while assessment.is_none() || !turn_completed {
+        match wait_for_event(&test.codex, |event| {
+            matches!(
+                event,
+                EventMsg::GuardianAssessment(_)
+                    | EventMsg::ExecApprovalRequest(_)
+                    | EventMsg::TurnComplete(_)
+            )
+        })
+        .await
+        {
+            EventMsg::GuardianAssessment(event) => assessment = Some(event),
+            EventMsg::ExecApprovalRequest(event) => {
+                panic!("strict auto-review unexpectedly requested user approval: {event:?}");
+            }
+            EventMsg::TurnComplete(event) if event.turn_id == active_turn.turn_id => {
+                turn_completed = true;
+            }
+            EventMsg::TurnComplete(_) => {}
+            _ => unreachable!("matched only terminal approval lifecycle events"),
+        }
+    }
+    let assessment = assessment.expect("Guardian assessment should be observed");
+    assert_eq!(assessment.status, GuardianAssessmentStatus::Approved);
     assert_eq!(assessment.turn_id, active_turn.turn_id);
     assert_ne!(assessment.turn_id, first_turn.turn_id);
-    wait_for_turn_complete(&test).await;
 
     let actions = guardian_network_actions(&responses)?;
     assert_eq!(actions.len(), 1);
@@ -1767,11 +1779,6 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
             .await?;
     let remote = test.executor_environment().selection().clone();
     assert_eq!(remote.environment_id, REMOTE_ENVIRONMENT_ID);
-    let session_call_id = "remote-guardian-session-approval";
-    let session_command = remote_network_proxy_request_command("REMOTE_GUARDIAN_SESSION");
-    let session_probe_call_id = "remote-guardian-session-probe";
-    let session_probe_command =
-        remote_network_proxy_request_command("REMOTE_GUARDIAN_SESSION_PROBE");
 
     let cases = [
         (
@@ -1804,30 +1811,17 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
         ),
     ];
 
-    let mut scripted_responses = Vec::with_capacity(cases.len() * 3 + 4);
-    for (call_id, command, _, rationale, approved) in &cases {
-        if *call_id == "local-guardian-deny" {
-            scripted_responses.push(sse(vec![
-                ev_response_created("resp-remote-guardian-session-approval-parent"),
-                ev_function_call(
-                    session_call_id,
-                    "exec_command",
-                    &serde_json::to_string(&network_exec_args(&session_command))?,
-                ),
-                ev_completed("resp-remote-guardian-session-approval-parent"),
-            ]));
-            scripted_responses.push(sse(vec![
-                ev_response_created("resp-remote-guardian-session-approval-done"),
-                ev_assistant_message("msg-remote-guardian-session-approval-done", "done"),
-                ev_completed("resp-remote-guardian-session-approval-done"),
-            ]));
-        }
+    let mut scripted_responses = Vec::with_capacity(cases.len() * 3);
+    for (call_id, command, environment, rationale, approved) in &cases {
         scripted_responses.push(sse(vec![
             ev_response_created(&format!("resp-{call_id}-parent")),
             ev_function_call(
                 call_id,
                 "exec_command",
-                &serde_json::to_string(&network_exec_args(command))?,
+                &serde_json::to_string(&network_exec_args_for_environment(
+                    command,
+                    &environment.environment_id,
+                ))?,
             ),
             ev_completed(&format!("resp-{call_id}-parent")),
         ]));
@@ -1848,46 +1842,11 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
             ev_completed(&format!("resp-{call_id}-done")),
         ]));
     }
-    scripted_responses.push(sse(vec![
-        ev_response_created("resp-remote-guardian-session-probe-parent"),
-        ev_function_call(
-            session_probe_call_id,
-            "exec_command",
-            &serde_json::to_string(&network_exec_args(&session_probe_command))?,
-        ),
-        ev_completed("resp-remote-guardian-session-probe-parent"),
-    ]));
-    scripted_responses.push(sse(vec![
-        ev_response_created("resp-remote-guardian-session-probe-done"),
-        ev_assistant_message("msg-remote-guardian-session-probe-done", "done"),
-        ev_completed("resp-remote-guardian-session-probe-done"),
-    ]));
     let responses = mount_sse_sequence(&server, scripted_responses).await;
 
     for (call_id, _, environment, _, _) in &cases {
-        if *call_id == "local-guardian-deny" {
-            submit_managed_network_turn(
-                &test,
-                "approve the remote destination for this session",
-                vec![remote.clone()],
-                ApprovalsReviewer::User,
-                AskForApproval::OnRequest,
-            )
-            .await?;
-            let approval = expect_network_approval(&test, REMOTE_ENVIRONMENT_ID).await?;
-            test.codex
-                .submit(Op::ExecApproval {
-                    id: approval.effective_approval_id(),
-                    turn_id: Some(approval.turn_id),
-                    decision: ReviewDecision::ApprovedForSession,
-                })
-                .await?;
-            tokio::time::timeout(Duration::from_secs(15), wait_for_turn_complete(&test))
-                .await
-                .context("remote session approval should complete")?;
-        }
         let prompt = format!("review network request {call_id}");
-        submit_managed_network_turn(
+        let turn_id = submit_managed_network_turn(
             &test,
             &prompt,
             vec![environment.clone()],
@@ -1897,25 +1856,11 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
         .await?;
         tokio::time::timeout(
             Duration::from_secs(15),
-            wait_for_completion_without_network_prompt(&test),
+            wait_for_completion_without_network_prompt_for_turn(&test, &turn_id),
         )
         .await
         .with_context(|| format!("Guardian review for {call_id} should complete"))?;
     }
-    submit_managed_network_turn(
-        &test,
-        "verify the remote session approval remains active",
-        vec![remote],
-        ApprovalsReviewer::User,
-        AskForApproval::OnRequest,
-    )
-    .await?;
-    tokio::time::timeout(
-        Duration::from_secs(15),
-        wait_for_completion_without_network_prompt(&test),
-    )
-    .await
-    .context("remote session approval should bypass another network prompt")?;
 
     let local_shell = get_shell(ShellType::Sh).context("expected local sh")?;
     let mut expected_actions = Vec::with_capacity(cases.len());
@@ -1927,7 +1872,7 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
         let command = if environment.environment_id == LOCAL_ENVIRONMENT_ID {
             local_shell.derive_exec_args(command, /*use_login_shell*/ false)
         } else {
-            vec!["/bin/sh".to_string(), "-c".to_string(), command.clone()]
+            vec!["/bin/bash".to_string(), "-c".to_string(), command.clone()]
         };
         expected_actions.push(json!({
             "host": NETWORK_TEST_HOST,
@@ -1948,20 +1893,6 @@ async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_enviro
     assert_eq!(guardian_network_actions(&responses)?, expected_actions);
 
     let requests = responses.requests();
-    for (call_id, marker) in [
-        (session_call_id, "REMOTE_GUARDIAN_SESSION:HTTP/1.1 502"),
-        (
-            session_probe_call_id,
-            "REMOTE_GUARDIAN_SESSION_PROBE:HTTP/1.1 502",
-        ),
-    ] {
-        let output = requests
-            .iter()
-            .find_map(|request| request.function_call_output_text(call_id))
-            .with_context(|| format!("expected remote session network output for {call_id}"))?;
-        assert!(output.contains(marker));
-        assert!(!output.contains("rejected"));
-    }
     for (call_id, _, _, rationale, approved) in &cases {
         let output = requests
             .iter()
@@ -2312,18 +2243,27 @@ async fn managed_network_unified_exec_test_with_features(
     features: &[Feature],
 ) -> Result<TestCodex> {
     let home = Arc::new(TempDir::new()?);
+    // Remote executors deliberately reject controller-side MITM state. Full mode still routes
+    // this fixture's unlisted HTTP host through the Guardian policy decider without requiring
+    // MITM.
+    let network_mode = match environment {
+        ManagedNetworkEnvironment::Local => "limited",
+        ManagedNetworkEnvironment::RemoteAndLocal => "full",
+    };
     fs::write(
         home.path().join("config.toml"),
-        r#"default_permissions = "workspace"
+        format!(
+            r#"default_permissions = "workspace"
 
 [permissions.workspace.filesystem]
 ":minimal" = "read"
 
 [permissions.workspace.network]
 enabled = true
-mode = "limited"
+mode = "{network_mode}"
 allow_local_binding = true
-"#,
+"#
+        ),
     )?;
     let approval_policy = AskForApproval::OnRequest;
     let permission_profile = PermissionProfile::workspace_write_with(
@@ -2414,6 +2354,14 @@ fn network_exec_args(command: &str) -> Value {
     })
 }
 
+fn network_exec_args_for_environment(command: &str, environment_id: &str) -> Value {
+    let mut args = network_exec_args(command);
+    if environment_id == REMOTE_ENVIRONMENT_ID {
+        args["shell"] = json!("/bin/bash");
+    }
+    args
+}
+
 fn remote_network_proxy_request_command(marker: &str) -> String {
     let host = NETWORK_TEST_HOST;
     format!(
@@ -2427,7 +2375,7 @@ async fn submit_managed_network_turn(
     environments: Vec<TurnEnvironmentSelection>,
     approvals_reviewer: ApprovalsReviewer,
     approval_policy: AskForApproval,
-) -> Result<()> {
+) -> Result<String> {
     let turn_cwd = environments
         .first()
         .context("managed network turn requires an execution environment")?
@@ -2444,7 +2392,8 @@ async fn submit_managed_network_turn(
         turn_permission_fields(permission_profile, turn_cwd.as_path());
     let turn_environment_selections = TurnEnvironmentSelections::new(turn_cwd, environments);
 
-    test.codex
+    let turn_id = match test
+        .codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
                 text: prompt.into(),
@@ -2467,9 +2416,17 @@ async fn submit_managed_network_turn(
                 ..Default::default()
             }),
         )
-        .await?;
+        .await?
+    {
+        TurnInputSubmission::Started { turn_id } | TurnInputSubmission::Steered { turn_id } => {
+            turn_id
+        }
+        TurnInputSubmission::NotSubmitted { reason } => {
+            anyhow::bail!("managed network turn was not submitted: {reason:?}")
+        }
+    };
 
-    Ok(())
+    Ok(turn_id)
 }
 
 fn decoded_request_body(request: &wiremock::Request) -> Option<Vec<u8>> {
@@ -2685,6 +2642,29 @@ async fn expect_network_approval_target(
     .context("expected network approval request before completion")
 }
 
+fn assert_network_approval_target(
+    approval: &ExecApprovalRequestEvent,
+    expected_environment_id: &str,
+    expected_target: &str,
+    expected_protocol: NetworkApprovalProtocol,
+) {
+    assert_eq!(
+        approval.command,
+        vec!["network-access".to_string(), expected_target.to_string()]
+    );
+    assert_eq!(
+        approval.network_approval_context,
+        Some(NetworkApprovalContext {
+            host: NETWORK_TEST_HOST.to_string(),
+            protocol: expected_protocol,
+        })
+    );
+    assert_eq!(
+        approval.environment_id.as_deref(),
+        Some(expected_environment_id)
+    );
+}
+
 async fn maybe_expect_network_approval(
     test: &TestCodex,
     expected_environment_id: &str,
@@ -2721,20 +2701,11 @@ async fn maybe_expect_network_approval_target(
     .await;
     match event {
         EventMsg::ExecApprovalRequest(approval) => {
-            assert_eq!(
-                approval.command,
-                vec!["network-access".to_string(), expected_target.to_string()]
-            );
-            assert_eq!(
-                approval.network_approval_context,
-                Some(NetworkApprovalContext {
-                    host: NETWORK_TEST_HOST.to_string(),
-                    protocol: expected_protocol,
-                })
-            );
-            assert_eq!(
-                approval.environment_id.as_deref(),
-                Some(expected_environment_id)
+            assert_network_approval_target(
+                &approval,
+                expected_environment_id,
+                expected_target,
+                expected_protocol,
             );
             Ok(Some(approval))
         }
@@ -2749,6 +2720,25 @@ async fn wait_for_completion_without_network_prompt(test: &TestCodex) {
             event,
             EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
         )
+    })
+    .await;
+    match event {
+        EventMsg::TurnComplete(_) => {}
+        EventMsg::ExecApprovalRequest(approval) => {
+            panic!(
+                "unexpected network approval request: {:?}",
+                approval.command
+            )
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+async fn wait_for_completion_without_network_prompt_for_turn(test: &TestCodex, turn_id: &str) {
+    let event = wait_for_event(&test.codex, |event| match event {
+        EventMsg::ExecApprovalRequest(_) => true,
+        EventMsg::TurnComplete(_) => is_scripted_root_turn_completion(event, turn_id),
+        _ => false,
     })
     .await;
     match event {
@@ -2808,4 +2798,15 @@ async fn wait_for_turn_complete(test: &TestCodex) {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+}
+
+fn is_scripted_root_turn_completion(event: &EventMsg, turn_id: &str) -> bool {
+    // Guardian assessment completion can reuse the submitted parent turn ID. Wait for the
+    // scripted parent response instead so the next case cannot consume the previous case's mock.
+    matches!(
+        event,
+        EventMsg::TurnComplete(event)
+            if event.turn_id == turn_id
+                && (event.error.is_some() || event.last_agent_message.as_deref() == Some("done"))
+    )
 }

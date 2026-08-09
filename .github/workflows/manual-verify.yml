@@ -41,7 +41,8 @@ jobs:
     timeout-minutes: 360
     env:
       CARGO_INCREMENTAL: "0"
-      RUST_MIN_STACK: "8388608"
+      # Fork TUI and app-server integration futures retain more lifecycle state than upstream.
+      RUST_MIN_STACK: "16777216"
       SCCACHE_CACHE_SIZE: 4G
     defaults:
       run:
@@ -189,6 +190,9 @@ jobs:
               fi
               args+=(-p "${package}")
             done
+          fi
+          if [[ -z "${NEXTEST_PACKAGES}" || ",${NEXTEST_PACKAGES}," == *",codex-v8-poc,"* ]]; then
+            args+=(--features codex-v8-poc/sandbox)
           fi
           if [[ -n "${NEXTEST_FILTER}" ]]; then
             args+=(-E "${NEXTEST_FILTER}")

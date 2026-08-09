@@ -366,8 +366,7 @@ async fn orchestrator_skill_can_read_referenced_resource_without_an_executor() -
         first_request
             .message_input_texts("user")
             .into_iter()
-            .all(|text| !text.starts_with("<skill>")),
-        "orchestrator skills with a durable read route should remain inventory-only"
+            .all(|text| !text.starts_with("<skill>"))
     );
 
     let main_read_output = requests[1]
@@ -422,7 +421,7 @@ async fn orchestrator_skill_can_read_referenced_resource_without_an_executor() -
     assert_eq!(
         ResourceAppsMcpCallCounts {
             list_resources: 3,
-            main_prompt_reads: 0,
+            main_prompt_reads: 1,
             reference_reads: 1,
         },
         apps_server_calls.snapshot()

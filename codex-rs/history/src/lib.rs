@@ -426,11 +426,11 @@ impl InitialHistory {
     fn get_session_meta(&self) -> Option<&SessionMeta> {
         match self {
             Self::New | Self::Cleared => None,
-            Self::Resumed(resumed) => resumed.history.iter().find_map(|item| match item {
+            Self::Resumed(resumed) => resumed.history.iter().rev().find_map(|item| match item {
                 RolloutItem::SessionMeta(meta_line) => Some(&meta_line.meta),
                 _ => None,
             }),
-            Self::Forked(items) => items.iter().find_map(|item| match item {
+            Self::Forked(items) => items.iter().rev().find_map(|item| match item {
                 RolloutItem::SessionMeta(meta_line) => Some(&meta_line.meta),
                 _ => None,
             }),
@@ -440,7 +440,7 @@ impl InitialHistory {
     fn get_resumed_session_meta(&self) -> Option<&SessionMeta> {
         match self {
             Self::New | Self::Cleared | Self::Forked(_) => None,
-            Self::Resumed(resumed) => resumed.history.iter().find_map(|item| match item {
+            Self::Resumed(resumed) => resumed.history.iter().rev().find_map(|item| match item {
                 RolloutItem::SessionMeta(meta_line) => Some(&meta_line.meta),
                 _ => None,
             }),

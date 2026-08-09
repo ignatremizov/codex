@@ -2254,13 +2254,33 @@ impl ThreadManagerState {
                     }
                     RolloutItem::Compacted(compacted) => {
                         if let Some(replacement_history) = &compacted.replacement_history {
-                            response_items.clone_from(replacement_history);
+                            response_items = replacement_history
+                                .iter()
+                                .map(|item| item.item.clone())
+                                .collect();
+                            user_agent_task_context_ids = response_items
+                                .iter()
+                                .filter_map(|item| {
+                                    item.id().filter(|id| {
+                                        is_user_agent_task_context_response_item_id(id.as_str())
+                                    })
+                                })
+                                .cloned()
+                                .collect();
+                        }
+                    }
+                    RolloutItem::AgentResponseObservation(observation) => {
+                        if let Some(task_item) = observation.promoted_task_context_item()
+                            && task_item
+                                .id()
+                                .is_none_or(|id| user_agent_task_context_ids.insert(id.clone()))
+                        {
+                            response_items.push(task_item);
                         }
                     }
                     RolloutItem::SessionMeta(_)
                     | RolloutItem::InterAgentCommunication(_)
                     | RolloutItem::InterAgentCommunicationMetadata { .. }
-                    | RolloutItem::AgentResponseObservation(_)
                     | RolloutItem::TurnContext(_)
                     | RolloutItem::WorldState(_)
                     | RolloutItem::SecurityRiskScore(_)

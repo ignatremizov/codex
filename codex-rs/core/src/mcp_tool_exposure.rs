@@ -207,6 +207,23 @@ pub(crate) fn build_mcp_tool_exposure(
     if search_tool_enabled {
         direct_tools = collect_app_mcp_tools(all_mcp_tools, explicitly_enabled_connectors, config);
     }
+    direct_tools.extend(
+        deferred_tools
+            .iter()
+            .filter(|(_, tool)| {
+                tool.canonical_tool_name()
+                    .with_default_namespace()
+                    .namespace
+                    .as_ref()
+                    .is_some_and(|namespace| {
+                        config
+                            .code_mode
+                            .direct_only_tool_namespaces
+                            .contains(namespace)
+                    })
+            })
+            .map(|(name, tool)| (name.clone(), tool.clone())),
+    );
     for direct_tool_name in direct_tools.keys() {
         deferred_tools.remove(direct_tool_name);
     }

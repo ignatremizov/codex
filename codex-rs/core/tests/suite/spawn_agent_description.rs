@@ -295,6 +295,7 @@ async fn built_in_and_configured_agent_roles_are_discoverable(
     )
     .await;
     let test = test_codex()
+        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
         .with_config(move |config| {
             config
                 .features

@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::items::CollabAgentTool;
@@ -284,17 +285,20 @@ fn exact_rollback_preserves_accepted_sub_agent_completion_artifacts() {
 fn exact_rollback_preserves_committed_observed_agent_responses() {
     let observer_thread_id = crate::ThreadId::new();
     let target_thread_id = crate::ThreadId::new();
-    let response_item_id = crate::ResponseItemId::new("amsg");
+    let response_item_id = ResponseItemId::new("amsg");
     let metadata = RolloutItem::InterAgentCommunicationMetadata { trigger_turn: true };
-    let response = RolloutItem::ResponseItem(ResponseItem::AgentMessage {
-        id: Some(response_item_id.clone()),
-        author: "/root/worker".to_string(),
-        recipient: "/root".to_string(),
-        content: vec![AgentMessageInputContent::InputText {
-            text: "observed response".to_string(),
-        }],
-        internal_chat_message_metadata_passthrough: None,
-    });
+    let response = RolloutItem::ResponseItem(
+        ResponseItem::AgentMessage {
+            id: Some(response_item_id.clone()),
+            author: "/root/worker".to_string(),
+            recipient: "/root".to_string(),
+            content: vec![AgentMessageInputContent::InputText {
+                text: "observed response".to_string(),
+            }],
+            internal_chat_message_metadata_passthrough: None,
+        }
+        .into(),
+    );
     let observation = RolloutItem::AgentResponseObservation(AgentResponseObservation {
         observer_thread_id,
         target_thread_id,

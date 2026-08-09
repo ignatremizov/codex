@@ -281,6 +281,35 @@ impl Session {
         ResponseItemEnvelope { item, metadata }
     }
 
+    /// Preserves trusted client provenance while items wait for an active turn.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
+    pub(crate) async fn inject_client_response_items(
+        &self,
+        items: Vec<ResponseItem>,
+        turn_context: &TurnContext,
+    ) {
+        let items = items
+            .into_iter()
+            .map(|item| self.annotate_client_response_item(item))
+            .collect::<Vec<_>>();
+        let mut active = self.active_turn.lock().await;
+        if let Some(active_turn) = active.as_mut() {
+            self.input_queue
+                .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+                    active_turn.turn_state.as_ref(),
+                    items.into_iter().map(TurnInput::ResponseItem).collect(),
+                )
+                .await;
+            return;
+        }
+        drop(active);
+        self.record_annotated_conversation_items(turn_context, items)
+            .await;
+    }
+
     pub(crate) async fn record_annotated_conversation_items(
         &self,
         turn_context: &TurnContext,

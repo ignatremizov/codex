@@ -195,11 +195,6 @@ async fn sqlite_default_filter_drops_raw_response_payload_logs() {
             .collect::<Vec<_>>(),
         vec![
             (
-                "TRACE",
-                "codex_api::sse::responses",
-                Some("retained-sse-trace")
-            ),
-            (
                 "DEBUG",
                 "codex_api::sse::responses",
                 Some("retained-sse-debug")

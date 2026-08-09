@@ -290,29 +290,38 @@ impl SkillsThreadState {
         providers: &SkillProviders,
         query: SkillListQuery,
     ) -> SkillCatalog {
-        let discovery_failed = query
-            .executor_capability_discovery
-            .as_ref()
-            .is_some_and(|discovery| discovery.roots().iter().any(|root| root.result.is_err()));
+        let discovery_succeeded =
+            query
+                .executor_capability_discovery
+                .as_ref()
+                .is_some_and(|snapshot| {
+                    snapshot.roots().iter().all(|root| {
+                        root.result
+                            .as_ref()
+                            .is_ok_and(|discovery| discovery.error.is_none())
+                    })
+                });
         let sandbox_contexts = query
             .executor_capability_discovery
             .as_ref()
             .map(|discovery| discovery.sandbox_contexts().clone())
             .unwrap_or_default();
-        if let Some(cached) = self
-            .executor_discovery_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .filter(|cached| {
-                cached.roots == query.executor_roots && cached.sandbox_contexts == sandbox_contexts
-            })
+        if discovery_succeeded
+            && let Some(cached) = self
+                .executor_discovery_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .filter(|cached| {
+                    cached.roots == query.executor_roots
+                        && cached.sandbox_contexts == sandbox_contexts
+                })
         {
             return cached.catalog.clone();
         }
         let roots = query.executor_roots.clone();
         let discovered = providers.list_executor_for_turn(query).await;
-        if discovery_failed {
+        if !discovery_succeeded {
             return discovered;
         }
         let mut cache = self

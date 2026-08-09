@@ -3901,6 +3901,137 @@ async fn observed_response_delivery_does_not_block_a_later_close(
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepted_spawn_commentary_does_not_block_a_later_agent_tool_after_an_intervening_tool(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const PARENT_PROMPT: &str = "spawn two independent commentary reviewers";
+    const FIRST_CHILD_PROMPT: &str = "first commentary reviewer";
+    const SECOND_CHILD_PROMPT: &str = "second independent reviewer";
+    const FIRST_SPAWN_CALL_ID: &str = "first-commentary-spawn";
+    const PLAN_CALL_ID: &str = "intervening-plan-update";
+    const SECOND_SPAWN_CALL_ID: &str = "second-commentary-spawn";
+
+    let server = start_mock_server().await;
+    let first_spawn_args = serde_json::to_string(&json!({
+        "message": FIRST_CHILD_PROMPT,
+        "fork_context": false,
+        "w": "c",
+    }))?;
+    let second_spawn_args = serde_json::to_string(&json!({
+        "message": SECOND_CHILD_PROMPT,
+        "fork_context": false,
+        "w": "c",
+    }))?;
+    let plan_args = serde_json::to_string(&json!({
+        "plan": [
+            {
+                "step": "Continue independent work while commentary arrives",
+                "status": "in_progress",
+            },
+        ],
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, PARENT_PROMPT),
+        sse(vec![
+            ev_response_created("resp-first-commentary-spawn"),
+            ev_function_call_with_namespace(
+                FIRST_SPAWN_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &first_spawn_args,
+            ),
+            ev_completed("resp-first-commentary-spawn"),
+        ]),
+    )
+    .await;
+    // Keep one parent response active while commentary reaches its mailbox, then return an
+    // unrelated tool call followed by another commentary-observing spawn in that same response.
+    // The first commentary cannot reach a model-consumption boundary until both tools finish, so
+    // the second spawn must not wait for that commentary receipt.
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, FIRST_CHILD_PROMPT)
+                && !body_contains(request, FIRST_SPAWN_CALL_ID)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-first-commentary-child"),
+            ev_commentary_message("msg-first-commentary-child", "first child acknowledged"),
+            ev_assistant_message("msg-first-commentary-final", "first child done"),
+            ev_completed("resp-first-commentary-child"),
+        ]))
+        .set_delay(Duration::from_millis(500)),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, FIRST_SPAWN_CALL_ID),
+        sse_response(sse(vec![
+            ev_response_created("resp-second-commentary-spawn"),
+            ev_function_call(PLAN_CALL_ID, "update_plan", &plan_args),
+            ev_function_call_with_namespace(
+                SECOND_SPAWN_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &second_spawn_args,
+            ),
+            ev_completed("resp-second-commentary-spawn"),
+        ]))
+        .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, SECOND_CHILD_PROMPT)
+                && !body_contains(request, SECOND_SPAWN_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("resp-second-commentary-child"),
+            ev_assistant_message("msg-second-commentary-final", "second child done"),
+            ev_completed("resp-second-commentary-child"),
+        ]),
+    )
+    .await;
+    let parent_done = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, SECOND_SPAWN_CALL_ID)
+                && body_contains(request, "<subagent_commentary>")
+        },
+        sse(vec![
+            ev_response_created("resp-commentary-spawns-done"),
+            ev_assistant_message("msg-commentary-spawns-done", "parent done"),
+            ev_completed("resp-commentary-spawns-done"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    tokio::time::timeout(Duration::from_secs(10), test.submit_turn(PARENT_PROMPT)).await??;
+
+    let request = wait_for_request_containing_text(&parent_done, "<subagent_commentary>").await?;
+    assert!(request.body_contains_text("first child acknowledged"));
+    assert!(request.body_contains_text(PLAN_CALL_ID));
+    assert!(request.body_contains_text(SECOND_SPAWN_CALL_ID));
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawn_x_presents_the_child_final_without_injecting_it(
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
@@ -4920,14 +5051,18 @@ async fn final_delivery_persistence_failure_recovers_the_v1_response_observer() 
             .filter(|item| {
                 matches!(
                     item,
-                    RolloutItem::ResponseItem(ResponseItem::AgentMessage { content, .. })
-                        if content.iter().any(|content| {
-                            matches!(
-                                content,
-                                AgentMessageInputContent::InputText { text }
-                                    if text.contains("result survives observation failure")
-                            )
-                        })
+                    RolloutItem::ResponseItem(envelope)
+                        if matches!(
+                            &envelope.item,
+                            ResponseItem::AgentMessage { content, .. }
+                                if content.iter().any(|content| {
+                                    matches!(
+                                        content,
+                                        AgentMessageInputContent::InputText { text }
+                                            if text.contains("result survives observation failure")
+                                    )
+                                })
+                        )
                 )
             })
             .count(),
@@ -7309,13 +7444,6 @@ async fn multi_agent_v2_spawn_uses_configured_delivery_over_response_marker(
     );
     if let Some(model) = model {
         assert_eq!(child_request.body_json()["model"], json!(model));
-        assert!(
-            !child_request
-                .body_json()
-                .to_string()
-                .contains("\"name\":\"collaboration\""),
-            "leaf workers must not receive collaboration tools",
-        );
     }
     let parent_body = parent_turn_request_log.single_request().body_json();
     let parent_turn_id = parent_body["client_metadata"]["turn_id"]

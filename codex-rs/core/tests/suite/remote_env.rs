@@ -3000,6 +3000,10 @@ async fn exec_command_routes_to_selected_remote_environment() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_exec_materializes_target_roots_before_sandbox_selection() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "Docker-backed remote exec-server coverage is not nested inside a remote test environment"
+    );
     skip_if_target_windows!(
         Ok(()),
         "sandboxed process launch is not supported by the exec-server Windows backend"

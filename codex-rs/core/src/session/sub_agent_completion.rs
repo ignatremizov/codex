@@ -6,6 +6,8 @@ use crate::agent::control::AgentTerminalPresentation;
 use crate::agent::control::TerminalPresentationDelivery;
 use crate::agent::status::is_final;
 use crate::turn_timing::now_unix_timestamp_ms;
+use codex_history::ResponseItemEnvelope;
+use codex_history::RolloutItem;
 use codex_protocol::ResponseItemId;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;

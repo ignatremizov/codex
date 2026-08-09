@@ -2920,7 +2920,7 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
                 matches!(
                     rollout_item,
                     RolloutItem::AgentResponseObservation(persisted)
-                        if persisted == &observation
+                        if *persisted == observation
                 )
             })
             .count(),
@@ -3555,7 +3555,7 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_later_model_ou
 #[tokio::test]
 async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
     let (session, turn_context) = make_session_and_context().await;
-    let mut replacement_history = (0..128)
+    let replacement_history = (0..128)
         .map(|index| ResponseItem::Message {
             id: None,
             role: "user".to_string(),
@@ -3566,19 +3566,20 @@ async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         })
-        .collect::<Vec<_>>();
-    replacement_history.push(ResponseItem::Reasoning {
-        id: None,
-        summary: Vec::new(),
-        content: None,
-        encrypted_content: Some("encrypted-reasoning".repeat(256)),
-        internal_chat_message_metadata_passthrough: None,
-    });
-    replacement_history.push(ResponseItem::Compaction {
-        id: None,
-        encrypted_content: "summary".to_string(),
-        internal_chat_message_metadata_passthrough: None,
-    });
+        .chain([
+            ResponseItem::Reasoning {
+                id: None,
+                summary: Vec::new(),
+                content: None,
+                encrypted_content: Some("encrypted-reasoning".repeat(256)),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::Compaction {
+                id: None,
+                encrypted_content: "summary".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ]);
     let stale_usage = TokenUsageInfo {
         total_token_usage: TokenUsage {
             total_tokens: 342_636,

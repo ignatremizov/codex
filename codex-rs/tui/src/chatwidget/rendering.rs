@@ -255,7 +255,6 @@ impl Renderable for ChatWidget {
 mod tests {
     use super::*;
     use crate::exec_cell::ExecCall;
-    use crate::history_cell::PlainHistoryCell;
     use crate::render::renderable::Renderable;
 
     fn buffer_rows(buf: &Buffer, area: Rect) -> Vec<String> {

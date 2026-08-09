@@ -4184,19 +4184,6 @@ impl ThreadRequestProcessor {
                     .await
                     .map_err(thread_store_resume_read_error)?;
             }
-            let history_items = if needs_history {
-                source_thread
-                    .history
-                    .take()
-                    .map(|history| history.items)
-                    .ok_or_else(|| {
-                        internal_error(format!(
-                            "thread {existing_thread_id} did not include persisted history"
-                        ))
-                    })?
-            } else {
-                Vec::new()
-            };
             let thread_state = self
                 .thread_state_manager
                 .thread_state(existing_thread_id)
@@ -4283,7 +4270,7 @@ impl ThreadRequestProcessor {
                 && (include_turns || params.initial_turns_page.is_some())
                 && let Err(error) = self
                     .thread_store
-                    .persist_thread(existing_thread_id)
+                    .persist_thread(existing_thread_id, PersistContext::Standard)
                     .await
                     .map_err(thread_store_resume_read_error)
             {

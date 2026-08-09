@@ -5023,7 +5023,7 @@ async fn thread_resume_replays_pending_command_execution_request_approval() -> R
                 "print(42)".to_string(),
             ],
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call-1",
         )?,
         create_final_assistant_message_sse_response("done")?,

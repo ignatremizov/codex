@@ -2018,7 +2018,7 @@ impl AgentControl {
             .or_else(|| initial_history.get_resumed_parent_thread_id())
             .or(stored_parent_thread_id);
         let inherited_environments = self
-            .inherited_environments_for_source(&state, Some(&session_source))
+            .inherited_environments_for_resume(&state, Some(&session_source), &config)
             .await;
         let inherited_exec_policy = self
             .inherited_exec_policy_for_source(&state, Some(&session_source), &config)

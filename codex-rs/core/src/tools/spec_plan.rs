@@ -269,13 +269,30 @@ fn apply_mcp_tool_exposure_policy(
         let tool_name = tool_name.with_default_namespace();
 
         let canonical_name = tool_name.to_string();
-        let mut exposures = if desired_exposure.direct_tools.contains_key(&canonical_name) {
-            ToolExposures::ALL.difference(ToolExposures::DEFERRED)
-        } else if desired_exposure
+        let direct_tool = desired_exposure.direct_tools.get(&canonical_name);
+        let deferred_tool = desired_exposure
             .deferred_tools
             .as_ref()
-            .is_some_and(|tools| tools.contains_key(&canonical_name))
-        {
+            .and_then(|tools| tools.get(&canonical_name));
+        let direct_fallback_allowed = deferred_tool.is_some_and(|tool| {
+            tool.server_name != codex_mcp::CODEX_APPS_MCP_SERVER_NAME
+                && mcp
+                    .config()
+                    .mcp_server_catalog
+                    .server(&tool.server_name)
+                    .map(codex_mcp::ResolvedMcpServer::config)
+                    .or_else(|| {
+                        session_start_mcp_servers
+                            .get(&tool.server_name)
+                            .map(codex_mcp::EffectiveMcpServer::config)
+                    })
+                    .is_some_and(|config| config.allow_implicit_invocation)
+        });
+        let mut exposures = if direct_tool.is_some() {
+            ToolExposures::ALL.difference(ToolExposures::DEFERRED)
+        } else if direct_fallback_allowed {
+            ToolExposures::ALL
+        } else if deferred_tool.is_some() {
             ToolExposures::ALL.difference(ToolExposures::DIRECT)
         } else {
             ToolExposures::empty()
@@ -870,7 +887,10 @@ fn register_code_mode_executors(
             ToolSpec::Namespace(namespace) if !namespace.tools.is_empty() => {
                 codex_tools::code_mode_name_for_tool_name(&tool_name)
             }
-            ToolSpec::Namespace(_) | ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } => {
+            // Tool search is client-executed, so Code Mode can expose it as a
+            // nested function even though it remains a hosted model tool.
+            ToolSpec::ToolSearch { .. } => TOOL_SEARCH_TOOL_NAME.to_string(),
+            ToolSpec::Namespace(_) | ToolSpec::WebSearch { .. } => {
                 continue;
             }
         };

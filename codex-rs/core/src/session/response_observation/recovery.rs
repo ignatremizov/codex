@@ -49,7 +49,7 @@ pub(crate) fn agent_response_events_from_rollout(
             RolloutItem::EventMsg(event) => agent_response_event(event, next_sequence),
             RolloutItem::ResponseItem(response_item) => {
                 let turn_id = response_item.turn_id().map(ToOwned::to_owned);
-                match response_item {
+                match &response_item.item {
                     ResponseItem::Message {
                         id: Some(item_id),
                         role,

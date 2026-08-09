@@ -745,7 +745,8 @@ async fn record_initial_history_ignores_security_risk_scores() {
             ]),
             rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
         }))
-        .await;
+        .await
+        .expect("security risk score should not block history restoration");
 
     assert_eq!(
         strip_metadata_from_items(&raw_history_items(

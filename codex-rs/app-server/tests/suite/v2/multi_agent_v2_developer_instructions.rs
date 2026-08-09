@@ -62,14 +62,14 @@ const ROLE_INSTRUCTIONS: &str = "configured role developer instructions";
 #[test_case("full history configured role"; "full history configured role")]
 #[test_case("implicit configured default"; "implicit configured default")]
 #[test_case("bounded implicit configured default"; "bounded implicit configured default")]
-#[test_case("full fork skips default role"; "full fork skips default role")]
+#[test_case("full fork applies default role"; "full fork applies default role")]
 #[tokio::test]
 async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     case: &str,
 ) -> Result<()> {
     let fork_turns = match case {
         "bounded history" | "bounded implicit configured default" => Some("1"),
-        "full history" | "full history configured role" | "full fork skips default role" => {
+        "full history" | "full history configured role" | "full fork applies default role" => {
             Some("all")
         }
         "no history" | "explicit configured role" | "implicit configured default" => Some("none"),
@@ -102,7 +102,7 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
             | "full history configured role"
             | "implicit configured default"
             | "bounded implicit configured default"
-            | "full fork skips default role"
+            | "full fork applies default role"
     );
     let role_has_instructions = matches!(
         case,
@@ -110,7 +110,7 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
             | "full history configured role"
             | "implicit configured default"
             | "bounded implicit configured default"
-            | "full fork skips default role"
+            | "full fork applies default role"
     );
     let expected = match case {
         "unset override" | "configured role without instructions" => Some(PARENT_INSTRUCTIONS),
@@ -118,7 +118,8 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
         "explicit configured role"
         | "full history configured role"
         | "implicit configured default"
-        | "bounded implicit configured default" => Some(ROLE_INSTRUCTIONS),
+        | "bounded implicit configured default"
+        | "full fork applies default role" => Some(ROLE_INSTRUCTIONS),
         _ => Some(CHILD_INSTRUCTIONS),
     };
     const PARENT_PROMPT: &str = "spawn the instruction override worker";
@@ -182,6 +183,9 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
         feature_config.push_str(&format!(
             "\nsubagent_developer_instructions = {configured_override:?}"
         ));
+    }
+    if matches!(fork_turns, Some("all" | "1")) {
+        feature_config.push_str("\n\n[agents]\nallow_history_forks = true");
     }
     if configured_roles {
         feature_config.push_str(
@@ -526,7 +530,6 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
     const WAIT_CALL_ID: &str = "wait-for-durable-instruction-worker";
     const FOLLOWUP_CALL_ID: &str = "followup-durable-instruction-worker";
     const DIRECT_RESUME_INSTRUCTIONS: &str = "direct resume must not replace worker instructions";
-    const COLD_RESUME_ERROR: &str = "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it";
 
     let instruction_markers = [
         PARENT_INSTRUCTIONS,
@@ -560,6 +563,7 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
     let redirect_base_url = format!("{}/v1", redirect_server.uri());
     let mut spawn_args = json!({
         "message": INITIAL_TASK,
+        "task_message": INITIAL_TASK,
         "task_name": "worker",
         "fork_turns": "none",
         "reasoning_effort": "low",
@@ -743,7 +747,9 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
                 params: child_resume_params.clone(),
             })
             .await?;
-        assert_eq!(reattached, baseline);
+        let mut expected_reattached = baseline.clone();
+        expected_reattached.thread.updated_at = reattached.thread.updated_at;
+        assert_eq!(reattached, expected_reattached);
         let shutdown = timeout(READ_TIMEOUT, app_server.shutdown_gracefully()).await??;
         assert!(
             shutdown.success(),
@@ -832,9 +838,18 @@ features.shell_tool = false
             app_server.read_stream_until_error_message(RequestId::Integer(request_id)),
         )
         .await??;
-        assert_eq!(
-            serde_json::to_value(error.error)?,
-            json!({"code": -32600, "message": COLD_RESUME_ERROR})
+        assert_eq!(error.error.code, -32600);
+        assert!(
+            error
+                .error
+                .message
+                .contains(&format!("spawned V2 child {child_thread_id}"))
+        );
+        assert!(
+            error
+                .error
+                .message
+                .contains(&format!("direct parent {thread_id} is not loaded"))
         );
     }
     let stored_child: ThreadReadResponse = app_server

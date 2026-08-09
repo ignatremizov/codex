@@ -1,6 +1,3 @@
-use crate::TurnInputRequest;
-use crate::TurnInputSubmission;
-use crate::TurnStartOptions;
 use crate::agent::AgentStatus;
 use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
@@ -61,6 +58,7 @@ use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
 use codex_protocol::turn_input::CyberAccessProgram;
 use codex_protocol::turn_input::TurnInputMode;
+use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
 use codex_protocol::user_input::UserInput;
 use codex_rollout_trace::AgentResultTracePayload;
 use codex_thread_store::LoadThreadHistoryParams;
@@ -72,7 +70,6 @@ use std::sync::Arc;
 use std::sync::Weak;
 use tokio::sync::watch;
 use tracing::warn;
-use uuid::Uuid;
 
 pub(crate) use self::execution::AgentExecutionGuard;
 use self::execution::AgentExecutionLimiter;
@@ -1813,6 +1810,19 @@ impl AgentControl {
                 .snapshot()
                 .await,
         )
+    }
+
+    async fn inherited_environments_for_resume(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        session_source: Option<&SessionSource>,
+        config: &Config,
+    ) -> Option<TurnEnvironmentSnapshot> {
+        if config.workspace_roots_explicit {
+            return None;
+        }
+        self.inherited_environments_for_source(state, session_source)
+            .await
     }
 
     async fn inherited_exec_policy_for_source(

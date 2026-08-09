@@ -80,6 +80,7 @@ async fn fresh_context_subagent_inherits_disabled_view_image_and_mcp_tools() -> 
                 "spawn_agent",
                 &serde_json::to_string(&json!({
                     "message": CHILD_PROMPT,
+                    "task_message": CHILD_PROMPT,
                     "task_name": "mcp_worker",
                     "fork_turns": "none",
                 }))?,

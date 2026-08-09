@@ -40,6 +40,7 @@ pub use responses::create_apply_patch_sse_response;
 pub use responses::create_command_execution_sse_response;
 pub use responses::create_escalated_command_execution_sse_response;
 pub use responses::create_exec_command_sse_response;
+pub use responses::create_exec_command_sse_response_with_command;
 pub use responses::create_final_assistant_message_sse_response;
 pub use responses::create_request_permissions_sse_response;
 pub use responses::create_request_user_input_sse_response;

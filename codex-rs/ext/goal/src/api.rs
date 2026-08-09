@@ -6,11 +6,9 @@ use std::sync::PoisonError;
 use std::sync::Weak;
 
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadGoal;
 use codex_protocol::protocol::ThreadGoalStatus;
 use codex_protocol::protocol::validate_thread_goal_objective;
-use codex_rollout::RolloutItem;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 

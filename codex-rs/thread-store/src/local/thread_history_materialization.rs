@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::io::SeekFrom;
 use std::path::Path;
 
@@ -23,7 +24,7 @@ use crate::ThreadStoreResult;
 enum ParsedProjectionStep {
     Line {
         line: Box<RolloutLine>,
-        projection: ProjectedRolloutLine,
+        projection: Box<ProjectedRolloutLine>,
     },
     SkippedOrdinalRange {
         start_ordinal: u64,
@@ -65,9 +66,12 @@ pub(super) async fn materialize_to_sqlite(
     {
         return Ok(());
     }
+    let rollout_reader = codex_rollout::open_rollout_seekable_reader(rollout_path)
+        .await
+        .map_err(thread_store_io_error)?;
     let offset_is_valid = if let Some(projection_state) = projection_state.as_ref() {
-        let rollout_len = tokio::fs::metadata(rollout_path)
-            .await
+        let rollout_len = rollout_reader
+            .metadata()
             .map_err(thread_store_io_error)?
             .len();
         if start_offset == 0 {
@@ -75,10 +79,10 @@ pub(super) async fn materialize_to_sqlite(
         } else if start_offset <= rollout_len
             && let Some(expected_previous_ordinal) = projection_state.next_ordinal.checked_sub(1)
         {
-            let rollout_path = rollout_path.to_path_buf();
+            let ordinal_reader = rollout_reader.try_clone().map_err(thread_store_io_error)?;
             tokio::task::spawn_blocking(move || {
-                codex_rollout::last_rollout_ordinal_before_offset(
-                    rollout_path.as_path(),
+                codex_rollout::last_rollout_ordinal_before_offset_in_file(
+                    ordinal_reader,
                     start_offset,
                 )
             })
@@ -96,7 +100,7 @@ pub(super) async fn materialize_to_sqlite(
         warn!(
             "rebuilding paginated history projection after canonical rollout changed for {thread_id}"
         );
-        return rebuild_to_sqlite(store, thread_id, rollout_path).await;
+        return rebuild_to_sqlite_from_reader(store, thread_id, rollout_path, rollout_reader).await;
     }
     let session_meta = codex_rollout::read_session_meta_line(rollout_path)
         .await
@@ -110,6 +114,7 @@ pub(super) async fn materialize_to_sqlite(
         .as_ref()
         .map_or(initial_ordinal, |state| state.next_ordinal);
     let (parsed_steps, next_offset) = read_projection_steps(
+        rollout_reader,
         rollout_path,
         start_offset,
         expected_ordinal,
@@ -151,6 +156,18 @@ pub(super) async fn rebuild_to_sqlite(
     thread_id: ThreadId,
     rollout_path: &Path,
 ) -> ThreadStoreResult<()> {
+    let rollout_reader = codex_rollout::open_rollout_seekable_reader(rollout_path)
+        .await
+        .map_err(thread_store_io_error)?;
+    rebuild_to_sqlite_from_reader(store, thread_id, rollout_path, rollout_reader).await
+}
+
+async fn rebuild_to_sqlite_from_reader(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    rollout_path: &Path,
+    rollout_reader: File,
+) -> ThreadStoreResult<()> {
     let session_meta = codex_rollout::read_session_meta_line(rollout_path)
         .await
         .map_err(thread_store_io_error)?
@@ -160,6 +177,7 @@ pub(super) async fn rebuild_to_sqlite(
         .map_or(0, |base| base.end_ordinal_exclusive);
     let subagent_history_start_ordinal = session_meta.subagent_history_start_ordinal;
     let (parsed_steps, next_offset) = read_projection_steps(
+        rollout_reader,
         rollout_path,
         /*start_offset*/ 0,
         initial_ordinal,
@@ -335,27 +353,17 @@ INSERT INTO thread_history_projection_state (
 }
 
 async fn read_projection_steps(
+    rollout_reader: File,
     rollout_path: &Path,
     start_offset: u64,
     expected_ordinal: u64,
     thread_id: ThreadId,
     subagent_history_start_ordinal: Option<u64>,
 ) -> ThreadStoreResult<(Vec<ParsedProjectionStep>, u64)> {
-    let path = rollout_path.to_path_buf();
-    let file =
-        tokio::task::spawn_blocking(move || codex_rollout::open_rollout_seekable_reader(&path))
-            .await
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!("failed to join rollout projection read: {err}"),
-            })?;
-    let mut file = match file {
-        Ok(file) => tokio::fs::File::from_std(file),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound && start_offset == 0 => {
-            return Ok((Vec::new(), 0));
-        }
-        Err(err) => return Err(thread_store_io_error(err)),
-    };
-    let file_end_offset = file.metadata().await.map_err(thread_store_io_error)?.len();
+    let file_end_offset = rollout_reader
+        .metadata()
+        .map_err(thread_store_io_error)?
+        .len();
     let byte_count =
         file_end_offset
             .checked_sub(start_offset)
@@ -366,6 +374,7 @@ async fn read_projection_steps(
         message: "durable rollout append exceeds addressable memory".to_string(),
     })?;
     let mut bytes = vec![0; byte_count];
+    let mut file = tokio::fs::File::from_std(rollout_reader);
     file.seek(SeekFrom::Start(start_offset))
         .await
         .map_err(thread_store_io_error)?;
@@ -540,14 +549,14 @@ async fn read_projection_steps(
         };
         projections.push(ParsedProjectionStep::Line {
             line: Box::new(line),
-            projection: ProjectedRolloutLine {
+            projection: Box::new(ProjectedRolloutLine {
                 ordinal,
                 start_byte_offset: line_start_offset,
                 end_byte_offset: line_end_offset,
                 fallback_created_at_ms,
                 changes,
                 realtime_item,
-            },
+            }),
         });
         next_ordinal = next_line_ordinal;
         next_offset = line_end_offset;

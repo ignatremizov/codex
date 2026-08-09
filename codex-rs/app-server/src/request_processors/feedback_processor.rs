@@ -516,7 +516,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(cwd, test.cwd_path());
+        assert_eq!(cwd, test.config.cwd.as_path());
         Ok(())
     }
 

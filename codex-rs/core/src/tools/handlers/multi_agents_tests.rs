@@ -516,6 +516,11 @@ async fn spawn_agent_rejects_history_fork_without_user_authorization() {
 
 #[tokio::test]
 async fn spawn_agent_history_fork_applies_authorized_role_override() {
+    #[derive(Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
     let (mut session, mut turn) = make_session_and_context().await;
     let role_name = install_role_with_model_override(&mut turn).await;
     let manager = thread_manager();
@@ -3151,10 +3156,18 @@ async fn send_input_interrupts_before_prompt() {
         .iter()
         .filter_map(|(id, op)| (*id == agent_id).then_some(op))
         .collect();
-    assert_eq!(ops_for_agent.len(), 1);
+    assert_eq!(ops_for_agent.len(), 2);
     assert!(matches!(ops_for_agent[0], Op::Interrupt));
+    assert!(matches!(
+        ops_for_agent[1],
+        Op::UserInput { items, .. }
+            if items == &[UserInput::Text {
+                text: "hi".to_string(),
+                text_elements: Vec::new(),
+            }]
+    ));
     wait_for_recorded_user_input(
-        thread.thread.as_ref(),
+        thread.as_ref(),
         &[UserInput::Text {
             text: "hi".to_string(),
             text_elements: Vec::new(),
@@ -3201,7 +3214,7 @@ async fn send_input_accepts_structured_items() {
         .expect("send_input should succeed");
 
     wait_for_recorded_user_input(
-        thread.thread.as_ref(),
+        thread.as_ref(),
         &[
             UserInput::Mention {
                 name: "drive".to_string(),

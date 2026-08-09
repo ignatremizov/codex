@@ -528,7 +528,11 @@ impl ToolRegistry {
             Some(tool) => tool,
             None => {
                 let message = unsupported_tool_call_message(&invocation.payload, &tool_name);
-                let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
+                let log_payload = tool_log_payload(
+                    &invocation.tool_name,
+                    &invocation.payload,
+                    &invocation.source,
+                );
                 let mut tool_result_tags = Vec::with_capacity(2);
                 sandbox_tags.append_metric_tags(&mut tool_result_tags);
                 otel.tool_result_with_tags(
@@ -559,7 +563,11 @@ impl ToolRegistry {
         }
         if !tool.matches_kind(&invocation.payload) {
             let message = format!("tool {tool_name} invoked with incompatible payload");
-            let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
+            let log_payload = tool_log_payload(
+                &invocation.tool_name,
+                &invocation.payload,
+                &invocation.source,
+            );
             otel.tool_result_with_tags(
                 &tool_name,
                 &call_id_owned,
@@ -654,7 +662,11 @@ impl ToolRegistry {
             tool_result_tags.push(("command_category", category));
         }
 
-        let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
+        let log_payload = tool_log_payload(
+            &invocation.tool_name,
+            &invocation.payload,
+            &invocation.source,
+        );
 
         let result = otel
             .log_tool_result_with_tags(

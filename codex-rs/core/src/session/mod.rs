@@ -121,6 +121,7 @@ use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::openai_models::ModelInfo;
@@ -129,6 +130,7 @@ use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AdditionalContextEntry;
+use codex_protocol::protocol::AgentInputPresentation;
 use codex_protocol::protocol::ContextCompactionStatusEvent;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
@@ -152,7 +154,6 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnContextNetworkItem;
 use codex_protocol::protocol::TurnEnvironmentSelection;
-use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::protocol::WorldStateItem;
@@ -4818,9 +4819,9 @@ impl Session {
                 internal_chat_message_metadata_passthrough
                     .get_or_insert_default()
                     .turn_id = Some(turn_context.sub_id.clone());
-                if !id.as_ref().is_some_and(|id| {
-                    is_sub_agent_completion_context_response_item_id(id.as_str())
-                        || !id.is_empty()
+                if id.as_ref().is_none_or(|id| {
+                    !id.starts_with("amsg_")
+                        || is_sub_agent_completion_context_response_item_id(id.as_str())
                 }) {
                     *id = Some(ResponseItemId::new("amsg"));
                 }
@@ -4996,6 +4997,7 @@ impl Session {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             },
         )));
         rollout_items.extend(items.iter().cloned().map(RolloutItem::ResponseItem));

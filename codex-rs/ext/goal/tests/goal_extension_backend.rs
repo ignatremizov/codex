@@ -1879,6 +1879,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
         )
         .await?;
     assert_eq!(goal.goal.token_budget, Some(100));
+    goal.apply_runtime_effects(&service).await;
 
     let error = service
         .set_thread_goal(
@@ -1919,6 +1920,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
         )
         .await?;
     assert_eq!(goal.goal.token_budget, Some(99));
+    goal.apply_runtime_effects(&service).await;
 
     let goal = service
         .set_thread_goal(
@@ -1933,6 +1935,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
         )
         .await?;
     assert_eq!(goal.goal.token_budget, Some(100));
+    goal.apply_runtime_effects(&service).await;
     Ok(())
 }
 
@@ -2021,8 +2024,8 @@ impl GoalExtensionHarness {
             /*metrics_client*/ None,
             Weak::new(),
             Arc::clone(&goal_service),
-            |_| GoalExtensionConfig {
-                enabled: true,
+            |enabled| GoalExtensionConfig {
+                enabled: *enabled,
                 max_goal_token_budget: None,
             },
         );

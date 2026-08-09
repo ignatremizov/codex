@@ -4345,7 +4345,6 @@ mod tests {
         ])
         .expect("parse");
         let MultitoolCli {
-            psp: _,
             interactive,
             config_overrides: root_overrides,
             subcommand,

@@ -45,16 +45,29 @@ use super::tool_log_payload;
 struct ExtensionEchoContributor;
 
 #[test]
-fn tool_log_payload_redacts_plaintext_multi_agent_messages() {
+fn tool_log_payload_redacts_multi_agent_messages_for_every_delivery_marker() {
+    let tool_name = ToolName::namespaced("collaboration", "send_message");
     let payload = ToolPayload::Function {
         arguments: json!({"target": "/root/worker", "message": "secret message"}).to_string(),
     };
     assert_eq!(
-        tool_log_payload(&payload, &ToolCallSource::DirectPlaintextMessage),
-        "[plaintext arguments]"
+        tool_log_payload(
+            &tool_name,
+            &payload,
+            &ToolCallSource::DirectPlaintextMessage
+        ),
+        "[message arguments]"
     );
     assert_eq!(
-        tool_log_payload(&payload, &ToolCallSource::Direct),
+        tool_log_payload(&tool_name, &payload, &ToolCallSource::Direct),
+        "[message arguments]"
+    );
+    assert_eq!(
+        tool_log_payload(
+            &ToolName::plain("exec_command"),
+            &payload,
+            &ToolCallSource::Direct
+        ),
         payload.log_payload()
     );
 }

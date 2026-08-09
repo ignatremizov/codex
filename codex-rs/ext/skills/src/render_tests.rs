@@ -263,6 +263,8 @@ fn host_only_prompts_preserve_existing_behavior_with_and_without_aliases() {
     )
     .expect("unaliased host catalog should render");
     insta::assert_snapshot!(unaliased.body(), @r###"
+    <promoted_skills>[]</promoted_skills>
+    When multiple complete skills inventories are present, this latest inventory supersedes earlier inventories.
 
     ## Skills
     A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that can be used. Each entry includes a name, description, and source locator. `file` locators are on the host filesystem, `executor package` locators are owned by their execution environment, `orchestrator package` locators are opaque package identifiers, and `custom resource` locators use their provider's access mechanism.
@@ -298,6 +300,8 @@ fn host_only_prompts_preserve_existing_behavior_with_and_without_aliases() {
     )
     .expect("aliased host catalog should render");
     insta::assert_snapshot!(aliased.body(), @r###"
+    <promoted_skills>[]</promoted_skills>
+    When multiple complete skills inventories are present, this latest inventory supersedes earlier inventories.
 
     ## Skills
     A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.

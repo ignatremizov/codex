@@ -103,6 +103,17 @@ pub(crate) fn ordinal_state_for_rollout(
 /// Returns the ordinal of the last valid rollout record ending before `offset`.
 pub fn last_rollout_ordinal_before_offset(path: &Path, offset: u64) -> io::Result<Option<u64>> {
     let file = File::open(path)?;
+    last_rollout_ordinal_before_offset_in_file(file, offset)
+}
+
+/// Returns the ordinal of the last valid rollout record ending before `offset` in `file`.
+///
+/// The caller may pass a seekable decompressed rollout representation so byte offsets retain
+/// their JSONL meaning even when the canonical rollout is compressed.
+pub fn last_rollout_ordinal_before_offset_in_file(
+    file: File,
+    offset: u64,
+) -> io::Result<Option<u64>> {
     let mut scanner = ReverseJsonlScanner::new_before_offset(file, offset)?;
     loop {
         match scanner.scan_next::<RolloutLine>()? {

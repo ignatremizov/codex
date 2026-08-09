@@ -66,6 +66,7 @@ use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::responses::start_websocket_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::local_selections;
@@ -218,13 +219,19 @@ async fn guardian_session_inherits_parent_http_fallback(
     .await;
 
     let requests = server.received_requests().await.unwrap_or_default();
-    let websocket_attempts = requests
+    let parent_websocket_attempts = requests
         .iter()
         .filter(|request| {
-            request.method == Method::GET && request.url.path().ends_with("/responses")
+            request.method == Method::GET && !request.headers.contains_key("x-openai-subagent")
         })
         .count();
-    assert_eq!(websocket_attempts, 1);
+    assert!(parent_websocket_attempts >= 1);
+    assert!(
+        requests.iter().all(|request| {
+            request.method != Method::GET || !request.headers.contains_key("x-openai-subagent")
+        }),
+        "Guardian should inherit the parent's HTTP fallback instead of attempting WebSockets"
+    );
     let guardian_request = responses
         .requests()
         .into_iter()
@@ -830,6 +837,10 @@ async fn guardian_node_repl_policy_follows_production_approval_path(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm() -> Result<()> {
+    skip_if_remote!(
+        Ok(()),
+        "the lifecycle fixture verifies local command outputs and denied host paths"
+    );
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_wine_exec!(
@@ -1113,7 +1124,7 @@ async fn interrupted_guardian_tool_review_aborts_without_executing_the_command()
             .set_legacy_sandbox_policy(sandbox_policy_for_config)
             .expect("set sandbox policy");
     });
-    let test = builder.build_with_auto_env(&server).await?;
+    let test = builder.build(&server).await?;
 
     let output_file = test.cwd.path().join("guardian-interrupted.txt");
     let command = format!("printf should-not-run > {}", output_file.display());

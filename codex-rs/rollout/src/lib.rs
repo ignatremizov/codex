@@ -130,6 +130,7 @@ pub use metadata::rollout_id_from_path;
 pub use model_context::ModelContextScan;
 pub use model_context::ModelContextScanProgress;
 pub use ordinal::last_rollout_ordinal_before_offset;
+pub use ordinal::last_rollout_ordinal_before_offset_in_file;
 pub use persistence_metrics::RolloutPersistenceBatchMeasurement;
 pub use persistence_metrics::RolloutPersistenceTelemetry;
 pub use persistence_metrics::measure_and_filter_rollout_items;
