@@ -475,14 +475,6 @@ impl TurnRequestProcessor {
         error
     }
 
-    pub(super) fn validate_v2_input_limit(items: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
-        let actual_chars: usize = items.iter().map(V2UserInput::text_char_count).sum();
-        if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
-            return Err(Self::input_too_large_error(actual_chars));
-        }
-        Ok(())
-    }
-
     async fn turn_start_inner(
         &self,
         request_id: ConnectionRequestId,
@@ -630,7 +622,16 @@ impl TurnRequestProcessor {
             TurnInputSubmission::Started { turn_id } => (turn_id, true),
             TurnInputSubmission::Steered { turn_id } => (turn_id, false),
             TurnInputSubmission::NotSubmitted { reason } => {
-                let error = internal_error(format!("failed to submit turn input: {reason:?}"));
+                let error = match reason {
+                    NotSubmittedReason::ActiveTurnNotSteerable { turn_kind } => {
+                        let turn_kind_label = match turn_kind {
+                            codex_protocol::protocol::NonSteerableTurnKind::Review => "review",
+                            codex_protocol::protocol::NonSteerableTurnKind::Compact => "compact",
+                        };
+                        invalid_request(format!("cannot steer a {turn_kind_label} turn"))
+                    }
+                    reason => internal_error(format!("failed to submit turn input: {reason:?}")),
+                };
                 self.track_error_response(&request_id, &error, /*error_type*/ None);
                 return Err(error);
             }

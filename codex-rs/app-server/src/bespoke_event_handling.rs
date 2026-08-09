@@ -1050,6 +1050,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     | CoreCodexErrorInfo::RateLimitExceeded
                     | CoreCodexErrorInfo::ServerOverloaded
                     | CoreCodexErrorInfo::CyberPolicy
+                    | CoreCodexErrorInfo::MisalignmentPolicyViolation
                     | CoreCodexErrorInfo::HttpConnectionFailed { .. }
                     | CoreCodexErrorInfo::ResponseStreamConnectionFailed { .. }
                     | CoreCodexErrorInfo::InternalServerError
