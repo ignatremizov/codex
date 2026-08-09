@@ -82,9 +82,10 @@ pub struct Cli {
     #[arg(long = "search", default_value_t = false)]
     pub web_search: bool,
 
-    /// Disable alternate screen mode
+    /// Disable alternate-screen rendering
     ///
-    /// Runs the TUI in inline mode, preserving terminal scrollback history.
+    /// Keep conversation output inline with terminal scrollback, overriding fullscreen transcript
+    /// mode. Pickers, pagers, and other temporary surfaces also stay in the primary buffer.
     #[arg(long = "no-alt-screen", default_value_t = false)]
     pub no_alt_screen: bool,
 
