@@ -801,21 +801,14 @@ impl Session {
             let Some(mut task) = active_turn.task.take() else {
                 return TaskFinishAction::Finish;
             };
-            let task_ended_before_persistence = if let Some(sender) = task.input_persisted.take() {
+            if let Some(sender) = task.input_persisted.take() {
                 let _ = sender.send(Err(
                     TryStartTurnIfIdleRejectionReason::TaskEndedBeforePersistence,
                 ));
-                true
-            } else {
-                false
-            };
+            }
             task.handle.detach();
-            (
-                Arc::clone(&active_turn.turn_state),
-                task_ended_before_persistence,
-            )
+            Arc::clone(&active_turn.turn_state)
         };
-        let (turn_state, mut task_ended_before_persistence) = turn_state;
         turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();
