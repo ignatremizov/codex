@@ -175,6 +175,17 @@ async fn build_uploaded_argument_value(
             .file_system_sandbox_policy(),
         additional_permissions.as_ref(),
     );
+    // Reject a policy denial before any file bytes can enter the upload client. The executor
+    // sandbox remains authoritative for symlinks and foreign path conventions that cannot be
+    // evaluated safely on this host.
+    if let (Ok(native_path), Ok(native_cwd)) =
+        (path_uri.to_abs_path(), turn_environment.cwd().to_abs_path())
+        && !file_system_policy.can_read_path_with_cwd(native_path.as_path(), native_cwd.as_path())
+    {
+        return Err(contextualize_error(
+            "Permission denied by the active filesystem policy".to_string(),
+        ));
+    }
     let requires_sandbox = !file_system_policy.has_full_disk_read_access()
         || file_system_policy
             .entries

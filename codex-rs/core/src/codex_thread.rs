@@ -14,8 +14,6 @@ use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
 use codex_history::RolloutItem;
-use codex_mcp::McpConfig;
-use codex_mcp::ToolPluginProvenance;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ThreadId;
@@ -808,21 +806,19 @@ impl CodexThread {
                     .record_context_updates_and_set_reference_context_item(step_context.as_ref())
                     .await?;
             }
-            if let Err(items) = session.inject_response_items(items).await {
-                if contains_agent_message {
-                    session
-                        .record_history_only_conversation_items(turn_context.as_ref(), &items)
-                        .await
-                        .map_err(|err| {
-                            CodexErr::Fatal(format!(
-                                "failed to persist history-only response items: {err}"
-                            ))
-                        })?;
-                } else {
-                    session
-                        .record_conversation_items(turn_context.as_ref(), &items)
-                        .await;
-                }
+            if !contains_agent_message {
+                session
+                    .inject_client_response_items(items, turn_context.as_ref())
+                    .await;
+            } else if let Err(items) = session.inject_response_items(items).await {
+                session
+                    .record_history_only_conversation_items(turn_context.as_ref(), &items)
+                    .await
+                    .map_err(|err| {
+                        CodexErr::Fatal(format!(
+                            "failed to persist history-only response items: {err}"
+                        ))
+                    })?;
             }
             session.flush_rollout().await?;
             Ok(())
