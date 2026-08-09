@@ -644,11 +644,15 @@ pub enum TrustLevel {
     Untrusted,
 }
 
-/// Controls whether the TUI uses the terminal's alternate screen buffer.
+/// Controls whether the transcript and temporary surfaces may use the alternate screen buffer.
 ///
-/// - `auto` (default): Use alternate screen mode.
-/// - `always`: Always use alternate screen mode.
-/// - `never`: Never use alternate screen mode. Runs in inline mode, preserving scrollback.
+/// Temporary surfaces and, when `fullscreen_transcript` is enabled, the owned transcript may use
+/// the alternate screen.
+///
+/// - `auto` (default): Allow transitions except for Terminal.app over SSH, which stays inline.
+/// - `always`: Enable every alternate-screen transition requested by the TUI, including
+///   Terminal.app over SSH.
+/// - `never`: Never enter alternate screen; render temporary surfaces without switching buffers.
 ///
 /// The CLI flag `--no-alt-screen` can override this setting at runtime.
 #[derive(
@@ -657,12 +661,12 @@ pub enum TrustLevel {
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
 pub enum AltScreenMode {
-    /// Use alternate screen mode.
+    /// Allow transitions except for Terminal.app over SSH.
     #[default]
     Auto,
-    /// Always use alternate screen mode.
+    /// Enable every alternate-screen transition requested by the TUI.
     Always,
-    /// Never use alternate screen (inline mode only).
+    /// Never enter alternate screen.
     Never,
 }
 
