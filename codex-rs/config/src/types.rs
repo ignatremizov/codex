@@ -858,12 +858,13 @@ pub struct Tui {
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub show_compact_summary: bool,
-
-    /// Controls whether the TUI uses the terminal's alternate screen buffer.
+    /// Controls whether the transcript and temporary surfaces may use the alternate screen buffer.
     ///
-    /// - `auto` (default): Use alternate screen.
-    /// - `always`: Always use alternate screen.
-    /// - `never`: Never use alternate screen (inline mode only, preserves scrollback).
+    /// Temporary surfaces and, when `fullscreen_transcript` is enabled, the owned transcript may
+    /// use the alternate screen.
+    /// - `auto` (default): Allow requested alternate-screen transitions.
+    /// - `always`: Enable every alternate-screen transition requested by the TUI.
+    /// - `never`: Never enter alternate screen.
     #[serde(default)]
     pub alternate_screen: AltScreenMode,
 
