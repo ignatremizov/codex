@@ -91,24 +91,24 @@
       "type": "string"
     },
     "AltScreenMode": {
-      "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n- `auto` (default): Use alternate screen mode. - `always`: Always use alternate screen mode. - `never`: Never use alternate screen mode. Runs in inline mode, preserving scrollback.\n\nThe CLI flag `--no-alt-screen` can override this setting at runtime.",
+      "description": "Controls whether the transcript and temporary surfaces may use the alternate screen buffer.\n\nTemporary surfaces and, when `fullscreen_transcript` is enabled, the owned transcript may use the alternate screen.\n\n- `auto` (default): Allow transitions except for Terminal.app over SSH, which stays inline. - `always`: Enable every alternate-screen transition requested by the TUI, including Terminal.app over SSH. - `never`: Never enter alternate screen; render temporary surfaces without switching buffers.\n\nThe CLI flag `--no-alt-screen` can override this setting at runtime.",
       "oneOf": [
         {
-          "description": "Use alternate screen mode.",
+          "description": "Allow transitions except for Terminal.app over SSH.",
           "enum": [
             "auto"
           ],
           "type": "string"
         },
         {
-          "description": "Always use alternate screen mode.",
+          "description": "Enable every alternate-screen transition requested by the TUI.",
           "enum": [
             "always"
           ],
           "type": "string"
         },
         {
-          "description": "Never use alternate screen (inline mode only).",
+          "description": "Never enter alternate screen.",
           "enum": [
             "never"
           ],
@@ -4953,7 +4953,7 @@
             }
           ],
           "default": "auto",
-          "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n- `auto` (default): Use alternate screen. - `always`: Always use alternate screen. - `never`: Never use alternate screen (inline mode only, preserves scrollback)."
+          "description": "Controls whether the transcript and temporary surfaces may use the alternate screen buffer.\n\nTemporary surfaces and, when `fullscreen_transcript` is enabled, the owned transcript may use the alternate screen. - `auto` (default): Allow transitions except for Terminal.app over SSH, which stays inline. - `always`: Enable every alternate-screen transition requested by the TUI. - `never`: Never enter alternate screen."
         },
         "animations": {
           "default": true,
