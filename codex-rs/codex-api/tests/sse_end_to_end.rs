@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
+use codex_api::ApiError;
 use codex_api::AuthProvider;
 use codex_api::Compression;
 use codex_api::GuardianAssessment;
@@ -27,11 +28,15 @@ use serde_json::json;
 #[derive(Clone)]
 struct FixtureSseTransport {
     body: String,
+    start_delay: Duration,
 }
 
 impl FixtureSseTransport {
     fn new(body: String) -> Self {
-        Self { body }
+        Self {
+            body,
+            start_delay: Duration::ZERO,
+        }
     }
 }
 
@@ -41,6 +46,7 @@ impl HttpTransport for FixtureSseTransport {
     }
 
     async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
+        tokio::time::sleep(self.start_delay).await;
         let stream = futures::stream::iter(vec![Ok::<Bytes, TransportError>(Bytes::from(
             self.body.clone(),
         ))]);
@@ -49,6 +55,19 @@ impl HttpTransport for FixtureSseTransport {
             headers: HeaderMap::new(),
             bytes: Box::pin(stream),
         })
+    }
+}
+
+#[derive(Clone)]
+struct StalledStreamStartTransport;
+
+impl HttpTransport for StalledStreamStartTransport {
+    async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
+        Err(TransportError::Build("execute should not run".to_string()))
+    }
+
+    async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
+        std::future::pending().await
     }
 }
 
@@ -94,8 +113,64 @@ fn build_responses_body(events: Vec<Value>) -> String {
     body
 }
 
-#[tokio::test]
-async fn responses_stream_parses_items_and_completed_end_to_end() -> Result<()> {
+#[tokio::test(start_paused = true)]
+async fn responses_stream_start_respects_idle_timeout() {
+    let client = ResponsesClient::new(
+        StalledStreamStartTransport,
+        provider("openai"),
+        Arc::new(NoAuth),
+    );
+
+    let result = client
+        .stream(
+            serde_json::json!({"echo": true}),
+            HeaderMap::new(),
+            Compression::None,
+            /*turn_state*/ None,
+        )
+        .await;
+
+    let Err(ApiError::Stream(message)) = result else {
+        panic!("stalled response stream startup should time out");
+    };
+    assert_eq!(
+        message,
+        "idle timeout waiting for HTTP response stream to start"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn responses_stream_start_is_capped_for_stalled_headers() {
+    let mut provider = provider("openai");
+    provider.stream_idle_timeout = Duration::from_secs(/*secs*/ 300);
+    let client = ResponsesClient::new(StalledStreamStartTransport, provider, Arc::new(NoAuth));
+    let started = tokio::time::Instant::now();
+
+    let result = client
+        .stream(
+            serde_json::json!({"echo": true}),
+            HeaderMap::new(),
+            Compression::None,
+            /*turn_state*/ None,
+        )
+        .await;
+
+    let Err(ApiError::Stream(message)) = result else {
+        panic!("stalled response stream startup should time out");
+    };
+    assert_eq!(
+        message,
+        "idle timeout waiting for HTTP response stream to start"
+    );
+    let elapsed = started.elapsed();
+    assert!(
+        (Duration::from_secs(/*secs*/ 120)..Duration::from_secs(/*secs*/ 121)).contains(&elapsed),
+        "unexpected startup timeout: {elapsed:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn responses_stream_parses_items_and_completed_after_slow_start_end_to_end() -> Result<()> {
     let item1 = serde_json::json!({
         "type": "response.output_item.done",
         "item": {
@@ -131,8 +206,13 @@ async fn responses_stream_parses_items_and_completed_end_to_end() -> Result<()> 
 
     let expected_metadata = completed["response"]["usage"].clone();
     let body = build_responses_body(vec![item1, item2, completed]);
-    let transport = FixtureSseTransport::new(body);
-    let client = ResponsesClient::new(transport, provider("openai"), Arc::new(NoAuth));
+    let transport = FixtureSseTransport {
+        body,
+        start_delay: Duration::from_secs(/*secs*/ 90),
+    };
+    let mut provider = provider("openai");
+    provider.stream_idle_timeout = Duration::from_secs(/*secs*/ 300);
+    let client = ResponsesClient::new(transport, provider, Arc::new(NoAuth));
 
     let mut stream = client
         .stream(
