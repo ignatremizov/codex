@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
+use codex_api::ApiError;
 use codex_api::AuthProvider;
 use codex_api::Compression;
 use codex_api::Provider;
@@ -49,6 +50,19 @@ impl HttpTransport for FixtureSseTransport {
     }
 }
 
+#[derive(Clone)]
+struct StalledStreamStartTransport;
+
+impl HttpTransport for StalledStreamStartTransport {
+    async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
+        Err(TransportError::Build("execute should not run".to_string()))
+    }
+
+    async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
+        std::future::pending().await
+    }
+}
+
 #[derive(Clone, Default)]
 struct NoAuth;
 
@@ -87,6 +101,32 @@ fn build_responses_body(events: Vec<Value>) -> String {
         }
     }
     body
+}
+
+#[tokio::test]
+async fn responses_stream_start_respects_idle_timeout() {
+    let client = ResponsesClient::new(
+        StalledStreamStartTransport,
+        provider("openai"),
+        Arc::new(NoAuth),
+    );
+
+    let result = client
+        .stream(
+            serde_json::json!({"echo": true}),
+            HeaderMap::new(),
+            Compression::None,
+            /*turn_state*/ None,
+        )
+        .await;
+
+    let Err(ApiError::Stream(message)) = result else {
+        panic!("stalled response stream startup should time out");
+    };
+    assert_eq!(
+        message,
+        "idle timeout waiting for HTTP response stream to start"
+    );
 }
 
 #[tokio::test]
