@@ -21,12 +21,15 @@ use http::Method;
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::Duration;
 use tracing::instrument;
 
 pub struct ResponsesClient<T: HttpTransport> {
     session: EndpointSession<T>,
     sse_telemetry: Option<Arc<dyn SseTelemetry>>,
 }
+
+const RESPONSE_STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub struct ResponsesOptions {
@@ -132,9 +135,17 @@ impl<T: HttpTransport> ResponsesClient<T> {
             Compression::Zstd => RequestCompression::Zstd,
         };
 
-        let stream_response = self
+        // The SSE idle timeout starts only after the transport receives response headers. Bound
+        // stream startup separately so an accepted HTTP request that never returns headers cannot
+        // leave the turn running indefinitely.
+        let stream_start_timeout = self
             .session
-            .stream_encoded_json_with(
+            .provider()
+            .stream_idle_timeout
+            .min(RESPONSE_STREAM_START_TIMEOUT);
+        let stream_response = tokio::time::timeout(
+            stream_start_timeout,
+            self.session.stream_encoded_json_with(
                 Method::POST,
                 "/responses",
                 extra_headers,
@@ -146,8 +157,12 @@ impl<T: HttpTransport> ResponsesClient<T> {
                     );
                     req.compression = request_compression;
                 },
-            )
-            .await?;
+            ),
+        )
+        .await
+        .map_err(|_| {
+            ApiError::Stream("idle timeout waiting for HTTP response stream to start".to_string())
+        })??;
 
         Ok(spawn_response_stream(
             stream_response,
