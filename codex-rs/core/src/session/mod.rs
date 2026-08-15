@@ -24,7 +24,6 @@ use crate::compact;
 use crate::compact::CompactedHistoryMetadata;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
-use crate::context::AgentContextIdentity;
 use crate::context::ContextualUserFragment;
 use crate::context::DeveloperInstructions;
 use crate::context::GuardianPolicy;
@@ -111,6 +110,8 @@ use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::EnteredReviewModeItem;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
@@ -130,7 +131,6 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_protocol::protocol::AdditionalContextEntry;
 use codex_protocol::protocol::AgentInputPresentation;
 use codex_protocol::protocol::ContextCompactionStatusEvent;
 use codex_protocol::protocol::FileChange;
@@ -141,6 +141,7 @@ use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::NonSteerableTurnKind;
 use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActivityKind;
@@ -159,6 +160,7 @@ use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::protocol::WorldStateItem;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::new_attributed_agent_message_response_item_id;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsArgs;
@@ -239,6 +241,7 @@ pub(crate) mod context_window;
 mod environment;
 pub(crate) mod extension_metrics;
 mod handlers;
+pub(crate) use handlers::inter_agent_communication;
 mod inject;
 mod input_queue;
 mod inter_agent_communication;
@@ -274,6 +277,8 @@ use self::handlers::submission_dispatch_span;
 use self::handlers::submission_loop;
 pub(crate) use self::input_queue::InputQueueActivity;
 pub(crate) use self::input_queue::PendingInputFollowUp;
+pub(crate) use self::input_queue::PromptInputKind;
+pub(crate) use self::input_queue::PromptTurnDraft;
 pub(crate) use self::input_queue::TurnInput;
 pub(crate) use self::input_queue::TurnInputQueue;
 pub(crate) use self::input_queue::classify_pending_input_follow_up;
@@ -282,6 +287,7 @@ pub(crate) use self::response_observation::AgentResponseEvent;
 pub(crate) use self::response_observation::AgentResponseSubscription;
 pub(crate) use self::response_observation::InputTurnAdmissionPolicy;
 pub(crate) use self::response_observation::InputTurnAdmissionResolution;
+pub(crate) use self::response_observation::SubmittedInputTurn;
 pub(crate) use self::response_observation::agent_response_events_from_rollout;
 use self::review::spawn_review_thread;
 use self::session::AppServerClientMetadata;
@@ -331,6 +337,12 @@ pub enum SteerInputError {
     ActiveTurnNotSteerable { turn_kind: NonSteerableTurnKind },
     EmptyInput,
 }
+
+pub(crate) const QUEUED_INPUT_ACTIVE_ERROR_PREFIX: &str =
+    "queued input requires an idle target; active turn is ";
+pub(crate) const STEER_ONLY_TARGET_ENDED_ERROR: &str =
+    "target turn ended before steer-only input admission";
+
 /// Notes from the previous real user turn.
 ///
 /// Conceptually this is the same role that `previous_model` used to fill, but
@@ -826,16 +838,6 @@ pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 512;
 const CYBER_VERIFY_URL: &str = "https://chatgpt.com/cyber";
 const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyber-safety";
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum CommandApprovalTiming {
-    LocalConfig,
-    InheritedTimed {
-        started_at_ms: i64,
-        expires_at_ms: i64,
-    },
-    InheritedUntimed,
-}
-
 pub(crate) fn saturating_instant_add_ms(
     now: tokio::time::Instant,
     timeout_ms: u64,
@@ -1270,6 +1272,44 @@ impl SessionIo {
         Ok(id)
     }
 
+    pub(crate) async fn submit_turn_input_with_admission(
+        &self,
+        session: &Session,
+        mut request: TurnInputRequest,
+        mode: TurnInputMode,
+        policy: InputTurnAdmissionPolicy,
+        agent_queue_turn: Option<codex_protocol::protocol::AgentQueueTurnMetadata>,
+    ) -> CodexResult<SubmittedInputTurn> {
+        let id = new_submission_id();
+        let mut admission =
+            session.register_input_turn_admission(id.clone(), policy, agent_queue_turn);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let trace = request.trace.take();
+        self.submit_with_id(Submission {
+            id: id.clone(),
+            op: Op::TurnInput {
+                request: Box::new(request),
+                mode,
+                reply: reply_tx,
+            },
+            trace,
+            parent_turn_id: None,
+            root_turn_id: None,
+        })
+        .await?;
+        admission.mark_submitted();
+        let _ = reply_rx.await.unwrap_or(Err(CodexErr::InternalAgentDied))?;
+        let outcome = tokio::select! {
+            admission = admission.recv() => {
+                admission.ok_or(CodexErr::InternalAgentDied)??
+            },
+            () = self.session_loop_termination.clone() => {
+                return Err(CodexErr::InternalAgentDied);
+            }
+        };
+        Ok(outcome)
+    }
+
     /// Use sparingly: prefer `submit()` so submission IDs are generated consistently.
     pub(crate) async fn submit_with_id(&self, sub: Submission) -> CodexResult<()> {
         self.submit_with_id_and_admission(sub, SubmissionAdmissionKind::Ordinary)
@@ -1427,54 +1467,14 @@ impl SessionIo {
         reply_rx.await.unwrap_or(Err(CodexErr::InternalAgentDied))
     }
 
-    pub(crate) async fn submit_turn_input_with_admission(
-        &self,
-        session: &Session,
-        mut request: TurnInputRequest,
-        mode: TurnInputMode,
-    ) -> CodexResult<(String, InputTurnAdmissionResolution)> {
-        let id = new_submission_id();
-        let admission = session.register_input_turn_admission(id.clone());
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let trace = request.trace.take();
-        self.submit_with_id(Submission {
-            id: id.clone(),
-            op: Op::TurnInput {
-                request: Box::new(request),
-                mode,
-                reply: reply_tx,
-            },
-            trace,
-            parent_turn_id: None,
-            root_turn_id: None,
-        })
-        .await?;
-        match reply_rx.await.unwrap_or(Err(CodexErr::InternalAgentDied))? {
-            TurnInputSubmission::Started { .. } | TurnInputSubmission::Steered { .. } => {}
-            TurnInputSubmission::NotSubmitted { reason } => {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "turn input was not submitted: {reason:?}"
-                )));
-            }
-        }
-        let resolution = tokio::select! {
-            admission = admission.recv() => {
-                admission.ok_or(CodexErr::InternalAgentDied)??
-            },
-            () = self.session_loop_termination.clone() => {
-                return Err(CodexErr::InternalAgentDied);
-            }
-        };
-        Ok((id, resolution))
-    }
-
     pub(crate) async fn start_turn_if_idle_with_lease(
-        self: &Arc<Self>,
+        &self,
+        session: &Arc<Session>,
         request: TurnInputRequest,
         reservation_lease: impl Send,
     ) -> CodexResult<TurnInputSubmission> {
         turn_input::start_if_idle_with_lease(
-            self,
+            session,
             request,
             new_submission_id(),
             turn_input::TurnStartKind::Automatic,
@@ -1995,8 +1995,10 @@ impl Session {
         if let Some(active_turn_state) = active_turn_state {
             let turn_state = active_turn_state.lock().await;
             if let Some(text) = turn_state.pending_input().iter().rev().find_map(|item| {
-                let TurnInput::ResponseItem(ResponseItem::Message { role, content, .. }) = item
-                else {
+                let TurnInput::ResponseItem(response) = item else {
+                    return None;
+                };
+                let ResponseItem::Message { role, content, .. } = &response.item else {
                     return None;
                 };
                 if role != "developer" {
@@ -2020,7 +2022,7 @@ impl Session {
             }
         }
         let history = self.clone_history().await;
-        history.raw_items().iter().rev().find_map(|item| {
+        history.raw_items().rev().find_map(|item| {
             let ResponseItem::Message { role, content, .. } = item else {
                 return None;
             };
@@ -2949,7 +2951,7 @@ impl Session {
                     let TurnInput::ResponseItem(item) = item else {
                         continue;
                     };
-                    mcp_input.push(item);
+                    mcp_input.push(item.into_item());
                 } else {
                     non_mcp_input.push(item);
                 }
@@ -3532,7 +3534,9 @@ impl Session {
         }
         match msg {
             EventMsg::ItemStarted(event) => {
-                if let TurnItem::AgentMessage(item) = &event.item {
+                if let TurnItem::AgentMessage(item) = &event.item
+                    && !item.is_attributed_agent_input_presentation()
+                {
                     self.conversation
                         .register_handoff_stream_item(
                             item.id.clone(),
@@ -3555,7 +3559,8 @@ impl Session {
             }
             EventMsg::ItemCompleted(event) => {
                 if let TurnItem::AgentMessage(item) = &event.item
-                    && self.conversation.finish_handoff_stream_item(&item.id).await
+                    && (item.is_attributed_agent_input_presentation()
+                        || self.conversation.finish_handoff_stream_item(&item.id).await)
                 {
                     return;
                 }
@@ -4029,6 +4034,10 @@ impl Session {
     /// be used to derive the available decisions via
     /// [ExecApprovalRequestEvent::default_available_decisions].
     #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
     pub async fn request_command_approval(
         &self,
         turn_context: &TurnContext,
@@ -4045,83 +4054,23 @@ impl Session {
         available_decisions: Option<Vec<ReviewDecision>>,
         plugin_attribution_override: Option<PluginCommandAttribution>,
     ) -> ReviewDecision {
-        self.request_command_approval_with_timing(
-            turn_context,
-            call_id,
-            approval_id,
-            environment_id,
-            command,
-            cwd,
-            reason,
-            network_approval_context,
-            proposed_execpolicy_amendment,
-            additional_permissions,
-            available_decisions,
-            plugin_attribution_override,
-            CommandApprovalTiming::LocalConfig,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "active turn checks and turn state updates must remain atomic"
-    )]
-    pub(crate) async fn request_command_approval_with_timing(
-        &self,
-        turn_context: &TurnContext,
-        call_id: String,
-        approval_id: Option<String>,
-        environment_id: Option<String>,
-        command: Vec<String>,
-        cwd: AbsolutePathBuf,
-        reason: Option<String>,
-        network_approval_context: Option<NetworkApprovalContext>,
-        proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
-        additional_permissions: Option<AdditionalPermissionProfile>,
-        available_decisions: Option<Vec<ReviewDecision>>,
-        plugin_attribution_override: Option<PluginCommandAttribution>,
-        timing: CommandApprovalTiming,
-    ) -> ReviewDecision {
         //  command-level approvals use `call_id`.
         // `approval_id` identifies subcommand callbacks and stdin writes.
         let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
         let monotonic_now = tokio::time::Instant::now();
         let wall_now_ms = now_unix_timestamp_ms();
-        if matches!(timing, CommandApprovalTiming::LocalConfig)
-            && turn_context.config.approval_timeout_ms == Some(0)
-        {
+        if turn_context.config.approval_timeout_ms == Some(0) {
             return ReviewDecision::TimedOut;
         }
         let _elicitation = self.services.elicitations.register();
-        let (started_at_ms, expires_at_ms, approval_deadline) = match timing {
-            CommandApprovalTiming::InheritedTimed {
-                started_at_ms,
-                expires_at_ms,
-            } => {
-                let timeout_ms = expires_at_ms.saturating_sub(started_at_ms);
-                (
-                    started_at_ms,
-                    Some(expires_at_ms),
-                    Some(saturating_instant_add_ms(
-                        monotonic_now,
-                        u64::try_from(timeout_ms).unwrap_or(0),
-                    )),
-                )
-            }
-            CommandApprovalTiming::InheritedUntimed => (wall_now_ms, None, None),
-            CommandApprovalTiming::LocalConfig => {
-                let expires_at_ms = turn_context.config.approval_timeout_ms.map(|timeout_ms| {
-                    wall_now_ms.saturating_add(i64::try_from(timeout_ms).unwrap_or(i64::MAX))
-                });
-                let approval_deadline = turn_context
-                    .config
-                    .approval_timeout_ms
-                    .map(|timeout_ms| saturating_instant_add_ms(monotonic_now, timeout_ms));
-                (wall_now_ms, expires_at_ms, approval_deadline)
-            }
-        };
+        let started_at_ms = wall_now_ms;
+        let expires_at_ms = turn_context.config.approval_timeout_ms.map(|timeout_ms| {
+            wall_now_ms.saturating_add(i64::try_from(timeout_ms).unwrap_or(i64::MAX))
+        });
+        let approval_deadline = turn_context
+            .config
+            .approval_timeout_ms
+            .map(|timeout_ms| saturating_instant_add_ms(monotonic_now, timeout_ms));
         // Add the tx_approve callback to the map before sending the request.
         let (tx_approve, mut rx_approve) = oneshot::channel();
         let approval_identity = {
@@ -5027,7 +4976,13 @@ impl Session {
                 agent_queue: None,
             },
         )));
-        rollout_items.extend(items.iter().cloned().map(RolloutItem::ResponseItem));
+        rollout_items.extend(
+            items
+                .iter()
+                .cloned()
+                .map(ResponseItemEnvelope::new)
+                .map(RolloutItem::ResponseItem),
+        );
         rollout_items.push(RolloutItem::EventMsg(EventMsg::TurnComplete(
             TurnCompleteEvent {
                 turn_id: turn_context.sub_id.clone(),
@@ -5098,6 +5053,7 @@ impl Session {
             turn_context,
             items,
             acknowledgement,
+            Vec::new(),
             rollout_suffix,
             image_preparations,
         )
@@ -5109,6 +5065,7 @@ impl Session {
         turn_context: Arc<TurnContext>,
         mut items: Vec<ResponseItemEnvelope>,
         acknowledgement: Option<TurnInputContributionAcknowledgement>,
+        rollout_prefix: Vec<RolloutItem>,
         rollout_suffix: Vec<RolloutItem>,
         image_preparations: Vec<ImagePreparationMetadata>,
     ) -> Result<(), ThreadStoreError> {
@@ -5119,7 +5076,13 @@ impl Session {
                     message: format!("failed to lock durable context recording: {err}"),
                 }
             })?;
-            let mut rollout_items = Vec::with_capacity(items.len().saturating_add(1));
+            let mut rollout_items = Vec::with_capacity(
+                rollout_prefix
+                    .len()
+                    .saturating_add(items.len())
+                    .saturating_add(rollout_suffix.len()),
+            );
+            rollout_items.extend(rollout_prefix);
             for item in &items {
                 if item
                     .id()
@@ -5190,13 +5153,9 @@ impl Session {
                 .collect::<Vec<_>>();
             let response_already_recorded = {
                 let mut state = sess.state.lock().await;
-                let already_recorded = response_delivery_id.as_ref().is_some_and(|id| {
-                    state
-                        .history
-                        .raw_items()
-                        .iter()
-                        .any(|item| item.id() == Some(id))
-                });
+                let already_recorded = response_delivery_id
+                    .as_ref()
+                    .is_some_and(|id| state.history.raw_items().any(|item| item.id() == Some(id)));
                 if !already_recorded {
                     state
                         .current_time_reminder
@@ -5481,7 +5440,12 @@ impl Session {
         items: &[ResponseItem],
     ) {
         self.record_into_history(items, turn_context).await;
-        self.persist_rollout_response_items(items).await;
+        let rollout_items = items
+            .iter()
+            .cloned()
+            .map(|item| RolloutItem::ResponseItem(item.into()))
+            .collect::<Vec<_>>();
+        self.persist_rollout_items(&rollout_items).await;
     }
 
     /// Append ResponseItems to the in-memory conversation history only.
@@ -5616,11 +5580,10 @@ impl Session {
                     items,
                     &previous_history,
                 );
-                let final_items =
-                    crate::compact::preserve_annotated_promoted_skills_inventory_item(
-                        final_items,
-                        &previous_history,
-                    );
+                let final_items = crate::compact::preserve_annotated_promoted_skills_inventory_item(
+                    final_items,
+                    &previous_history,
+                );
                 let mut final_items =
                     crate::compact::insert_annotated_post_compaction_context_items(
                         final_items,
@@ -5765,26 +5728,6 @@ impl Session {
         let selected = config.multi_agent_version_for_model(model_info.multi_agent_version);
 
         self.set_multi_agent_version_if_unset(selected)
-    }
-
-    async fn current_model_visible_agent_identity(
-        &self,
-        multi_agent_version: MultiAgentVersion,
-    ) -> AgentContextIdentity {
-        self.services
-            .agent_control
-            .model_visible_agent_identity_for_version(multi_agent_version, self.thread_id)
-            .await
-            .unwrap_or_else(|err| {
-                warn!(
-                    thread_id = %self.thread_id,
-                    %err,
-                    "failed to resolve source-relative agent identity"
-                );
-                AgentContextIdentity::Canonical {
-                    agent_id: self.thread_id,
-                }
-            })
     }
 
     #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]
@@ -5966,8 +5909,9 @@ impl Session {
             }
             separate_developer_sections.push(
                 crate::context::TokenBudgetContext::new(
-                    self.current_model_visible_agent_identity(turn_context.multi_agent_version)
-                        .await,
+                    session_source
+                        .get_agent_path()
+                        .unwrap_or_else(codex_protocol::AgentPath::root),
                     auto_compact_window_ids.first_window_id,
                     auto_compact_window_ids.previous_window_id,
                     auto_compact_window_ids.window_id,
@@ -6477,22 +6421,45 @@ impl Session {
         }
     }
 
-    pub(crate) async fn record_user_prompt_and_emit_turn_item(
+    pub(crate) async fn record_prompt_and_emit_turn_item(
         &self,
         turn_context: &TurnContext,
         input: &[UserInput],
         client_id: Option<String>,
         persist_context: PersistContext,
+        prompt_kind: PromptInputKind,
     ) {
-        // Persist the user message to history, but emit the turn item from `UserInput` so
-        // UI-only `text_elements` are preserved. `ResponseItem::Message` does not carry
-        // those spans, and `record_response_item_and_emit_turn_item` would drop them.
+        // Persist prompt content as user-role model input. User-authored prompts keep their
+        // attachment spans, while attributed agent input emits a separate trusted presentation
+        // instead of asking clients to infer provenance from model-visible marker text.
         let response_item = self.response_item_from_user_input(input.to_vec());
         self.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
             .await;
-        let mut user_message_item = UserMessageItem::new(input);
-        user_message_item.client_id = client_id;
-        let turn_item = TurnItem::UserMessage(user_message_item);
+        let turn_item = match prompt_kind {
+            PromptInputKind::User => {
+                let mut user_message_item = UserMessageItem::new(input);
+                user_message_item.client_id = client_id;
+                TurnItem::UserMessage(user_message_item)
+            }
+            PromptInputKind::Agent {
+                presentation: AgentInputPresentation::Attributed(transcript),
+            } => {
+                let mut agent_message_item =
+                    AgentMessageItem::new(&[AgentMessageContent::Text { text: transcript }]);
+                agent_message_item.id = new_attributed_agent_message_response_item_id().to_string();
+                agent_message_item.phase = Some(MessagePhase::Commentary);
+                TurnItem::AgentMessage(agent_message_item)
+            }
+            PromptInputKind::Agent {
+                presentation: AgentInputPresentation::Delegated(visible_input),
+            } => {
+                if visible_input.is_empty() {
+                    self.ensure_rollout_materialized(persist_context).await;
+                    return;
+                }
+                TurnItem::UserMessage(UserMessageItem::new(&visible_input))
+            }
+        };
         self.emit_turn_item_started(turn_context, &turn_item).await;
         self.emit_turn_item_completed(turn_context, turn_item).await;
         self.ensure_rollout_materialized(persist_context).await;
@@ -6516,65 +6483,44 @@ impl Session {
         self.send_event(turn_context, event).await;
     }
 
-    /// Inject additional user input into the currently active turn.
-    ///
-    /// Returns the active turn id when accepted.
-    pub async fn steer_input(
+    pub(crate) async fn steer_internal_agent_input(
         &self,
         input: Vec<UserInput>,
-        additional_context: BTreeMap<String, AdditionalContextEntry>,
-        expected_turn_id: Option<&str>,
-        client_user_message_id: Option<String>,
-        responsesapi_client_metadata: Option<HashMap<String, String>>,
+        presentation: AgentInputPresentation,
+        expected_turn_id: &str,
     ) -> Result<String, SteerInputError> {
-        self.steer_input_with_response_observation_boundary(
-            input,
-            additional_context,
-            expected_turn_id,
-            client_user_message_id,
-            responsesapi_client_metadata,
+        self.steer_input_with_response_observation_boundary_and_policy(
+            PromptTurnDraft {
+                input,
+                additional_context: Default::default(),
+                client_user_message_id: None,
+                responsesapi_client_metadata: None,
+                prompt_kind: PromptInputKind::Agent { presentation },
+            },
+            Some(expected_turn_id),
+            InputTurnAdmissionPolicy::AnyTurn,
         )
         .await
         .map(|resolution| resolution.target_turn_id)
     }
 
-    /// Inject additional user input and capture its response-observation boundary atomically with
-    /// active-turn admission.
-    ///
-    /// The boundary is sampled before the input becomes visible to the active task, so a fast
-    /// first commentary response cannot race ahead of observation registration.
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"
     )]
-    pub(crate) async fn steer_input_with_response_observation_boundary(
+    pub(crate) async fn steer_input_with_response_observation_boundary_and_policy(
         &self,
-        input: Vec<UserInput>,
-        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        draft: PromptTurnDraft,
         expected_turn_id: Option<&str>,
-        client_user_message_id: Option<String>,
-        responsesapi_client_metadata: Option<HashMap<String, String>>,
-    ) -> Result<InputTurnAdmissionResolution, SteerInputError> {
-        self.steer_input_with_response_observation_boundary_and_policy(
-            input,
-            additional_context,
-            expected_turn_id,
-            client_user_message_id,
-            responsesapi_client_metadata,
-            InputTurnAdmissionPolicy::AnyTurn,
-        )
-        .await
-    }
-
-    async fn steer_input_with_response_observation_boundary_and_policy(
-        &self,
-        input: Vec<UserInput>,
-        additional_context: BTreeMap<String, AdditionalContextEntry>,
-        expected_turn_id: Option<&str>,
-        client_user_message_id: Option<String>,
-        responsesapi_client_metadata: Option<HashMap<String, String>>,
         policy: InputTurnAdmissionPolicy,
     ) -> Result<InputTurnAdmissionResolution, SteerInputError> {
+        let PromptTurnDraft {
+            input,
+            additional_context,
+            client_user_message_id,
+            responsesapi_client_metadata,
+            prompt_kind,
+        } = draft;
         let mut active = self.active_turn.lock().await;
         let Some(active_turn) = active.as_mut() else {
             return Err(SteerInputError::NoActiveTurn(input));
@@ -6585,7 +6531,7 @@ impl Session {
         };
         let active_turn_id = &active_task.turn_context.sub_id;
 
-        if policy == InputTurnAdmissionPolicy::IdleOnly {
+        if policy == InputTurnAdmissionPolicy::Queued {
             return Err(SteerInputError::ActiveTurnPresent {
                 actual: active_turn_id.clone(),
             });
@@ -6633,12 +6579,9 @@ impl Session {
         let mut pending_input = additional_context_input
             .into_iter()
             .map(ResponseItem::from)
-            .map(TurnInput::ResponseItem)
+            .map(|item| TurnInput::ResponseItem(item.into()))
             .collect::<Vec<_>>();
-        pending_input.push(TurnInput::UserInput {
-            content: input,
-            client_id: client_user_message_id.clone(),
-        });
+        pending_input.push(prompt_kind.into_turn_input(input, client_user_message_id.clone()));
         self.input_queue
             .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                 active_turn.turn_state.as_ref(),

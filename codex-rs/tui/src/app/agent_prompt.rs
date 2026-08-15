@@ -5,7 +5,6 @@ use codex_app_server_protocol::UserInput;
 
 use super::agent_observation_display::AgentResponseObservationBinding;
 use super::*;
-use crate::app_server_session::QueuedAgentPromptAdmission;
 use crate::chatwidget::UserMessage;
 use crate::chatwidget::agent_command::AgentSelector;
 use crate::chatwidget::agent_command::AgentSelectorKind;
@@ -19,7 +18,7 @@ pub(super) enum AgentPromptAvailability {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum AgentPromptAdmission {
+pub(crate) enum AgentPromptAdmission {
     Direct,
     Queued,
 }
@@ -27,11 +26,31 @@ pub(super) enum AgentPromptAdmission {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum AgentPromptSubmission {
     Admitted {
+        queued: bool,
         audit_warning: Option<String>,
         post_admission_warning: Option<String>,
     },
-    TargetActive,
     Rejected,
+}
+
+pub(crate) struct SubmitAgentPromptArgs {
+    pub source_thread_id: ThreadId,
+    pub thread_id: ThreadId,
+    pub target: String,
+    pub authored_selector: String,
+    pub user_message: UserMessage,
+    pub response_handling: Option<AgentResponseHandling>,
+    pub admission: AgentPromptAdmission,
+}
+
+struct SubmitAgentPromptItemsArgs {
+    source_thread_id: ThreadId,
+    thread_id: ThreadId,
+    target: String,
+    authored_selector: String,
+    items: Vec<UserInput>,
+    response_handling: Option<AgentResponseHandling>,
+    admission: AgentPromptAdmission,
 }
 
 impl AgentPromptAvailability {
@@ -102,13 +121,15 @@ impl App {
         };
         self.submit_agent_prompt_with_control(
             app_server,
-            source_thread_id,
-            thread_id,
-            target,
-            selector.authored().to_string(),
-            user_message,
-            response_handling,
-            AgentPromptAdmission::Direct,
+            SubmitAgentPromptArgs {
+                source_thread_id,
+                thread_id,
+                target,
+                authored_selector: selector.authored().to_string(),
+                user_message,
+                response_handling,
+                admission: AgentPromptAdmission::Direct,
+            },
         )
         .await;
     }
@@ -207,13 +228,15 @@ impl App {
         };
         self.submit_agent_prompt_with_control(
             app_server,
-            source_thread_id,
-            thread_id,
-            thread_id.to_string(),
-            thread_id.to_string(),
-            user_message,
-            /*response_handling*/ None,
-            AgentPromptAdmission::Direct,
+            SubmitAgentPromptArgs {
+                source_thread_id,
+                thread_id,
+                target: thread_id.to_string(),
+                authored_selector: thread_id.to_string(),
+                user_message,
+                response_handling: None,
+                admission: AgentPromptAdmission::Direct,
+            },
         )
         .await;
     }
@@ -221,14 +244,17 @@ impl App {
     pub(super) async fn submit_agent_prompt_with_control(
         &mut self,
         app_server: &mut AppServerSession,
-        source_thread_id: ThreadId,
-        thread_id: ThreadId,
-        target: String,
-        authored_selector: String,
-        user_message: UserMessage,
-        response_handling: Option<AgentResponseHandling>,
-        admission: AgentPromptAdmission,
+        args: SubmitAgentPromptArgs,
     ) -> AgentPromptSubmission {
+        let SubmitAgentPromptArgs {
+            source_thread_id,
+            thread_id,
+            target,
+            authored_selector,
+            user_message,
+            response_handling,
+            admission,
+        } = args;
         match self.agent_prompt_availability(thread_id) {
             AgentPromptAvailability::Current(label) => {
                 self.chat_widget.add_error_message(format!(
@@ -290,33 +316,30 @@ impl App {
         match self
             .submit_agent_prompt_items(
                 app_server,
-                source_thread_id,
-                thread_id,
-                target,
-                authored_selector,
-                items,
-                response_handling,
-                admission,
+                SubmitAgentPromptItemsArgs {
+                    source_thread_id,
+                    thread_id,
+                    target,
+                    authored_selector,
+                    items,
+                    response_handling,
+                    admission,
+                },
             )
             .await
         {
-            Ok(
-                outcome @ AgentPromptSubmission::Admitted {
-                    audit_warning: _,
-                    post_admission_warning: _,
-                },
-            ) => {
-                let AgentPromptSubmission::Admitted {
-                    audit_warning,
-                    post_admission_warning,
-                } = &outcome
-                else {
-                    unreachable!("matched admitted outcome above")
-                };
+            Ok(AgentPromptSubmission::Admitted {
+                queued,
+                audit_warning,
+                post_admission_warning,
+            }) => {
                 self.refresh_primary_agent_aliases(app_server).await;
                 self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                     .await;
-                if post_admission_warning.is_none() && self.agent_navigation.is_running(thread_id) {
+                if !queued
+                    && post_admission_warning.is_none()
+                    && self.agent_navigation.is_running(thread_id)
+                {
                     self.agent_navigation.note_response_observation(
                         source_thread_id,
                         thread_id,
@@ -325,21 +348,24 @@ impl App {
                     );
                 }
                 self.sync_active_agent_label();
-                if let Some(warning) = audit_warning {
+                if let Some(warning) = &audit_warning {
                     self.chat_widget.add_error_message(format!(
                         "Prompt was admitted to {label}, but its source audit failed; do not retry \
                          it: {warning}"
                     ));
                 }
-                if let Some(warning) = post_admission_warning {
+                if let Some(warning) = &post_admission_warning {
                     self.chat_widget.add_error_message(format!(
                         "Prompt was admitted to {label}, but response handling degraded; do not \
                          retry it: {warning}"
                     ));
                 }
-                outcome
+                AgentPromptSubmission::Admitted {
+                    queued,
+                    audit_warning,
+                    post_admission_warning,
+                }
             }
-            Ok(AgentPromptSubmission::TargetActive) => AgentPromptSubmission::TargetActive,
             Ok(AgentPromptSubmission::Rejected) => {
                 unreachable!("submission helper never returns rejected")
             }
@@ -389,20 +415,23 @@ impl App {
         )
     }
 
-    pub(super) async fn submit_agent_prompt_items(
+    async fn submit_agent_prompt_items(
         &mut self,
         app_server: &mut AppServerSession,
-        source_thread_id: ThreadId,
-        thread_id: ThreadId,
-        target: String,
-        authored_selector: String,
-        items: Vec<UserInput>,
-        response_handling: Option<AgentResponseHandling>,
-        admission: AgentPromptAdmission,
+        args: SubmitAgentPromptItemsArgs,
     ) -> Result<AgentPromptSubmission> {
-        match admission {
+        let SubmitAgentPromptItemsArgs {
+            source_thread_id,
+            thread_id,
+            target,
+            authored_selector,
+            items,
+            response_handling,
+            admission,
+        } = args;
+        let response = match admission {
             AgentPromptAdmission::Direct => {
-                let response = app_server
+                app_server
                     .prompt_agent(
                         source_thread_id,
                         target,
@@ -410,51 +439,40 @@ impl App {
                         items,
                         response_handling,
                     )
-                    .await?;
-                let codex_app_server_protocol::AgentControlResponse {
-                    outcome,
-                    audit_warning,
-                } = response;
-                match outcome {
-                    codex_app_server_protocol::AgentControlOutcome::Prompted {
-                        target_thread_id,
-                        post_admission_warning,
-                        ..
-                    } if ThreadId::from_string(&target_thread_id).ok() == Some(thread_id) => {
-                        Ok(AgentPromptSubmission::Admitted {
-                            audit_warning,
-                            post_admission_warning,
-                        })
-                    }
-                    response => Err(color_eyre::eyre::eyre!(
-                        "agent/control prompt returned {response:?}, expected target {thread_id}"
-                    )),
-                }
+                    .await?
             }
             AgentPromptAdmission::Queued => {
-                match app_server
-                    .admit_queued_agent_prompt(
+                app_server
+                    .queue_agent_prompt(
                         source_thread_id,
-                        thread_id,
                         target,
                         authored_selector,
                         items,
                         response_handling,
                     )
                     .await?
-                {
-                    QueuedAgentPromptAdmission::Admitted {
-                        audit_warning,
-                        post_admission_warning,
-                    } => Ok(AgentPromptSubmission::Admitted {
-                        audit_warning,
-                        post_admission_warning,
-                    }),
-                    QueuedAgentPromptAdmission::TargetActive => {
-                        Ok(AgentPromptSubmission::TargetActive)
-                    }
-                }
             }
+        };
+        let codex_app_server_protocol::AgentControlResponse {
+            outcome,
+            audit_warning,
+        } = response;
+        match outcome {
+            codex_app_server_protocol::AgentControlOutcome::Prompted {
+                target_thread_id,
+                submission_id: _,
+                queued,
+                post_admission_warning,
+            } if ThreadId::from_string(&target_thread_id).ok() == Some(thread_id) => {
+                Ok(AgentPromptSubmission::Admitted {
+                    queued,
+                    audit_warning,
+                    post_admission_warning,
+                })
+            }
+            response => Err(color_eyre::eyre::eyre!(
+                "agent/control prompt returned {response:?}, expected target {thread_id}"
+            )),
         }
     }
 }

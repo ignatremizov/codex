@@ -12,6 +12,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::SessionSource;
+use codex_thread_store::ReadThreadParams;
 use tracing::warn;
 
 use super::AgentControl;
@@ -90,8 +91,11 @@ impl AgentControl {
         let belongs_to_current_root = self
             .bound_session_id()
             .is_some_and(|session_id| current_owner == Some(session_id))
-            || (current_owner.is_none() && known_to_current_root);
-        if !matches!(status, AgentStatus::NotFound) && !belongs_to_current_root {
+            || (current_owner.is_none()
+                && (known_to_current_root || self.bound_session_id().is_none()));
+        let is_live_under_another_root = current_owner
+            .is_some_and(|owner| self.bound_session_id().is_some_and(|root| owner != root));
+        if !matches!(status, AgentStatus::NotFound) && is_live_under_another_root {
             return Err(CodexErr::InvalidRequest(format!(
                 "agent {thread_id} is live under another root; close it before adoption"
             )));
@@ -127,8 +131,7 @@ impl AgentControl {
             .await
             .map_err(|err| {
                 CodexErr::Fatal(format!(
-                    "failed to load inherited agent nickname reservations for {}: {err}",
-                    session_id
+                    "failed to load inherited agent nickname reservations for {session_id}: {err}"
                 ))
             })?;
         let nicknames = aliases
@@ -155,8 +158,7 @@ impl AgentControl {
             .await
             .map_err(|err| {
                 CodexErr::Fatal(format!(
-                    "failed to initialize durable agent aliases for {}: {err}",
-                    session_id
+                    "failed to initialize durable agent aliases for {session_id}: {err}"
                 ))
             })?;
         agent_graph_store
@@ -164,8 +166,7 @@ impl AgentControl {
             .await
             .map_err(|err| {
                 CodexErr::Fatal(format!(
-                    "failed to load durable agent aliases for {}: {err}",
-                    session_id
+                    "failed to load durable agent aliases for {session_id}: {err}"
                 ))
             })
     }
@@ -200,6 +201,7 @@ impl AgentControl {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn current_agent_owner_session(
         &self,
         thread_id: ThreadId,
@@ -226,8 +228,7 @@ impl AgentControl {
                 .await
                 .map_err(|err| {
                     CodexErr::Fatal(format!(
-                        "failed to initialize durable agent aliases for {}: {err}",
-                        session_id
+                        "failed to initialize durable agent aliases for {session_id}: {err}"
                     ))
                 })?;
         }
@@ -290,8 +291,7 @@ impl AgentControl {
             .await
             .map_err(|err| {
                 CodexErr::Fatal(format!(
-                    "failed to initialize durable agent aliases for {}: {err}",
-                    session_id
+                    "failed to initialize durable agent aliases for {session_id}: {err}"
                 ))
             })?;
         let current = agent_graph_store
@@ -310,7 +310,7 @@ impl AgentControl {
         }
         if current.is_none()
             && self.get_agent_metadata(thread_id).is_some()
-            && let Ok(thread) = state.get_thread(thread_id).await
+            && let Ok(thread) = state.get_thread_including_pending(thread_id).await
             && thread.config_snapshot().await.ephemeral
         {
             return Ok(());
@@ -332,27 +332,62 @@ impl AgentControl {
             return Ok(*thread_id);
         }
 
-        let state = self.upgrade()?;
-        let process_local_controlled = match &parsed {
-            V1AgentTarget::Id(thread_id) => self.get_agent_metadata(*thread_id).is_some(),
-            V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_) => false,
+        let state = match self.upgrade() {
+            Ok(state) => state,
+            Err(_) => {
+                return resolve_without_alias_store(
+                    parsed,
+                    scope,
+                    /*process_local_controlled*/ false,
+                    /*thread_exists*/ false,
+                    self.bound_session_id().map(ThreadId::from),
+                );
+            }
+        };
+        let (process_local_controlled, thread_exists) = match &parsed {
+            V1AgentTarget::Id(thread_id) => {
+                let has_metadata = self.get_agent_metadata(*thread_id).is_some();
+                let is_unbound_local = self.bound_session_id().is_none()
+                    && state.get_thread_including_pending(*thread_id).await.is_ok();
+                let exists = has_metadata
+                    || is_unbound_local
+                    || state.get_thread_including_pending(*thread_id).await.is_ok()
+                    || state
+                        .read_stored_thread(ReadThreadParams {
+                            thread_id: *thread_id,
+                            include_archived: true,
+                            include_history: false,
+                        })
+                        .await
+                        .is_ok();
+                (has_metadata || is_unbound_local, exists)
+            }
+            V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_) => (false, false),
         };
         let Some(agent_graph_store) = state.agent_graph_store() else {
             return resolve_without_alias_store(
                 parsed,
                 scope,
                 process_local_controlled,
+                thread_exists,
                 self.bound_session_id().map(ThreadId::from),
             );
         };
         let Some(session_id) = self.bound_session_id() else {
-            return resolve_without_alias_store(parsed, scope, process_local_controlled, None);
+            return resolve_without_alias_store(
+                parsed,
+                scope,
+                process_local_controlled,
+                thread_exists,
+                None,
+            );
         };
         if !agent_graph_store.supports_agent_aliases() {
             return resolve_without_alias_store(
                 parsed,
                 scope,
                 process_local_controlled,
+                thread_exists,
                 Some(ThreadId::from(session_id)),
             );
         }
@@ -361,8 +396,7 @@ impl AgentControl {
             .await
             .map_err(|err| {
                 CodexErr::Fatal(format!(
-                    "failed to initialize durable agent aliases for {}: {err}",
-                    session_id
+                    "failed to initialize durable agent aliases for {session_id}: {err}"
                 ))
             })?;
 
@@ -385,33 +419,41 @@ impl AgentControl {
         }
         .map_err(|err| {
             CodexErr::Fatal(format!(
-                "failed to resolve agent target {target:?} in root {}: {err}",
-                session_id
+                "failed to resolve agent target {target:?} in root {session_id}: {err}"
             ))
         })?;
         let Some(alias) = alias else {
             if let V1AgentTarget::Id(thread_id) = &parsed
                 && process_local_controlled
-                && let Ok(thread) = state.get_thread(*thread_id).await
+                && let Ok(thread) = state.get_thread_including_pending(*thread_id).await
                 && thread.config_snapshot().await.ephemeral
             {
-                // Ephemeral children deliberately have no durable alias. Their UUID remains a
-                // controlled target only while this root-local registry owns the live runtime.
                 return Ok(*thread_id);
             }
-            return Err(CodexErr::UnsupportedOperation(match parsed {
+            return Err(match parsed {
                 V1AgentTarget::Id(thread_id) => {
-                    format!(
-                        "agent {thread_id} is not controlled by this root; use resume_agent to adopt it"
-                    )
+                    if agent_graph_store
+                        .find_current_agent_alias_by_thread(thread_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some()
+                        || thread_exists
+                    {
+                        CodexErr::UnsupportedOperation(format!(
+                            "agent {thread_id} is not controlled by this root; use resume_agent to adopt it"
+                        ))
+                    } else {
+                        CodexErr::ThreadNotFound(thread_id)
+                    }
                 }
-                V1AgentTarget::Ref(agent_ref) => {
-                    format!("agent ref {agent_ref:?} was not found in this root")
-                }
-                V1AgentTarget::Nickname(nickname) => {
-                    format!("agent target {nickname:?} was not found")
-                }
-            }));
+                V1AgentTarget::Ref(agent_ref) => CodexErr::UnsupportedOperation(format!(
+                    "agent ref {agent_ref:?} was not found in this root"
+                )),
+                V1AgentTarget::Nickname(nickname) => CodexErr::UnsupportedOperation(format!(
+                    "agent target {nickname:?} was not found"
+                )),
+            });
         };
         match alias.state {
             AgentAliasState::Active | AgentAliasState::Closed => Ok(alias.thread_id),
@@ -464,11 +506,15 @@ impl AgentControl {
             }
         };
 
+        let metadata_nickname = self
+            .get_agent_metadata(child_thread_id)
+            .and_then(|metadata| metadata.agent_nickname);
         let request = AllocateAgentAliasRequest {
             session_id,
             parent_thread_id,
             child_thread_id,
-            nickname: session_source.and_then(SessionSource::get_nickname),
+            nickname: metadata_nickname
+                .or_else(|| session_source.and_then(SessionSource::get_nickname)),
         };
         let alias = match persistence {
             ThreadSpawnPersistence::New => agent_graph_store.allocate_agent_alias(request).await,
@@ -536,8 +582,7 @@ impl AgentControl {
             .await
             .map_err(|err| {
                 CodexErr::Fatal(format!(
-                    "failed to initialize durable agent aliases for {}: {err}",
-                    session_id
+                    "failed to initialize durable agent aliases for {session_id}: {err}"
                 ))
             })?;
         agent_graph_store
@@ -576,6 +621,7 @@ fn resolve_without_alias_store(
     target: V1AgentTarget,
     scope: V1AgentTargetScope,
     process_local_controlled: bool,
+    thread_exists: bool,
     root_thread_id: Option<ThreadId>,
 ) -> CodexResult<ThreadId> {
     if let V1AgentTarget::Nickname(nickname) = &target
@@ -592,9 +638,13 @@ fn resolve_without_alias_store(
             Ok(thread_id)
         }
         (V1AgentTarget::Id(thread_id), V1AgentTargetScope::ControlledOnly) => {
-            Err(CodexErr::UnsupportedOperation(format!(
-                "agent {thread_id} is not controlled by this root; use resume_agent to adopt it"
-            )))
+            if thread_exists {
+                Err(CodexErr::UnsupportedOperation(format!(
+                    "agent {thread_id} is not controlled by this root; use resume_agent to adopt it"
+                )))
+            } else {
+                Err(CodexErr::ThreadNotFound(thread_id))
+            }
         }
         (V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_), _) => {
             Err(CodexErr::UnsupportedOperation(

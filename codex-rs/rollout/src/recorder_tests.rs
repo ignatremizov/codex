@@ -1069,7 +1069,7 @@ async fn writer_recovery_reconciles_ordinal_after_complete_unterminated_write()
     // Model the writer state after write_all persisted the JSON object but failed on its newline.
     let mut state = RolloutWriterState {
         writer: None,
-        deferred_log_file_info: None,
+        deferred_creation: false,
         pending_items: vec![agent_message_item("after-recovery")],
         meta: None,
         cwd: home.path().to_path_buf(),
@@ -1112,7 +1112,7 @@ async fn writer_recovery_reconciles_initial_metadata_write() -> std::io::Result<
 
         let mut state = RolloutWriterState {
             writer: None,
-            deferred_log_file_info: None,
+            deferred_creation: false,
             pending_items: Vec::new(),
             meta: Some(session_meta_line.meta),
             cwd: home.path().to_path_buf(),
@@ -1199,7 +1199,7 @@ async fn failed_single_item_barrier_does_not_retry_after_filesystem_recovers() -
         writer: Some(JsonlWriter {
             file: tokio::fs::File::from_std(read_only_file),
         }),
-        deferred_log_file_info: None,
+        deferred_creation: false,
         pending_items: Vec::new(),
         meta: None,
         cwd: home.path().to_path_buf(),

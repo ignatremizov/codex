@@ -48,11 +48,18 @@ impl ResponseMock {
     }
 
     pub fn single_request(&self) -> ResponsesRequest {
-        let requests = self.requests.lock().unwrap();
-        if requests.len() != 1 {
-            panic!("expected 1 request, got {}", requests.len());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let requests = self.requests.lock().unwrap();
+            if requests.len() == 1 {
+                return requests.first().unwrap().clone();
+            }
+            if requests.len() > 1 || std::time::Instant::now() >= deadline {
+                panic!("expected 1 request, got {}", requests.len());
+            }
+            drop(requests);
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        requests.first().unwrap().clone()
     }
 
     pub fn requests(&self) -> Vec<ResponsesRequest> {
@@ -207,7 +214,13 @@ impl ResponsesRequest {
             .to_string();
         self.body_json().to_string().contains(&json_fragment)
     }
+}
 
+pub fn body_contains(request: &wiremock::Request, text: &str) -> bool {
+    ResponsesRequest(request.clone()).body_contains_text(text)
+}
+
+impl ResponsesRequest {
     pub fn tool_by_name(&self, namespace: &str, tool_name: &str) -> Option<Value> {
         namespace_child_tool(&self.body_json(), namespace, tool_name).cloned()
     }
@@ -1131,9 +1144,40 @@ where
     response_mock
 }
 
+pub async fn mount_sse_once_match_with_delay<M>(
+    server: &MockServer,
+    matcher: M,
+    body: String,
+    delay: Duration,
+) -> ResponseMock
+where
+    M: wiremock::Match + Send + Sync + 'static,
+{
+    let (mock, response_mock) = base_mock();
+    mock.and(matcher)
+        .respond_with(sse_response(body).set_delay(delay))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    response_mock
+}
+
 pub async fn mount_sse_once(server: &MockServer, body: String) -> ResponseMock {
     let (mock, response_mock) = base_mock();
     mock.respond_with(sse_response(body))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    response_mock
+}
+
+pub async fn mount_sse_once_with_delay(
+    server: &MockServer,
+    body: String,
+    delay: Duration,
+) -> ResponseMock {
+    let (mock, response_mock) = base_mock();
+    mock.respond_with(sse_response(body).set_delay(delay))
         .up_to_n_times(1)
         .mount(server)
         .await;

@@ -880,6 +880,8 @@ async fn search_finds_user_agent_control_audit_terms() {
         fork_mode: None,
         observe_commentary: Some(true),
         final_response: Some(codex_app_server_protocol::AgentFinalResponseHandling::Wake),
+        target_messages: Some(true),
+        queue_input: Some(true),
         status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,
         error: None,
     };

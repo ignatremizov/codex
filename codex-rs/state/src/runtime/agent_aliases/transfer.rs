@@ -2,7 +2,6 @@ use anyhow::Context;
 use chrono::Utc;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
-use sqlx::Acquire;
 use sqlx::Row;
 use sqlx::Sqlite;
 

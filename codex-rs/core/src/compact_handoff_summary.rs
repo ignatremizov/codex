@@ -23,8 +23,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SubAgentSource;
-use codex_history::InitialHistory;
-use codex_history::RolloutItem;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 

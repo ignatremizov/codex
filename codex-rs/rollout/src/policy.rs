@@ -112,7 +112,9 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
                 )
                 || matches!(
                     &event.item,
-                    TurnItem::AgentMessage(item) if item.has_sub_agent_completion_identity()
+                    TurnItem::AgentMessage(item)
+                        if item.has_sub_agent_completion_identity()
+                            || item.is_attributed_agent_input_presentation()
                 )
         }
         EventMsg::TokenCount(_)
@@ -210,3 +212,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         | EventMsg::CollabResumeBegin(_) => false,
     }
 }
+
+#[cfg(test)]
+#[path = "policy_tests.rs"]
+mod tests;

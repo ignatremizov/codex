@@ -1,8 +1,8 @@
 use super::*;
+use codex_history::InitialHistory;
+use codex_history::rollout::rollout_without_exact_rollback_ranges;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::InitialHistory;
-use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 use std::borrow::Cow;
 use std::collections::HashSet;
 

@@ -688,7 +688,7 @@ async fn failed_root_switch_keeps_background_requests_on_the_active_session() ->
         .store
         .lock()
         .await
-        .active_turn_id = Some("running-turn".to_string());
+        .set_active_turn_id("running-turn".to_string());
     let mut tui = crate::tui::test_support::make_test_tui()?;
 
     app.select_agents_overview_thread(&mut tui, &mut app_server, ThreadId::new())

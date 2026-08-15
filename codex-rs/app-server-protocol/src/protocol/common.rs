@@ -698,6 +698,18 @@ client_request_definitions! {
         serialization: thread_id(params.root_thread_id),
         response: v2::AgentAliasListResponse,
     },
+    #[experimental("agentQueue/list")]
+    AgentQueueList => "agentQueue/list" {
+        params: v2::AgentQueueListParams,
+        serialization: thread_id(params.root_thread_id),
+        response: v2::AgentQueueListResponse,
+    },
+    #[experimental("agentQueue/delete")]
+    AgentQueueDelete => "agentQueue/delete" {
+        params: v2::AgentQueueDeleteParams,
+        serialization: thread_id(params.root_thread_id),
+        response: v2::AgentQueueDeleteResponse,
+    },
     #[experimental("agent/control")]
     AgentControl => "agent/control" {
         params: v2::AgentControlParams,

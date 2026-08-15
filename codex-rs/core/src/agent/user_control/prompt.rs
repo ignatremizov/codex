@@ -1,5 +1,6 @@
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 
 use super::UserAgentPromptResult;
@@ -7,7 +8,8 @@ use super::UserAgentReservedPromptResult;
 use super::UserAgentResponseHandling;
 use crate::CodexThread;
 use crate::agent::AgentStatus;
-use crate::session::InputTurnAdmissionPolicy;
+use crate::agent::control::QueuedInputObservationParams;
+use crate::agent::response_observation::ResponseObservationPolicy;
 
 impl CodexThread {
     /// Admit genuine user input to a live agent controlled by this thread's root.
@@ -20,20 +22,11 @@ impl CodexThread {
         input: Vec<UserInput>,
         response_handling: UserAgentResponseHandling,
     ) -> CodexResult<UserAgentPromptResult> {
-        self.prompt_agent(
-            target,
-            input,
-            response_handling,
-            InputTurnAdmissionPolicy::AnyTurn,
-        )
-        .await
+        self.prompt_agent(target, input, response_handling).await
     }
 
-    /// Admit genuine user input only if the controlled target is still idle.
-    ///
-    /// This keeps process-local queued follow-ups from steering a newer turn that raced their
-    /// liveness check. The caller retains the queued item and retries after that turn completes.
-    pub async fn prompt_idle_agent(
+    /// Queue genuine user input as a distinct turn for a controlled target.
+    pub async fn queue_agent_prompt(
         &self,
         target: &str,
         input: Vec<UserInput>,
@@ -42,8 +35,10 @@ impl CodexThread {
         self.prompt_agent(
             target,
             input,
-            response_handling,
-            InputTurnAdmissionPolicy::IdleOnly,
+            UserAgentResponseHandling {
+                queue_input: true,
+                ..response_handling
+            },
         )
         .await
     }
@@ -53,7 +48,6 @@ impl CodexThread {
         target: &str,
         input: Vec<UserInput>,
         response_handling: UserAgentResponseHandling,
-        admission: InputTurnAdmissionPolicy,
     ) -> CodexResult<UserAgentPromptResult> {
         if input.is_empty() {
             return Err(CodexErr::InvalidRequest(
@@ -77,47 +71,48 @@ impl CodexThread {
         );
         if resumed_target {
             return self
-                .resume_closed_agent_with_input(
-                    target_thread_id,
-                    input,
-                    response_handling,
-                    admission,
-                )
+                .resume_closed_agent_with_input(target_thread_id, input, response_handling)
                 .await;
         }
 
         let task_preview = response_handling
             .exposes_task_context()
             .then(|| crate::agent::control::render_input_preview(&input));
-        let submission = match admission {
-            InputTurnAdmissionPolicy::AnyTurn => {
-                agent_control
-                    .send_user_input_observing_response(
-                        target_thread_id,
-                        input,
-                        /*parent_turn_id*/ None,
-                        self.session.presentation_id(),
-                        response_handling.into(),
-                        task_preview,
-                    )
-                    .await?
-            }
-            InputTurnAdmissionPolicy::IdleOnly => {
-                agent_control
-                    .send_idle_user_input_observing_response(
-                        target_thread_id,
-                        input,
-                        /*parent_turn_id*/ None,
-                        self.session.presentation_id(),
-                        response_handling.into(),
-                        task_preview,
-                    )
-                    .await?
-            }
-        };
+        let response_observation = ResponseObservationPolicy::from(response_handling);
+        if response_observation.queue_input() {
+            let submission = agent_control
+                .queue_input_observing_response(QueuedInputObservationParams {
+                    agent_id: target_thread_id,
+                    input,
+                    start_options: TurnStartOptions::default(),
+                    observer: self.session.presentation_id(),
+                    response_observation,
+                    task_preview,
+                    authored_selector: Some(target.to_string()),
+                })
+                .await?;
+            return Ok(UserAgentPromptResult {
+                target_thread_id,
+                submission_id: submission.queue_id.to_string(),
+                queued: true,
+                resumed_target,
+                post_admission_warning: None,
+            });
+        }
+        let submission = agent_control
+            .send_user_input_observing_response(
+                target_thread_id,
+                input,
+                /*parent_turn_id*/ None,
+                self.session.presentation_id(),
+                response_handling.into(),
+                task_preview,
+            )
+            .await?;
         Ok(UserAgentPromptResult {
             target_thread_id,
             submission_id: submission.submission_id,
+            queued: false,
             resumed_target,
             post_admission_warning: submission.post_admission_warning,
         })

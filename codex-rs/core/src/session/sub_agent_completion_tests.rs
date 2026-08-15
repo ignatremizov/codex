@@ -126,6 +126,8 @@ fn completed_wait_item(
         status: CollabAgentToolCallStatus::Completed,
         observe_commentary: None,
         wake_on_completion: None,
+        target_messages: None,
+        queue_input: None,
         deadline_at_ms: None,
         sender_thread_id,
         receiver_thread_ids: vec![child_thread_id],
@@ -386,7 +388,6 @@ async fn active_turn_abort_preserves_durable_v1_subagent_notification() {
             .clone_history()
             .await
             .raw_items()
-            .iter()
             .any(|item| matches!(
                 item,
                 ResponseItem::AgentMessage { content, .. }
@@ -577,6 +578,7 @@ async fn canonical_completion_reuses_a_previously_committed_history_item() {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(persisted_completion),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
@@ -689,8 +691,13 @@ async fn v1_completion_context_reuses_a_previously_committed_response_item() {
         })
         .expect("persisted response item");
     assert_eq!(
-        session.clone_history().await.raw_items(),
-        std::slice::from_ref(&persisted_response_item.item)
+        session
+            .clone_history()
+            .await
+            .raw_items()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![persisted_response_item.item.clone()]
     );
 }
 
@@ -969,6 +976,7 @@ async fn terminal_status_is_preserved_until_the_next_turn_starts() {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }),
     );
     publish_agent_status(

@@ -20,18 +20,20 @@ use uuid::Uuid;
 
 mod response_observation;
 
+pub(in crate::agent::control) use self::response_observation::CommentaryDeliveryRoute;
 pub(in crate::agent::control) use self::response_observation::FinalResponseObservationReplacement;
-pub(in crate::agent) use self::response_observation::ReplacedFinalResponseObservationBinding;
+pub(crate) use self::response_observation::ReplacedFinalResponseObservationBinding;
 pub(crate) use self::response_observation::ResponseObservationBinding;
 pub(crate) use self::response_observation::ResponseObservationBindingPublication;
 pub(crate) use self::response_observation::ResponseObservationDeliveryCommit;
 pub(crate) use self::response_observation::ResponseObservationDeliveryKind;
 pub(crate) use self::response_observation::ResponseObservationEventMatch;
 pub(crate) use self::response_observation::ResponseObservationPersistence;
+pub(crate) use self::response_observation::ResponseObservationTurnBinding;
 pub(in crate::agent::control) use self::response_observation::ResponseObserverRelationship;
 
 #[derive(Default)]
-pub(super) struct WaitAgentPresentations {
+pub(crate) struct WaitAgentPresentations {
     state: Mutex<PresentationState>,
     response_observation_changed: Notify,
     pub(super) watcher_terminal_changed: Notify,
@@ -50,6 +52,11 @@ struct PresentationState {
     // clear one exact ID when it proves that presentation was lost; teardown clears the set.
     terminal_turns_by_observer_child:
         HashMap<(SessionPresentationId, SessionPresentationId), HashSet<String>>,
+    // The response watcher processes events in order. Reaching a terminal event therefore proves
+    // that every preceding subscribed commentary item was delivered or handed to the active wait.
+    response_observer_terminal_turns:
+        HashSet<(SessionPresentationId, SessionPresentationId, String)>,
+    wait_commentary_turns: HashSet<(SessionPresentationId, SessionPresentationId, String)>,
     watcher_terminals: HashMap<
         (SessionPresentationId, SessionPresentationId),
         VecDeque<WatcherTerminalPresentation>,
@@ -96,6 +103,24 @@ pub(crate) enum ConditionalResponseObservationRevocation {
     Revoked { removed_bound_wake: bool },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TargetMessageAdmission {
+    /// Inject into an already-running source turn.
+    Steer,
+    /// Start the grant's one permitted idle source wake.
+    Wake(Uuid),
+    /// Join the wake already submitted for this grant before its turn becomes observable.
+    PendingWake,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TargetMessageAdmissionMode {
+    /// Steer an active source turn, or start the grant's one idle wake.
+    SteerOrWake,
+    /// Reserve a distinct source turn instead of steering active work.
+    SeparateTurn,
+}
+
 enum WaitAgentPresentationScope {
     Targeted(Vec<ThreadId>),
     AnyChild,
@@ -130,6 +155,7 @@ pub(crate) struct WaitAgentPresentationCommit {
     terminals: Vec<Arc<TerminalPresentationInner>>,
     agent_states: HashMap<ThreadId, AgentStatus>,
     pending_completion_context_ids: Vec<ResponseItemId>,
+    commentary_turns: Vec<(SessionPresentationId, String)>,
     committed: bool,
 }
 
@@ -137,6 +163,12 @@ pub(crate) struct ClaimedTargetTurn {
     pub(crate) child: SessionPresentationId,
     pub(crate) turn_id: String,
     pub(crate) response_item_id: ResponseItemId,
+}
+
+pub(crate) struct WaitCommentaryDelivery {
+    pub(crate) child: SessionPresentationId,
+    pub(crate) turn_id: String,
+    pub(crate) delivery: codex_protocol::protocol::AgentResponseCommentaryDelivery,
 }
 
 #[derive(Clone)]
@@ -211,11 +243,17 @@ impl AgentControl {
                 state
                     .terminal_turns_by_observer_child
                     .retain(|(_, terminal_child), _| *terminal_child != child);
+                state
+                    .response_observer_terminal_turns
+                    .retain(|(_, terminal_child, _)| *terminal_child != child);
             }
             SpawnedThreadRelease::AbsentThread(child_thread_id) => {
                 state
                     .terminal_turns_by_observer_child
                     .retain(|(_, child), _| child.thread_id != child_thread_id);
+                state
+                    .response_observer_terminal_turns
+                    .retain(|(_, child, _)| child.thread_id != child_thread_id);
             }
         }
     }
@@ -559,6 +597,9 @@ impl AgentControl {
                     .remove(&observer_child);
             }
         }
+        state
+            .response_observer_terminal_turns
+            .remove(&(parent, child, turn_id.to_string()));
         if let Some(in_flight) = state.in_flight_watcher_terminals.get_mut(&observer_child) {
             in_flight.retain(|presentation| {
                 presentation
@@ -755,6 +796,7 @@ impl WaitAgentPresentationGuard {
             terminals: exact,
             agent_states,
             pending_completion_context_ids: Vec::new(),
+            commentary_turns: Vec::new(),
             committed: false,
         }
     }
@@ -796,6 +838,7 @@ impl WaitAgentPresentationGuard {
             terminals,
             agent_states,
             pending_completion_context_ids: Vec::new(),
+            commentary_turns: Vec::new(),
             committed: false,
         }
     }
@@ -840,6 +883,7 @@ impl WaitAgentPresentationGuard {
             terminals,
             agent_states,
             pending_completion_context_ids: Vec::new(),
+            commentary_turns: Vec::new(),
             committed: false,
         }
     }
@@ -898,6 +942,9 @@ impl CompletionWatcherRegistration {
             state
                 .response_observation_by_observer_child
                 .remove(&observer_child);
+            state
+                .response_observer_terminal_turns
+                .retain(|(parent, child, _)| (*parent, *child) != observer_child);
             state.watcher_terminals.remove(&observer_child);
             state.in_flight_watcher_terminals.remove(&observer_child);
             state
@@ -986,6 +1033,11 @@ fn remove_response_observation_for_presentation(
     state
         .response_observation_by_observer_child
         .remove(&observer_child);
+    state
+        .response_observer_terminal_turns
+        .retain(|(terminal_parent, terminal_child, _)| {
+            (*terminal_parent, *terminal_child) != observer_child
+        });
     state.watcher_terminals.remove(&observer_child);
     state.in_flight_watcher_terminals.remove(&observer_child);
     state
@@ -1048,6 +1100,15 @@ impl WaitAgentPresentationCommit {
             .collect()
     }
 
+    pub(crate) fn claim_commentary_turns(&mut self, target_turns: &[ClaimedTargetTurn]) {
+        self.commentary_turns = target_turns
+            .iter()
+            .map(|target_turn| (target_turn.child, target_turn.turn_id.clone()))
+            .collect();
+        self.presentations
+            .claim_wait_commentary_turns(self.parent, self.commentary_turns.as_slice());
+    }
+
     pub(crate) fn commit(mut self) {
         if self
             .presentations
@@ -1060,6 +1121,8 @@ impl WaitAgentPresentationCommit {
                 terminal.release(self.wait_id);
             }
         }
+        self.presentations
+            .release_wait_commentary_turns(self.parent, &self.commentary_turns);
         self.committed = true;
     }
 }
@@ -1072,6 +1135,8 @@ impl Drop for WaitAgentPresentationCommit {
             for terminal in &self.terminals {
                 terminal.release(self.wait_id);
             }
+            self.presentations
+                .release_wait_commentary_turns(self.parent, &self.commentary_turns);
         }
     }
 }
@@ -1212,6 +1277,53 @@ fn claimable_watcher_terminal_presentations(
 }
 
 impl WaitAgentPresentations {
+    fn claim_wait_commentary_turns(
+        &self,
+        parent: SessionPresentationId,
+        target_turns: &[(SessionPresentationId, String)],
+    ) {
+        let mut state = self.state();
+        for (child, turn_id) in target_turns {
+            state
+                .wait_commentary_turns
+                .insert((parent, *child, turn_id.clone()));
+            if let Some(observation) = state
+                .response_observation_by_observer_child
+                .get_mut(&(parent, *child))
+                .and_then(|relationship| relationship.turns.get_mut(turn_id))
+                && observation.commentary_delivery.is_some()
+            {
+                observation.commentary_delivery_route = CommentaryDeliveryRoute::Wait;
+            }
+        }
+        drop(state);
+        self.response_observation_changed.notify_waiters();
+    }
+
+    fn release_wait_commentary_turns(
+        &self,
+        parent: SessionPresentationId,
+        target_turns: &[(SessionPresentationId, String)],
+    ) {
+        let mut state = self.state();
+        for (child, turn_id) in target_turns {
+            state
+                .wait_commentary_turns
+                .remove(&(parent, *child, turn_id.clone()));
+            if let Some(observation) = state
+                .response_observation_by_observer_child
+                .get_mut(&(parent, *child))
+                .and_then(|relationship| relationship.turns.get_mut(turn_id))
+                && observation.commentary_delivery_route == CommentaryDeliveryRoute::Wait
+            {
+                observation.commentary_delivery_route = CommentaryDeliveryRoute::Mailbox;
+            }
+        }
+        drop(state);
+        self.response_observation_changed.notify_waiters();
+        self.watcher_terminal_changed.notify_waiters();
+    }
+
     fn state(&self) -> std::sync::MutexGuard<'_, PresentationState> {
         self.state
             .lock()
@@ -1246,6 +1358,9 @@ impl WaitAgentPresentations {
         state
             .response_observation_by_observer_child
             .retain(|(_, child), _| child.thread_id != child_thread_id);
+        state
+            .response_observer_terminal_turns
+            .retain(|(_, child, _)| child.thread_id != child_thread_id);
         state
             .watcher_terminals
             .retain(|(_, child), _| child.thread_id != child_thread_id);

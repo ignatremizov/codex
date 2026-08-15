@@ -20,21 +20,110 @@ mod prompt;
 mod spawn;
 
 /// Response handling requested by a user-authored agent operation.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum UserAgentResponseHandling {
-    /// Deliver the final response to the source model without waking an idle source.
-    #[default]
-    Passive,
-    /// Also deliver the first complete commentary item.
-    Commentary,
-    /// Deliver the final response and wake an idle source.
-    Wake,
-    /// Keep the final response presentation-only.
-    Presentation,
-    /// Deliver first commentary, then wake for the final response.
-    CommentaryWake,
-    /// Deliver first commentary while keeping the final response presentation-only.
-    CommentaryPresentation,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserAgentResponseHandling {
+    commentary: bool,
+    final_response: FinalResponseObservation,
+    target_messages: bool,
+    queue_input: bool,
+}
+
+impl Default for UserAgentResponseHandling {
+    fn default() -> Self {
+        Self::Passive
+    }
+}
+
+#[allow(non_upper_case_globals)]
+impl UserAgentResponseHandling {
+    pub const Passive: Self = Self::new(
+        /*commentary*/ false,
+        FinalResponseObservation::Passive,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+    pub const Commentary: Self = Self::new(
+        /*commentary*/ true,
+        FinalResponseObservation::Passive,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+    pub const Wake: Self = Self::new(
+        /*commentary*/ false,
+        FinalResponseObservation::Wake,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+    pub const Presentation: Self = Self::new(
+        /*commentary*/ false,
+        FinalResponseObservation::PresentationOnly,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+    pub const CommentaryWake: Self = Self::new(
+        /*commentary*/ true,
+        FinalResponseObservation::Wake,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+    pub const CommentaryPresentation: Self = Self::new(
+        /*commentary*/ true,
+        FinalResponseObservation::PresentationOnly,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+
+    const fn new(
+        commentary: bool,
+        final_response: FinalResponseObservation,
+        target_messages: bool,
+        queue_input: bool,
+    ) -> Self {
+        Self {
+            commentary,
+            final_response,
+            target_messages,
+            queue_input,
+        }
+    }
+
+    pub fn from_parts(
+        commentary: bool,
+        final_response: UserAgentFinalResponseHandling,
+        target_messages: bool,
+        queue_input: bool,
+    ) -> Self {
+        let final_response = match final_response {
+            UserAgentFinalResponseHandling::None => FinalResponseObservation::None,
+            UserAgentFinalResponseHandling::Passive => FinalResponseObservation::Passive,
+            UserAgentFinalResponseHandling::Wake => FinalResponseObservation::Wake,
+            UserAgentFinalResponseHandling::Presentation => {
+                FinalResponseObservation::PresentationOnly
+            }
+        };
+        Self::new(commentary, final_response, target_messages, queue_input)
+    }
+
+    /// Whether the target turn's first complete commentary item is delivered.
+    pub fn commentary(self) -> bool {
+        self.commentary
+    }
+
+    /// Final-response handling for the target turn.
+    pub fn final_response(self) -> UserAgentFinalResponseHandling {
+        self.final_response.into()
+    }
+
+    /// Whether the target turn may send attributed input back to the source.
+    pub fn target_messages(self) -> bool {
+        self.target_messages
+    }
+
+    /// Whether supplied input and its model-visible final response cross distinct next-turn
+    /// boundaries.
+    pub fn queue_input(self) -> bool {
+        self.queue_input
+    }
 }
 
 /// Conversation history copied into a user-spawned child.
@@ -109,32 +198,18 @@ impl From<FinalResponseObservation> for UserAgentFinalResponseHandling {
 
 impl From<UserAgentResponseHandling> for ResponseObservationPolicy {
     fn from(value: UserAgentResponseHandling) -> Self {
-        match value {
-            UserAgentResponseHandling::Passive => Self::default(),
-            UserAgentResponseHandling::Commentary => {
-                Self::from_parts(/*commentary*/ true, FinalResponseObservation::Passive)
-            }
-            UserAgentResponseHandling::Wake => {
-                Self::from_parts(/*commentary*/ false, FinalResponseObservation::Wake)
-            }
-            UserAgentResponseHandling::Presentation => Self::from_parts(
-                /*commentary*/ false,
-                FinalResponseObservation::PresentationOnly,
-            ),
-            UserAgentResponseHandling::CommentaryWake => {
-                Self::from_parts(/*commentary*/ true, FinalResponseObservation::Wake)
-            }
-            UserAgentResponseHandling::CommentaryPresentation => Self::from_parts(
-                /*commentary*/ true,
-                FinalResponseObservation::PresentationOnly,
-            ),
-        }
+        Self::from_turn_parts(
+            value.commentary,
+            value.final_response,
+            value.target_messages,
+            value.queue_input,
+        )
     }
 }
 
 impl UserAgentResponseHandling {
     fn exposes_task_context(self) -> bool {
-        ResponseObservationPolicy::from(self).has_model_visible_delivery()
+        ResponseObservationPolicy::from(self).exposes_source_model_context()
     }
 }
 
@@ -147,6 +222,41 @@ impl CodexThread {
             .resolve_resumable_agent_target(target)
             .await
     }
+
+    /// List queued turns owned by this thread's current agent-root control plane.
+    pub fn list_user_agent_queued_turns(&self) -> Vec<UserAgentQueuedTurn> {
+        self.session
+            .services
+            .agent_control
+            .list_queued_agent_turns()
+            .into_iter()
+            .map(|turn| UserAgentQueuedTurn {
+                id: turn.id.to_string(),
+                source_thread_id: turn.source_thread_id,
+                target_thread_id: turn.target_thread_id,
+                input: turn.input,
+                prompt_preview: turn.prompt_preview,
+                response_handling: UserAgentResponseHandling::new(
+                    turn.response_observation.commentary(),
+                    turn.response_observation.final_response(),
+                    turn.response_observation.target_messages(),
+                    turn.response_observation.queue_input(),
+                ),
+                authored_selector: turn.authored_selector,
+            })
+            .collect()
+    }
+
+    /// Remove one pending queued turn from this thread's current agent-root control plane.
+    pub fn cancel_user_agent_queued_turn(&self, id: &str) -> CodexResult<bool> {
+        let id = uuid::Uuid::parse_str(id)
+            .map_err(|err| CodexErr::InvalidRequest(format!("invalid agent queue id: {err}")))?;
+        Ok(self
+            .session
+            .services
+            .agent_control
+            .cancel_queued_agent_turn(id))
+    }
 }
 
 /// Canonical result of admitting a user-authored prompt to a live agent.
@@ -156,10 +266,31 @@ pub struct UserAgentPromptResult {
     pub target_thread_id: ThreadId,
     /// Submission that Core durably admitted to the target turn.
     pub submission_id: String,
+    /// Whether target-owned queue admission was selected for this input.
+    pub queued: bool,
     /// Whether prompt admission first reopened a closed controlled target.
     pub resumed_target: bool,
     /// Non-retryable degradation that occurred after target input admission.
     pub post_admission_warning: Option<String>,
+}
+
+/// Process-lifetime queued input waiting for its own target turn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserAgentQueuedTurn {
+    /// Stable queue-entry identity.
+    pub id: String,
+    /// Thread that authored the queued input.
+    pub source_thread_id: ThreadId,
+    /// Controlled thread that will admit the input.
+    pub target_thread_id: ThreadId,
+    /// Complete structured input retained until admission.
+    pub input: Vec<codex_protocol::user_input::UserInput>,
+    /// Compact model-facing input text with internal route fragments removed.
+    pub prompt_preview: String,
+    /// Target-turn handling that will bind when the entry is admitted.
+    pub response_handling: UserAgentResponseHandling,
+    /// Selector text authored by the user, when this entry came from `/agent queue`.
+    pub authored_selector: Option<String>,
 }
 
 /// Canonical result of admitting input under a reserved next-turn response policy.

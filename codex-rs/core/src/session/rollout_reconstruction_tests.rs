@@ -3,8 +3,8 @@ use super::*;
 use super::tests::build_world_state_from_turn_context;
 use super::tests::make_session_and_context;
 use super::tests::raw_history_items;
-use crate::context::CompactionSummary;
 use crate::context::CompactedImageOmission;
+use crate::context::CompactionSummary;
 use crate::context::ContextualUserFragment;
 use crate::context::standalone_compacted_image_omission_message;
 use codex_history::CompactedItem;
@@ -24,11 +24,11 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::WorldStateItem;
 use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
 use codex_protocol::security_risk::SecurityRiskScore;
 use codex_rollout::ModelContextScan;
 use codex_rollout::ModelContextScanProgress;
 use core_test_support::responses::strip_metadata_from_items;
-use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -140,6 +140,9 @@ async fn reconstruction_restores_promoted_task_from_atomic_observation_snapshot(
         commentary_after_sequences: Vec::new(),
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
+        target_messages: false,
+        queue_delivery: false,
+        message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::PresentationOnly,
         final_delivery: AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: None,
@@ -154,7 +157,7 @@ async fn reconstruction_restores_promoted_task_from_atomic_observation_snapshot(
         .reconstruct_history_from_rollout(&turn_context, &rollout_items)
         .await;
 
-    assert_eq!(reconstructed.history, vec![task]);
+    assert_eq!(reconstructed.history, annotated(vec![task]));
 }
 
 #[tokio::test]
@@ -379,9 +382,9 @@ async fn reconstruction_certifies_a_media_free_legacy_checkpoint_for_manual_vacu
             message: "superseded image checkpoint".to_string(),
             replacement_history: Some(annotated(vec![image_message(vec![
                 ContentItem::InputImage {
-                image_url: "data:image/png;base64,superseded".to_string(),
-                detail: None,
-            },
+                    image_url: "data:image/png;base64,superseded".to_string(),
+                    detail: None,
+                },
             ])])),
             window_number: Some(1),
             ..Default::default()
@@ -468,6 +471,7 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -539,6 +543,7 @@ async fn reconstruction_replays_full_history_when_only_checkpoint_is_rolled_back
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -627,6 +632,7 @@ async fn reconstruction_does_not_roll_back_an_out_of_band_representation_repair(
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -681,7 +687,7 @@ async fn representation_repair_without_companion_records_preserves_existing_base
             ..Default::default()
         }),
         RolloutItem::WorldState(WorldStateItem::full(
-            world_state_snapshot.clone().into_value(),
+            world_state_snapshot.clone().into_object(),
         )),
         RolloutItem::TurnContext(reference_context.clone()),
         RolloutItem::Compacted(CompactedItem {
@@ -727,7 +733,7 @@ async fn representation_repair_applies_its_out_of_band_companion_records() {
             ..Default::default()
         }),
         RolloutItem::WorldState(WorldStateItem::full(
-            world_state_snapshot.clone().into_value(),
+            world_state_snapshot.clone().into_object(),
         )),
         RolloutItem::TurnContext(reference_context.clone()),
     ];
@@ -1233,7 +1239,7 @@ async fn newer_exact_rollback_removes_legacy_marker_in_its_raw_range() {
 
     assert_eq!(
         reconstructed.history,
-        vec![surviving_user, surviving_assistant]
+        annotated(vec![surviving_user, surviving_assistant])
     );
 }
 

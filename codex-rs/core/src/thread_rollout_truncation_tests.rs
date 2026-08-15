@@ -473,12 +473,12 @@ fn instruction_positions_include_user_event_before_model_message() {
             message: "initial".to_string(),
             ..Default::default()
         })),
-        RolloutItem::ResponseItem(user_msg("initial")),
+        RolloutItem::ResponseItem(user_msg("initial").into()),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
             message: "steer".to_string(),
             ..Default::default()
         })),
-        RolloutItem::ResponseItem(user_msg("steer")),
+        RolloutItem::ResponseItem(user_msg("steer").into()),
     ];
 
     assert_eq!(instruction_positions_in_rollout(&rollout), vec![1, 3]);

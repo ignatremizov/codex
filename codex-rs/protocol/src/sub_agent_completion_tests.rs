@@ -2,8 +2,10 @@ use pretty_assertions::assert_eq;
 
 use super::SubAgentCompletionModelVisibility;
 use super::SubAgentCompletionStatus;
+use super::is_attributed_agent_message_response_item_id;
 use super::is_sub_agent_completion_context_response_item_id;
 use super::is_user_agent_task_context_response_item_id;
+use super::new_attributed_agent_message_response_item_id;
 use super::new_sub_agent_completion_context_response_item_id;
 use super::new_sub_agent_completion_response_item_id;
 use super::new_user_agent_task_context_response_item_id;
@@ -14,6 +16,7 @@ use super::sub_agent_completion_model_visibility_from_response_item_id;
 use super::sub_agent_completion_status_from_response_item_id;
 use super::sub_agent_completion_transcript;
 use super::sub_agent_completion_transcript_parts;
+use crate::ResponseItemId;
 use crate::protocol::AgentStatus;
 
 #[test]
@@ -93,6 +96,22 @@ fn user_agent_task_context_ids_are_distinct_and_validated() {
 }
 
 #[test]
+fn attributed_agent_message_ids_are_distinct_and_validated() {
+    let id = new_attributed_agent_message_response_item_id();
+
+    assert!(id.starts_with("msg_a_"));
+    assert!(id.len() <= 64, "{id}");
+    assert!(is_attributed_agent_message_response_item_id(&id));
+    assert!(!is_attributed_agent_message_response_item_id(
+        "msg_a_not-a-uuid"
+    ));
+    assert_eq!(
+        ordinary_agent_message_response_item_id(&id),
+        format!("agent_{id}")
+    );
+}
+
+#[test]
 fn canonical_completion_round_trips_and_skips_lossy_legacy_projection() {
     let (id, text) = sub_agent_completion_transcript(
         "/root/reviewer",
@@ -148,5 +167,44 @@ fn canonical_completion_round_trips_and_skips_lossy_legacy_projection() {
     assert_eq!(
         ordinary_agent_message_response_item_id(&hidden_untrusted.id),
         format!("agent_{}", hidden_untrusted.id)
+    );
+}
+
+#[test]
+fn model_context_completion_projects_with_a_stable_visible_identity() {
+    let source_id = "amsg_01900000-0000-7000-8000-000000000001";
+    let status = AgentStatus::Completed(Some("Finished reviewing.".to_string()));
+
+    let first = super::sub_agent_completion_transcript_from_agent_message_id(
+        source_id,
+        "01900000-0000-7000-8000-000000000002",
+        &status,
+    )
+    .expect("valid model-context completion");
+    let second = super::sub_agent_completion_transcript_from_agent_message_id(
+        source_id,
+        "01900000-0000-7000-8000-000000000002",
+        &status,
+    )
+    .expect("valid model-context completion");
+
+    assert_eq!(first, second);
+    assert_eq!(
+        first,
+        (
+            ResponseItemId::from_server(
+                "msg_c_01900000-0000-7000-8000-000000000001".to_string()
+            ),
+            "Agent final answer from `01900000-0000-7000-8000-000000000002`:\n\nFinished reviewing."
+                .to_string(),
+        )
+    );
+    assert!(
+        super::sub_agent_completion_transcript_from_agent_message_id(
+            "amsg_x_01900000-0000-7000-8000-000000000001",
+            "01900000-0000-7000-8000-000000000002",
+            &status,
+        )
+        .is_none()
     );
 }

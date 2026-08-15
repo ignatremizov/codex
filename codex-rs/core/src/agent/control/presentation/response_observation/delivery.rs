@@ -11,6 +11,16 @@ enum CommentaryEventBoundary<'a> {
     },
 }
 
+pub(crate) struct ResponseObservationTurnBinding<'a> {
+    pub(crate) parent: SessionPresentationId,
+    pub(crate) child: SessionPresentationId,
+    pub(crate) turn_id: &'a str,
+    pub(crate) binding: ResponseObservationBinding,
+    pub(crate) commentary_boundary: Option<(u64, Option<String>)>,
+    pub(crate) task_preview: Option<String>,
+    pub(crate) publication: ResponseObservationBindingPublication,
+}
+
 impl AgentControl {
     #[cfg(test)]
     pub(crate) fn prepare_commentary_observation_delivery(
@@ -123,6 +133,7 @@ impl AgentControl {
             response_item_id: ResponseItemId::new("amsg"),
         };
         observation.commentary_delivery = Some(delivery.clone());
+        observation.commentary_delivery_route = CommentaryDeliveryRoute::Undecided;
         Some(delivery)
     }
 
@@ -132,21 +143,22 @@ impl AgentControl {
         child: SessionPresentationId,
         turn_id: &str,
         response_item_id: &ResponseItemId,
-    ) -> (FinalResponseObservation, Option<ResponseItemId>) {
+    ) -> (FinalResponseObservation, Option<ResponseItemId>, bool) {
         let mut state = self.wait_agent_presentations.state();
         let Some(observation) = state
             .response_observation_by_observer_child
             .get_mut(&(parent, child))
             .and_then(|relationship| relationship.turns.get_mut(turn_id))
         else {
-            return (FinalResponseObservation::None, None);
+            return (FinalResponseObservation::None, None, false);
         };
         let final_response = observation.final_response;
+        let queue_delivery = observation.queue_delivery;
         if matches!(
             final_response,
             FinalResponseObservation::None | FinalResponseObservation::PresentationOnly
         ) {
-            return (final_response, None);
+            return (final_response, None, queue_delivery);
         }
         let response_item_id = observation
             .final_delivery_response_item_id
@@ -156,9 +168,9 @@ impl AgentControl {
             .committed_delivery_response_item_ids
             .contains(&response_item_id)
         {
-            return (FinalResponseObservation::None, None);
+            return (FinalResponseObservation::None, None, queue_delivery);
         }
-        (final_response, Some(response_item_id))
+        (final_response, Some(response_item_id), queue_delivery)
     }
 
     pub(crate) fn response_observation_commentary_delivery(
@@ -195,6 +207,155 @@ impl AgentControl {
                             .map(|delivery| (turn_id.clone(), delivery))
                     })
             })
+    }
+
+    pub(in crate::agent::control) fn route_response_observer_commentary(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        turn_id: &str,
+    ) -> CommentaryDeliveryRoute {
+        let mut state = self.wait_agent_presentations.state();
+        let wait_active = state
+            .active_targeted_waits
+            .get(&(parent, child.thread_id))
+            .is_some_and(|waits| !waits.is_empty())
+            || state
+                .active_any_child_waits
+                .get(&parent)
+                .is_some_and(|waits| !waits.is_empty())
+            || state
+                .wait_commentary_turns
+                .contains(&(parent, child, turn_id.to_string()));
+        let route = if wait_active {
+            CommentaryDeliveryRoute::Wait
+        } else {
+            CommentaryDeliveryRoute::Mailbox
+        };
+        if let Some(observation) = state
+            .response_observation_by_observer_child
+            .get_mut(&(parent, child))
+            .and_then(|relationship| relationship.turns.get_mut(turn_id))
+            && observation.commentary_delivery.is_some()
+            && observation.commentary_delivery_route == CommentaryDeliveryRoute::Undecided
+        {
+            observation.commentary_delivery_route = route;
+        }
+        let route = state
+            .response_observation_by_observer_child
+            .get(&(parent, child))
+            .and_then(|relationship| relationship.turns.get(turn_id))
+            .map_or(CommentaryDeliveryRoute::Mailbox, |observation| {
+                observation.commentary_delivery_route
+            });
+        drop(state);
+        self.wait_agent_presentations
+            .response_observation_changed
+            .notify_waiters();
+        route
+    }
+
+    pub(crate) fn mark_response_observer_terminal_processed(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        turn_id: &str,
+    ) {
+        self.wait_agent_presentations
+            .state()
+            .response_observer_terminal_turns
+            .insert((parent, child, turn_id.to_string()));
+        self.wait_agent_presentations
+            .response_observation_changed
+            .notify_waiters();
+    }
+
+    /// Claims subscribed commentary from target turns whose response watcher selected the active
+    /// wait as its delivery boundary.
+    pub(crate) async fn wait_commentary_before_terminal(
+        &self,
+        parent: SessionPresentationId,
+        target_turns: &[ClaimedTargetTurn],
+    ) -> Vec<WaitCommentaryDelivery> {
+        loop {
+            let changed = self
+                .wait_agent_presentations
+                .response_observation_changed
+                .notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let (commentary, commentary_pending) = {
+                let state = self.wait_agent_presentations.state();
+                let mut commentary = Vec::new();
+                let mut pending = false;
+                for target_turn in target_turns {
+                    let Some(observation) = state
+                        .response_observation_by_observer_child
+                        .get(&(parent, target_turn.child))
+                        .and_then(|relationship| relationship.turns.get(&target_turn.turn_id))
+                    else {
+                        continue;
+                    };
+                    if observation.commentary_delivery_route == CommentaryDeliveryRoute::Wait
+                        && let Some(delivery) = observation.commentary_delivery.clone()
+                    {
+                        commentary.push(WaitCommentaryDelivery {
+                            child: target_turn.child,
+                            turn_id: target_turn.turn_id.clone(),
+                            delivery,
+                        });
+                    } else if (!observation.commentary_admissions.is_empty()
+                        || (observation.commentary_delivery.is_some()
+                            && observation.commentary_delivery_route
+                                == CommentaryDeliveryRoute::Undecided))
+                        && !state.response_observer_terminal_turns.contains(&(
+                            parent,
+                            target_turn.child,
+                            target_turn.turn_id.clone(),
+                        ))
+                    {
+                        pending = true;
+                    }
+                }
+                (commentary, pending)
+            };
+            if !commentary_pending {
+                return commentary;
+            }
+            changed.as_mut().await;
+        }
+    }
+
+    pub(crate) fn release_wait_commentary_delivery(
+        &self,
+        parent: SessionPresentationId,
+        commentary: &WaitCommentaryDelivery,
+    ) {
+        let mut state = self.wait_agent_presentations.state();
+        state
+            .wait_commentary_turns
+            .remove(&(parent, commentary.child, commentary.turn_id.clone()));
+        if let Some(observation) = state
+            .response_observation_by_observer_child
+            .get_mut(&(parent, commentary.child))
+            .and_then(|relationship| relationship.turns.get_mut(&commentary.turn_id))
+            && observation
+                .commentary_delivery
+                .as_ref()
+                .is_some_and(|delivery| {
+                    delivery.response_item_id == commentary.delivery.response_item_id
+                })
+            && observation.commentary_delivery_route == CommentaryDeliveryRoute::Wait
+        {
+            observation.commentary_delivery_route = CommentaryDeliveryRoute::Mailbox;
+        }
+        drop(state);
+        self.wait_agent_presentations
+            .response_observation_changed
+            .notify_waiters();
+        self.wait_agent_presentations
+            .watcher_terminal_changed
+            .notify_waiters();
     }
 
     pub(crate) fn commit_final_response_observation_delivery(
@@ -241,6 +402,7 @@ impl AgentControl {
                     return;
                 }
                 observation.commentary_delivery = None;
+                observation.commentary_delivery_route = CommentaryDeliveryRoute::Undecided;
             }
             ResponseObservationDeliveryKind::Final => {
                 if observation.final_delivery_response_item_id.as_ref()
@@ -286,6 +448,9 @@ impl AgentControl {
             commentary_after_sequences: Vec::new(),
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
+            target_messages: false,
+            queue_delivery: false,
+            message_wake_turn_id: None,
             baseline_final_delivery,
             final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery_response_item_id: None,
@@ -303,27 +468,30 @@ impl AgentControl {
         turn_id: &str,
         binding: ResponseObservationBinding,
     ) {
-        self.bind_response_observation_turn_at_sequence(
+        self.bind_response_observation_turn_at_sequence(ResponseObservationTurnBinding {
             parent,
             child,
             turn_id,
             binding,
-            /*commentary_boundary*/ None,
-            /*task_preview*/ None,
-            ResponseObservationBindingPublication::Immediate,
-        );
+            commentary_boundary: None,
+            task_preview: None,
+            publication: ResponseObservationBindingPublication::Immediate,
+        });
     }
 
     pub(crate) fn bind_response_observation_turn_at_sequence(
         &self,
-        parent: SessionPresentationId,
-        child: SessionPresentationId,
-        turn_id: &str,
-        binding: ResponseObservationBinding,
-        commentary_boundary: Option<(u64, Option<String>)>,
-        task_preview: Option<String>,
-        publication: ResponseObservationBindingPublication,
+        binding: ResponseObservationTurnBinding<'_>,
     ) {
+        let ResponseObservationTurnBinding {
+            parent,
+            child,
+            turn_id,
+            binding,
+            commentary_boundary,
+            task_preview,
+            publication,
+        } = binding;
         let mut state = self.wait_agent_presentations.state();
         let relationship = state
             .response_observation_by_observer_child
@@ -357,11 +525,17 @@ impl AgentControl {
                     .extend(pending.commentary_admissions.iter().cloned());
                 if current.commentary_delivery.is_none() {
                     current.commentary_delivery = pending.commentary_delivery.clone();
+                    current.commentary_delivery_route = pending.commentary_delivery_route;
                 }
                 if pending.task_preview.is_some() {
                     current.task_preview = pending.task_preview.clone();
                 }
                 current.final_response = current.final_response.max(pending.final_response);
+                current.target_messages |= pending.target_messages;
+                current.queue_delivery |= pending.queue_delivery;
+                if current.message_wake_turn_id.is_none() {
+                    current.message_wake_turn_id = pending.message_wake_turn_id.clone();
+                }
                 if current.final_delivery_response_item_id.is_none() {
                     current.final_delivery_response_item_id =
                         pending.final_delivery_response_item_id.clone();
@@ -478,15 +652,15 @@ impl AgentControl {
         };
         if relationship.pending_next_turn.is_some() {
             drop(state);
-            self.bind_response_observation_turn_at_sequence(
+            self.bind_response_observation_turn_at_sequence(ResponseObservationTurnBinding {
                 parent,
                 child,
                 turn_id,
-                ResponseObservationBinding::NextTurn,
-                Some((sequence.saturating_add(1), None)),
-                /*task_preview*/ None,
-                ResponseObservationBindingPublication::Immediate,
-            );
+                binding: ResponseObservationBinding::NextTurn,
+                commentary_boundary: Some((sequence.saturating_add(1), None)),
+                task_preview: None,
+                publication: ResponseObservationBindingPublication::Immediate,
+            });
             return true;
         }
         if relationship.baseline_final_response == FinalResponseObservation::None {

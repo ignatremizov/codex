@@ -25,6 +25,7 @@ use codex_thread_store::PersistContext;
 
 mod agent_alias;
 mod agent_control;
+mod agent_queue;
 
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 pub(super) const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -797,6 +798,24 @@ impl ThreadRequestProcessor {
         params: AgentAliasListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.agent_alias_list_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn agent_queue_list(
+        &self,
+        params: AgentQueueListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.agent_queue_list_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn agent_queue_delete(
+        &self,
+        params: AgentQueueDeleteParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.agent_queue_delete_response_inner(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -2977,8 +2996,19 @@ impl ThreadRequestProcessor {
             thread.session_id.clone_from(&fallback_thread.session_id);
             thread.ephemeral = fallback_thread.ephemeral;
             thread
+                .parent_thread_id
+                .clone_from(&fallback_thread.parent_thread_id);
+            thread
+                .agent_nickname
+                .clone_from(&fallback_thread.agent_nickname);
+            thread.agent_role.clone_from(&fallback_thread.agent_role);
+            thread.source.clone_from(&fallback_thread.source);
+            thread
                 .can_accept_direct_input
                 .clone_from(&fallback_thread.can_accept_direct_input);
+            thread
+                .thread_source
+                .clone_from(&fallback_thread.thread_source);
             thread
         } else {
             fallback_thread
@@ -3874,6 +3904,7 @@ impl ThreadRequestProcessor {
                         return Ok(());
                     }
                 };
+                thread.session_id = session_configured.session_id.to_string();
                 thread.thread_source = codex_thread
                     .config_snapshot()
                     .await

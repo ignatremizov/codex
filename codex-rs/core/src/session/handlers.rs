@@ -10,6 +10,7 @@ use tracing::Instrument;
 use tracing::debug_span;
 use tracing::info_span;
 
+use crate::session::TurnInput;
 use crate::session::inter_agent_communication::InterAgentCommunicationRecord;
 use crate::session::rollout_reconstruction::RolloutReconstructionRepairPersistence;
 use crate::session::session::Session;
@@ -29,6 +30,7 @@ use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
 use codex_app_server_protocol::materialized_rollback_start;
 use codex_history::RolloutItem;
+use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -85,6 +87,78 @@ pub async fn realtime_conversation_list_voices(sess: &Session, sub_id: String) {
     .await;
 }
 
+pub async fn user_input_or_turn(
+    sess: &Arc<Session>,
+    sub_id: String,
+    op: Op,
+    client_user_message_id: Option<String>,
+    parent_turn_id: Option<String>,
+    root_turn_id: Option<String>,
+) {
+    let request = match op {
+        Op::UserInput {
+            items,
+            final_output_json_schema,
+            responsesapi_client_metadata,
+            additional_context,
+            thread_settings,
+        } => codex_protocol::turn_input::TurnInputRequest::new(
+            codex_protocol::turn_input::TurnInput::UserInput {
+                content: items,
+                client_id: client_user_message_id,
+            },
+        )
+        .with_thread_settings(thread_settings)
+        .with_additional_context(additional_context)
+        .with_responses_metadata(responsesapi_client_metadata)
+        .on_start(codex_protocol::turn_input::TurnStartOptions {
+            final_output_json_schema,
+            parent_turn_id,
+            root_turn_id,
+            ..Default::default()
+        }),
+        Op::AgentInput {
+            items,
+            presentation,
+        } => codex_protocol::turn_input::TurnInputRequest::new(
+            codex_protocol::turn_input::TurnInput::AgentInput {
+                content: items,
+                presentation,
+            },
+        )
+        .on_start(codex_protocol::turn_input::TurnStartOptions {
+            parent_turn_id,
+            root_turn_id,
+            ..Default::default()
+        }),
+        _ => unreachable!(),
+    };
+    let result = turn_input::handle(
+        sess,
+        request,
+        codex_protocol::turn_input::TurnInputMode::StartOrSteer,
+        sub_id.clone(),
+    )
+    .await;
+    let error = match result {
+        Ok(
+            codex_protocol::turn_input::TurnInputSubmission::Started { .. }
+            | codex_protocol::turn_input::TurnInputSubmission::Steered { .. },
+        ) => None,
+        Ok(codex_protocol::turn_input::TurnInputSubmission::NotSubmitted { reason }) => Some(
+            CodexErr::InvalidRequest(format!("turn input was not submitted: {reason:?}")),
+        ),
+        Err(error) => Some(error),
+    };
+    if let Some(error) = error {
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::Error(error.to_error_event(/*message_prefix*/ None)),
+        })
+        .await;
+    }
+}
+
 /// Queues an inter-agent message, then lets the shared pending-work scheduler
 /// decide whether an idle session should start a regular turn.
 pub async fn inter_agent_communication(
@@ -94,6 +168,18 @@ pub async fn inter_agent_communication(
     start_options: codex_protocol::turn_input::TurnStartOptions,
 ) {
     let trigger_turn = communication.trigger_turn;
+    let defer_to_next_turn = communication.defer_to_next_turn;
+    if defer_to_next_turn {
+        sess.input_queue
+            .queue_turn_inputs_for_next_turn(vec![TurnInput::InterAgentCommunication(
+                communication,
+            )])
+            .await;
+        crate::agent_communication::emit_agent_communication_receive(&sub_id);
+        sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
+            .await;
+        return;
+    }
     sess.input_queue
         .enqueue_mailbox_communication(communication, start_options)
         .await;
@@ -1077,6 +1163,18 @@ pub(super) async fn submission_loop(
                 } => {
                     let result = turn_input::handle(&sess, *request, mode, sub.id.clone()).await;
                     let _ = reply.send(result);
+                    false
+                }
+                Op::UserInput { .. } | Op::AgentInput { .. } => {
+                    user_input_or_turn(
+                        &sess,
+                        sub.id.clone(),
+                        sub.op,
+                        /*client_user_message_id*/ None,
+                        sub.parent_turn_id,
+                        sub.root_turn_id,
+                    )
+                    .await;
                     false
                 }
                 Op::RecoverTurn {

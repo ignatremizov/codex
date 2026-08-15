@@ -3,13 +3,13 @@ use crate::protocol::thread_history::build_turns_from_rollout_items;
 use crate::protocol::v2::Turn;
 use crate::protocol::v2::TurnItemsView;
 use crate::protocol::v2::TurnStatus;
+use codex_history::RolloutItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
-use codex_history::RolloutItem;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use pretty_assertions::assert_eq;
 use std::time::Duration;
@@ -18,6 +18,7 @@ fn turn_metadata(turn_id: &str) -> Option<InternalChatMessageMetadataPassthrough
     Some(InternalChatMessageMetadataPassthrough {
         turn_id: Some(turn_id.to_string()),
         create_time: None,
+        content_item_kinds: None,
         executed_tool_calls: None,
     })
 }
@@ -41,7 +42,9 @@ fn function_call_output(turn_id: &str, call_id: &str, output: &str) -> RolloutIt
     RolloutItem::ResponseItem(
         ResponseItem::FunctionCallOutput {
             id: None,
-            call_id: call_id.to_string(),
+            call_id: Some(call_id.to_string()),
+            name: None,
+            namespace: None,
             output: FunctionCallOutputPayload::from_text(output.to_string()),
             internal_chat_message_metadata_passthrough: turn_metadata(turn_id),
         }
@@ -56,6 +59,7 @@ fn turn_started(turn_id: &str) -> RolloutItem {
         started_at: None,
         model_context_window: None,
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }))
 }
 

@@ -1,6 +1,8 @@
 use pretty_assertions::assert_eq;
 
 use super::*;
+use crate::app::agent_observation_display::AgentFinalResponseDisplay;
+use crate::app::agent_observation_display::AgentResponseObservationDisplay;
 
 fn populated_state() -> (AgentNavigationState, ThreadId, ThreadId, ThreadId) {
     let mut state = AgentNavigationState::default();
@@ -143,6 +145,8 @@ fn user_response_observation_tracks_commentary_final_mode_and_turn_binding() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::NextTurn,
             commentary: true,
+            target_messages: false,
+            queue_delivery: false,
             final_response: AgentFinalResponseDisplay::Presentation,
         })
     );
@@ -159,6 +163,8 @@ fn user_response_observation_tracks_commentary_final_mode_and_turn_binding() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::Bound,
             commentary: true,
+            target_messages: false,
+            queue_delivery: false,
             final_response: AgentFinalResponseDisplay::Wake,
         })
     );
@@ -198,6 +204,8 @@ fn reserved_prompt_response_ends_when_target_starts_or_closes() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::Bound,
             commentary: true,
+            target_messages: false,
+            queue_delivery: false,
             final_response: AgentFinalResponseDisplay::Wake,
         })
     );

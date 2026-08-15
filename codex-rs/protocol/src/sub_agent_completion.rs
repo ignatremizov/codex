@@ -15,7 +15,9 @@ use ts_rs::TS;
 const SUB_AGENT_COMPLETION_VISIBLE_ID_PREFIX: &str = "msg";
 const SUB_AGENT_COMPLETION_NOT_VISIBLE_ID_PREFIX: &str = "msgx";
 const SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX: &str = "amsg_x";
+const AGENT_MESSAGE_ID_PREFIX: &str = "amsg_";
 const USER_AGENT_TASK_CONTEXT_ID_PREFIX: &str = "msg_t";
+const ATTRIBUTED_AGENT_MESSAGE_ID_PREFIX: &str = "msg_a";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_PREFIX: &str = "Agent final answer from `";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
 
@@ -118,6 +120,16 @@ pub fn is_user_agent_task_context_response_item_id(id: &str) -> bool {
     has_uuid_v7_suffix(id, USER_AGENT_TASK_CONTEXT_ID_PREFIX)
 }
 
+/// Creates a trusted transcript item ID for attributed input received from another agent.
+pub fn new_attributed_agent_message_response_item_id() -> ResponseItemId {
+    ResponseItemId::new(ATTRIBUTED_AGENT_MESSAGE_ID_PREFIX)
+}
+
+/// Returns whether an item is a trusted attributed-agent input presentation.
+pub fn is_attributed_agent_message_response_item_id(id: &str) -> bool {
+    has_uuid_v7_suffix(id, ATTRIBUTED_AGENT_MESSAGE_ID_PREFIX)
+}
+
 /// Returns the terminal status encoded in a canonical background-completion item ID.
 pub fn sub_agent_completion_status_from_response_item_id(
     id: &str,
@@ -184,11 +196,19 @@ impl AgentMessageItem {
             && model_visibility == metadata.model_visibility.unwrap_or_default()
             && agent_reference == metadata.agent_reference
     }
+
+    /// Returns whether this is a core-authored presentation of input from another agent.
+    pub fn is_attributed_agent_input_presentation(&self) -> bool {
+        is_attributed_agent_message_response_item_id(&self.id)
+            && self.phase == Some(MessagePhase::Commentary)
+    }
 }
 
-/// Prevents an ordinary provider-authored agent message from using the reserved completion ID.
+/// Prevents an ordinary provider-authored agent message from using a reserved presentation ID.
 pub fn ordinary_agent_message_response_item_id(id: &str) -> String {
-    if sub_agent_completion_status_from_response_item_id(id).is_some() {
+    if sub_agent_completion_status_from_response_item_id(id).is_some()
+        || is_attributed_agent_message_response_item_id(id)
+    {
         format!("agent_{id}")
     } else {
         id.to_string()
@@ -222,6 +242,41 @@ pub fn sub_agent_completion_transcript_with_visibility(
     };
     Some((
         new_sub_agent_completion_response_item_id(completion_status, model_visibility),
+        sub_agent_completion_transcript_text(agent_reference, payload),
+    ))
+}
+
+/// Projects a terminal model-context agent message into a stable completion presentation.
+///
+/// The source item remains the canonical model-visible record. App-server uses the derived item
+/// ID and transcript text only for client presentation, so repeated rollout projection produces
+/// one stable completion row instead of exposing the internal completion envelope as an ordinary
+/// peer message.
+pub fn sub_agent_completion_transcript_from_agent_message_id(
+    source_id: &str,
+    agent_reference: &str,
+    status: &AgentStatus,
+) -> Option<(ResponseItemId, String)> {
+    let suffix = source_id.strip_prefix(AGENT_MESSAGE_ID_PREFIX)?;
+    if !has_uuid_v7(suffix) {
+        return None;
+    }
+    let completion_status = SubAgentCompletionStatus::from_agent_status(status)?;
+    let id = ResponseItemId::with_suffix(
+        &format!(
+            "{SUB_AGENT_COMPLETION_VISIBLE_ID_PREFIX}_{}",
+            completion_status.as_id_segment()
+        ),
+        suffix,
+    );
+    let payload = match status {
+        AgentStatus::Completed(message) => message.as_deref().unwrap_or_default(),
+        AgentStatus::Errored(error) => error,
+        AgentStatus::Shutdown | AgentStatus::NotFound => "",
+        AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted => return None,
+    };
+    Some((
+        id,
         sub_agent_completion_transcript_text(agent_reference, payload),
     ))
 }

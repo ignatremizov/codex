@@ -4,6 +4,8 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 
 use super::AdditionalContextUserFragment;
+use super::AgentReplyRoute;
+use super::AttributedAgentMessage;
 use super::ContextualUserFragment;
 use super::InternalModelContextFragment;
 use super::LegacyApplyPatchExecCommandWarning;
@@ -23,6 +25,8 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     UserInstructions::matches_text,
     EnvironmentsState::matches_text,
     AdditionalContextUserFragment::matches_text,
+    AgentReplyRoute::matches_text,
+    AttributedAgentMessage::matches_text,
     codex_skills_extension::is_skill_prompt_fragment,
     McpServerUseInstructions::matches_text,
     UserShellCommand::matches_text,

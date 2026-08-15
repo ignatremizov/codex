@@ -1,4 +1,5 @@
 use super::*;
+use assert_matches::assert_matches;
 use pretty_assertions::assert_eq;
 
 fn selector(kind: AgentSelectorKind, authored: &str) -> AgentSelector {
@@ -162,13 +163,18 @@ fn double_dash_preserves_option_shaped_prompt_text() {
 #[test]
 fn parses_lifecycle_actions() {
     assert_eq!(
-        parse_agent_command("queue 2 w:x follow up"),
+        parse_agent_command("queue 2 w:cmqx follow up"),
         Ok(AgentCommand::Queue {
             selector: selector(AgentSelectorKind::Ref(2), "2"),
-            response: Some(AgentResponseHandling::Presentation),
+            response: Some(AgentResponseHandling::new(
+                /*commentary*/ true,
+                AgentFinalResponseHandling::Presentation,
+                /*target_messages*/ true,
+                /*queue_input*/ true,
+            )),
             prompt: Some(AgentCommandPrompt {
                 text: "follow up",
-                offset: "queue 2 w:x ".len(),
+                offset: "queue 2 w:cmqx ".len(),
             }),
         })
     );
@@ -184,9 +190,15 @@ fn parses_lifecycle_actions() {
         })
     );
     assert_eq!(
-        parse_agent_command("close 2"),
+        parse_agent_command("close 2 w:q"),
         Ok(AgentCommand::Close {
             selector: selector(AgentSelectorKind::Ref(2), "2"),
+            response: Some(AgentResponseHandling::new(
+                /*commentary*/ false,
+                AgentFinalResponseHandling::Passive,
+                /*target_messages*/ false,
+                /*queue_input*/ true,
+            )),
         })
     );
     assert_eq!(
@@ -291,6 +303,8 @@ fn rejects_ambiguous_or_invalid_control_syntax_before_mutation() {
             "`fork` may be specified only once",
         ),
         ("2 w:f w:x prompt", "`w` may be specified only once"),
+        ("2 w:qm prompt", "use unique c, f, m, q, or x flags"),
+        ("2 w:mm prompt", "use unique c, f, m, q, or x flags"),
         ("queue 2 w:f", "`w` requires a queued prompt"),
         ("interrupt 2 w:x", "`w` requires a follow-up prompt"),
         ("2 fork:all prompt", "`fork` is valid only when spawning"),
@@ -298,7 +312,7 @@ fn rejects_ambiguous_or_invalid_control_syntax_before_mutation() {
         ("2 w:f", "`w` requires a prompt for an existing target"),
         (
             "close 2 extra",
-            "`close` does not accept additional arguments",
+            "`close` accepts response handling but not a prompt",
         ),
         ("observe 2 maybe", "Invalid observation mode `maybe`"),
         ("nick:\"unterminated", "Unterminated double quote"),

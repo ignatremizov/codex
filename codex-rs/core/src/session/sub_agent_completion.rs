@@ -23,7 +23,6 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
-use codex_history::RolloutItem;
 use codex_thread_store::LoadSubAgentCompletionContextItemParams;
 use codex_thread_store::LoadSubAgentCompletionPresentationParams;
 use codex_thread_store::StoredSubAgentCompletionPresentation;
@@ -142,10 +141,12 @@ impl Session {
         // Preparation normalizes caller-provided agent-message IDs. Restore the reserved
         // completion identity only inside this trusted watcher commit.
         *id = Some(response_item_id);
+        let items = items.into_iter().map(ResponseItemEnvelope::new).collect();
         self.record_prepared_durable_context_items_with_rollout_suffix(
             turn_context,
             items,
             /*acknowledgement*/ None,
+            Vec::new(),
             committed_observations
                 .into_iter()
                 .map(RolloutItem::AgentResponseObservation)
@@ -644,6 +645,7 @@ impl Session {
                             started_at: None,
                             model_context_window: None,
                             collaboration_mode_kind: Default::default(),
+                            agent_queue: None,
                         },
                     )));
                 }

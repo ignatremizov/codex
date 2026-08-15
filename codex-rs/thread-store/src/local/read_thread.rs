@@ -4,6 +4,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::find_thread_name_by_id;
@@ -73,6 +74,15 @@ pub(super) async fn read_thread(
             rollout_thread.model = thread.model;
             rollout_thread.reasoning_effort = thread.reasoning_effort;
             rollout_thread.git_info = thread.git_info;
+            if thread.agent_path.is_some() {
+                rollout_thread.agent_path = thread.agent_path;
+            }
+            if thread.agent_role.is_some() {
+                rollout_thread.agent_role = thread.agent_role;
+            }
+            if thread.agent_nickname.is_some() {
+                rollout_thread.agent_nickname = thread.agent_nickname;
+            }
             rollout_thread.permission_profile = permission_profile_from_metadata_value(
                 &metadata_sandbox_policy,
                 rollout_thread.cwd.as_path(),
@@ -342,7 +352,15 @@ pub(super) async fn stored_thread_from_sqlite_metadata(
         }
     };
     let forked_from_id = session_meta.as_ref().and_then(|meta| meta.forked_from_id);
-    let parent_thread_id = session_meta.as_ref().and_then(|meta| meta.parent_thread_id);
+    let parent_thread_id = session_meta
+        .as_ref()
+        .and_then(|meta| meta.parent_thread_id)
+        .or_else(|| match parse_session_source(&metadata.source) {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }) => Some(parent_thread_id),
+            _ => None,
+        });
     let history_mode = session_meta
         .as_ref()
         .map(|meta| meta.history_mode)

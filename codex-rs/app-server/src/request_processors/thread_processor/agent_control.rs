@@ -1,6 +1,7 @@
 //! Typed user-authored agent lifecycle requests and source-side audit persistence.
 
 use super::*;
+use codex_app_server_protocol::AgentForkMode;
 use conversion::agent_control_error;
 use conversion::agent_final_response_handling;
 use conversion::agent_observation_binding;
@@ -9,7 +10,7 @@ use conversion::user_agent_control_item;
 use conversion::user_agent_final_response_handling;
 use conversion::user_agent_response_handling;
 
-mod conversion;
+pub(super) mod conversion;
 
 impl ThreadRequestProcessor {
     pub(super) async fn agent_control_response_inner(
@@ -113,6 +114,7 @@ impl ThreadRequestProcessor {
                     Ok(AgentControlOutcome::Prompted {
                         target_thread_id: result.target_thread_id.to_string(),
                         submission_id: result.submission_id,
+                        queued: result.queued,
                         post_admission_warning: result.post_admission_warning,
                     })
                 }
@@ -128,7 +130,7 @@ impl ThreadRequestProcessor {
                         .map(user_agent_response_handling)
                         .unwrap_or_default();
                     let result = source_thread
-                        .prompt_idle_agent(&target, input, response_handling)
+                        .queue_agent_prompt(&target, input, response_handling)
                         .await
                         .map_err(agent_control_error)?;
                     self.try_attach_thread_listener(
@@ -142,6 +144,7 @@ impl ThreadRequestProcessor {
                     Ok(AgentControlOutcome::Prompted {
                         target_thread_id: result.target_thread_id.to_string(),
                         submission_id: result.submission_id,
+                        queued: result.queued,
                         post_admission_warning: result.post_admission_warning,
                     })
                 }
@@ -265,9 +268,15 @@ impl ThreadRequestProcessor {
                             .and_then(|result| result.post_admission_warning),
                     })
                 }
-                AgentControlAction::Close { target } => {
+                AgentControlAction::Close {
+                    target,
+                    response_handling,
+                } => {
+                    let response_handling = response_handling
+                        .map(user_agent_response_handling)
+                        .unwrap_or_default();
                     let target_thread_id = source_thread
-                        .close_agent(&target)
+                        .close_agent(&target, response_handling)
                         .await
                         .map_err(agent_control_error)?;
                     audit_item.target_thread_id = Some(target_thread_id);
@@ -350,18 +359,6 @@ impl ThreadRequestProcessor {
                     audit_warning,
                 })
             }
-            Err(error)
-                if error
-                    .data
-                    .as_ref()
-                    .and_then(|data| data.get("reason"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some("targetActive") =>
-            {
-                // This is an atomic queue-admission deferral, not a failed user action. The TUI
-                // keeps the process-local item queued and retries after the active turn stops.
-                Err(error)
-            }
             Err(error) => {
                 audit_item.status = CoreUserAgentControlStatus::Failed;
                 audit_item.error = Some(error.message.clone());
@@ -386,7 +383,7 @@ fn agent_control_action_target(action: &AgentControlAction) -> Option<&str> {
         | AgentControlAction::QueuedPrompt { target, .. }
         | AgentControlAction::Resume { target, .. }
         | AgentControlAction::Interrupt { target, .. }
-        | AgentControlAction::Close { target }
+        | AgentControlAction::Close { target, .. }
         | AgentControlAction::Observe { target, .. } => Some(target),
     }
 }

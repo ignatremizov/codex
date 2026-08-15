@@ -39,7 +39,7 @@ fn agent_control_pane_details_snapshot() {
         ]
         .into(),
         vec!["Children: ".bold(), "2".into()].into(),
-        vec!["Approval: ".bold(), "pending".yellow()].into(),
+        vec!["Approval: ".bold(), "pending".magenta()].into(),
         "".into(),
         "Enter opens this thread".dim().into(),
     ]);
@@ -60,8 +60,8 @@ fn agent_control_pane_details_snapshot() {
     Model: gpt-5.6-sol · medium
     Task: Review the response-observation
     lifecycle.
-    Latest response: Found one ordering issue
-    in completion delivery.
+    Latest response: Found one ordering
+    issue in completion delivery.
     Fork: last 3 turns
     Running: 4m 12s
 
@@ -152,7 +152,7 @@ async fn transcript_inspection_keeps_the_agent_pane_under_the_pager() {
         row_descriptions,
         @r"
     00000000-0000-0000-0000-000000000001 · idle
-    00000000-0000-0000-0000-000000000002 · closed
+    00000000-0000-0000-0000-000000000002 · external
     "
     );
 }

@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use codex_extension_api::ContextualUserFragment;
 use codex_extension_api::TurnInputContribution;
-use codex_protocol::models::ContentItem;
-use codex_protocol::models::ResponseItem;
 use codex_history::InitialHistory;
 use codex_history::RolloutItem;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::ResponseItem;
 use codex_rollout::RolloutRecorder;
 use pretty_assertions::assert_eq;
 use tokio::sync::oneshot;
@@ -39,6 +40,10 @@ struct MarkerPresence {
 struct DurableContextFragment(&'static str);
 
 impl ContextualUserFragment for DurableContextFragment {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind("test.durable_context".to_string())
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }

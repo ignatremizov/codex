@@ -1,10 +1,10 @@
 use super::input_queue::CompletionCommunicationCommit;
 use super::session::Session;
 use super::turn_context::TurnContext;
+use codex_history::RolloutItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
-use codex_history::RolloutItem;
 use codex_thread_store::ThreadStoreError;
 use std::sync::Arc;
 
@@ -15,6 +15,35 @@ pub(crate) enum InterAgentCommunicationRecord {
 }
 
 impl Session {
+    pub(crate) async fn record_wait_commentary(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        mut communication: InterAgentCommunication,
+        rollout_suffix: Vec<RolloutItem>,
+    ) -> Result<(), ThreadStoreError> {
+        communication.set_turn_id_if_missing(&turn_context.sub_id);
+        let response_item = communication.to_model_input_item();
+        let response_items = [response_item];
+        let (items, image_preparations) =
+            self.prepare_conversation_items_for_history(turn_context.as_ref(), &response_items);
+        let items = items
+            .into_owned()
+            .into_iter()
+            .map(codex_history::ResponseItemEnvelope::new)
+            .collect();
+        self.record_prepared_durable_context_items_with_rollout_suffix(
+            turn_context,
+            items,
+            /*acknowledgement*/ None,
+            vec![RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: communication.trigger_turn,
+            }],
+            rollout_suffix,
+            image_preparations,
+        )
+        .await
+    }
+
     pub(crate) async fn persist_inter_agent_completion_context_without_turn(
         &self,
         turn_context: Arc<TurnContext>,
@@ -204,17 +233,13 @@ impl Session {
                     // Suppress the retry's second model-context/event insertion by stable item ID.
                     let already_recorded = response_delivery_commit.is_some()
                         && response_delivery_id.as_ref().is_some_and(|id| {
-                            state
-                                .history
-                                .raw_items()
-                                .iter()
-                                .any(|item| item.id() == Some(id))
+                            state.history.raw_items().any(|item| item.id() == Some(id))
                         });
                     if !already_recorded {
                         state.current_time_reminder.note_recorded_items(&items);
                         state.record_items(
                             items.iter(),
-                            turn_context.model_info.truncation_policy.into(),
+                            turn_context.model_info().truncation_policy.into(),
                         );
                     }
                     already_recorded
@@ -368,17 +393,13 @@ impl Session {
                     // canonical write and first in-memory insertion completed before shutdown.
                     let already_recorded = response_delivery_commit.is_some()
                         && response_delivery_id.as_ref().is_some_and(|id| {
-                            state
-                                .history
-                                .raw_items()
-                                .iter()
-                                .any(|item| item.id() == Some(id))
+                            state.history.raw_items().any(|item| item.id() == Some(id))
                         });
                     if !already_recorded {
                         state.current_time_reminder.note_recorded_items(&items);
                         state.record_items(
                             items.iter(),
-                            turn_context.model_info.truncation_policy.into(),
+                            turn_context.model_info().truncation_policy.into(),
                         );
                     }
                     already_recorded

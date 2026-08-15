@@ -3,9 +3,9 @@
 use super::*;
 use crate::app_event::AgentPickerRefresh;
 use crate::app_server_session::load_agent_aliases;
+use crate::app_server_session::load_agent_queued_turns;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SortDirection;
-use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
@@ -60,6 +60,7 @@ impl App {
                 tracing::warn!(%err, "failed to refresh durable agent aliases");
             }
         }
+        self.refresh_primary_agent_queue(app_server).await;
     }
 
     pub(super) fn refresh_agent_picker_threads(
@@ -75,6 +76,9 @@ impl App {
         tokio::spawn(async move {
             let result = async {
                 let aliases = load_agent_aliases(&request_handle, root)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                let queued = load_agent_queued_turns(&request_handle, root)
                     .await
                     .map_err(|err| err.to_string())?;
                 let agent_root_thread_id = aliases
@@ -162,7 +166,11 @@ impl App {
                         );
                     }
                 }
-                Ok(AgentPickerRefresh { threads, aliases })
+                Ok(AgentPickerRefresh {
+                    threads,
+                    aliases,
+                    queued,
+                })
             }
             .await;
 
@@ -187,7 +195,11 @@ impl App {
         {
             return;
         }
-        let AgentPickerRefresh { threads, aliases } = match result {
+        let AgentPickerRefresh {
+            threads,
+            aliases,
+            queued,
+        } = match result {
             Ok(refresh) => refresh,
             Err(err) => {
                 tracing::warn!(%err, "failed to refresh agent picker descendants");
@@ -195,6 +207,7 @@ impl App {
             }
         };
         self.apply_primary_agent_aliases(aliases);
+        self.apply_primary_agent_queue(queued);
         let selected = self
             .chat_widget
             .selected_index_for_present_view(AGENT_PICKER_VIEW_ID);

@@ -72,20 +72,30 @@ fn queued_prompt_rows_snapshot_visible_content() {
         QueuedAgentPrompt {
             id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid prompt id"),
             source_thread_id,
-            target: "2".to_string(),
-            authored_selector: "2".to_string(),
+            authored_selector: Some("2".to_string()),
             target_thread_id,
             user_message: UserMessage::from("Review the final response ordering."),
-            response_handling: Some(AgentResponseHandling::Wake),
+            preview: "Review the final response ordering.".to_string(),
+            response_handling: Some(AgentResponseHandling::new(
+                /*commentary*/ false,
+                codex_app_server_protocol::AgentFinalResponseHandling::Wake,
+                /*target_messages*/ false,
+                /*queue_input*/ true,
+            )),
         },
         QueuedAgentPrompt {
             id: Uuid::parse_str("00000000-0000-0000-0000-000000000002").expect("valid prompt id"),
             source_thread_id,
-            target: "2".to_string(),
-            authored_selector: "2".to_string(),
+            authored_selector: Some("2".to_string()),
             target_thread_id,
             user_message: image_message,
-            response_handling: None,
+            preview: "2 images".to_string(),
+            response_handling: Some(AgentResponseHandling::new(
+                /*commentary*/ false,
+                codex_app_server_protocol::AgentFinalResponseHandling::Passive,
+                /*target_messages*/ false,
+                /*queue_input*/ true,
+            )),
         },
     ]);
     let rendered = queued_agent_prompt_rows(Some(&queued))
@@ -95,8 +105,8 @@ fn queued_prompt_rows_snapshot_visible_content() {
         .join("\n");
 
     insta::assert_snapshot!(rendered, @r"
-    w:f · Review the final response ordering.
-    passive · 2 images
+    w:fq · Review the final response ordering.
+    w:q · 2 images
     ");
 }
 
@@ -107,10 +117,10 @@ fn queued_prompt_removal_uses_stable_id_after_prior_item_changes() {
     let prompt = |id: &str, text: &str| QueuedAgentPrompt {
         id: Uuid::parse_str(id).expect("valid prompt id"),
         source_thread_id,
-        target: "2".to_string(),
-        authored_selector: "2".to_string(),
+        authored_selector: Some("2".to_string()),
         target_thread_id,
         user_message: UserMessage::from(text),
+        preview: text.to_string(),
         response_handling: None,
     };
     let third_id =
@@ -145,10 +155,10 @@ fn closing_a_thread_removes_queues_it_targets_or_authored() {
         QueuedAgentPrompt {
             id: Uuid::parse_str(id).expect("valid prompt id"),
             source_thread_id,
-            target: target_thread_id.to_string(),
-            authored_selector: target_thread_id.to_string(),
+            authored_selector: Some(target_thread_id.to_string()),
             target_thread_id,
             user_message: UserMessage::from(text),
+            preview: text.to_string(),
             response_handling: None,
         }
     };
@@ -221,12 +231,12 @@ fn queued_prompt_view_renders_response_modes_and_explicit_actions() {
             QueuedAgentPromptRow {
                 prompt_id: first_prompt_id,
                 preview: "Review the final response ordering.".to_string(),
-                response: "w:f",
+                response: "w:fq".to_string(),
             },
             QueuedAgentPromptRow {
                 prompt_id: second_prompt_id,
                 preview: "Check the pagination projection.".to_string(),
-                response: "passive",
+                response: "passive".to_string(),
             },
         ],
         /*initial_selected_idx*/ None,
@@ -235,13 +245,14 @@ fn queued_prompt_view_renders_response_modes_and_explicit_actions() {
         target_thread_id,
         first_prompt_id,
         "Review the final response ordering.".to_string(),
+        /*editable*/ true,
     ));
 
     insta::assert_snapshot!(format!("queue:\n{queue}\n\nactions:\n{actions}"), @r"
     queue:
     Queued for Hopper [reviewer]
     00000000-0000-0000-0000-000000000002
-    › 1. Review the final response ordering. w:f
+    › 1. Review the final response ordering. w:fq
     2. Check the pagination projection. passive
     Enter edits · Tab opens actions
     Press enter to confirm or esc to go back

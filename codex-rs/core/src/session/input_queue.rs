@@ -6,6 +6,7 @@ use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ResponseItemId;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentInputPresentation;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::turn_input::TurnStartOptions;
@@ -29,6 +30,10 @@ pub enum TurnInput {
         client_id: Option<String>,
     },
     FunctionCallOutput(ResponseItem),
+    AgentInput {
+        content: Vec<UserInput>,
+        presentation: AgentInputPresentation,
+    },
     // Preserve the existing serialized format while carrying injection API metadata
     // through the in-memory queue.
     ResponseItem(#[serde(with = "turn_input_response_item")] ResponseItemEnvelope),
@@ -65,6 +70,45 @@ mod turn_input_response_item {
     {
         ResponseItem::deserialize(deserializer).map(ResponseItemEnvelope::new)
     }
+}
+
+impl TurnInput {
+    pub(crate) fn is_prompt(&self) -> bool {
+        matches!(self, Self::UserInput { .. } | Self::AgentInput { .. })
+    }
+}
+
+#[derive(Clone)]
+pub(crate) enum PromptInputKind {
+    User,
+    Agent {
+        presentation: AgentInputPresentation,
+    },
+}
+
+impl PromptInputKind {
+    pub(crate) fn into_turn_input(
+        self,
+        content: Vec<UserInput>,
+        client_id: Option<String>,
+    ) -> TurnInput {
+        match self {
+            Self::User => TurnInput::UserInput { content, client_id },
+            Self::Agent { presentation } => TurnInput::AgentInput {
+                content,
+                presentation,
+            },
+        }
+    }
+}
+
+pub(crate) struct PromptTurnDraft {
+    pub(crate) input: Vec<UserInput>,
+    pub(crate) additional_context:
+        std::collections::BTreeMap<String, codex_protocol::protocol::AdditionalContextEntry>,
+    pub(crate) client_user_message_id: Option<String>,
+    pub(crate) responsesapi_client_metadata: Option<HashMap<String, String>>,
+    pub(crate) prompt_kind: PromptInputKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -250,6 +294,49 @@ impl InputQueue {
         !self.mailbox.lock().await.pending_mails.is_empty()
     }
 
+    pub(crate) async fn has_pending_agent_completion(
+        &self,
+        turn_state: Option<&Mutex<TurnState>>,
+        expected_message: &str,
+    ) -> bool {
+        let matches =
+            |communication: &InterAgentCommunication| communication.content == expected_message;
+        if let Some(turn_state) = turn_state
+            && turn_state
+                .lock()
+                .await
+                .pending_input
+                .as_slice()
+                .iter()
+                .any(|input| {
+                    matches!(
+                        input,
+                        TurnInput::InterAgentCommunication(communication)
+                            if matches(communication)
+                    )
+                })
+        {
+            return true;
+        }
+        if self.idle_pending_input.lock().await.iter().any(|input| {
+            matches!(
+                input,
+                TurnInput::InterAgentCommunication(communication) if matches(communication)
+            )
+        }) {
+            return true;
+        }
+        let mailbox = self.mailbox.lock().await;
+        mailbox
+            .pending_mails
+            .iter()
+            .any(|mail| matches(&mail.communication))
+            || mailbox
+                .in_flight_completion_mails
+                .values()
+                .any(|mail| matches(&mail.mail.communication))
+    }
+
     pub(crate) async fn pending_mailbox_response_item_ids(
         &self,
         turn_state: Option<&Mutex<TurnState>>,
@@ -265,6 +352,7 @@ impl InputQueue {
                     TurnInput::InterAgentCommunication(communication) => communication.id.clone(),
                     TurnInput::UserInput { .. }
                     | TurnInput::FunctionCallOutput(_)
+                    | TurnInput::AgentInput { .. }
                     | TurnInput::ResponseItem(_) => None,
                 })
                 .collect()
@@ -570,7 +658,9 @@ impl InputQueue {
             .filter_map(|item| match item {
                 TurnInput::FunctionCallOutput(item) => Some(item.clone()),
                 TurnInput::ResponseItem(item) => Some(item.item.clone()),
-                TurnInput::UserInput { .. } | TurnInput::InterAgentCommunication(_) => None,
+                TurnInput::UserInput { .. }
+                | TurnInput::AgentInput { .. }
+                | TurnInput::InterAgentCommunication(_) => None,
             })
             .collect()
     }
@@ -623,6 +713,7 @@ impl InputQueue {
                     }
                     TurnInput::UserInput { .. }
                     | TurnInput::FunctionCallOutput(_)
+                    | TurnInput::AgentInput { .. }
                     | TurnInput::ResponseItem(_)
                     | TurnInput::InterAgentCommunication(_) => None,
                 })
@@ -659,7 +750,7 @@ impl InputQueue {
                     !crate::context::McpServerUseInstructions::matches_response_item(item)
                 }
                 TurnInput::FunctionCallOutput(_) => true,
-                TurnInput::UserInput { .. } => true,
+                TurnInput::UserInput { .. } | TurnInput::AgentInput { .. } => true,
             })
         {
             return;
@@ -808,7 +899,9 @@ impl TurnInputQueue {
         self.items.iter().any(|input| {
             matches!(
                 input,
-                TurnInput::UserInput { .. } | TurnInput::FunctionCallOutput(_)
+                TurnInput::UserInput { .. }
+                    | TurnInput::AgentInput { .. }
+                    | TurnInput::FunctionCallOutput(_)
             )
         })
     }
@@ -1147,6 +1240,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_completion_lookup_covers_active_mailbox_and_next_turn_queues() {
+        let payload = "exact final result";
+        let expected_message = format!("worker_2 completed: {payload}");
+        let communication = || {
+            make_mail(
+                AgentPath::try_from("/root/worker_2").expect("agent path"),
+                AgentPath::root(),
+                &expected_message,
+                /*trigger_turn*/ false,
+            )
+        };
+
+        let active_queue = InputQueue::new();
+        let turn_state = Mutex::new(TurnState::default());
+        active_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![TurnInput::InterAgentCommunication(communication())],
+            )
+            .await;
+        assert!(
+            active_queue
+                .has_pending_agent_completion(Some(&turn_state), &expected_message)
+                .await
+        );
+
+        let mailbox_queue = InputQueue::new();
+        mailbox_queue
+            .enqueue_mailbox_communication(communication(), TurnStartOptions::default())
+            .await;
+        assert!(
+            mailbox_queue
+                .has_pending_agent_completion(/*turn_state*/ None, &expected_message)
+                .await
+        );
+
+        let next_turn_queue = InputQueue::new();
+        next_turn_queue
+            .queue_turn_inputs_for_next_turn(vec![TurnInput::InterAgentCommunication(
+                communication(),
+            )])
+            .await;
+        assert!(
+            next_turn_queue
+                .has_pending_agent_completion(/*turn_state*/ None, &expected_message)
+                .await
+        );
+        assert!(
+            !next_turn_queue
+                .has_pending_agent_completion(
+                    /*turn_state*/ None,
+                    "worker_2 completed: different result",
+                )
+                .await
+        );
+    }
+
+    #[tokio::test]
     async fn clearing_pending_requeues_completion_communication() {
         let input_queue = InputQueue::new();
         let active_turn = ActiveTurn::default();
@@ -1306,7 +1457,7 @@ mod tests {
         input_queue
             .queue_turn_inputs_for_next_turn(vec![
                 TurnInput::InterAgentCommunication(completion.clone()),
-                TurnInput::ResponseItem(retained_item.clone()),
+                TurnInput::ResponseItem(retained_item.clone().into()),
             ])
             .await;
         let ordinary = make_mail(
@@ -1326,7 +1477,7 @@ mod tests {
         assert!(!completion_drain.has_committing);
         assert_eq!(
             input_queue.take_queued_items_for_next_turn().await,
-            vec![TurnInput::ResponseItem(retained_item)]
+            vec![TurnInput::ResponseItem(retained_item.into())]
         );
         assert_eq!(
             input_queue.drain_mailbox_input_items().await,

@@ -32,8 +32,8 @@ pub(super) async fn run_remote_compact_attempt(
 ) -> CodexResult<RemoteCompactAttempt> {
     let turn_context = &step_context.turn;
     let mut history = sess.clone_history().await;
-    let explicit_mcp_context =
-        crate::compact::collect_mcp_server_use_context_items(history.raw_items());
+    let raw_history = history.raw_items().cloned().collect::<Vec<_>>();
+    let explicit_mcp_context = crate::compact::collect_mcp_server_use_context_items(&raw_history);
     let media_sanitization = history.sanitize_compacted_media_prefix();
     if media_sanitization.changed() {
         info!(

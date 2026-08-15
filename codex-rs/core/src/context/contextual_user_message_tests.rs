@@ -77,20 +77,33 @@ fn detects_subagent_notification_fragment_case_insensitively() {
 
 #[test]
 fn detects_user_agent_task_fragment() {
-    let rendered = UserAgentTask::new(
-        AgentContextIdentity::V1 {
-            agent_id: ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad")
-                .expect("valid thread id"),
-            agent_ref: Some(2),
-            nickname: Some("Pascal".to_string()),
-        },
-        "Review the lifecycle change.",
-    )
-    .render();
+    let rendered = UserAgentTask::new(v1_agent_identity(), "Review the lifecycle change.").render();
 
     assert!(is_contextual_user_fragment(&ContentItem::InputText {
         text: rendered
     }));
+}
+
+#[test]
+fn detects_scoped_agent_route_and_attributed_message_fragments() {
+    let route = AgentReplyRoute::new(v1_agent_identity()).render();
+    let message =
+        AttributedAgentMessage::new(v1_agent_identity(), "turn-1", "Question for Main.").render();
+
+    for text in [route, message] {
+        assert!(is_contextual_user_fragment(&ContentItem::InputText {
+            text
+        }));
+    }
+}
+
+fn v1_agent_identity() -> AgentContextIdentity {
+    AgentContextIdentity::V1 {
+        agent_id: ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad")
+            .expect("valid thread id"),
+        agent_ref: Some(2),
+        nickname: Some("Pascal".to_string()),
+    }
 }
 
 #[test]

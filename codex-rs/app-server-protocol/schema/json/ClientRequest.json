@@ -34,6 +34,369 @@
       ],
       "type": "string"
     },
+    "AgentControlAction": {
+      "description": "A user-authored multi-agent control operation.",
+      "oneOf": [
+        {
+          "description": "Spawn a default or configured-role child.",
+          "properties": {
+            "fork_mode": {
+              "$ref": "#/definitions/AgentForkMode"
+            },
+            "input": {
+              "description": "Omitted creates a real idle child without starting its first turn.",
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omitted uses passive final-response delivery."
+            },
+            "role": {
+              "description": "Omitted selects the default child configuration.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "spawn"
+              ],
+              "title": "SpawnAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "fork_mode",
+            "type"
+          ],
+          "title": "SpawnAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Send genuine user input to a controlled agent, reopening a known closed descendant.",
+          "properties": {
+            "input": {
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": "array"
+            },
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omitted uses passive final-response delivery."
+            },
+            "target": {
+              "description": "Root-scoped ref or nickname, or a canonical thread UUID.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "prompt"
+              ],
+              "title": "PromptAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input",
+            "target",
+            "type"
+          ],
+          "title": "PromptAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Admit target input using response handling reserved by spawn or resume.",
+          "properties": {
+            "input": {
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": "array"
+            },
+            "target": {
+              "description": "Canonical target thread UUID.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "reservedPrompt"
+              ],
+              "title": "ReservedPromptAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input",
+            "target",
+            "type"
+          ],
+          "title": "ReservedPromptAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Queue input as a distinct future target turn, starting it immediately when the target is idle.",
+          "properties": {
+            "input": {
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": "array"
+            },
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omitted uses passive final-response delivery."
+            },
+            "target": {
+              "description": "Root-scoped ref or nickname, or a canonical thread UUID.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "queuedPrompt"
+              ],
+              "title": "QueuedPromptAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input",
+            "target",
+            "type"
+          ],
+          "title": "QueuedPromptAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Reopen a controlled closed agent or explicitly adopt a stored agent by UUID.",
+          "properties": {
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omitted reserves passive delivery for the next admitted target turn."
+            },
+            "target": {
+              "description": "Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "resume"
+              ],
+              "title": "ResumeAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "type"
+          ],
+          "title": "ResumeAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Interrupt the active target turn and optionally submit a follow-up after cancellation.",
+          "properties": {
+            "input": {
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Valid only when `input` is present."
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "interrupt"
+              ],
+              "title": "InterruptAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "type"
+          ],
+          "title": "InterruptAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Close a controlled agent runtime.",
+          "properties": {
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omitted replays a completed response passively when it is absent from model context."
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "close"
+              ],
+              "title": "CloseAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "type"
+          ],
+          "title": "CloseAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Authoritatively replace final-response handling for one target turn.",
+          "properties": {
+            "response_handling": {
+              "$ref": "#/definitions/AgentObservationMode"
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "observe"
+              ],
+              "title": "ObserveAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response_handling",
+            "target",
+            "type"
+          ],
+          "title": "ObserveAgentControlAction",
+          "type": "object"
+        }
+      ]
+    },
+    "AgentFinalResponseHandling": {
+      "description": "Final-response handling selected by an explicit user observation replacement.",
+      "enum": [
+        "none",
+        "passive",
+        "wake",
+        "presentation"
+      ],
+      "type": "string"
+    },
+    "AgentForkMode": {
+      "description": "Parent conversation history copied into a user-spawned child.",
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "none"
+              ],
+              "title": "NoneAgentForkModeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "NoneAgentForkMode",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "all"
+              ],
+              "title": "AllAgentForkModeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AllAgentForkMode",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "turns": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "lastNTurns"
+              ],
+              "title": "LastNTurnsAgentForkModeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "turns",
+            "type"
+          ],
+          "title": "LastNTurnsAgentForkMode",
+          "type": "object"
+        }
+      ]
+    },
     "AgentMessageInputContent": {
       "oneOf": [
         {
@@ -77,6 +440,47 @@
           "type": "object"
         }
       ]
+    },
+    "AgentObservationMode": {
+      "description": "Authoritative final-response policy accepted by `agent/control` observe.",
+      "enum": [
+        "passive",
+        "wake",
+        "presentation"
+      ],
+      "type": "string"
+    },
+    "AgentResponseHandling": {
+      "description": "Response, reverse-message, and admission handling for one target turn.",
+      "properties": {
+        "commentary": {
+          "description": "Deliver the first complete commentary item from the target turn.",
+          "type": "boolean"
+        },
+        "finalResponse": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentFinalResponseHandling"
+            }
+          ],
+          "description": "Select how the target turn's final response reaches the source."
+        },
+        "queueInput": {
+          "description": "Admit supplied input as a distinct queued target turn and queue its model-visible final response for the source's next turn.",
+          "type": "boolean"
+        },
+        "targetMessages": {
+          "description": "Let the target turn send attributed input back to the source.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "commentary",
+        "finalResponse",
+        "queueInput",
+        "targetMessages"
+      ],
+      "type": "object"
     },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",

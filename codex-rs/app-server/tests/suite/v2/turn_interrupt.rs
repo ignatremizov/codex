@@ -20,7 +20,10 @@ use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
+use core_test_support::responses;
 use core_test_support::skip_if_remote;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -29,7 +32,9 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 
 #[tokio::test]
-async fn turn_interrupt_aborts_running_turn() -> Result<()> {
+async fn turn_interrupt_aborts_running_turn_and_continues_accepted_steer() -> Result<()> {
+    const STEER_PROMPT: &str = "continue with this steer after interrupt";
+
     // TODO(anp): Remove after the long-running command fixture can run in the selected remote environment.
     skip_if_remote!(
         Ok(()),
@@ -60,6 +65,7 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
             Some(10_000),
             "call_sleep",
         )?,
+        create_final_assistant_message_sse_response("continued after interrupt")?,
     ])
     .await;
     MockResponsesConfig::new(&server.uri())
@@ -102,6 +108,22 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     let thread_id = thread.id.clone();
+    let _: TurnSteerResponse = mcp
+        .request(|request_id| ClientRequest::TurnSteer {
+            request_id,
+            params: TurnSteerParams {
+                thread_id: thread_id.clone(),
+                client_user_message_id: None,
+                input: vec![V2UserInput::Text {
+                    text: STEER_PROMPT.to_string(),
+                    text_elements: Vec::new(),
+                }],
+                responsesapi_client_metadata: None,
+                additional_context: None,
+                expected_turn_id: turn_id.clone(),
+            },
+        })
+        .await?;
     // Interrupt the in-progress turn by id (v2 API).
     let _: TurnInterruptResponse = mcp
         .request(|request_id| ClientRequest::TurnInterrupt {
@@ -120,6 +142,21 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
     .await??;
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(completed.turn.status, TurnStatus::Interrupted);
+
+    let completed: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(completed.thread_id, thread_id);
+    assert_ne!(completed.turn.id, turn_id);
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    let requests = server
+        .received_requests()
+        .await
+        .expect("response requests should be recorded");
+    assert_eq!(requests.len(), 2);
+    assert!(responses::body_contains(&requests[1], STEER_PROMPT));
 
     Ok(())
 }

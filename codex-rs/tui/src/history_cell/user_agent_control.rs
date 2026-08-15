@@ -36,6 +36,8 @@ pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentContro
         fork_mode,
         observe_commentary,
         final_response,
+        target_messages,
+        queue_input,
         status,
         error,
         ..
@@ -72,13 +74,18 @@ pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentContro
     if let Some(fork_mode) = fork_mode {
         title.push(format!(" ({})", fork_mode_label(fork_mode)).dim());
     }
-    if let Some(response_observation) =
-        response_observation_label(observe_commentary, final_response)
-    {
+    if let Some(response_observation) = response_observation_label(
+        observe_commentary,
+        final_response,
+        target_messages,
+        queue_input,
+    ) {
         title.push(" ".into());
         title.push(
             if observe_commentary == Some(true)
                 || matches!(final_response, Some(AgentFinalResponseHandling::Wake))
+                || target_messages == Some(true)
+                || queue_input == Some(true)
             {
                 response_observation.magenta()
             } else {
@@ -99,7 +106,7 @@ pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentContro
         details.push(if status == UserAgentControlStatus::Failed {
             vec!["Failed: ".red(), error.red()].into()
         } else {
-            vec!["Warning: ".yellow(), error.yellow()].into()
+            vec!["Warning: ".magenta(), error.magenta()].into()
         });
     }
 
@@ -244,6 +251,8 @@ fn fork_mode_label(fork_mode: UserAgentForkMode) -> String {
 fn response_observation_label(
     observe_commentary: Option<bool>,
     final_response: Option<AgentFinalResponseHandling>,
+    target_messages: Option<bool>,
+    queue_input: Option<bool>,
 ) -> Option<String> {
     let mut labels = Vec::new();
     if observe_commentary == Some(true) {
@@ -255,6 +264,12 @@ fn response_observation_label(
         Some(AgentFinalResponseHandling::Wake) => labels.push("wake"),
         Some(AgentFinalResponseHandling::Presentation) => labels.push("presentation"),
         None => {}
+    }
+    if target_messages == Some(true) {
+        labels.push("allow replies");
+    }
+    if queue_input == Some(true) {
+        labels.push("queued turn + reply");
     }
     (!labels.is_empty()).then(|| format!("({})", labels.join(" · ")))
 }

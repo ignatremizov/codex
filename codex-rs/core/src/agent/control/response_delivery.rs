@@ -202,6 +202,7 @@ impl AgentControl {
                             TerminalPresentationDelivery::Watcher,
                             || {},
                         );
+                        self.mark_response_observer_terminal_processed(parent, child, &turn_id);
                     }
                 }
                 AgentResponseEvent::TurnAborted { turn_id, .. } => {
@@ -231,6 +232,7 @@ impl AgentControl {
                             TerminalPresentationDelivery::Watcher,
                             || {},
                         );
+                        self.mark_response_observer_terminal_processed(parent, child, &turn_id);
                     }
                 }
                 AgentResponseEvent::TurnStarted { turn_id, sequence } => {
@@ -304,12 +306,6 @@ impl AgentControl {
         sequence: u64,
         target_lifecycle_guard: tokio::sync::OwnedMutexGuard<()>,
     ) -> bool {
-        let Ok(submission_permit) = self
-            .acquire_mailbox_submission_permit(parent.thread_id)
-            .await
-        else {
-            return false;
-        };
         let transaction_permit = self.acquire_response_observation_transaction(parent).await;
         let Some(delivery) = self.prepare_commentary_observation_delivery_at_sequence(
             parent, child, turn_id, item_id, text, sequence,
@@ -323,6 +319,29 @@ impl AgentControl {
             return false;
         }
         drop(transaction_permit);
+        if self.route_response_observer_commentary(parent, child, turn_id)
+            == CommentaryDeliveryRoute::Wait
+        {
+            return true;
+        }
+        let Ok(submission_permit) = self
+            .acquire_mailbox_submission_permit(parent.thread_id)
+            .await
+        else {
+            return false;
+        };
+        if self.route_response_observer_commentary(parent, child, turn_id)
+            != CommentaryDeliveryRoute::Mailbox
+        {
+            return true;
+        }
+        if self
+            .response_observation_commentary_delivery(parent, child, turn_id)
+            .as_ref()
+            != Some(&delivery)
+        {
+            return true;
+        }
         self.deliver_v1_commentary_observation_after_claim(
             parent,
             child,
@@ -355,12 +374,6 @@ impl AgentControl {
         prior_item_ids: &HashSet<String>,
         target_lifecycle_guard: tokio::sync::OwnedMutexGuard<()>,
     ) -> bool {
-        let Ok(submission_permit) = self
-            .acquire_mailbox_submission_permit(parent.thread_id)
-            .await
-        else {
-            return false;
-        };
         let transaction_permit = self.acquire_response_observation_transaction(parent).await;
         let Some(delivery) = self.prepare_recovered_commentary_observation_delivery(
             parent,
@@ -380,6 +393,29 @@ impl AgentControl {
             return false;
         }
         drop(transaction_permit);
+        if self.route_response_observer_commentary(parent, child, turn_id)
+            == CommentaryDeliveryRoute::Wait
+        {
+            return true;
+        }
+        let Ok(submission_permit) = self
+            .acquire_mailbox_submission_permit(parent.thread_id)
+            .await
+        else {
+            return false;
+        };
+        if self.route_response_observer_commentary(parent, child, turn_id)
+            != CommentaryDeliveryRoute::Mailbox
+        {
+            return true;
+        }
+        if self
+            .response_observation_commentary_delivery(parent, child, turn_id)
+            .as_ref()
+            != Some(&delivery)
+        {
+            return true;
+        }
         self.deliver_v1_commentary_observation_after_claim(
             parent,
             child,
@@ -408,12 +444,29 @@ impl AgentControl {
         delivery: &codex_protocol::protocol::AgentResponseCommentaryDelivery,
         target_lifecycle_guard: tokio::sync::OwnedMutexGuard<()>,
     ) -> bool {
+        if self.route_response_observer_commentary(parent, child, turn_id)
+            == CommentaryDeliveryRoute::Wait
+        {
+            return true;
+        }
         let Ok(submission_permit) = self
             .acquire_mailbox_submission_permit(parent.thread_id)
             .await
         else {
             return false;
         };
+        if self.route_response_observer_commentary(parent, child, turn_id)
+            != CommentaryDeliveryRoute::Mailbox
+        {
+            return true;
+        }
+        if self
+            .response_observation_commentary_delivery(parent, child, turn_id)
+            .as_ref()
+            != Some(delivery)
+        {
+            return true;
+        }
         let transaction_permit = self.acquire_response_observation_transaction(parent).await;
         if !self
             .persist_response_observation_snapshot(parent, child)
@@ -440,6 +493,76 @@ impl AgentControl {
             },
         )
         .await
+    }
+
+    pub(crate) async fn deliver_v1_wait_commentary(
+        &self,
+        parent: SessionPresentationId,
+        turn_context: &Arc<crate::TurnContext>,
+        commentary: &WaitCommentaryDelivery,
+    ) -> bool {
+        let Ok(state) = self.upgrade() else {
+            return false;
+        };
+        let Ok(parent_thread) = state.get_thread_including_pending(parent.thread_id).await else {
+            return false;
+        };
+        if parent_thread.session.presentation_id() != parent {
+            return false;
+        }
+        let Ok(agent) = self
+            .model_visible_agent_identity(&parent_thread, commentary.child.thread_id)
+            .await
+        else {
+            return false;
+        };
+        let Some(child_agent_path) = self.observation_agent_path(commentary.child.thread_id) else {
+            return false;
+        };
+        let Some(parent_agent_path) = self.observation_agent_path(parent.thread_id) else {
+            return false;
+        };
+        let mut communication = InterAgentCommunication::new(
+            child_agent_path,
+            parent_agent_path,
+            Vec::new(),
+            format_subagent_commentary_message(
+                agent,
+                &commentary.turn_id,
+                &commentary.delivery.source_item_id,
+                &commentary.delivery.text,
+            ),
+            /*trigger_turn*/ true,
+        );
+        communication.id = Some(commentary.delivery.response_item_id.clone());
+        let commit = ResponseObservationDeliveryCommit {
+            parent,
+            child: commentary.child,
+            turn_id: commentary.turn_id.clone(),
+            response_item_id: commentary.delivery.response_item_id.clone(),
+            kind: ResponseObservationDeliveryKind::Commentary,
+        };
+        let rollout_suffix = self
+            .response_observation_committed_snapshots(
+                parent,
+                commentary.child,
+                &commentary.turn_id,
+                &commentary.delivery.response_item_id,
+                ResponseObservationDeliveryKind::Commentary,
+            )
+            .into_iter()
+            .map(RolloutItem::AgentResponseObservation)
+            .collect();
+        if parent_thread
+            .session
+            .record_wait_commentary(Arc::clone(turn_context), communication, rollout_suffix)
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        self.commit_response_observation_delivery(&commit);
+        true
     }
 
     // The pending claim is durable before this method starts, but the observer transaction is not
@@ -521,7 +644,7 @@ impl AgentControl {
             .acquire_response_observation_transaction(terminal.presentation.parent())
             .await;
         let terminal_response_item_id = terminal.presentation.completion_context_response_item_id();
-        let (final_response_observation, response_item_id) = self
+        let (final_response_observation, response_item_id, queue_delivery) = self
             .prepare_final_response_observation_delivery(
                 terminal.presentation.parent(),
                 terminal.presentation.child(),
@@ -555,8 +678,12 @@ impl AgentControl {
             }
             return true;
         }
-        let final_response_observation =
-            if final_response_observation == FinalResponseObservation::Wake {
+        let (final_response_observation, queue_delivery) =
+            if matches!(
+                final_response_observation,
+                FinalResponseObservation::Passive | FinalResponseObservation::Wake
+            ) && (final_response_observation == FinalResponseObservation::Wake || queue_delivery)
+            {
                 let Ok(state) = self.upgrade() else {
                     return false;
                 };
@@ -583,16 +710,16 @@ impl AgentControl {
                     // synthetic wake. Persist the subscribed result through the passive path so
                     // the transcript remains complete without leaving a durable receipt blocked
                     // on a turn that this host deliberately cannot start.
-                    FinalResponseObservation::Passive
+                    (FinalResponseObservation::Passive, false)
                 } else {
-                    FinalResponseObservation::Wake
+                    (final_response_observation, queue_delivery)
                 }
             } else {
-                final_response_observation
+                (final_response_observation, queue_delivery)
             };
-        match final_response_observation {
-            FinalResponseObservation::None => return true,
-            FinalResponseObservation::PresentationOnly => {
+        match (final_response_observation, queue_delivery) {
+            (FinalResponseObservation::None, _) => return true,
+            (FinalResponseObservation::PresentationOnly, _) => {
                 // `x` still owns the canonical client-visible completion item. That item is
                 // persisted as an ItemCompleted event rather than conversation context, so TUI
                 // replay remains complete without exposing the payload to a later model request.
@@ -634,7 +761,7 @@ impl AgentControl {
                 }
                 return true;
             }
-            FinalResponseObservation::Wake => {
+            (FinalResponseObservation::Wake, _) | (FinalResponseObservation::Passive, true) => {
                 let Some(response_item_id) = response_item_id else {
                     return false;
                 };
@@ -644,15 +771,16 @@ impl AgentControl {
                 let Some(target_lifecycle_guard) = target_lifecycle_guard.take() else {
                     return false;
                 };
-                // A wake receipt resolves at the observer's next mailbox-consumption boundary.
-                // Holding its observation transaction across that wait would block any lifecycle
-                // tool the observer invokes before it can reach that boundary.
+                // Triggered delivery resolves at the observer's next mailbox-consumption
+                // boundary. Holding its observation transaction across that wait would block any
+                // lifecycle tool the observer invokes before it can reach that boundary.
                 drop(transaction_permit);
                 return self
-                    .deliver_v1_waking_terminal(
+                    .deliver_v1_triggered_terminal(
                         parent_thread_id,
                         child_reference,
                         terminal,
+                        queue_delivery,
                         DurableResponseDelivery {
                             commit: ResponseObservationDeliveryCommit {
                                 parent: terminal.presentation.parent(),
@@ -667,7 +795,7 @@ impl AgentControl {
                     )
                     .await;
             }
-            FinalResponseObservation::Passive => {}
+            (FinalResponseObservation::Passive, false) => {}
         }
         let Some(response_item_id) = response_item_id else {
             return false;
@@ -803,11 +931,12 @@ impl AgentControl {
         }
     }
 
-    async fn deliver_v1_waking_terminal(
+    async fn deliver_v1_triggered_terminal(
         &self,
         parent_thread_id: ThreadId,
         child_reference: &str,
         terminal: &WatcherTerminalPresentation,
+        queue_delivery: bool,
         durable_delivery: DurableResponseDelivery,
     ) -> bool {
         let Ok(state) = self.upgrade() else {
@@ -841,6 +970,7 @@ impl AgentControl {
             message,
             /*trigger_turn*/ true,
         );
+        communication.defer_to_next_turn = queue_delivery;
         communication.id = Some(durable_delivery.commit.response_item_id.clone());
         let context = AgentCommunicationContext::new(
             AgentCommunicationKind::Result,
@@ -895,23 +1025,6 @@ impl AgentControl {
         true
     }
 
-    fn observation_agent_path(&self, thread_id: ThreadId) -> Option<AgentPath> {
-        if let Some(agent_path) = self
-            .get_agent_metadata(thread_id)
-            .and_then(|metadata| metadata.agent_path)
-        {
-            return Some(agent_path);
-        }
-        let thread_name = format!("thread_{}", thread_id.to_string().replace('-', "_"));
-        match AgentPath::root().join(&thread_name) {
-            Ok(path) => Some(path),
-            Err(err) => {
-                tracing::warn!(%thread_id, "failed to build synthetic agent path: {err}");
-                None
-            }
-        }
-    }
-
     pub(super) async fn persist_response_observation_snapshot(
         &self,
         parent: SessionPresentationId,
@@ -938,6 +1051,16 @@ impl AgentControl {
         };
         if parent_thread.session.presentation_id() != parent {
             return false;
+        }
+        if parent_thread
+            .session
+            .thread_config_snapshot()
+            .await
+            .ephemeral
+        {
+            // Ephemeral sessions retain observation state only for the live runtime. They have no
+            // rollout against which a durable response-observation barrier could be satisfied.
+            return true;
         }
         parent_thread
             .session

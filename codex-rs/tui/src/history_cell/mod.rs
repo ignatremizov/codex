@@ -133,7 +133,6 @@ pub(crate) use request_user_input::*;
 pub(crate) use search::*;
 pub(crate) use separators::*;
 pub(crate) use session::*;
-pub(crate) use user_agent_control::UserAgentControlHistoryCell;
 pub(crate) use user_agent_control::new_user_agent_control;
 
 #[cfg(test)]

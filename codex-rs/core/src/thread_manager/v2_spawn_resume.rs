@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::control::LiveAgentMetadataDisposition;
 use crate::agent::control::agent_alias_lifecycle_status;
 use codex_agent_graph_store::AgentAliasState;
+use codex_agent_graph_store::AgentGraphStoreError;
 use codex_agent_graph_store::ThreadSpawnEdgeStatus;
 use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
@@ -522,21 +523,30 @@ async fn resolve_persisted_v2_spawn_resume(
             resumed.conversation_id
         ))
     })?;
-    let current_alias = agent_graph_store
+    let current_alias = match agent_graph_store
         .find_current_agent_alias_by_thread(resumed.conversation_id)
         .await
-        .map_err(|err| {
-            CodexErr::Fatal(format!(
+    {
+        Ok(Some(alias)) => alias,
+        Ok(None) => {
+            return Err(CodexErr::InvalidRequest(format!(
+                "cannot resume spawned V2 child {} because it has no current durable owner or persisted thread-spawn edge; restore the graph state and retry",
+                resumed.conversation_id
+            )));
+        }
+        Err(AgentGraphStoreError::InvalidRequest { message }) => {
+            return Err(CodexErr::InvalidRequest(format!(
+                "cannot resume spawned V2 child {} because its persisted thread-spawn edge and agent graph are unavailable: {message}; restore the graph state and retry",
+                resumed.conversation_id
+            )));
+        }
+        Err(err) => {
+            return Err(CodexErr::Fatal(format!(
                 "failed to resolve the current durable owner for spawned V2 child {}: {err}",
                 resumed.conversation_id
-            ))
-        })?
-        .ok_or_else(|| {
-            CodexErr::InvalidRequest(format!(
-                "cannot resume spawned V2 child {} because it has no current durable owner; restore the graph state and retry",
-                resumed.conversation_id
-            ))
-        })?;
+            )));
+        }
+    };
     let edge_status = agent_alias_lifecycle_status(current_alias.state).ok_or_else(|| {
         CodexErr::InvalidRequest(format!(
             "cannot resume spawned V2 child {} through a transferred historical alias; resolve its current owner and retry",

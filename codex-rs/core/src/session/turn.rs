@@ -186,13 +186,8 @@ pub(crate) async fn run_turn(
         Ok(pre_sampling_compact) => pre_sampling_compact,
         Err(err) => {
             if matches!(err.details(), CodexErrorDetails::TurnAborted) {
-                run_hooks_and_record_inputs(
-                    &sess,
-                    &turn_context,
-                    &input,
-                    PersistContext::Standard,
-                )
-                .await;
+                run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::Standard)
+                    .await;
                 return Err(err);
             }
             if matches!(err.details(), CodexErrorDetails::ToolCollision(_)) {
@@ -711,33 +706,46 @@ pub(crate) async fn run_hooks_and_record_inputs(
 ) -> bool {
     let mut blocked_input = false;
     let mut accepted_user_input = false;
+    let mut persistence_failed = false;
     for input_item in input {
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
             blocked_input = true;
             record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
         } else {
-            if matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()) {
+            if matches!(
+                input_item,
+                TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. }
+                    if !content.is_empty()
+            ) {
                 accepted_user_input = true;
             }
-            record_pending_input(
+            if record_pending_input(
                 sess,
                 turn_context,
                 input_item.clone(),
                 hook_outcome.additional_contexts,
                 persist_context,
             )
-            .await;
+            .await
+            .is_err()
+            {
+                // Preserve later drained inputs, but stop before sampling so a
+                // later queue retry cannot execute this message twice.
+                persistence_failed = true;
+            }
         }
     }
-    blocked_input && !accepted_user_input
+    persistence_failed || (blocked_input && !accepted_user_input)
 }
 
 fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
     input
         .iter()
         .filter_map(|item| match item {
-            TurnInput::UserInput { content, .. } => Some(content.as_slice()),
+            TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. } => {
+                Some(content.as_slice())
+            }
             TurnInput::ResponseItem(_)
             | TurnInput::FunctionCallOutput(_)
             | TurnInput::InterAgentCommunication(_) => None,
@@ -1102,7 +1110,8 @@ async fn track_turn_resolved_config_analytics(
             num_input_images: input
                 .iter()
                 .filter_map(|item| match item {
-                    TurnInput::UserInput { content, .. } => Some(content.as_slice()),
+                    TurnInput::UserInput { content, .. }
+                    | TurnInput::AgentInput { content, .. } => Some(content.as_slice()),
                     TurnInput::ResponseItem(_)
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::InterAgentCommunication(_) => None,

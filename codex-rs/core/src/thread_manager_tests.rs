@@ -105,8 +105,7 @@ async fn reserved_thread_id_is_used_without_changing_normal_id_generation() {
     let resume_error = manager
         .start_thread(resumed_options)
         .await
-        .err()
-        .expect("reject reserved ID for resume");
+        .expect_err("reject reserved ID for resume");
     let generated = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await

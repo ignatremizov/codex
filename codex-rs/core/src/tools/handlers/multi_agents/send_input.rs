@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
+use crate::agent::control::QueuedInputObservationParams;
 use crate::agent::control::render_input_preview;
 use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
@@ -46,6 +47,7 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: SendInputArgs = parse_arguments(&arguments)?;
+        let input_items = parse_collab_input(args.message, args.items)?;
         let receiver_thread_id = resolve_controlled_v1_agent_target(&session, &args.target).await?;
         if receiver_thread_id == session.thread_id {
             return Err(FunctionCallError::RespondToModel(
@@ -53,7 +55,6 @@ impl Handler {
                     .to_string(),
             ));
         }
-        let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = render_input_preview(&input_items);
         let receiver_agent = session
             .services
@@ -70,10 +71,19 @@ impl Handler {
                 .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
         }
         let receiver_agent = receiver_agent.unwrap_or_default();
+        let agent_control = session.services.agent_control.clone();
+        let sends_to_descendant = agent_control
+            .is_live_agent_descendant(session.thread_id, receiver_thread_id)
+            .await
+            .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+        if args.interrupt && !sends_to_descendant {
+            return Err(FunctionCallError::RespondToModel(
+                "an agent reply route authorizes input, not interruption of its parent or peer"
+                    .to_string(),
+            ));
+        }
         if args.interrupt {
-            session
-                .services
-                .agent_control
+            agent_control
                 .interrupt_agent(receiver_thread_id)
                 .await
                 .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
@@ -87,6 +97,8 @@ impl Handler {
                     status: CollabAgentToolCallStatus::InProgress,
                     observe_commentary: Some(args.w.commentary()),
                     wake_on_completion: args.w.wake_on_completion_item_value(),
+                    target_messages: Some(args.w.target_messages()),
+                    queue_input: Some(args.w.queue_input()),
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: vec![receiver_thread_id],
@@ -99,22 +111,66 @@ impl Handler {
                 }),
             )
             .await;
-        let agent_control = session.services.agent_control.clone();
-        let result = agent_control
-            .send_input_observing_response(
-                receiver_thread_id,
-                input_items,
-                crate::TurnStartOptions {
-                    parent_turn_id: Some(turn.sub_id.clone()),
-                    root_turn_id: turn.turn_metadata_state.root_turn_id(),
-                    cyber_access_program: turn.cyber_access_program,
-                    ..Default::default()
-                },
-                session.presentation_id(),
-                args.w,
-            )
-            .await
-            .map_err(|err| collab_agent_error(receiver_thread_id, err));
+        let start_options = crate::TurnStartOptions {
+            parent_turn_id: Some(turn.sub_id.clone()),
+            root_turn_id: turn.turn_metadata_state.root_turn_id(),
+            cyber_access_program: turn.cyber_access_program,
+            ..Default::default()
+        };
+        let result = if args.w.queue_input() && sends_to_descendant {
+            agent_control
+                .queue_input_observing_response(QueuedInputObservationParams {
+                    agent_id: receiver_thread_id,
+                    input: input_items,
+                    start_options,
+                    observer: session.presentation_id(),
+                    response_observation: args.w,
+                    task_preview: None,
+                    authored_selector: None,
+                })
+                .await
+                .map(|submission| SendInputResult {
+                    submission_id: submission.queue_id.to_string(),
+                })
+        } else if args.w.queue_input() {
+            agent_control
+                .queue_scoped_agent_input_observing_response(
+                    session.presentation_id(),
+                    &turn.sub_id,
+                    receiver_thread_id,
+                    input_items,
+                    start_options,
+                    args.w,
+                )
+                .await
+                .map(|submission| SendInputResult {
+                    submission_id: submission.queue_id.to_string(),
+                })
+        } else if sends_to_descendant {
+            agent_control
+                .send_input_observing_response(
+                    receiver_thread_id,
+                    input_items,
+                    start_options,
+                    session.presentation_id(),
+                    args.w,
+                )
+                .await
+                .map(|submission_id| SendInputResult { submission_id })
+        } else {
+            agent_control
+                .send_scoped_agent_input_observing_response(
+                    session.presentation_id(),
+                    &turn.sub_id,
+                    receiver_thread_id,
+                    input_items,
+                    start_options,
+                    args.w,
+                )
+                .await
+                .map(|submission_id| SendInputResult { submission_id })
+        }
+        .map_err(|err| collab_agent_error(receiver_thread_id, err));
         let status = session
             .services
             .agent_control
@@ -129,6 +185,8 @@ impl Handler {
                     status: collab_tool_call_status(&status, Some(receiver_thread_id)),
                     observe_commentary: Some(args.w.commentary()),
                     wake_on_completion: args.w.wake_on_completion_item_value(),
+                    target_messages: Some(args.w.target_messages()),
+                    queue_input: Some(args.w.queue_input()),
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: vec![receiver_thread_id],
@@ -145,9 +203,7 @@ impl Handler {
                 }),
             )
             .await;
-        let submission_id = result?;
-
-        Ok(boxed_tool_output(SendInputResult { submission_id }))
+        Ok(boxed_tool_output(result?))
     }
 }
 

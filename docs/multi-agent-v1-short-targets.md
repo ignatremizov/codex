@@ -76,8 +76,11 @@ Examples:
 ```
 
 ```json
-{"target":"main","message":"Status update from a child","w":"x"}
+{"target":"main","message":"Status update from a child","w":"cx"}
 ```
+
+The child-to-Main example assumes that child's current turn holds the exact-turn `m` route granted
+by Main. The selector identifies the destination; it does not itself authorize reverse input.
 
 ```json
 {"target":"019faa07-aa3d-78d3-9eca-66cd8626adad"}
@@ -257,19 +260,20 @@ and a runtime still live under another root cannot acquire a second controller.
 
 | Operation | Same-root ref, nickname, or UUID | UUID outside current root |
 | --- | --- | --- |
-| send, wait, interrupt, observe, close | Allowed when existing lifecycle rules permit it. | Reject as not controlled. |
+| send, wait, interrupt, observe, close | Allowed when existing lifecycle and scoped-message rules permit it. | Reject as not controlled. |
 | resume known closed descendant | Resume under the existing root. | Not applicable. |
 | explicit resume/adopt | Idempotent when already controlled. | May transfer exclusive ownership after validation. |
 | inspect | Allowed. | Read-only lookup may be allowed without mutation. |
 
 Main cannot be closed by a child. Self-send, self-wait, self-resume, and
-self-close are invalid; child-to-Main and sibling communication remain
-available. At V1's maximum spawn depth, `send_input` remains model-visible so a
-leaf can notify Main or a same-root sibling without first resuming it. Tools
-that create or manage deeper lifecycle relationships remain unavailable to the
-model. The depth budget limits autonomous model-created edges, not explicit
-user `/agent` spawn or adoption; those operations record their actual depth and
-retain normal concurrency limits.
+self-close are invalid. Child-to-Main and peer communication use an exact-turn
+`m` route granted by the target that dispatched the work; knowing a UUID or
+alias does not create that authority. At V1's maximum spawn depth, `send_input`
+remains model-visible so a leaf can use a granted route without receiving tools
+that create or manage deeper lifecycle relationships. The depth budget limits
+autonomous model-created edges, not explicit user `/agent` spawn or adoption;
+those operations record their actual depth and retain normal concurrency
+limits.
 Other same-root parent, child, and sibling actions keep their existing
 operation-specific checks.
 
@@ -500,11 +504,11 @@ Coverage must include:
 - Full-history and last-N forks preventing both ref and nickname reuse.
 - Out-of-root UUID rejection for send, wait, interrupt, observe, and close.
 - Self-target rejection for send, wait, resume, and close without affecting
-  child-to-Main communication.
-- Child-to-Main close rejection while permitted child-to-Main communication
-  continues to work.
-- A maximum-depth V1 child retaining `send_input` for Main and same-root
-  siblings while deeper lifecycle tools remain unavailable.
+  a separately granted child-to-Main route.
+- Child-to-Main close rejection while exact-turn `m` communication continues
+  to work.
+- A maximum-depth V1 child retaining `send_input` for an explicit `m` route
+  while deeper lifecycle tools remain unavailable.
 - Explicit user spawning or adoption beyond the autonomous model depth budget
   recording the actual graph depth while the resulting leaf remains able to
   communicate.

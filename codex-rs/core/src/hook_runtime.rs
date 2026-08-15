@@ -57,9 +57,11 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tracing::instrument;
 
+use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
 use crate::context::ContextualUserFragment;
 use crate::context::HookAdditionalContext;
 use crate::event_mapping::parse_turn_item;
+use crate::session::PromptInputKind;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
@@ -686,7 +688,9 @@ pub(crate) async fn inspect_pending_input(
             )
             .await
         }
-        TurnInput::ResponseItem(_) | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
+        TurnInput::AgentInput { .. }
+        | TurnInput::ResponseItem(_)
+        | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
             should_stop: false,
             additional_contexts: Vec::new(),
         },
@@ -697,20 +701,78 @@ pub(crate) async fn inspect_pending_input(
     }
 }
 
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "durable queue admission must settle before its active turn can be aborted"
+)]
 pub(crate) async fn record_pending_input(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     pending_input: TurnInput,
     additional_contexts: Vec<String>,
     persist_context: PersistContext,
-) {
+) -> Result<(), TryStartTurnIfIdleRejectionReason> {
     match pending_input {
-        TurnInput::UserInput { content, client_id } => {
-            sess.record_user_prompt_and_emit_turn_item(
+        prompt @ (TurnInput::UserInput { .. } | TurnInput::AgentInput { .. }) => {
+            let (content, client_id, prompt_kind) = match prompt {
+                TurnInput::UserInput { content, client_id } => {
+                    (content, client_id, PromptInputKind::User)
+                }
+                TurnInput::AgentInput {
+                    content,
+                    presentation,
+                } => (content, None, PromptInputKind::Agent { presentation }),
+                TurnInput::ResponseItem(_)
+                | TurnInput::FunctionCallOutput(_)
+                | TurnInput::InterAgentCommunication(_) => {
+                    unreachable!()
+                }
+            };
+            let mut active = sess.active_turn.lock().await;
+            let input_persisted = active
+                .as_mut()
+                .and_then(|turn| turn.task.as_mut())
+                .filter(|task| Arc::ptr_eq(&task.turn_context, turn_context))
+                .and_then(|task| task.input_persisted.take());
+            if input_persisted.is_some() {
+                sess.record_prompt_and_emit_turn_item(
+                    turn_context.as_ref(),
+                    content.as_slice(),
+                    client_id.clone(),
+                    persist_context,
+                    prompt_kind.clone(),
+                )
+                .await;
+                record_additional_contexts(sess, turn_context, additional_contexts).await;
+                match sess.flush_rollout().await {
+                    Ok(()) => {
+                        if let Some(sender) = input_persisted {
+                            let _ = sender.send(Ok(()));
+                        }
+                    }
+                    Err(error) => {
+                        let error = codex_protocol::error::CodexErr::from(error);
+                        sess.send_event(
+                            turn_context.as_ref(),
+                            EventMsg::Error(error.to_error_event(/*message_prefix*/ None)),
+                        )
+                        .await;
+                        if let Some(sender) = input_persisted {
+                            let _ = sender
+                                .send(Err(TryStartTurnIfIdleRejectionReason::PersistenceFailed));
+                        }
+                        return Err(TryStartTurnIfIdleRejectionReason::PersistenceFailed);
+                    }
+                }
+                return Ok(());
+            }
+            drop(active);
+            sess.record_prompt_and_emit_turn_item(
                 turn_context.as_ref(),
                 content.as_slice(),
                 client_id,
                 persist_context,
+                prompt_kind,
             )
             .await;
         }
@@ -746,6 +808,7 @@ pub(crate) async fn record_pending_input(
         }
     }
     record_additional_contexts(sess, turn_context, additional_contexts).await;
+    Ok(())
 }
 
 /// Processes finished async hook results at a safe turn boundary.

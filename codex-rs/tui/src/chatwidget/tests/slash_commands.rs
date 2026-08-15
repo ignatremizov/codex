@@ -1,6 +1,7 @@
 use super::*;
 use crate::app_command::AppCommand;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
+use crate::chatwidget::agent_command::AgentSelectorKind;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
 
@@ -134,6 +135,7 @@ fn next_copy_selection(
 #[tokio::test]
 async fn slash_agent_with_uuid_submits_a_user_prompt_to_that_thread() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     let thread_id =
         ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad").expect("valid thread id");
 
@@ -173,6 +175,7 @@ async fn slash_agent_with_uuid_submits_a_user_prompt_to_that_thread() {
 #[tokio::test]
 async fn slash_agent_main_uses_the_case_insensitive_nickname_target() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
 
     chat.dispatch_command_with_args(
         SlashCommand::Agent,
@@ -205,6 +208,7 @@ async fn slash_agent_main_uses_the_case_insensitive_nickname_target() {
 #[tokio::test]
 async fn prepared_agent_command_preserves_existing_composer_draft_as_prompt() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     chat.bottom_pane
         .set_composer_text("existing draft".to_string(), Vec::new(), Vec::new());
     chat.restore_user_message_to_composer(UserMessage::from("/agent 2 "));
@@ -232,6 +236,7 @@ async fn prepared_agent_command_preserves_existing_composer_draft_as_prompt() {
 #[tokio::test]
 async fn slash_agent_with_only_uuid_opens_that_target_in_the_control_pane() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     let thread_id =
         ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad").expect("valid thread id");
 
@@ -253,6 +258,7 @@ async fn slash_agent_with_only_uuid_opens_that_target_in_the_control_pane() {
 #[tokio::test]
 async fn promptless_agent_command_drains_staged_mention_bindings() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     let mention_bindings = vec![MentionBinding {
         sigil: '$',
         mention: "figma".to_string(),
@@ -291,6 +297,7 @@ async fn promptless_agent_command_drains_staged_mention_bindings() {
 #[tokio::test]
 async fn slash_agent_with_only_remote_image_dispatches_a_structured_prompt() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     let source_thread_id = chat.thread_id.expect("source thread id");
     let image_url = "data:image/png;base64,aW1hZ2U=".to_string();
     chat.set_remote_image_urls(vec![image_url.clone()]);
@@ -338,6 +345,7 @@ async fn slash_agent_with_only_remote_image_dispatches_a_structured_prompt() {
 #[tokio::test]
 async fn slash_agent_new_with_only_remote_image_starts_the_first_turn() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     let source_thread_id = chat.thread_id.expect("source thread id");
     let image_url = "data:image/png;base64,aW1hZ2U=".to_string();
     chat.set_remote_image_urls(vec![image_url.clone()]);
@@ -383,6 +391,7 @@ async fn slash_agent_new_with_only_remote_image_starts_the_first_turn() {
 #[tokio::test]
 async fn slash_agent_resume_preserves_source_selector_and_response_handling() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     let source_thread_id = chat.thread_id.expect("source thread id");
 
     chat.dispatch_command_with_args(
@@ -426,6 +435,7 @@ async fn slash_agent_resume_preserves_source_selector_and_response_handling() {
 #[tokio::test]
 async fn slash_agent_new_preserves_fork_and_first_turn_response_handling() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     let source_thread_id = chat.thread_id.expect("source thread id");
 
     chat.dispatch_command_with_args(
@@ -453,9 +463,64 @@ async fn slash_agent_new_preserves_fork_and_first_turn_response_handling() {
 }
 
 #[tokio::test]
+async fn slash_agent_configured_role_wins_nickname_collision_and_can_repeat() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.agent_roles.insert(
+        "reviewer".to_string(),
+        crate::legacy_core::config::AgentRoleConfig {
+            description: Some("Review changes".to_string()),
+            config_file: None,
+            nickname_candidates: None,
+        },
+    );
+    chat.set_agent_prompt_targets(vec![crate::bottom_pane::AgentPromptTarget {
+        thread_id: Some(ThreadId::new()),
+        selector: "2".to_string(),
+        label: "reviewer [worker]".to_string(),
+    }]);
+
+    for prompt in ["review the API", "review the TUI"] {
+        chat.dispatch_command_with_args(
+            SlashCommand::Agent,
+            format!("reviewer {prompt}"),
+            Vec::new(),
+        );
+    }
+
+    let spawned = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::SpawnAgent {
+                role,
+                authored_selector,
+                prompt,
+                ..
+            } => Some((role, authored_selector, prompt)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        spawned,
+        vec![
+            (
+                Some("reviewer".to_string()),
+                Some("reviewer".to_string()),
+                Some(UserMessage::from("review the API")),
+            ),
+            (
+                Some("reviewer".to_string()),
+                Some("reviewer".to_string()),
+                Some(UserMessage::from("review the TUI")),
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn slash_agent_interrupt_and_close_preserve_source_control() {
     let (mut interrupt_chat, mut interrupt_rx, _op_rx) =
         make_chatwidget_manual(/*model_override*/ None).await;
+    interrupt_chat.thread_id = Some(ThreadId::new());
     let source_thread_id = interrupt_chat.thread_id.expect("source thread id");
     interrupt_chat.dispatch_command_with_args(
         SlashCommand::Agent,
@@ -485,10 +550,11 @@ async fn slash_agent_interrupt_and_close_preserve_source_control() {
 
     let (mut close_chat, mut close_rx, _op_rx) =
         make_chatwidget_manual(/*model_override*/ None).await;
+    close_chat.thread_id = Some(ThreadId::new());
     let close_source_thread_id = close_chat.thread_id.expect("source thread id");
     close_chat.dispatch_command_with_args(
         SlashCommand::Agent,
-        "close nick:Robie".to_string(),
+        "close nick:Robie w:x".to_string(),
         Vec::new(),
     );
     let close = std::iter::from_fn(|| close_rx.try_recv().ok())
@@ -499,6 +565,9 @@ async fn slash_agent_interrupt_and_close_preserve_source_control() {
         AppEvent::CloseAgent {
             source_thread_id: actual_source,
             selector,
+            response_handling: Some(
+                codex_app_server_protocol::AgentResponseHandling::Presentation
+            ),
         } if actual_source == close_source_thread_id
             && selector
                 == agent_selector(
@@ -513,6 +582,7 @@ async fn slash_agent_interrupt_and_close_preserve_source_control() {
 #[tokio::test]
 async fn slash_agent_queue_preserves_source_and_future_turn_response_handling() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     let source_thread_id = chat.thread_id.expect("source thread id");
 
     chat.dispatch_command_with_args(
@@ -546,6 +616,7 @@ async fn slash_agent_queue_preserves_source_and_future_turn_response_handling() 
 #[tokio::test]
 async fn slash_agent_queue_without_prompt_opens_target_queue() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
 
     chat.dispatch_command_with_args(SlashCommand::Agent, "queue ref:2".to_string(), Vec::new());
 
@@ -565,6 +636,7 @@ async fn slash_agent_queue_without_prompt_opens_target_queue() {
 #[tokio::test]
 async fn slash_agent_observe_requests_authoritative_final_response_replacement() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
     let source_thread_id = chat.thread_id.expect("source thread id");
 
     chat.dispatch_command_with_args(
@@ -1816,21 +1888,14 @@ async fn interrupted_merged_message_history_encodes_mentions_once() {
     next_interrupt_op(&mut op_rx);
     chat.on_interrupted_turn(TurnAbortReason::Interrupted);
 
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { items, .. } => {
-            let [
-                UserInput::Text {
-                    text: submitted, ..
-                },
-            ] = items.as_slice()
-            else {
-                panic!("expected resubmitted text item, got {items:?}");
-            };
-            assert_eq!(submitted, text);
-        }
-        other => panic!("expected resubmitted user turn, got {other:?}"),
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(chat.input_queue.pending_steers.len(), 1);
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::AppendMessageHistoryEntry { .. }),
+            "Core continuation must not duplicate the steer in local message history"
+        );
     }
-    assert_eq!(next_add_to_history_event(&mut rx), encoded);
 }
 
 #[tokio::test]

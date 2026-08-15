@@ -3,6 +3,7 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
+use std::sync::Arc;
 
 use super::UserAgentFinalResponseHandling;
 use super::UserAgentObservationBinding;
@@ -17,11 +18,11 @@ use super::user_control_tool_error;
 use crate::CodexThread;
 use crate::agent::AgentStatus;
 use crate::agent::control::AgentResumeOwnership;
+use crate::agent::control::InputTurnAdmissionMode;
 use crate::agent::control::ResumeUserInputAdmission;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::config::Config;
-use crate::session::InputTurnAdmissionPolicy;
 use crate::tools::handlers::multi_agents_common::build_agent_resume_config;
 
 struct PreparedClosedAgentResume {
@@ -212,13 +213,17 @@ impl CodexThread {
             }
         };
         let status = agent_control.get_status(target_thread_id).await;
-        let observation_binding = agent_control
-            .current_response_observation_binding_for_thread(
-                self.session.presentation_id(),
-                target_thread_id,
-            )
-            .await
-            .map(Into::into);
+        let observation_binding = if post_commit_warning.is_some() {
+            None
+        } else {
+            agent_control
+                .current_response_observation_binding_for_thread(
+                    self.session.presentation_id(),
+                    target_thread_id,
+                )
+                .await
+                .map(Into::into)
+        };
         let (agent_ref, nickname) = persisted_alias.map_or((None, None), |alias| {
             (Some(alias.agent_ref), alias.nickname)
         });
@@ -250,7 +255,7 @@ impl CodexThread {
         };
         let task_name = ownership_transfer
             .is_some()
-            .then(|| format!("user-adopt-{}", uuid::Uuid::now_v7()));
+            .then(|| format!("user_adopt_{}", uuid::Uuid::now_v7().as_simple()));
         let session_source = if ownership_transfer.is_some() {
             child_session_source(self, turn.as_ref(), /*role*/ None, task_name)?
         } else {
@@ -276,7 +281,6 @@ impl CodexThread {
         target_thread_id: ThreadId,
         input: Vec<UserInput>,
         response_handling: UserAgentResponseHandling,
-        admission_policy: InputTurnAdmissionPolicy,
     ) -> CodexResult<UserAgentPromptResult> {
         let agent_control = &self.session.services.agent_control;
         let resume_plan = agent_control.plan_agent_resume(target_thread_id).await?;
@@ -292,11 +296,24 @@ impl CodexThread {
         let task_preview = response_handling
             .exposes_task_context()
             .then(|| crate::agent::control::render_input_preview(&input));
+        let response_observation = ResponseObservationPolicy::from(response_handling);
+        let queue_id = response_handling.queue_input().then(uuid::Uuid::now_v7);
+        let admission_mode =
+            queue_id
+                .as_ref()
+                .map_or(InputTurnAdmissionMode::AnyTurn, |queue_id| {
+                    InputTurnAdmissionMode::Queued(
+                        response_observation.admitted_queue_turn_metadata(
+                            queue_id.to_string(),
+                            self.session.thread_id(),
+                        ),
+                    )
+                });
         let admission = ResumeUserInputAdmission {
             input,
             observer: self.session.presentation_id(),
-            response_observation: response_handling.into(),
-            admission_policy,
+            response_observation,
+            admission_mode,
             task_preview,
         };
         let submission = agent_control
@@ -307,9 +324,14 @@ impl CodexThread {
                 admission,
             )
             .await?;
+        let submission_id = match queue_id {
+            Some(queue_id) => queue_id.to_string(),
+            None => submission.submission_id,
+        };
         Ok(UserAgentPromptResult {
             target_thread_id,
-            submission_id: submission.submission_id,
+            submission_id,
+            queued: response_handling.queue_input(),
             resumed_target: true,
             post_admission_warning: submission.post_admission_warning,
         })
@@ -369,6 +391,7 @@ impl CodexThread {
             Some(UserAgentPromptResult {
                 target_thread_id,
                 submission_id: submission.submission_id,
+                queued: false,
                 resumed_target: false,
                 post_admission_warning: submission.post_admission_warning,
             }),
@@ -376,7 +399,11 @@ impl CodexThread {
     }
 
     /// Explicitly close a controlled agent runtime.
-    pub async fn close_agent(&self, target: &str) -> CodexResult<ThreadId> {
+    pub async fn close_agent(
+        &self,
+        target: &str,
+        response_handling: UserAgentResponseHandling,
+    ) -> CodexResult<ThreadId> {
         let source_thread_id = self.session.thread_id();
         let agent_control = &self.session.services.agent_control;
         let target_thread_id = agent_control
@@ -392,7 +419,20 @@ impl CodexThread {
                 "a child agent cannot close Main".to_string(),
             ));
         }
-        agent_control.close_agent(target_thread_id).await?;
+        let close_response = agent_control
+            .prepare_close_agent_response(
+                Arc::clone(&self.session),
+                self.multi_agent_version()
+                    .unwrap_or(codex_protocol::protocol::MultiAgentVersion::V1),
+                target_thread_id,
+            )
+            .await?;
+        let closed = agent_control
+            .close_agent_with_status(target_thread_id)
+            .await?;
+        close_response
+            .deliver(&closed.previous_status, response_handling.into())
+            .await;
         Ok(target_thread_id)
     }
 }

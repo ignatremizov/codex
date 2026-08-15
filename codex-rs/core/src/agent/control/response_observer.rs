@@ -2,10 +2,11 @@ use super::presentation::FinalResponseObservationReplacement;
 use super::presentation::ReplacedFinalResponseObservationBinding;
 use super::*;
 use crate::session::AgentResponseSubscription;
+use crate::session::SteerInputError;
 use crate::session::agent_response_events_from_rollout;
+use codex_history::rollout::rollout_without_exact_rollback_ranges;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::AgentResponsePromotedTaskContext;
-use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 use std::collections::HashSet;
 
 pub(crate) struct ReplacedFinalResponseObservation {
@@ -144,6 +145,9 @@ impl AgentControl {
         {
             state.advance_agent_lifecycle_generation(thread_id);
         }
+        state.agent_turn_queue.cancel_for_threads(
+            std::iter::once(target_thread_id).chain(descendant_thread_ids.iter().copied()),
+        );
 
         let Some(previous_session_id) = previous_session_id else {
             return;
@@ -195,7 +199,7 @@ impl AgentControl {
             .acquire_mailbox_submission_permit(target_thread_id)
             .await?;
         let _transaction_permit = self.acquire_response_observation_transaction(parent).await;
-        let child_thread = state.get_thread(target_thread_id).await?;
+        let child_thread = state.get_thread_including_pending(target_thread_id).await?;
         let child = child_thread.session.presentation_id();
         let child_lifecycle_generation = state.agent_lifecycle_generation(target_thread_id);
         validate_response_observation_endpoints(&state, parent, child, child_lifecycle_generation)
@@ -476,13 +480,15 @@ impl AgentControl {
         let child_lifecycle_guard = state.acquire_live_agent_lifecycle(child_thread_id).await?;
         self.require_current_agent_ownership(child_thread_id)
             .await?;
-        let child_thread = state.get_thread(child_thread_id).await?;
+        let child_thread = state.get_thread_including_pending(child_thread_id).await?;
         let child_lifecycle_generation = state.agent_lifecycle_generation(child_thread_id);
         drop(child_lifecycle_guard);
         let _parent_lifecycle_guard = state
             .acquire_live_agent_lifecycle(*parent_thread_id)
             .await?;
-        let parent_thread = state.get_thread(*parent_thread_id).await?;
+        let parent_thread = state
+            .get_thread_including_pending(*parent_thread_id)
+            .await?;
         let _transaction_permit = self
             .acquire_mailbox_submission_permit(child_thread_id)
             .await?;
@@ -520,12 +526,14 @@ impl AgentControl {
         let child = child_thread.session.presentation_id();
         validate_response_observation_endpoints(state, parent, child, child_lifecycle_generation)
             .await?;
+        self.ensure_scoped_reply_route_supported(child_thread, response_observation)?;
         let parent_thread = state.get_thread_including_pending(parent.thread_id).await?;
         if child_thread_id == parent.thread_id {
             return Ok(child_thread.agent_status().await);
         }
         if !response_observation.commentary()
             && response_observation.final_response() == FinalResponseObservation::None
+            && !response_observation.target_messages()
         {
             if binding == ResponseObservationBinding::NextTurn {
                 let (response_snapshot, response_rx) =
@@ -663,6 +671,67 @@ impl AgentControl {
             );
             return Err(err);
         }
+        if response_observation.target_messages()
+            && let Some(target_turn_id) = target_turn_id.as_deref()
+        {
+            let route = self
+                .with_agent_reply_route(
+                    child_thread,
+                    parent,
+                    response_observation,
+                    AgentControlInput::User(Vec::new()),
+                )
+                .await;
+            let route_result = match route {
+                Ok(route) => {
+                    let Op::AgentInput {
+                        items,
+                        presentation,
+                    } = route.into_op()
+                    else {
+                        unreachable!("reply-route context is core-authored agent input")
+                    };
+                    child_thread
+                        .session
+                        .steer_internal_agent_input(items, presentation, target_turn_id)
+                        .await
+                        .map(|_| ())
+                        .map_err(|err| {
+                            let message = match err {
+                                SteerInputError::NoActiveTurn(_) => {
+                                    "target turn completed before the reply route was delivered"
+                                        .to_string()
+                                }
+                                SteerInputError::ActiveTurnPresent { actual } => {
+                                    format!("unexpected active target turn `{actual}`")
+                                }
+                                SteerInputError::ExpectedTurnMismatch { expected, actual } => {
+                                    format!(
+                                        "expected target turn `{expected}` but found `{actual}`"
+                                    )
+                                }
+                                SteerInputError::ActiveTurnNotSteerable { .. } => {
+                                    "target turn does not accept reply-route input".to_string()
+                                }
+                                SteerInputError::EmptyInput => {
+                                    "reply-route input was empty".to_string()
+                                }
+                            };
+                            CodexErr::InvalidRequest(message)
+                        })
+                }
+                Err(err) => Err(err),
+            };
+            if let Err(err) = route_result {
+                drop(watcher_registration);
+                self.restore_response_observation_relationship_snapshot(
+                    parent,
+                    child,
+                    previous_relationship,
+                );
+                return Err(err);
+            }
+        }
         if let Some(task_preview) = task_preview.as_ref() {
             self.set_response_observation_task_preview(
                 parent,
@@ -671,7 +740,7 @@ impl AgentControl {
                 task_preview.clone(),
             );
         }
-        if response_observation.has_model_visible_delivery()
+        if response_observation.exposes_source_model_context()
             && let Some(task_preview) = task_preview
             && let Err(err) = self
                 .persist_user_agent_task_context(parent, child_thread_id, task_preview)
@@ -1091,7 +1160,7 @@ impl AgentControl {
                 ) {
                     return;
                 }
-                if let Ok(child_thread) = state.get_thread(target_thread_id).await
+                if let Ok(child_thread) = state.get_thread_including_pending(target_thread_id).await
                     && previous_child
                         .is_none_or(|previous| child_thread.session.presentation_id() != previous)
                 {
@@ -1385,7 +1454,7 @@ impl AgentControl {
                 ) {
                     return;
                 }
-                if let Ok(child_thread) = state.get_thread(target_thread_id).await
+                if let Ok(child_thread) = state.get_thread_including_pending(target_thread_id).await
                     && previous_child
                         .is_none_or(|previous| child_thread.session.presentation_id() != previous)
                 {
@@ -1473,6 +1542,7 @@ impl AgentControl {
                 self.take_watcher_terminal_presentation(parent, child)
             });
         if let Some(terminal) = terminal {
+            self.mark_response_observer_terminal_processed(parent, child, turn_id);
             loop {
                 let Some(lifecycle_guard) = self
                     .acquire_current_agent_lifecycle(child.thread_id, child_lifecycle_generation)

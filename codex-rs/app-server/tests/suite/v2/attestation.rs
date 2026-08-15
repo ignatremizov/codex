@@ -115,17 +115,21 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
             ..Default::default()
         })
         .await?;
-    let turn_response: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(turn_request_id)),
-    )
-    .await??;
-    let _: TurnStartResponse = to_response(turn_response)?;
-
     let mut attestation_requests = 0;
+    let mut saw_turn_response = false;
+    let mut saw_turn_completed = false;
     timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
+            if saw_turn_response && saw_turn_completed {
+                break Ok::<_, anyhow::Error>(());
+            }
             match mcp.read_next_message().await? {
+                JSONRPCMessage::Response(response)
+                    if response.id == RequestId::Integer(turn_request_id) =>
+                {
+                    let _: TurnStartResponse = to_response(response)?;
+                    saw_turn_response = true;
+                }
                 JSONRPCMessage::Request(request) => {
                     let request = ServerRequest::try_from(request)?;
                     let ServerRequest::AttestationGenerate { request_id, .. } = request else {
@@ -143,7 +147,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                 JSONRPCMessage::Notification(notification)
                     if notification.method == "turn/completed" =>
                 {
-                    break Ok(());
+                    saw_turn_completed = true;
                 }
                 _ => {}
             }
