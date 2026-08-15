@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
+use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::AgentResponseCommentaryAdmission;
 use codex_protocol::protocol::AgentResponseCommentaryDelivery;
 use codex_protocol::protocol::AgentResponseObservation;
@@ -18,7 +19,12 @@ pub(super) struct ResponseTurnObservation {
         Option<codex_protocol::protocol::AgentResponsePromotedTaskContext>,
     pub(super) commentary_admissions: Vec<AgentResponseCommentaryAdmission>,
     pub(super) commentary_delivery: Option<AgentResponseCommentaryDelivery>,
+    pub(super) commentary_delivery_route: CommentaryDeliveryRoute,
     pub(super) final_response: FinalResponseObservation,
+    pub(super) target_messages: bool,
+    pub(super) queue_delivery: bool,
+    pub(super) message_wake_reservation_id: Option<Uuid>,
+    pub(super) message_wake_turn_id: Option<String>,
     pub(super) final_delivery_response_item_id: Option<ResponseItemId>,
     pub(super) committed_delivery_response_item_ids: Vec<ResponseItemId>,
 }
@@ -30,11 +36,24 @@ impl Default for ResponseTurnObservation {
             promoted_task_context: None,
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
+            commentary_delivery_route: CommentaryDeliveryRoute::Undecided,
             final_response: FinalResponseObservation::None,
+            target_messages: false,
+            queue_delivery: false,
+            message_wake_reservation_id: None,
+            message_wake_turn_id: None,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CommentaryDeliveryRoute {
+    #[default]
+    Undecided,
+    Mailbox,
+    Wait,
 }
 
 impl ResponseTurnObservation {
@@ -66,6 +85,12 @@ impl ResponseTurnObservation {
                 });
         }
         self.final_response = self.final_response.max(policy.final_response());
+        if policy.target_messages() && !self.target_messages {
+            self.message_wake_reservation_id = None;
+            self.message_wake_turn_id = None;
+        }
+        self.target_messages |= policy.target_messages();
+        self.queue_delivery |= policy.queue_input();
     }
 }
 
@@ -259,6 +284,199 @@ impl LocalAgentControl {
             relationship.pending_admissions.remove(&admission_id);
         }
         self.publish_response_observation_binding();
+    }
+
+    pub(crate) fn target_message_admission(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+        target_turn_id: &str,
+        observer_active_turn_id: Option<&str>,
+        observer_last_terminal_turn_id: Option<&str>,
+        mode: TargetMessageAdmissionMode,
+    ) -> CodexResult<TargetMessageAdmission> {
+        let may_steer = mode == TargetMessageAdmissionMode::SteerOrWake;
+        let mut state = self.wait_agent_presentations.state();
+        let observation = state
+            .response_observation_by_observer_child
+            .get_mut(&(observer, target))
+            .filter(|relationship| !relationship.revoked)
+            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
+            .filter(|observation| observation.target_messages)
+            .ok_or_else(|| {
+                CodexErr::InvalidRequest(format!(
+                    "agent {} has no message route to {} for turn {target_turn_id}",
+                    target.thread_id, observer.thread_id
+                ))
+            })?;
+        if observation.message_wake_reservation_id.is_some() {
+            return if observer_active_turn_id.is_some() && may_steer {
+                Ok(TargetMessageAdmission::Steer)
+            } else {
+                Ok(TargetMessageAdmission::PendingWake)
+            };
+        }
+        match observation.message_wake_turn_id.as_deref() {
+            None if observer_active_turn_id.is_some() && may_steer => {
+                Ok(TargetMessageAdmission::Steer)
+            }
+            None => {
+                let reservation_id = Uuid::now_v7();
+                observation.message_wake_reservation_id = Some(reservation_id);
+                Ok(TargetMessageAdmission::Wake(reservation_id))
+            }
+            Some(wake_turn_id) if observer_active_turn_id == Some(wake_turn_id) && may_steer => {
+                Ok(TargetMessageAdmission::Steer)
+            }
+            Some(wake_turn_id) if observer_last_terminal_turn_id == Some(wake_turn_id) => {
+                Err(CodexErr::InvalidRequest(format!(
+                    "agent message route to {} already used its idle wake",
+                    observer.thread_id
+                )))
+            }
+            Some(_) if observer_active_turn_id.is_none() && may_steer => {
+                Ok(TargetMessageAdmission::PendingWake)
+            }
+            Some(_) => Err(CodexErr::InvalidRequest(format!(
+                "agent message route to {} belongs to another source turn",
+                observer.thread_id
+            ))),
+        }
+    }
+
+    pub(crate) fn target_message_binding_pending(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+    ) -> bool {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(observer, target))
+            .filter(|relationship| !relationship.revoked)
+            .is_some_and(|relationship| {
+                // Only input already being admitted can bind a route for a running sender.
+                // A next-turn reservation cannot authorize that sender's current turn.
+                relationship
+                    .pending_admissions
+                    .values()
+                    .any(|observation| observation.target_messages)
+            })
+    }
+
+    pub(crate) fn commit_target_message_wake(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+        target_turn_id: &str,
+        reservation_id: Uuid,
+        wake_turn_id: &str,
+    ) -> bool {
+        let mut state = self.wait_agent_presentations.state();
+        let Some(observation) = state
+            .response_observation_by_observer_child
+            .get_mut(&(observer, target))
+            .filter(|relationship| !relationship.revoked)
+            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
+            .filter(|observation| observation.target_messages)
+        else {
+            return false;
+        };
+        if observation.message_wake_reservation_id != Some(reservation_id) {
+            return false;
+        }
+        observation.message_wake_reservation_id = None;
+        let committed = match observation.message_wake_turn_id.as_deref() {
+            None => {
+                observation.message_wake_turn_id = Some(wake_turn_id.to_string());
+                true
+            }
+            Some(existing) => existing == wake_turn_id,
+        };
+        drop(state);
+        if committed {
+            self.wait_agent_presentations
+                .response_observation_changed
+                .notify_waiters();
+        }
+        committed
+    }
+
+    pub(crate) fn rollback_target_message_wake(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+        target_turn_id: &str,
+        reservation_id: Uuid,
+    ) {
+        let mut state = self.wait_agent_presentations.state();
+        if let Some(observation) = state
+            .response_observation_by_observer_child
+            .get_mut(&(observer, target))
+            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
+            && observation.message_wake_reservation_id == Some(reservation_id)
+        {
+            observation.message_wake_reservation_id = None;
+        }
+        drop(state);
+        self.wait_agent_presentations
+            .response_observation_changed
+            .notify_waiters();
+    }
+
+    /// Retires only the grant that consumed this exact source turn's idle wake.
+    pub(crate) fn finish_target_message_wake(
+        &self,
+        observer: SessionPresentationId,
+        wake_turn_id: &str,
+    ) {
+        let mut changed_children = Vec::new();
+        let mut state = self.wait_agent_presentations.state();
+        for ((parent, child), relationship) in &mut state.response_observation_by_observer_child {
+            if *parent != observer || relationship.revoked {
+                continue;
+            }
+            let mut changed = false;
+            for observation in relationship.turns.values_mut() {
+                if observation.target_messages
+                    && observation.message_wake_turn_id.as_deref() == Some(wake_turn_id)
+                {
+                    observation.target_messages = false;
+                    observation.message_wake_reservation_id = None;
+                    changed = true;
+                }
+            }
+            if changed {
+                changed_children.push(*child);
+            }
+        }
+        drop(state);
+        if changed_children.is_empty() {
+            return;
+        }
+        self.wait_agent_presentations
+            .response_observation_changed
+            .notify_waiters();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let control = self.clone();
+            runtime.spawn(async move {
+                let _transaction = control
+                    .acquire_response_observation_transaction(observer)
+                    .await;
+                for child in changed_children {
+                    if let Err(error) = control
+                        .persist_response_observation_snapshot(observer, child)
+                        .await
+                    {
+                        control.abandon_response_observer(
+                            observer,
+                            child,
+                            &format!("completed agent-message wake publication failed: {error}"),
+                        );
+                    }
+                }
+            });
+        }
     }
 }
 

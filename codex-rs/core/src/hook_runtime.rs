@@ -62,6 +62,7 @@ use crate::context::ContextualUserFragment;
 use crate::context::HookAdditionalContext;
 use crate::event_mapping::parse_turn_item;
 use crate::guardian::GuardianReviewContext;
+use crate::session::PromptInputKind;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
@@ -695,7 +696,9 @@ pub(crate) async fn inspect_pending_input(
             )
             .await
         }
-        TurnInput::ResponseItem(_) | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
+        TurnInput::AgentInput { .. }
+        | TurnInput::ResponseItem(_)
+        | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
             should_stop: false,
             additional_contexts: Vec::new(),
         },
@@ -713,22 +716,48 @@ pub(crate) async fn record_pending_input(
     pending_input: TurnInput,
     additional_contexts: Vec<String>,
     persist_context: PersistContext,
-) {
+) -> codex_protocol::error::Result<()> {
     match pending_input {
         TurnInput::UserInput {
             content,
             client_id,
             acceptance_order,
         } => {
-            sess.record_user_prompt_and_emit_turn_item(
-                turn_context.as_ref(),
-                model_info,
-                content.as_slice(),
-                client_id,
-                acceptance_order,
-                persist_context,
-            )
-            .await;
+            return sess
+                .record_prompt_and_emit_turn_item(
+                    turn_context.as_ref(),
+                    model_info,
+                    content.as_slice(),
+                    client_id,
+                    acceptance_order,
+                    persist_context,
+                    PromptInputKind::User,
+                    additional_context_messages(additional_contexts)
+                        .into_iter()
+                        .map(codex_history::ResponseItemEnvelope::new)
+                        .collect(),
+                )
+                .await;
+        }
+        TurnInput::AgentInput {
+            content,
+            presentation,
+        } => {
+            return sess
+                .record_prompt_and_emit_turn_item(
+                    turn_context.as_ref(),
+                    model_info,
+                    &content,
+                    /*client_id*/ None,
+                    /*acceptance_order*/ None,
+                    persist_context,
+                    PromptInputKind::Agent { presentation },
+                    additional_context_messages(additional_contexts)
+                        .into_iter()
+                        .map(codex_history::ResponseItemEnvelope::new)
+                        .collect(),
+                )
+                .await;
         }
         TurnInput::ResponseItem(item) => {
             sess.record_annotated_conversation_items(turn_context, model_info, vec![item])
@@ -762,6 +791,7 @@ pub(crate) async fn record_pending_input(
         }
     }
     record_additional_contexts(sess, turn_context, additional_contexts).await;
+    sess.check_history_publication()
 }
 
 /// Processes finished async hook results at a safe turn boundary.

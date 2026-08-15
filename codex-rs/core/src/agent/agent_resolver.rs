@@ -57,6 +57,9 @@ pub(crate) async fn resolve_resumable_v1_agent_target(
 
 fn agent_target_error(err: codex_protocol::error::CodexErr) -> FunctionCallError {
     match err.details() {
+        CodexErrorDetails::ThreadNotFound(id) => {
+            FunctionCallError::RespondToModel(format!("agent with id {id} not found"))
+        }
         CodexErrorDetails::UnsupportedOperation(message) => {
             FunctionCallError::RespondToModel(message.clone())
         }

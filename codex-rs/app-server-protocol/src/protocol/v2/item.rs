@@ -38,6 +38,7 @@ use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::items::UserAgentControlAction as CoreUserAgentControlAction;
 use codex_protocol::items::UserAgentControlStatus as CoreUserAgentControlStatus;
 use codex_protocol::items::UserAgentForkMode as CoreUserAgentForkMode;
+use codex_protocol::items::UserAgentInputOutcome as CoreUserAgentInputOutcome;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -503,6 +504,7 @@ pub enum ThreadItem {
         final_response: Option<AgentResponseFinalDelivery>,
         target_messages: Option<bool>,
         queue_input: Option<bool>,
+        input_outcome: Option<AgentInputOutcome>,
         status: UserAgentControlStatus,
         error: Option<String>,
     },
@@ -1147,6 +1149,11 @@ impl From<CoreTurnItem> for ThreadItem {
                 final_response: control.final_response,
                 target_messages: control.target_messages,
                 queue_input: control.queue_input,
+                input_outcome: control.input_outcome.map(|outcome| match outcome {
+                    CoreUserAgentInputOutcome::Queued => AgentInputOutcome::Queued,
+                    CoreUserAgentInputOutcome::Admitted => AgentInputOutcome::Admitted,
+                    CoreUserAgentInputOutcome::Unknown => AgentInputOutcome::Unknown,
+                }),
                 status: control.status.into(),
                 error: control.error,
             },

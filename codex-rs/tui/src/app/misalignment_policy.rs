@@ -169,6 +169,7 @@ impl App {
                 self.chat_widget.handle_server_notification(
                     ServerNotification::TurnStarted(
                         codex_app_server_protocol::TurnStartedNotification {
+                            agent_queue: None,
                             thread_id: review.thread_id.to_string(),
                             turn: response.turn,
                         },

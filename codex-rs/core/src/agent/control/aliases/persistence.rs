@@ -48,7 +48,10 @@ impl LocalAgentControl {
             session_id,
             parent_thread_id,
             child_thread_id,
-            nickname: session_source.and_then(SessionSource::get_nickname),
+            nickname: self
+                .get_agent_metadata(child_thread_id)
+                .and_then(|metadata| metadata.agent_nickname)
+                .or_else(|| session_source.and_then(SessionSource::get_nickname)),
         };
         let mut transfer = None;
         let alias = match persistence {

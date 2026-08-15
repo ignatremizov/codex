@@ -20,6 +20,8 @@ impl LocalAgentControl {
                 admissions.sort_by_key(|(id, _)| **id);
                 for (_, admission) in admissions {
                     pending.final_response = pending.final_response.max(admission.final_response);
+                    pending.target_messages |= admission.target_messages;
+                    pending.queue_delivery |= admission.queue_delivery;
                     pending
                         .commentary_admissions
                         .extend(admission.commentary_admissions.iter().cloned());
@@ -30,8 +32,8 @@ impl LocalAgentControl {
                     target_turn_id: None,
                     task_preview: pending.task_preview.clone(),
                     promoted_task_context: pending.promoted_task_context.clone(),
-                    target_messages: false,
-                    queue_delivery: false,
+                    target_messages: pending.target_messages,
+                    queue_delivery: pending.queue_delivery,
                     message_wake_turn_id: None,
                     pending_commentary: !pending.commentary_admissions.is_empty(),
                     commentary_after_sequences: Vec::new(),
@@ -55,9 +57,9 @@ impl LocalAgentControl {
                         target_turn_id: Some(turn_id.clone()),
                         task_preview: observation.task_preview.clone(),
                         promoted_task_context: observation.promoted_task_context.clone(),
-                        target_messages: false,
-                        queue_delivery: false,
-                        message_wake_turn_id: None,
+                        target_messages: observation.target_messages,
+                        queue_delivery: observation.queue_delivery,
+                        message_wake_turn_id: observation.message_wake_turn_id.clone(),
                         pending_commentary: !observation.commentary_admissions.is_empty(),
                         commentary_after_sequences: Vec::new(),
                         commentary_admissions: observation.commentary_admissions.clone(),

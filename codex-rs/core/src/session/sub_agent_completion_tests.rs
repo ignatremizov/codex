@@ -350,6 +350,17 @@ async fn existing_context_identity_rejects_changed_payload_without_another_write
         .await
         .expect("first canonical payload");
     let calls = store.calls().await.append_completion_items_and_flush;
+    assert_eq!(
+        session
+            .persist_completion_context(
+                response.clone(),
+                &accepted,
+                CompletionContextDelivery::QueueOnly,
+            )
+            .await
+            .expect("exact canonical identity is already owned"),
+        CompletionContextPublication::AlreadyPublished,
+    );
     let mut changed = response.clone();
     if let ResponseItem::AgentMessage { content, .. } = &mut changed {
         *content = vec![AgentMessageInputContent::InputText {
@@ -372,6 +383,51 @@ async fn existing_context_identity_rejects_changed_payload_without_another_write
             .cloned()
             .collect::<Vec<_>>(),
         vec![response],
+    );
+}
+
+#[tokio::test]
+async fn close_replay_distinguishes_pending_visible_and_settled_removed_context() {
+    let (mut session, _, _) = make_session_and_context_with_rx().await;
+    attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique")).await;
+    let response = completion_context();
+    let id = response.id().expect("context identity").clone();
+    assert_eq!(
+        session.completion_context_state(&id).await.unwrap(),
+        crate::session::CompletionContextState::Unacknowledged,
+    );
+    let accepted = session
+        .submission_admission
+        .try_accept_completion_delivery()
+        .expect("accepted");
+    session
+        .persist_completion_context(
+            response.clone(),
+            &accepted,
+            CompletionContextDelivery::QueueOnly,
+        )
+        .await
+        .expect("canonical pending context");
+    assert_eq!(
+        session.completion_context_state(&id).await.unwrap(),
+        crate::session::CompletionContextState::Present,
+    );
+    {
+        let mut state = session.state.lock().await;
+        state.acknowledged_completion_contexts.clear();
+        state.record_items(
+            std::iter::once(&response),
+            codex_utils_output_truncation::TruncationPolicy::Tokens(1000),
+        );
+    }
+    assert_eq!(
+        session.completion_context_state(&id).await.unwrap(),
+        crate::session::CompletionContextState::Present,
+    );
+    session.state.lock().await.history.replace(Vec::new());
+    assert_eq!(
+        session.completion_context_state(&id).await.unwrap(),
+        crate::session::CompletionContextState::SettledRemoved,
     );
 }
 

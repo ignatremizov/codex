@@ -5,6 +5,26 @@ use codex_protocol::protocol::AgentStatus;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn fork_removes_trusted_reply_routes_but_preserves_client_authored_copies() {
+    let route = ContextualUserFragment::into(AgentReplyRoute::new(
+        crate::context::AgentContextIdentity::Canonical {
+            agent_id: codex_protocol::ThreadId::new(),
+        },
+    ));
+    let parent = ResponseItemEnvelope::new(route);
+    let mut runtime = parent.clone();
+    assert!(!retain_without_notification_context(&mut runtime));
+    let mut quoted = parent;
+    quoted.metadata = Some(CodexHarnessMetadata {
+        client_authored: true,
+        ..Default::default()
+    });
+    let expected = quoted.clone();
+    assert!(retain_without_notification_context(&mut quoted));
+    assert_eq!(quoted, expected);
+}
+
+#[test]
 fn notification_filter_requires_runtime_annotation() {
     let notification = ContextualUserFragment::into(SubagentNotification::new(
         "/root/worker",

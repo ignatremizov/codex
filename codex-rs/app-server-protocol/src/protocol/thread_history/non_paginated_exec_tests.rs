@@ -2,9 +2,11 @@ use super::*;
 use crate::protocol::thread_history::ThreadHistoryBuilder;
 use crate::protocol::thread_history::build_turns_from_rollout_items;
 use crate::protocol::v2::CommandAction;
+use codex_history::RolloutItem;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::SessionMetaLine;
@@ -27,6 +29,10 @@ fn header(mode: ThreadHistoryMode, cwd: &str) -> RolloutItem {
 }
 
 fn started(turn_id: &str) -> RolloutItem {
+    turn_started(turn_id)
+}
+
+fn turn_started(turn_id: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_id.to_string(),
         root_turn_id: None,

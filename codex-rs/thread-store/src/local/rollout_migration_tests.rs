@@ -243,6 +243,7 @@ fn started(turn_id: &str) -> RolloutItem {
         started_at: Some(1_735_905_600),
         model_context_window: None,
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }))
 }
 
@@ -459,6 +460,9 @@ async fn migration_preserves_agent_response_observation_records() {
         commentary_after_sequences: vec![7],
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
+        target_messages: false,
+        queue_delivery: false,
+        message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::Passive,
         final_delivery: AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: None,
@@ -1443,6 +1447,9 @@ async fn migration_preserves_committed_agent_response_in_crossed_compaction() {
         commentary_after_sequences: Vec::new(),
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
+        target_messages: false,
+        queue_delivery: false,
+        message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::Passive,
         final_delivery: AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: Some(response_item_id.clone()),

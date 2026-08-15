@@ -167,6 +167,16 @@ impl V2Residency {
             else {
                 continue;
             };
+            // Queue insertion and admission use this same lifecycle boundary. A pending entry
+            // therefore pins the target until its worker starts the next turn or cancels it;
+            // unloading here would make the worker mistake capacity eviction for explicit close.
+            if manager
+                .agent_turn_queue
+                .has_pending_involving(candidate_thread_id)
+            {
+                self.touch(candidate_thread_id);
+                continue;
+            }
             if !is_unloadable(candidate_thread.as_ref()).await {
                 self.touch(candidate_thread_id);
                 continue;

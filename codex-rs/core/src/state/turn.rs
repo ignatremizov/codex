@@ -25,6 +25,7 @@ use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::tasks::AnySessionTask;
+use crate::tasks::TaskStartupState;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::TokenUsage;
@@ -77,6 +78,7 @@ pub(crate) enum TaskKind {
 
 pub(crate) struct RunningTask {
     pub(crate) done: Arc<Notify>,
+    pub(crate) startup: Arc<TaskStartupState>,
     pub(crate) kind: TaskKind,
     pub(crate) task: Arc<dyn AnySessionTask>,
     pub(crate) cancellation_token: CancellationToken,

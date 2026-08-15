@@ -70,12 +70,21 @@ use self::residency::V2Residency;
 mod aliases;
 mod budget;
 pub(crate) use aliases::AgentResumeOwnership;
+mod close_response;
 mod completion;
 mod completion_watcher;
+mod input;
 mod presentation;
 mod response_delivery;
 mod response_observer;
 mod response_submission;
+mod scoped_messages;
+mod turn_queue;
+mod wait_commentary;
+pub(crate) use close_response::CloseAgentResponseDisposition;
+pub(crate) use close_response::ClosedAgent;
+pub(crate) use input::AgentControlInput;
+pub(crate) use turn_queue::QueuedInputObservationParams;
 mod user_dispatch;
 mod user_observation;
 mod user_resume;
@@ -101,6 +110,8 @@ pub(crate) use presentation::ResponseObservationDeliveryCommit;
 pub(crate) use presentation::ResponseObservationDeliveryKind;
 use presentation::ResponseObservationPersistence;
 pub(crate) use presentation::SessionPresentationId;
+pub(crate) use presentation::TargetMessageAdmission;
+pub(crate) use presentation::TargetMessageAdmissionMode;
 pub(crate) use presentation::TerminalPresentationDelivery;
 pub(crate) use presentation::WaitAgentPresentationCommit;
 mod delivery;
@@ -161,6 +172,10 @@ impl Default for LocalAgentControl {
 }
 
 impl LocalAgentControl {
+    pub(crate) fn response_observation_changed(&self) -> &tokio::sync::Notify {
+        &self.wait_agent_presentations.response_observation_changed
+    }
+
     /// Construct a new `LocalAgentControl` that can spawn/message agents via the given manager state.
     pub(crate) fn new(
         manager: Weak<ThreadManagerState>,

@@ -82,6 +82,7 @@ impl LocalAgentControl {
         start: ResponseObserverStart,
     ) -> BoxFuture<'a, CodexResult<()>> {
         Box::pin(async move {
+            self.ensure_scoped_reply_route_supported(target, policy)?;
             let parent = observer.session.presentation_id();
             let child = target.session.presentation_id();
             if parent == child {

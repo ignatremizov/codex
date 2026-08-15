@@ -60,13 +60,13 @@ impl CodexThread {
         .await
         .map_err(user_control_tool_error)?;
 
-        let spawn_id = uuid::Uuid::now_v7();
+        let spawn_id = uuid::Uuid::now_v7().as_simple().to_string();
         let task_name = (matches!(
             self.session.multi_agent_version(),
             Some(MultiAgentVersion::V2)
         ) || turn.config.multi_agent_version_from_features()
             == MultiAgentVersion::V2)
-            .then(|| format!("user-{spawn_id}"));
+            .then(|| format!("user_{spawn_id}"));
         let session_source = child_session_source(self, turn.as_ref(), role, task_name)?;
         let fork_mode = match fork_mode {
             UserAgentForkMode::None => None,

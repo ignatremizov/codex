@@ -1,5 +1,6 @@
 //! Parsing for the user-facing `/agent` control grammar.
 
+use codex_app_server_protocol::AgentFinalResponseHandling;
 use codex_app_server_protocol::AgentForkMode;
 use codex_app_server_protocol::AgentObservationMode;
 use codex_app_server_protocol::AgentResponseHandling;
@@ -35,6 +36,7 @@ pub(super) enum AgentCommand<'a> {
     },
     Close {
         selector: AgentSelector,
+        response: Option<AgentResponseHandling>,
     },
     Resume {
         selector: AgentSelector,
@@ -197,13 +199,13 @@ pub(super) fn parse_agent_command_with_attached_input(
 impl<'a> AgentCommandParser<'a> {
     fn close_command(&mut self, selector: AgentSelector) -> Result<AgentCommand<'a>, String> {
         let (options, prompt) = self.options_and_prompt(/*allow_fork*/ false)?;
-        if options.response.is_some() {
-            return Err("Response handling is not supported for `close` yet.".to_string());
-        }
         if prompt.is_some() {
-            return Err("`close` does not accept a prompt.".to_string());
+            return Err("`close` accepts response handling but not a prompt.".to_string());
         }
-        Ok(AgentCommand::Close { selector })
+        Ok(AgentCommand::Close {
+            selector,
+            response: options.response,
+        })
     }
 
     fn required_selector(&mut self, action: &str) -> Result<AgentSelector, String> {
@@ -432,16 +434,59 @@ fn parse_fork_mode(value: &str) -> Result<AgentForkMode, String> {
 }
 
 fn parse_response_mode(value: &str) -> Result<AgentResponseHandling, String> {
-    match value {
-        "c" => Ok(AgentResponseHandling::Commentary),
-        "f" => Ok(AgentResponseHandling::Wake),
-        "x" => Ok(AgentResponseHandling::Presentation),
-        "cf" => Ok(AgentResponseHandling::CommentaryWake),
-        "cx" => Ok(AgentResponseHandling::CommentaryPresentation),
-        _ => Err(format!(
-            "Invalid response mode `{value}`; use c, f, x, cf, or cx."
-        )),
+    if value.is_empty() {
+        return Err("Invalid response mode ``; omit w for passive handling.".to_string());
     }
+    let mut commentary = false;
+    let mut wake = false;
+    let mut target_messages = false;
+    let mut queue_input = false;
+    let mut presentation = false;
+    let mut previous_position = None;
+    for flag in value.chars() {
+        let position = match flag {
+            'c' if !commentary => {
+                commentary = true;
+                0
+            }
+            'f' if !wake => {
+                wake = true;
+                1
+            }
+            'm' if !target_messages => {
+                target_messages = true;
+                2
+            }
+            'q' if !queue_input => {
+                queue_input = true;
+                3
+            }
+            'x' if !presentation => {
+                presentation = true;
+                4
+            }
+            _ => return Err(invalid_response_mode(value)),
+        };
+        if previous_position.is_some_and(|previous| position <= previous) {
+            return Err(invalid_response_mode(value));
+        }
+        previous_position = Some(position);
+    }
+    let final_response = match (wake, presentation) {
+        (true, false) => AgentFinalResponseHandling::Wake,
+        (false, true) => AgentFinalResponseHandling::Presentation,
+        (false, false) | (true, true) => AgentFinalResponseHandling::Passive,
+    };
+    Ok(AgentResponseHandling::new(
+        commentary,
+        final_response,
+        target_messages,
+        queue_input,
+    ))
+}
+
+fn invalid_response_mode(value: &str) -> String {
+    format!("Invalid response mode `{value}`; use unique c, f, m, q, or x flags in cfmqx order.")
 }
 
 fn parse_observe_mode(value: &str) -> Result<AgentObservationMode, String> {

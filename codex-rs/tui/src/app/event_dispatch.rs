@@ -1091,6 +1091,13 @@ impl App {
                         Ok((None, codex_app_server_protocol::AgentInputOutcome::Admitted)) => {
                             self.chat_widget.accept_agent_input_without_cursor();
                         }
+                        Ok((_, codex_app_server_protocol::AgentInputOutcome::Queued)) => {
+                            self.chat_widget.accept_agent_input_without_cursor();
+                            self.chat_widget.add_info_message(
+                                "Input queued for a future agent turn.".to_string(),
+                                /*hint*/ None,
+                            );
+                        }
                         Err(err) => {
                             let message = format!("Failed to start agent turn: {err:#}");
                             if !self
@@ -2860,6 +2867,7 @@ impl App {
                     Ok(thread_id) => {
                         self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                             .await;
+                        self.refresh_primary_agent_queue(app_server).await;
                         if self.agent_navigation.get(&thread_id).is_some() {
                             self.open_agent_prompt_queue(thread_id);
                         } else {
@@ -2874,7 +2882,8 @@ impl App {
                 target_thread_id,
                 prompt_id,
             } => {
-                self.edit_queued_agent_prompt(target_thread_id, prompt_id);
+                self.edit_queued_agent_prompt(app_server, target_thread_id, prompt_id)
+                    .await;
             }
             AppEvent::OpenQueuedAgentPromptActions {
                 target_thread_id,
@@ -2886,11 +2895,11 @@ impl App {
                 target_thread_id,
                 prompt_id,
             } => {
-                self.remove_queued_agent_prompt(target_thread_id, prompt_id);
-            }
-            AppEvent::DrainAgentPromptQueue { target_thread_id } => {
-                self.drain_agent_prompt_queue(app_server, target_thread_id)
+                self.remove_queued_agent_prompt(app_server, target_thread_id, prompt_id)
                     .await;
+            }
+            AppEvent::RefreshAgentPromptQueue => {
+                self.refresh_primary_agent_queue(app_server).await;
             }
             AppEvent::SpawnAgent {
                 source_thread_id,
@@ -2904,12 +2913,14 @@ impl App {
                 if let Some(thread_id) = self
                     .spawn_agent_from_command(
                         app_server,
-                        source_thread_id,
-                        role,
-                        authored_selector,
-                        prompt,
-                        fork_mode,
-                        response_handling,
+                        SpawnAgentCommandArgs {
+                            source_thread_id,
+                            role,
+                            authored_selector,
+                            prompt,
+                            fork_mode,
+                            response_handling,
+                        },
                     )
                     .await
                     && switch_to_child
@@ -2951,9 +2962,15 @@ impl App {
             AppEvent::CloseAgent {
                 source_thread_id,
                 selector,
+                response_handling,
             } => {
-                self.close_agent_from_selector(app_server, source_thread_id, selector)
-                    .await;
+                self.close_agent_from_selector(
+                    app_server,
+                    source_thread_id,
+                    selector,
+                    response_handling,
+                )
+                .await;
             }
             AppEvent::ObserveAgent {
                 source_thread_id,

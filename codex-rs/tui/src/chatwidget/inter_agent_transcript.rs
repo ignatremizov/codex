@@ -27,6 +27,7 @@ impl ChatWidget {
 
     pub(super) fn handle_inter_agent_message_now(&mut self, item: ThreadItem) {
         let ThreadItem::AgentMessage {
+            id,
             text,
             phase,
             inter_agent_source: Some(_),
@@ -36,6 +37,7 @@ impl ChatWidget {
             return;
         };
         if let Some(cell) = multi_agents::background_commentary_history_cell_from_agent_message(
+            &id,
             &text,
             phase.as_ref(),
             self.local_settings.tui.agent_response_preview_lines,

@@ -17,10 +17,13 @@ use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
+mod agent_queue_start;
 mod delivery;
 mod events;
 mod recovery;
 mod terminal;
+use agent_queue_start::AgentQueueTurnStart;
+pub(crate) use agent_queue_start::AgentQueueTurnStartPermit;
 use events::agent_response_event;
 use events::apply_agent_response_event_state;
 use events::begin_agent_response_turn_locked;
@@ -82,6 +85,13 @@ pub(super) struct AgentResponseObservationState {
     next_subscriber_id: u64,
     subscribers: HashMap<u64, AgentResponseSubscriber>,
     input_admissions: HashMap<String, oneshot::Sender<CodexResult<InputTurnAdmissionResolution>>>,
+    queued_input_starts: HashMap<String, AgentQueueTurnStart>,
+    agent_queue_turns: HashMap<String, AgentQueueTurnStart>,
+    queued_input_receipts: HashMap<String, oneshot::Sender<CodexResult<()>>>,
+    admitted_input_receipts: HashMap<String, oneshot::Sender<CodexResult<()>>>,
+    // Exact positive receipts survive replacement history. They never recreate live grants.
+    pub(super) settled_completion_contexts:
+        HashMap<ResponseItemId, codex_protocol::models::ResponseItem>,
     communication_deliveries: HashMap<ResponseItemId, PendingCommunicationDelivery>,
     consumed_deliveries: std::collections::HashSet<ResponseItemId>,
 }
@@ -113,6 +123,7 @@ pub(crate) struct InputTurnAdmission {
     submission_id: String,
     state: std::sync::Weak<Mutex<AgentResponseObservationState>>,
     receiver: Option<oneshot::Receiver<CodexResult<InputTurnAdmissionResolution>>>,
+    submitted: bool,
 }
 
 pub(crate) struct CommunicationDeliveryReceipt {
@@ -144,6 +155,10 @@ impl Drop for AgentResponseSubscription {
 }
 
 impl InputTurnAdmission {
+    pub(crate) fn mark_submitted(&mut self) {
+        self.submitted = true;
+    }
+
     pub(crate) async fn recv(mut self) -> Option<CodexResult<InputTurnAdmissionResolution>> {
         self.receiver.take()?.await.ok()
     }
@@ -152,11 +167,14 @@ impl InputTurnAdmission {
 impl Drop for InputTurnAdmission {
     fn drop(&mut self) {
         if let Some(state) = self.state.upgrade() {
-            state
+            let mut state = state
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .input_admissions
-                .remove(&self.submission_id);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.input_admissions.remove(&self.submission_id);
+            if !self.submitted {
+                state.queued_input_starts.remove(&self.submission_id);
+                state.queued_input_receipts.remove(&self.submission_id);
+            }
         }
     }
 }
@@ -341,6 +359,7 @@ impl Session {
             submission_id,
             state: Arc::downgrade(&self.response_observation_state),
             receiver: Some(receiver),
+            submitted: false,
         }
     }
 
@@ -384,19 +403,29 @@ impl Session {
             .response_observation_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(start) = state.queued_input_starts.remove(submission_id) {
+            state
+                .agent_queue_turns
+                .insert(resolution.target_turn_id.clone(), start);
+        }
+        if let Some(receipt) = state.queued_input_receipts.remove(submission_id) {
+            state
+                .admitted_input_receipts
+                .insert(resolution.target_turn_id.clone(), receipt);
+        }
         if let Some(sender) = state.input_admissions.remove(submission_id) {
             let _ = sender.send(Ok(resolution));
         }
     }
 
     pub(super) fn reject_input_turn_admission(&self, submission_id: &str, error: CodexErr) {
-        if let Some(sender) = self
+        let mut state = self
             .response_observation_state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .input_admissions
-            .remove(submission_id)
-        {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.queued_input_starts.remove(submission_id);
+        state.queued_input_receipts.remove(submission_id);
+        if let Some(sender) = state.input_admissions.remove(submission_id) {
             let _ = sender.send(Err(error));
         }
     }
@@ -476,7 +505,18 @@ impl Session {
                 }
             }
         }
+        let finished_turn = match &response_event {
+            AgentResponseEvent::Terminal { turn_id, .. }
+            | AgentResponseEvent::TurnAborted { turn_id } => Some(turn_id.clone()),
+            AgentResponseEvent::TurnStarted { .. } | AgentResponseEvent::Commentary { .. } => None,
+        };
         publish_agent_response_event_locked(&mut state, response_event);
+        drop(state);
+        if let Some(turn_id) = finished_turn {
+            self.services
+                .agent_control
+                .finish_target_message_wake(self.presentation_id(), &turn_id);
+        }
     }
 
     pub(super) fn publish_agent_response_terminal(&self, turn_id: String, status: AgentStatus) {
@@ -494,8 +534,15 @@ impl Session {
             .unwrap_or(status);
         publish_agent_response_event_locked(
             &mut state,
-            AgentResponseEvent::Terminal { turn_id, status },
+            AgentResponseEvent::Terminal {
+                turn_id: turn_id.clone(),
+                status,
+            },
         );
+        drop(state);
+        self.services
+            .agent_control
+            .finish_target_message_wake(self.presentation_id(), &turn_id);
     }
 
     /// Returns whether `turn_id` still owns the session-wide status slot.

@@ -22,6 +22,12 @@ pub(crate) enum CompletionContextDelivery {
     QueueOnly,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompletionContextPublication {
+    Published,
+    AlreadyPublished,
+}
+
 struct CompletionConsumption {
     session: Arc<Session>,
     finished: bool,
@@ -180,7 +186,7 @@ impl Session {
         response: ResponseItem,
         reservation: &AcceptedCompletionDelivery,
         delivery: CompletionContextDelivery,
-    ) -> CodexResult<()> {
+    ) -> CodexResult<CompletionContextPublication> {
         let order = self
             .submission_admission
             .admit_completion(reservation)
@@ -210,23 +216,33 @@ impl Session {
                 "completion identity payload changed".to_string(),
             ));
         }
-        let items = if previous.is_some() {
-            Vec::new()
-        } else {
-            vec![
-                RolloutItem::InterAgentCommunicationMetadata {
-                    trigger_turn: false,
-                },
-                RolloutItem::ResponseItem(response.clone().into()),
-            ]
-        };
+        if previous.is_some() {
+            // The canonical worker retains this barrier through live installation.
+            // Its publisher owns any remaining presentation/enqueue work.
+            return Ok(CompletionContextPublication::AlreadyPublished);
+        }
+        let items = vec![
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: false,
+            },
+            RolloutItem::ResponseItem(response.clone().into()),
+        ];
         let turn = self.new_history_only_turn().await;
         let policy = turn.model_info().truncation_policy.into();
+        let observations = Arc::clone(&self.response_observation_state);
+        let settled = response.clone();
         let receiver = self.dispatch_completion_publication(
             permit,
             items,
             Vec::new(),
             move |state| {
+                if let Some(id) = settled.id().cloned() {
+                    observations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .settled_completion_contexts
+                        .insert(id, settled);
+                }
                 if matches!(delivery, CompletionContextDelivery::InstallNow)
                     && !state.history.raw_items().any(|item| item == &response)
                 {
@@ -253,7 +269,7 @@ impl Session {
         self.publication_result(receiver)
             .await
             .inspect_err(|error| self.quarantine_history(error.to_string()))?;
-        Ok(())
+        Ok(CompletionContextPublication::Published)
     }
 
     /// Selects the real active turn once, or a stable UUIDv7 history-only turn.
@@ -332,6 +348,7 @@ impl Session {
                         started_at: None,
                         model_context_window: None,
                         collaboration_mode_kind: Default::default(),
+                        agent_queue: None,
                     },
                 )));
             }

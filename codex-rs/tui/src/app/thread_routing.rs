@@ -1275,6 +1275,10 @@ impl App {
             None
         };
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
+        let queued_start = match &notification {
+            ServerNotification::TurnStarted(started) => started.agent_queue.clone(),
+            _ => None,
+        };
         let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
         self.cache_collab_response_observation_for_notification(&notification);
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
@@ -1313,14 +1317,25 @@ impl App {
         };
         if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
+            if let Some(queued) = queued_start {
+                if let Ok(source) = ThreadId::from_string(&queued.source_thread_id)
+                    && let Some(handling) = queued.response_handling
+                {
+                    self.agent_navigation.note_response_observation(
+                        source,
+                        thread_id,
+                        super::agent_observation_display::AgentResponseObservationBinding::Bound,
+                        Some(handling),
+                    );
+                }
+                self.app_event_tx.send(AppEvent::RefreshAgentPromptQueue);
+            }
         } else if is_thread_closed {
             self.mark_agent_picker_thread_closed(thread_id);
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);
             if self.queued_agent_prompts.contains_key(&thread_id) {
-                self.app_event_tx.send(AppEvent::DrainAgentPromptQueue {
-                    target_thread_id: thread_id,
-                });
+                self.app_event_tx.send(AppEvent::RefreshAgentPromptQueue);
             }
         }
 

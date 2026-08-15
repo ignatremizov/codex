@@ -401,7 +401,7 @@ async fn restore_thread_input_state_restores_pending_steers_without_downgrading_
             turn_started_at: None,
         }),
         ThreadInputStateRestoreMode {
-            preserve_in_flight_turn: true,
+            preserve_in_flight_turn: false,
         },
     );
 
@@ -785,7 +785,7 @@ async fn steer_enter_during_final_stream_preserves_follow_up_prompts_in_order() 
 }
 
 #[tokio::test]
-async fn manual_interrupt_restores_pending_steers_to_composer() {
+async fn manual_interrupt_preserves_pending_steers_for_reconciliation() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.on_task_started();
@@ -817,8 +817,8 @@ async fn manual_interrupt_restores_pending_steers_to_composer() {
 
     chat.on_interrupted_turn(TurnAbortReason::Interrupted);
 
-    assert!(chat.input_queue.pending_steers.is_empty());
-    assert_eq!(chat.bottom_pane.composer_text(), "queued while streaming");
+    assert_eq!(chat.input_queue.pending_steers.len(), 1);
+    assert_eq!(chat.bottom_pane.composer_text(), "");
     assert_no_submit_op(&mut op_rx);
 
     let inserted = drain_insert_history(&mut rx);
@@ -830,7 +830,7 @@ async fn manual_interrupt_restores_pending_steers_to_composer() {
 }
 
 #[tokio::test]
-async fn esc_interrupt_sends_all_pending_steers_immediately_and_keeps_existing_draft() {
+async fn esc_interrupt_keeps_pending_steers_for_core_continuation_and_existing_draft() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.on_task_started();
@@ -877,18 +877,15 @@ async fn esc_interrupt_sends_all_pending_steers_immediately_and_keeps_existing_d
 
     chat.on_interrupted_turn(TurnAbortReason::Interrupted);
 
-    match next_submit_op(&mut op_rx) {
-        Op::UserTurn { items, .. } => assert_eq!(
-            items,
-            vec![UserInput::Text {
-                text: "first pending steer\nsecond pending steer".to_string(),
-                text_elements: Vec::new(),
-            }]
-        ),
-        other => panic!("expected merged pending steers to submit, got {other:?}"),
-    }
-
-    assert!(chat.input_queue.pending_steers.is_empty());
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.input_queue
+            .pending_steers
+            .iter()
+            .map(|pending| pending.user_message.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first pending steer", "second pending steer"]
+    );
     assert_eq!(chat.bottom_pane.composer_text(), "still editing");
     assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
     assert_eq!(
@@ -898,14 +895,11 @@ async fn esc_interrupt_sends_all_pending_steers_immediately_and_keeps_existing_d
 
     let inserted = drain_insert_history(&mut rx);
     assert!(
-        inserted
-            .iter()
-            .any(|cell| lines_to_single_string(cell).contains("first pending steer"))
-    );
-    assert!(
-        inserted
-            .iter()
-            .any(|cell| lines_to_single_string(cell).contains("second pending steer"))
+        inserted.iter().all(|cell| {
+            let text = lines_to_single_string(cell);
+            !text.contains("first pending steer") && !text.contains("second pending steer")
+        }),
+        "pending steers should remain in the preview until Core emits canonical user messages"
     );
 }
 
@@ -932,7 +926,7 @@ async fn esc_with_pending_steers_overrides_agent_command_interrupt_behavior() {
 }
 
 #[tokio::test]
-async fn manual_interrupt_restores_pending_steer_mention_bindings_to_composer() {
+async fn manual_interrupt_preserves_pending_steer_mention_bindings() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.on_task_started();
@@ -969,13 +963,18 @@ async fn manual_interrupt_restores_pending_steer_mention_bindings_to_composer() 
 
     chat.on_interrupted_turn(TurnAbortReason::Interrupted);
 
-    assert_eq!(chat.bottom_pane.composer_text(), "please use $figma");
-    assert_eq!(chat.bottom_pane.take_mention_bindings(), mention_bindings);
+    assert_eq!(chat.bottom_pane.composer_text(), "");
+    assert_eq!(
+        chat.input_queue.pending_steers[0]
+            .user_message
+            .mention_bindings,
+        mention_bindings
+    );
     assert_no_submit_op(&mut op_rx);
 }
 
 #[tokio::test]
-async fn manual_interrupt_restores_pending_steers_before_queued_messages() {
+async fn manual_interrupt_restores_only_unsubmitted_queued_messages() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.on_task_started();
@@ -1007,13 +1006,9 @@ async fn manual_interrupt_restores_pending_steers_before_queued_messages() {
 
     chat.on_interrupted_turn(TurnAbortReason::Interrupted);
 
-    assert!(chat.input_queue.pending_steers.is_empty());
+    assert_eq!(chat.input_queue.pending_steers.len(), 1);
     assert!(chat.input_queue.queued_user_messages.is_empty());
-    assert_eq!(
-        chat.bottom_pane.composer_text(),
-        "pending steer
-queued draft"
-    );
+    assert_eq!(chat.bottom_pane.composer_text(), "queued draft");
     assert_no_submit_op(&mut op_rx);
 }
 
@@ -1266,6 +1261,7 @@ async fn interrupted_turn_after_goal_budget_limited_uses_budget_message_snapshot
                     completed_at: None,
                     duration_ms: None,
                 },
+                agent_queue: None,
             },
         ),
         /*replay_kind*/ None,
@@ -1349,7 +1345,7 @@ async fn budget_limited_turn_restores_queued_input_without_submitting() {
 // differently" error prompt.
 #[tokio::test]
 async fn interrupted_turn_pending_steers_message_snapshot() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.input_queue
         .pending_steers
@@ -1367,6 +1363,8 @@ async fn interrupted_turn_pending_steers_message_snapshot() {
         .find(|line| line.contains("Model interrupted to submit steer instructions."))
         .expect("expected steer interrupt info message to be inserted");
     assert_chatwidget_snapshot!("interrupted_turn_pending_steers_message", info);
+    assert_eq!(chat.input_queue.pending_steers.len(), 1);
+    assert_no_submit_op(&mut op_rx);
 }
 
 /// Opening custom prompt from the review popup, pressing Esc returns to the

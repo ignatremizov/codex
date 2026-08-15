@@ -42,6 +42,29 @@ fn publish(chat: &mut ChatWidget, item: AppServerThreadItem) {
 }
 
 #[tokio::test]
+async fn attributed_scoped_message_does_not_complete_the_local_answer() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let author = ThreadId::new().to_string();
+    let id = codex_protocol::protocol::new_attributed_agent_message_response_item_id().to_string();
+    publish(
+        &mut chat,
+        communication(
+            &id,
+            &author,
+            &format!("Agent message from `{author}`:\n\nReview this."),
+        ),
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("sends:"), "{rendered}");
+    assert!(rendered.contains("Review this."), "{rendered}");
+    assert_eq!(&chat.transcript.last_completed_agent_message, &None);
+    assert_eq!(&chat.transcript.last_agent_markdown, &None);
+}
+
+#[tokio::test]
 async fn live_app_server_inter_agent_message_renders_in_transcript() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     publish(

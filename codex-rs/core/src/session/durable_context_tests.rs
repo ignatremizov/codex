@@ -138,6 +138,62 @@ async fn transcript_publication_receipt_does_not_require_a_connected_event_reade
     assert!(session.check_history_publication().is_ok());
 }
 
+#[tokio::test]
+async fn queued_prompt_receipt_survives_task_cancellation_and_requires_canonical_flush() {
+    for phase in [AppendGate::BeforeFlush, AppendGate::FlushFailure] {
+        let (session, store, release) = gated_session(phase).await;
+        let turn = session.new_default_turn().await;
+        let (permit, mut persisted) = session.register_queued_input_start(
+            "queued-input",
+            codex_protocol::protocol::AgentQueueTurnMetadata {
+                queue_id: uuid::Uuid::now_v7().to_string(),
+                source_thread_id: ThreadId::new(),
+                response_handling: None,
+            },
+        );
+        let resolution = session.capture_input_turn_admission_resolution(turn.sub_id.clone());
+        session.resolve_input_turn_admission("queued-input", resolution);
+        permit.publish();
+        let mut publication = Box::pin(session.record_prepared_conversation_items(
+            &turn,
+            turn.model_info(),
+            vec![render_inventory("queued prompt", &[])],
+            Vec::new(),
+            /*acknowledgement*/ None,
+            crate::session::transcript_publication::ConversationBoundary::Prompt,
+        ));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                assert!(futures::poll!(&mut publication).is_pending());
+                if store.gate_polls.load(Ordering::SeqCst) > 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("canonical writer reached flush");
+        assert!(futures::poll!(&mut persisted).is_pending());
+        drop(publication);
+        release
+            .send(())
+            .expect("writer retained ownership after cancellation");
+        let receipt = tokio::time::timeout(Duration::from_secs(5), persisted)
+            .await
+            .expect("receipt settles");
+        assert_eq!(
+            receipt.is_ok_and(|result| result.is_ok()),
+            phase == AppendGate::BeforeFlush
+        );
+        session.await_history_publication().await;
+        assert_eq!(store.appends.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            session.check_history_publication().is_ok(),
+            phase == AppendGate::BeforeFlush
+        );
+    }
+}
+
 async fn gated_session(
     phase: AppendGate,
 ) -> (Arc<Session>, Arc<GatedAppendStore>, oneshot::Sender<()>) {

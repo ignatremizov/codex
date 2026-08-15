@@ -3,7 +3,9 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::turn_input::TurnInputMode;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
+use std::sync::Arc;
 
 use super::UserAgentFinalResponseHandling;
 use super::UserAgentObservationBinding;
@@ -256,9 +258,9 @@ impl CodexThread {
     pub(super) async fn resume_closed_agent_with_input(
         &self,
         target_thread_id: ThreadId,
+        authored_selector: String,
         input: Vec<UserInput>,
         response_handling: UserAgentResponseHandling,
-        admission_policy: TurnInputMode,
     ) -> CodexResult<UserAgentPromptResult> {
         let agent_control = &self.session.services.agent_control;
         let resume_plan = agent_control.plan_agent_resume(target_thread_id).await?;
@@ -271,12 +273,50 @@ impl CodexThread {
         let prepared = self
             .prepare_closed_agent_resume(AgentResumeOwnership::CurrentRoot)
             .await?;
-        let task_preview = Some(crate::agent::control::render_input_preview(&input));
+        let task_preview = response_handling
+            .exposes_task_context()
+            .then(|| crate::agent::control::render_input_preview(&input));
+        if response_handling.queue_input() {
+            let resumed = agent_control
+                .resume_user_agent_from_rollout(
+                    prepared.config,
+                    target_thread_id,
+                    prepared.session_source,
+                    ResponseObservationPolicy::from_parts(
+                        /*commentary*/ false,
+                        FinalResponseObservation::None,
+                    ),
+                )
+                .await?;
+            let response_observation = ResponseObservationPolicy::from(response_handling);
+            let submission = agent_control
+                .queue_input_observing_response(
+                    crate::agent::control::QueuedInputObservationParams {
+                        agent_id: target_thread_id,
+                        input,
+                        start_options: TurnStartOptions::default(),
+                        observer: self.session.presentation_id(),
+                        response_observation,
+                        task_preview,
+                        authored_selector: Some(authored_selector),
+                    },
+                )
+                .await?;
+            return Ok(UserAgentPromptResult {
+                target_thread_id,
+                submission_id: submission.queue_id.to_string(),
+                queued: true,
+                input_outcome: super::UserAgentInputOutcome::Queued,
+                resumed_target: true,
+                post_admission_warning: resumed.post_commit_warning,
+            });
+        }
+        let response_observation = ResponseObservationPolicy::from(response_handling);
         let admission = ResumeUserInputAdmission {
             input,
             observer: self.session.presentation_id(),
-            response_observation: response_handling.into(),
-            admission_policy,
+            response_observation,
+            admission_policy: TurnInputMode::StartOrSteer,
             task_preview,
         };
         let submission = agent_control
@@ -290,6 +330,7 @@ impl CodexThread {
         Ok(UserAgentPromptResult {
             target_thread_id,
             submission_id: submission.submission_id,
+            queued: false,
             input_outcome: submission.input_outcome,
             resumed_target: true,
             post_admission_warning: submission.post_admission_warning,
@@ -348,6 +389,7 @@ impl CodexThread {
             Some(UserAgentPromptResult {
                 target_thread_id,
                 submission_id: submission.submission_id,
+                queued: false,
                 input_outcome: submission.input_outcome,
                 resumed_target: false,
                 post_admission_warning: submission.post_admission_warning,
@@ -356,7 +398,11 @@ impl CodexThread {
     }
 
     /// Explicitly close a controlled agent runtime.
-    pub async fn close_agent(&self, target: &str) -> CodexResult<ThreadId> {
+    pub async fn close_agent(
+        &self,
+        target: &str,
+        response_handling: UserAgentResponseHandling,
+    ) -> CodexResult<ThreadId> {
         let source_thread_id = self.session.thread_id();
         let agent_control = &self.session.services.agent_control;
         let target_thread_id = agent_control
@@ -372,7 +418,36 @@ impl CodexThread {
                 "a child agent cannot close Main".to_string(),
             ));
         }
-        agent_control.close_agent(target_thread_id).await?;
+        let close_response = agent_control
+            .prepare_close_agent_response(
+                Arc::clone(&self.session),
+                self.multi_agent_version()
+                    .unwrap_or(codex_protocol::protocol::MultiAgentVersion::V1),
+                target_thread_id,
+            )
+            .await?;
+        let closed = agent_control
+            .close_agent_with_status(target_thread_id)
+            .await?;
+        let response_warning = match close_response
+            .deliver(&closed, response_handling.into())
+            .await
+        {
+            Ok(crate::agent::control::CloseAgentResponseDisposition::DeliveryPending) => Some(
+                "the earlier exact-session delivery still owns its receipt; delivery is pending, not acknowledged".to_string()
+            ),
+            Ok(_) => None,
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(warning) = response_warning {
+            tracing::warn!(%target_thread_id, "agent closed; response pending or failed: {warning}");
+            self.session.send_event_raw(codex_protocol::protocol::Event {
+                id: format!("agent-close-{target_thread_id}"),
+                msg: codex_protocol::protocol::EventMsg::Warning(codex_protocol::protocol::WarningEvent {
+                    message: format!("Agent {target_thread_id} was closed, but its response could not be acknowledged: {warning}. Do not replay automatically."),
+                }),
+            }).await;
+        }
         Ok(target_thread_id)
     }
 }

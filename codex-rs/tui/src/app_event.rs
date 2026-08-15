@@ -411,10 +411,8 @@ pub(crate) enum AppEvent {
         prompt_id: Uuid,
     },
 
-    /// Admit the next queued user prompt after the target's active turn stops.
-    DrainAgentPromptQueue {
-        target_thread_id: ThreadId,
-    },
+    /// Refresh queued agent turns after a target turn stops.
+    RefreshAgentPromptQueue,
 
     /// Spawn a default or configured-role agent from the displayed source thread.
     SpawnAgent {
@@ -446,6 +444,7 @@ pub(crate) enum AppEvent {
     CloseAgent {
         source_thread_id: ThreadId,
         selector: AgentSelector,
+        response_handling: Option<codex_app_server_protocol::AgentResponseHandling>,
     },
 
     /// Replace response handling for one target turn.
@@ -1696,6 +1695,7 @@ pub(crate) enum AppEvent {
 pub(crate) struct AgentPickerRefresh {
     pub(crate) threads: Vec<Thread>,
     pub(crate) aliases: Vec<AgentAlias>,
+    pub(crate) queued: Vec<codex_app_server_protocol::AgentQueueEntry>,
 }
 
 /// Named profile selection to apply after any required UI guardrails complete.

@@ -228,6 +228,11 @@ async fn recovered_question_answers_preserve_other_questions() {
                     preserve_in_flight_turn: false,
                 },
             );
+            assert!(!chat.maybe_send_next_queued_input());
+            assert!(op_rx.try_recv().is_err());
+            assert_eq!(chat.input_queue.pending_steers.len(), 1);
+            assert_eq!(question_count(&chat), 2);
+            continue;
         } else {
             assert!(chat.enqueue_rejected_steer());
             chat.turn_lifecycle.finish();
@@ -1005,15 +1010,12 @@ async fn retried_question_answers_keep_separate_envelopes_and_order() {
         assert_eq!(original.len(), 4);
         let mut retried = Vec::new();
         if interrupt {
+            let pending = chat.input_queue.pending_steers.clone();
             chat.input_queue.submit_pending_steers_after_interrupt = true;
             chat.on_interrupted_turn(TurnAbortReason::Interrupted);
-            let Op::UserTurn { items, .. } = ops.try_recv().unwrap() else {
-                panic!("user turn")
-            };
-            let [UserInput::Text { text, .. }] = items.as_slice() else {
-                panic!("one text input")
-            };
-            retried.push(text.clone());
+            assert_eq!(chat.input_queue.pending_steers, pending);
+            assert!(ops.try_recv().is_err());
+            continue;
         } else {
             while !chat.input_queue.pending_steers.is_empty() {
                 assert!(chat.enqueue_rejected_steer());

@@ -54,6 +54,7 @@ pub use agent::UserAgentObservationBinding;
 pub use agent::UserAgentObservationMode;
 pub use agent::UserAgentOwnershipTransfer;
 pub use agent::UserAgentPromptResult;
+pub use agent::UserAgentQueuedTurn;
 pub use agent::UserAgentReservedPromptResult;
 pub use agent::UserAgentResponseHandling;
 pub use agent::UserAgentResumeResult;

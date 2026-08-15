@@ -4,6 +4,7 @@ use crate::agent::status::is_final;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
 use crate::turn_timing::now_unix_timestamp_ms;
+use codex_history::RolloutItem;
 use codex_protocol::error::CodexErrorDetails;
 use codex_tools::ToolSpec;
 use futures::FutureExt;
@@ -69,18 +70,48 @@ impl Handler {
                 "agent targets must be non-empty".to_string(),
             ));
         }
-        let mut receiver_thread_ids = Vec::with_capacity(args.targets.len());
-        let mut target_by_thread_id = HashMap::with_capacity(args.targets.len());
-        for target in args.targets {
-            let receiver_thread_id = resolve_controlled_v1_agent_target(&session, &target).await?;
-            if receiver_thread_id == session.thread_id {
+        let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+        let timeout_ms = match timeout_ms {
+            ms if ms <= 0 => {
                 return Err(FunctionCallError::RespondToModel(
-                    "an agent cannot wait on itself; continue the current turn directly"
-                        .to_string(),
+                    "timeout_ms must be greater than zero".to_owned(),
                 ));
             }
-            receiver_thread_ids.push(receiver_thread_id);
-            target_by_thread_id.insert(receiver_thread_id, target);
+            ms => ms.clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
+        };
+        let mut receiver_thread_ids = Vec::with_capacity(args.targets.len());
+        let mut target_by_thread_id = HashMap::with_capacity(args.targets.len());
+        let mut initial_final_statuses = Vec::new();
+        for target in args.targets {
+            match resolve_controlled_v1_agent_target(&session, &target).await {
+                Ok(receiver_thread_id) => {
+                    if receiver_thread_id == session.thread_id {
+                        return Err(FunctionCallError::RespondToModel(
+                            "an agent cannot wait on itself; continue the current turn directly"
+                                .to_string(),
+                        ));
+                    }
+                    receiver_thread_ids.push(receiver_thread_id);
+                    target_by_thread_id.insert(receiver_thread_id, target);
+                }
+                Err(FunctionCallError::RespondToModel(ref msg))
+                    if msg.starts_with("agent with id ") && msg.ends_with(" not found") =>
+                {
+                    if let Ok(thread_id) = ThreadId::from_string(&target) {
+                        target_by_thread_id.insert(thread_id, target);
+                        initial_final_statuses.push((
+                            thread_id,
+                            crate::session::TerminalStatusEvent {
+                                turn_id: None,
+                                status: AgentStatus::NotFound,
+                            },
+                        ));
+                    } else {
+                        return Err(FunctionCallError::RespondToModel(msg.clone()));
+                    }
+                }
+                Err(err) => return Err(err),
+            }
         }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
@@ -96,17 +127,8 @@ impl Handler {
             });
         }
 
-        let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
-        let timeout_ms = match timeout_ms {
-            ms if ms <= 0 => {
-                return Err(FunctionCallError::RespondToModel(
-                    "timeout_ms must be greater than zero".to_owned(),
-                ));
-            }
-            ms => ms.clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
-        };
-
         let deadline_at_ms = now_unix_timestamp_ms().checked_add(timeout_ms);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
         // Claim the final-outcome presentation before taking any status snapshot or subscription.
         // A child can complete during setup, and its watcher must already see this wait as the
         // owner.
@@ -118,7 +140,6 @@ impl Handler {
                 receiver_thread_ids.as_slice(),
             );
         let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
-        let mut initial_final_statuses = Vec::new();
         for id in &receiver_thread_ids {
             match session
                 .services
@@ -161,6 +182,8 @@ impl Handler {
                                 status: wait_tool_call_status(&statuses),
                                 observe_commentary: None,
                                 wake_on_completion: None,
+                                target_messages: None,
+                                queue_input: None,
                                 deadline_at_ms: None,
                                 sender_thread_id: session.thread_id,
                                 receiver_thread_ids: statuses.keys().copied().collect(),
@@ -187,6 +210,8 @@ impl Handler {
                     status: CollabAgentToolCallStatus::InProgress,
                     observe_commentary: None,
                     wake_on_completion: None,
+                    target_messages: None,
+                    queue_input: None,
                     deadline_at_ms,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
@@ -208,7 +233,6 @@ impl Handler {
                 futures.push(wait_for_final_status(id, rx));
             }
             let mut results = Vec::new();
-            let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
             loop {
                 match timeout_at(deadline, futures.next()).await {
                     Ok(Some(Some(result))) => {
@@ -242,10 +266,30 @@ impl Handler {
             .iter()
             .map(|(thread_id, status)| (*thread_id, status.status.clone()))
             .collect::<HashMap<_, _>>();
-        let presentation_commit =
+        let mut presentation_commit =
             presentation_guard.freeze_for_terminal_statuses(&terminal_statuses_by_id);
         let completion_presentation_agent_ids =
             presentation_commit.completion_presentation_agent_ids();
+        let claimed_target_turns = presentation_commit.claimed_target_turns();
+        presentation_commit.claim_commentary_turns(&claimed_target_turns);
+        let commentary = session
+            .services
+            .agent_control
+            .wait_commentary_before_terminal(session.presentation_id(), &claimed_target_turns);
+        let commentary = timeout_at(deadline, commentary).await.unwrap_or_default();
+        for commentary in commentary {
+            if !session
+                .services
+                .agent_control
+                .deliver_v1_wait_commentary(session.presentation_id(), &turn, &commentary)
+                .await
+            {
+                session
+                    .services
+                    .agent_control
+                    .release_wait_commentary_delivery(session.presentation_id(), &commentary);
+            }
+        }
         let result = WaitAgentResult {
             status: statuses
                 .into_iter()
@@ -268,6 +312,8 @@ impl Handler {
                     status: wait_tool_call_status(&statuses_by_id),
                     observe_commentary: None,
                     wake_on_completion: None,
+                    target_messages: None,
+                    queue_input: None,
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: statuses_by_id.keys().copied().collect(),

@@ -18,6 +18,7 @@ use std::sync::atomic::Ordering;
 pub(super) struct AgentExecutionLimiter {
     active: AtomicUsize,
     max_threads: OnceLock<usize>,
+    changed: tokio::sync::Notify,
 }
 
 struct LocalExecutionPermit {
@@ -27,10 +28,23 @@ struct LocalExecutionPermit {
 impl Drop for LocalExecutionPermit {
     fn drop(&mut self) {
         self.limiter.active.fetch_sub(1, Ordering::AcqRel);
+        self.limiter.changed.notify_waiters();
     }
 }
 
 impl LocalAgentControl {
+    pub(super) async fn wait_for_execution_capacity(&self) {
+        loop {
+            let changed = self.agent_execution_limiter.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.agent_execution_limiter.has_capacity() {
+                return;
+            }
+            changed.await;
+        }
+    }
+
     pub(crate) async fn ensure_execution_capacity_for_turn_start(
         &self,
         thread: &CodexThread,

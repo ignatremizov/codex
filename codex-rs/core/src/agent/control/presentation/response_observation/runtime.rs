@@ -202,6 +202,20 @@ impl LocalAgentControl {
             .pop_front()
     }
 
+    pub(crate) fn response_observation_terminal(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        turn_id: &str,
+    ) -> Option<AgentTerminalPresentation> {
+        self.wait_agent_presentations
+            .state()
+            .response_terminals
+            .get(&(parent, child, turn_id.to_owned()))
+            .cloned()
+            .map(|inner| AgentTerminalPresentation { inner })
+    }
+
     pub(crate) fn has_future_response_observation(
         &self,
         parent: SessionPresentationId,
@@ -262,6 +276,8 @@ impl LocalAgentControl {
                 .pending_next_turn
                 .get_or_insert_with(Default::default);
             current.final_response = current.final_response.max(pending.final_response);
+            current.target_messages |= pending.target_messages;
+            current.queue_delivery |= pending.queue_delivery;
             current
                 .commentary_admissions
                 .extend(pending.commentary_admissions);
@@ -313,6 +329,8 @@ impl PresentationState {
         relationship.pending_admissions.clear();
         for (turn_id, observation) in &mut relationship.turns {
             observation.commentary_admissions.clear();
+            observation.message_wake_reservation_id = None;
+            observation.target_messages = false;
             let accepted = self
                 .response_terminals
                 .contains_key(&(pair.0, pair.1, turn_id.clone()))

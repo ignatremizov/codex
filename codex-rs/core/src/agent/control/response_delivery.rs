@@ -1,5 +1,6 @@
 //! Single-attempt canonical observation delivery to a retained exact observer.
 
+use super::presentation::CommentaryDeliveryRoute;
 use super::presentation::WatcherTerminalPresentation;
 use super::*;
 use crate::session_prefix::format_subagent_commentary_message;
@@ -109,13 +110,31 @@ impl LocalAgentControl {
             /*trigger_turn*/ true,
         );
         communication.id = Some(delivery.response_item_id.clone());
-        let receipt = observer
-            .session
-            .register_communication_delivery(commit, accepted)?;
         // Admission can wait for rollback, which needs this transaction for its checkpoint.
         drop(transaction);
         drop(lifecycle);
         drop(mailbox);
+        self.publish_response_observation_binding();
+        loop {
+            let changed = self.response_observation_changed().notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.response_observation_delivery_committed(
+                parent,
+                child,
+                turn_id,
+                &delivery.response_item_id,
+            ) {
+                return Ok(());
+            }
+            match self.route_response_observer_commentary(parent, child, turn_id) {
+                CommentaryDeliveryRoute::Wait => changed.await,
+                CommentaryDeliveryRoute::Mailbox | CommentaryDeliveryRoute::Undecided => break,
+            }
+        }
+        let receipt = observer
+            .session
+            .register_communication_delivery(commit, accepted)?;
         observer
             .session
             .enqueue_registered_observed_communication(communication, TurnStartOptions::default())
@@ -156,6 +175,7 @@ impl LocalAgentControl {
             &terminal.turn_id,
             &context_id,
         );
+        let mut queued = self.response_observation_queue_delivery(parent, child, &terminal.turn_id);
         if disposition == FinalResponseObservation::None {
             self.finish_response_observation_turn(parent, child, &terminal.turn_id);
             self.claim_completion_context_response_item_id(parent, &context_id);
@@ -184,7 +204,7 @@ impl LocalAgentControl {
             kind: ResponseObservationDeliveryKind::Final,
         };
         // Exec is a one-shot host, not a daemon waiting beyond its primary turn.
-        if disposition == FinalResponseObservation::Wake
+        if (disposition == FinalResponseObservation::Wake || queued)
             && observer
                 .session
                 .app_server_client_metadata()
@@ -192,15 +212,17 @@ impl LocalAgentControl {
                 .client_name
                 .as_deref()
                 == Some("codex_exec")
-            && observer
-                .session
-                .active_turn
-                .lock()
-                .await
-                .as_ref()
-                .is_none_or(|turn| turn.task.is_none())
+            && (queued
+                || observer
+                    .session
+                    .active_turn
+                    .lock()
+                    .await
+                    .as_ref()
+                    .is_none_or(|turn| turn.task.is_none()))
         {
             disposition = FinalResponseObservation::Passive;
+            queued = false;
         }
         // Wait arbitration may itself need this transaction to commit its canonical response.
         drop(transaction);
@@ -237,10 +259,11 @@ impl LocalAgentControl {
                             .unwrap_or_else(AgentPath::root),
                         Vec::new(),
                         format_subagent_notification_message(agent, &terminal.status),
-                        disposition == FinalResponseObservation::Wake,
+                        queued || disposition == FinalResponseObservation::Wake,
                     );
                     communication.id = Some(context_id.clone());
-                    if disposition == FinalResponseObservation::Passive {
+                    communication.defer_to_next_turn = queued;
+                    if disposition == FinalResponseObservation::Passive && !queued {
                         observer
                             .session
                             .persist_observed_terminal_response(

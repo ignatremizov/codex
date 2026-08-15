@@ -6,7 +6,9 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Select an agent to watch. ⌥+← previous, ⌥+→ next.
 
 
-› 2 • /root/worker (wake · approval)  00000000-0000-0000-0000-000000000123
+  Filter by ref, name, role, path, or UUID
+› 2 • /root/worker (wake · approval)  00000000-0000-0000-0000-000000000123 ·
+                                      running · approval pending
 
   /root/worker
   running · ref 2
@@ -24,5 +26,6 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Approval: pending
 
   Enter opens this thread
+
   Tab opens controls for the selected agent.
   Tab opens controls

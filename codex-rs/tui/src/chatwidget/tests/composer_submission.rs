@@ -1803,23 +1803,24 @@ async fn restore_thread_input_state_applies_running_state_policy() {
     assert!(!chat.bottom_pane.is_task_running());
     assert!(!chat.input_queue.user_turn_pending_start);
     assert!(!chat.input_queue.submit_pending_steers_after_interrupt);
-    assert!(chat.input_queue.pending_steers.is_empty());
+    assert_eq!(chat.input_queue.pending_steers.len(), 1);
+    assert_eq!(
+        chat.input_queue.pending_steers[0].history_record,
+        pending_history
+    );
     assert_eq!(chat.bottom_pane.composer_text(), "composer draft");
     assert_eq!(
         chat.safety_buffering_prompt,
         Some(UserMessage::from("buffered prompt"))
     );
-    assert_eq!(
-        chat.queued_user_message_texts(),
-        vec!["submitted to the interrupted turn", "already queued"]
-    );
+    assert_eq!(chat.queued_user_message_texts(), vec!["already queued"]);
     assert_eq!(
         chat.input_queue.queued_user_message_history_records,
-        VecDeque::from([pending_history, queued_history])
+        VecDeque::from([queued_history])
     );
     assert!(chat.maybe_send_next_queued_input());
     assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. });
-    assert_eq!(chat.queued_user_message_texts(), vec!["already queued"]);
+    assert!(chat.queued_user_message_texts().is_empty());
 
     chat.restore_thread_input_state(
         /*input_state*/ None,

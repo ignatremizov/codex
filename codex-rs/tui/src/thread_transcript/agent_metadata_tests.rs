@@ -9,6 +9,7 @@ use pretty_assertions::assert_eq;
 fn late_agent_metadata_updates_labels_without_losing_preview_or_raw_source() {
     let thread_id = ThreadId::new();
     let original = background_commentary_history_cell_from_agent_message(
+        "legacy-commentary",
         &format!("Agent commentary from `{thread_id}`:\n\nfirst\nsecond\nlast"),
         Some(&MessagePhase::Commentary),
         /*agent_response_preview_lines*/ 2,

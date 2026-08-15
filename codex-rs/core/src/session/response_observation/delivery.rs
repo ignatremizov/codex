@@ -34,6 +34,10 @@ enum Payload {
         presentation: Option<CompletionPresentation>,
     },
     Presentation(CompletionPresentation),
+    WaitCommentary {
+        communication: InterAgentCommunication,
+        turn_context: Arc<crate::session::turn_context::TurnContext>,
+    },
 }
 
 fn copy_presentation(presentation: &CompletionPresentation) -> CompletionPresentation {
@@ -44,6 +48,24 @@ fn copy_presentation(presentation: &CompletionPresentation) -> CompletionPresent
 }
 
 impl Session {
+    pub(crate) async fn record_wait_commentary(
+        self: &Arc<Self>,
+        turn_context: Arc<crate::session::turn_context::TurnContext>,
+        communication: InterAgentCommunication,
+        commit: ResponseObservationDeliveryCommit,
+        accepted: AcceptedCompletionDelivery,
+    ) -> CodexResult<()> {
+        self.persist_observation_payload(
+            commit,
+            Arc::new(accepted),
+            Payload::WaitCommentary {
+                communication,
+                turn_context,
+            },
+        )
+        .await
+    }
+
     pub(crate) async fn persist_agent_response_observations(
         self: &Arc<Self>,
         observations: &[AgentResponseObservation],
@@ -356,8 +378,8 @@ impl Session {
                     .await;
                 let permit = session.acquire_history_publication_barrier().await?;
                 let turn = session.new_history_only_turn().await;
-                let policy = turn.model_info().truncation_policy.into();
-                let (response, presentation, trigger_turn) = match payload {
+                let mut policy = turn.model_info().truncation_policy.into();
+                let (response, presentation, trigger_turn, wait_turn) = match payload {
                     Payload::Context {
                         communication,
                         presentation,
@@ -368,12 +390,26 @@ impl Session {
                                 "observed response identity changed".to_string(),
                             ));
                         }
-                        (Some(response), presentation, communication.trigger_turn)
+                        (Some(response), presentation, communication.trigger_turn, None)
                     }
-                    Payload::Presentation(presentation) => (None, Some(presentation), false),
+                    Payload::Presentation(presentation) => (None, Some(presentation), false, None),
+                    Payload::WaitCommentary { mut communication, turn_context } => {
+                        communication.set_turn_id_if_missing(&turn_context.sub_id);
+                        let response = communication.to_model_input_item();
+                        if response.id() != Some(&commit.response_item_id) || response.turn_id() != Some(turn_context.sub_id.as_str()) {
+                            return Err(CodexErr::InvalidRequest("wait commentary identity changed".to_string()));
+                        }
+                        policy = turn_context.model_info().truncation_policy.into();
+                        (Some(response), None, communication.trigger_turn, Some(turn_context))
+                    }
                 };
                 let active = session.active_turn.lock().await;
-                let (mut records, events) = match presentation {
+                if let Some(wait_turn) = &wait_turn
+                    && active.as_ref().and_then(|active| active.task.as_ref()).is_none_or(|task| task.turn_context.sub_id != wait_turn.sub_id)
+                {
+                    return Err(CodexErr::InvalidRequest("wait commentary turn is no longer active".to_string()));
+                }
+                let (mut records, mut events) = match presentation {
                     Some(presentation) => presentation::records(
                         session.thread_id,
                         active
@@ -387,6 +423,14 @@ impl Session {
                 if let Some(response) = &response {
                     records.push(RolloutItem::InterAgentCommunicationMetadata { trigger_turn });
                     records.push(RolloutItem::ResponseItem(response.clone().into()));
+                    if let Some(wait_turn) = &wait_turn {
+                        events.push(codex_protocol::protocol::Event {
+                            id: wait_turn.sub_id.clone(),
+                            msg: EventMsg::RawResponseItem(codex_protocol::protocol::RawResponseItemEvent {
+                                item: response.clone(),
+                            }),
+                        });
+                    }
                 }
                 records.extend(
                     control
@@ -396,12 +440,19 @@ impl Session {
                 );
                 let install_control = control.clone();
                 let install_commit = commit.clone();
+                let observations = Arc::clone(&session.response_observation_state);
                 let receiver = session.dispatch_completion_publication(
                     permit,
                     records,
                     events,
                     move |state| {
                         if let Some(response) = response {
+                            if let Some(id) = response.id()
+                                && codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(id.as_str())
+                            {
+                                observations.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .settled_completion_contexts.insert(id.clone(), response.clone());
+                            }
                             if !state.history.raw_items().any(|item| item == &response) {
                                 state.record_items(std::iter::once(&response), policy);
                             }

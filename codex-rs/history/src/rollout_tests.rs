@@ -53,6 +53,7 @@ fn started(id: &str) -> RolloutItem {
         started_at: None,
         model_context_window: None,
         collaboration_mode_kind: ModeKind::Default,
+        agent_queue: None,
     }))
 }
 
@@ -141,6 +142,21 @@ fn user_agent_control_event(turn_id: &str) -> RolloutItem {
     }))
 }
 
+#[test]
+fn user_agent_control_from_before_target_turn_flags_defaults_new_fields() {
+    let expected = UserAgentControlItem::succeeded(UserAgentControlAction::Prompt);
+    let mut value = serde_json::to_value(&expected).expect("serialize user agent control");
+    let object = value.as_object_mut().expect("user agent control object");
+    object.remove("targetMessages");
+    object.remove("queueInput");
+
+    assert_eq!(
+        serde_json::from_value::<UserAgentControlItem>(value)
+            .expect("deserialize earlier user agent control"),
+        expected
+    );
+}
+
 fn completion_wait_event(turn_id: &str) -> RolloutItem {
     let child_thread_id = ThreadId::new();
     RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -152,6 +168,8 @@ fn completion_wait_event(turn_id: &str) -> RolloutItem {
             status: CollabAgentToolCallStatus::Completed,
             observe_commentary: None,
             wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             deadline_at_ms: None,
             sender_thread_id: ThreadId::new(),
             receiver_thread_ids: vec![child_thread_id],

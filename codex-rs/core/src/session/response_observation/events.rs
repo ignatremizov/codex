@@ -91,7 +91,8 @@ pub(super) fn agent_response_event(event: &EventMsg, sequence: u64) -> Option<Ag
         EventMsg::ItemCompleted(event) => match &event.item {
             TurnItem::AgentMessage(item)
                 if matches!(item.phase.as_ref(), Some(MessagePhase::Commentary))
-                    && !item.has_sub_agent_completion_identity() =>
+                    && !item.has_sub_agent_completion_identity()
+                    && !item.is_attributed_agent_input_presentation() =>
             {
                 Some(AgentResponseEvent::Commentary {
                     turn_id: event.turn_id.clone(),

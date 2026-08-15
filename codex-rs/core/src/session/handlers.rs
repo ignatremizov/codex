@@ -84,6 +84,27 @@ pub async fn inter_agent_communication(
     start_options: codex_protocol::turn_input::TurnStartOptions,
 ) {
     let trigger_turn = communication.trigger_turn;
+    let defer_to_next_turn = communication.defer_to_next_turn;
+    let completion_wake = trigger_turn
+        && communication.id.as_ref().is_some_and(|id| {
+            codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(id.as_str())
+        });
+    let mut start_options = start_options;
+    if completion_wake && start_options.turn_trigger.is_none() {
+        start_options.turn_trigger = Some("agent_wake".to_string());
+    }
+    if defer_to_next_turn {
+        sess.input_queue
+            .queue_turn_inputs_for_next_turn(
+                vec![TurnInput::InterAgentCommunication(communication)],
+                start_options,
+            )
+            .await;
+        crate::agent_communication::emit_agent_communication_receive(&sub_id);
+        sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
+            .await;
+        return;
+    }
     sess.input_queue
         .enqueue_mailbox_communication(communication, start_options)
         .await;

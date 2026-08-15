@@ -328,59 +328,16 @@ impl ChatWidget {
             }
         }
 
-        // The server has already discarded pending input by the time the
-        // interrupted turn reaches the UI, so any unacknowledged steers still
-        // tracked here must be restored locally instead of waiting for a later commit.
-        if send_pending_steers_immediately {
-            let pending_steers = self
-                .input_queue
-                .pending_steers
-                .drain(..)
-                .collect::<Vec<_>>();
-            if pending_steers
-                .iter()
-                .any(|pending| pending.source == UserMessageSource::QuestionAnswer)
-            {
-                // Keep answers intact when an interrupt retries uncommitted input.
-                for pending in pending_steers {
-                    self.input_queue
-                        .rejected_steers_queue
-                        .push_back(pending.user_message);
-                    self.input_queue
-                        .rejected_steer_sources
-                        .push_back(pending.source);
-                    self.input_queue
-                        .rejected_steer_history_records
-                        .push_back(pending.history_record);
-                }
-                if let Some((message, history_record)) = self.pop_next_queued_user_message() {
-                    let source = message.source;
-                    self.submit_user_message_with_history_and_shell_escape_policy(
-                        message.into_user_message(),
-                        history_record,
-                        ShellEscapePolicy::Allow,
-                        source,
-                    );
-                }
-            } else if !pending_steers.is_empty() {
-                let (user_message, history_record) = merge_user_messages_with_history_record(
-                    pending_steers
-                        .into_iter()
-                        .map(|pending| (pending.user_message, pending.history_record))
-                        .collect(),
-                );
-                self.submit_user_message_with_history_and_shell_escape_policy(
-                    user_message,
-                    history_record,
-                    ShellEscapePolicy::Allow,
-                    UserMessageSource::Prompt,
-                );
-            } else if let Some(combined) = self.drain_pending_messages_for_restore() {
-                self.restore_composer_state(combined);
-            }
-        } else if let Some(combined) = self.drain_pending_messages_for_restore() {
+        // Core carries accepted steers into one automatic continuation turn after interrupt.
+        // Keep those optimistic entries until their canonical user-message events arrive instead
+        // of submitting duplicate input.
+        let pending_steers = std::mem::take(&mut self.input_queue.pending_steers);
+        if (!send_pending_steers_immediately || pending_steers.is_empty())
+            && let Some(combined) = self.drain_pending_messages_for_restore()
+        {
             self.restore_composer_state(combined);
         }
+        self.input_queue.pending_steers = pending_steers;
         self.refresh_pending_input_preview();
         self.request_redraw();
     }
@@ -628,22 +585,12 @@ impl ChatWidget {
             self.update_collaboration_mode_indicator();
             self.refresh_model_dependent_surfaces();
             self.restore_composer_state(input_state.composer.unwrap_or_default());
-            let pending_steers = input_state.pending_steers;
-            let mut queued_user_messages = input_state.queued_user_messages;
-            let mut queued_user_message_history_records =
+            // A stopped projection does not undo backend admission. Keep these inputs for
+            // reconciliation instead of submitting them again when the view is restored.
+            self.input_queue.pending_steers = input_state.pending_steers;
+            let queued_user_messages = input_state.queued_user_messages;
+            let queued_user_message_history_records =
                 input_state.queued_user_message_history_records;
-            if preserve_in_flight_turn {
-                self.input_queue.pending_steers = pending_steers;
-            } else {
-                self.input_queue.pending_steers.clear();
-                for pending in pending_steers.into_iter().rev() {
-                    queued_user_messages.push_front(QueuedUserMessage {
-                        source: pending.source,
-                        ..QueuedUserMessage::from(pending.user_message)
-                    });
-                    queued_user_message_history_records.push_front(pending.history_record);
-                }
-            }
             self.input_queue.rejected_steers_queue = input_state.rejected_steers_queue;
             self.input_queue.rejected_steer_sources = input_state.rejected_steer_sources;
             self.input_queue.rejected_steer_sources.resize(

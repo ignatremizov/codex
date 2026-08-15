@@ -52,7 +52,7 @@ pub enum AgentControlAction {
         target: String,
         input: Vec<UserInput>,
     },
-    /// Admit a previously queued user prompt after its target becomes idle.
+    /// Queue input as a distinct future target turn, starting it immediately when the target is idle.
     QueuedPrompt {
         /// Root-scoped ref or nickname, or a canonical thread UUID.
         target: String,
@@ -77,7 +77,7 @@ pub enum AgentControlAction {
     /// Close a controlled agent runtime.
     Close {
         target: String,
-        /// Reserved for future close-response replay; configured values are currently rejected.
+        /// Controls replay of an undelivered completion after close.
         response_handling: Option<AgentResponseHandling>,
     },
     /// Authoritatively replace final-response handling for one target turn.
@@ -85,18 +85,6 @@ pub enum AgentControlAction {
         target: String,
         response_handling: AgentObservationMode,
     },
-}
-
-/// Response handling for one target turn.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub enum AgentResponseHandling {
-    Commentary,
-    Wake,
-    Presentation,
-    CommentaryWake,
-    CommentaryPresentation,
 }
 
 /// Final-response handling selected by an explicit user observation replacement.
@@ -108,6 +96,84 @@ pub enum AgentFinalResponseHandling {
     Passive,
     Wake,
     Presentation,
+}
+
+impl From<codex_protocol::protocol::AgentResponseFinalDelivery> for AgentFinalResponseHandling {
+    fn from(value: codex_protocol::protocol::AgentResponseFinalDelivery) -> Self {
+        match value {
+            codex_protocol::protocol::AgentResponseFinalDelivery::None => Self::None,
+            codex_protocol::protocol::AgentResponseFinalDelivery::PresentationOnly => {
+                Self::Presentation
+            }
+            codex_protocol::protocol::AgentResponseFinalDelivery::Passive => Self::Passive,
+            codex_protocol::protocol::AgentResponseFinalDelivery::Wake => Self::Wake,
+        }
+    }
+}
+
+/// Response, reverse-message, and admission handling for one target turn.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AgentResponseHandling {
+    /// Deliver the first complete commentary item from the target turn.
+    pub commentary: bool,
+    /// Select how the target turn's final response reaches the source.
+    pub final_response: AgentFinalResponseHandling,
+    /// Let the target turn send attributed input back to the source.
+    pub target_messages: bool,
+    /// Admit supplied input as a distinct queued target turn and queue its model-visible final
+    /// response for the source's next turn.
+    pub queue_input: bool,
+}
+
+#[allow(non_upper_case_globals)]
+impl AgentResponseHandling {
+    pub const Commentary: Self = Self::new(
+        /*commentary*/ true,
+        AgentFinalResponseHandling::Passive,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+    pub const Wake: Self = Self::new(
+        /*commentary*/ false,
+        AgentFinalResponseHandling::Wake,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+    pub const Presentation: Self = Self::new(
+        /*commentary*/ false,
+        AgentFinalResponseHandling::Presentation,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+    pub const CommentaryWake: Self = Self::new(
+        /*commentary*/ true,
+        AgentFinalResponseHandling::Wake,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+    pub const CommentaryPresentation: Self = Self::new(
+        /*commentary*/ true,
+        AgentFinalResponseHandling::Presentation,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    );
+
+    /// Builds independent handling for one target turn.
+    pub const fn new(
+        commentary: bool,
+        final_response: AgentFinalResponseHandling,
+        target_messages: bool,
+        queue_input: bool,
+    ) -> Self {
+        Self {
+            commentary,
+            final_response,
+            target_messages,
+            queue_input,
+        }
+    }
 }
 
 /// Authoritative final-response policy accepted by `agent/control` observe.
@@ -161,6 +227,7 @@ pub struct AgentControlResponse {
 #[ts(export_to = "v2/")]
 pub enum AgentInputOutcome {
     Admitted,
+    Queued,
     Unknown,
 }
 

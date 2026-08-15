@@ -3090,7 +3090,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
     // Second turn same, but we'll set approval_policy=never to avoid elicitation.
     let responses = vec![
         create_escalated_command_execution_sse_response(
-            first_shell_command,
+            first_shell_command.to_vec(),
             /*workdir*/ None,
             /*yield_time_ms*/ Some(5000),
             "call1",
@@ -3340,7 +3340,7 @@ async fn run_turn_start_exec_approval_rejection_v2(
 
     let responses = vec![
         create_escalated_command_execution_sse_response(
-            shell_command,
+            shell_command.to_vec(),
             /*workdir*/ None,
             /*yield_time_ms*/ Some(5000),
             "call-decline",
@@ -4490,6 +4490,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             status: CollabAgentToolCallStatus::InProgress,
             observe_commentary: Some(true),
             wake_on_completion: Some(false),
+            target_messages: Some(false),
+            queue_input: Some(false),
             sender_thread_id: thread.id.clone(),
             receiver_thread_ids: Vec::new(),
             receiver_agents: Vec::new(),
@@ -4518,6 +4520,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         status,
         observe_commentary,
         wake_on_completion,
+        target_messages,
+        queue_input,
         sender_thread_id,
         receiver_thread_ids,
         receiver_agents,
@@ -4538,6 +4542,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(status, CollabAgentToolCallStatus::Completed);
     assert_eq!(observe_commentary, Some(true));
     assert_eq!(wake_on_completion, Some(false));
+    assert_eq!(target_messages, Some(false));
+    assert_eq!(queue_input, Some(false));
     assert_eq!(sender_thread_id, thread.id);
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
     assert_eq!(receiver_agents.len(), 1);
@@ -4852,16 +4858,17 @@ async fn direct_input_to_multi_agent_v2_subagent_is_accepted(
         }
     })
     .await??;
-    assert_eq!(direct_child_turn.requests().len(), 1);
-    assert_eq!(
-        direct_child_turn.single_request().header("thread-id"),
-        Some(child_thread_id.clone())
-    );
-    assert!(
-        direct_child_turn
-            .single_request()
-            .body_contains_text(DIRECT_PROMPT)
-    );
+    let direct_turn_count = direct_child_turn
+        .requests()
+        .into_iter()
+        .filter(|request| {
+            request
+                .message_input_texts("user")
+                .last()
+                .is_some_and(|text| text == DIRECT_PROMPT)
+        })
+        .count();
+    assert_eq!(direct_turn_count, 1);
 
     let event = wait_for_matching_analytics_event(&server, DEFAULT_READ_TIMEOUT, |event| {
         event["event_type"] == "codex_collab_agent_tool_call_event"
@@ -5047,6 +5054,8 @@ config_file = "./custom-role.toml"
         status,
         observe_commentary,
         wake_on_completion,
+        target_messages,
+        queue_input,
         sender_thread_id,
         receiver_thread_ids,
         receiver_agents,
@@ -5067,6 +5076,8 @@ config_file = "./custom-role.toml"
     assert_eq!(status, CollabAgentToolCallStatus::Completed);
     assert_eq!(observe_commentary, Some(false));
     assert_eq!(wake_on_completion, Some(false));
+    assert_eq!(target_messages, Some(false));
+    assert_eq!(queue_input, Some(false));
     assert_eq!(sender_thread_id, thread.id);
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
     assert_eq!(receiver_agents.len(), 1);

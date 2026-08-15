@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::response_observation::FinalResponseObservation;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use codex_protocol::protocol::AgentResponseCommentaryAdmission;
 use pretty_assertions::assert_eq;
 use response_observation::ResponseTurnObservation;
@@ -37,6 +38,171 @@ fn next_turn_policy_does_not_block_a_delayed_historical_terminal() {
     assert_eq!(
         control.response_observation_event_match(parent, child, "new-turn"),
         ResponseObservationEventMatch::Observe,
+    );
+}
+
+#[test]
+fn target_message_admission_reserves_one_idle_wake() {
+    let control = LocalAgentControl::default();
+    let parent = identity();
+    let child = identity();
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .insert(
+            (parent, child),
+            ResponseObserverRelationship {
+                turns: HashMap::from([(
+                    "child-turn".to_owned(),
+                    ResponseTurnObservation {
+                        target_messages: true,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+
+    let TargetMessageAdmission::Wake(reservation_id) = control
+        .target_message_admission(
+            parent,
+            child,
+            "child-turn",
+            None,
+            None,
+            TargetMessageAdmissionMode::SteerOrWake,
+        )
+        .expect("message route should reserve an idle wake")
+    else {
+        panic!("expected idle wake reservation");
+    };
+    assert_eq!(
+        control
+            .target_message_admission(
+                parent,
+                child,
+                "child-turn",
+                None,
+                None,
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .expect("pending wake should remain visible"),
+        TargetMessageAdmission::PendingWake
+    );
+    assert!(control.commit_target_message_wake(
+        parent,
+        child,
+        "child-turn",
+        reservation_id,
+        "source-turn",
+    ));
+    assert_eq!(
+        control
+            .target_message_admission(
+                parent,
+                child,
+                "child-turn",
+                Some("source-turn"),
+                None,
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .expect("active source turn should be steerable"),
+        TargetMessageAdmission::Steer
+    );
+
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .get_mut(&(parent, child))
+        .expect("the exact relationship should still exist")
+        .revoked = true;
+    assert!(
+        control
+            .target_message_admission(
+                parent,
+                child,
+                "child-turn",
+                Some("source-turn"),
+                /*observer_last_terminal_turn_id*/ None,
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .is_err(),
+        "retained turn data must not authorize input through a revoked relationship"
+    );
+}
+
+#[test]
+fn future_policy_replacement_retains_pending_message_and_queue_axes() {
+    let control = LocalAgentControl::default();
+    let parent = identity();
+    let child = identity();
+    let replacement = SessionPresentationId::new(child.thread_id, Uuid::now_v7());
+    let expected_policy = ResponseObservationPolicy::from_turn_parts(
+        /*commentary*/ false,
+        FinalResponseObservation::Wake,
+        /*target_messages*/ true,
+        /*queue_input*/ true,
+    );
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .insert(
+            (parent, child),
+            ResponseObserverRelationship {
+                pending_next_turn: Some(ResponseTurnObservation {
+                    final_response: FinalResponseObservation::Wake,
+                    target_messages: true,
+                    queue_delivery: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+    assert_eq!(
+        control.reserved_response_observation_policy(parent, child),
+        Some(expected_policy)
+    );
+    assert!(control.move_future_response_observation(parent, child, replacement));
+    assert_eq!(
+        (
+            control.reserved_response_observation_policy(parent, child),
+            control.reserved_response_observation_policy(parent, replacement),
+        ),
+        (None, Some(expected_policy))
+    );
+    assert!(
+        !control.target_message_binding_pending(parent, replacement),
+        "a future-turn policy must not block a current sender waiting for new authority"
+    );
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .get_mut(&(parent, replacement))
+        .expect("the replacement relationship should exist")
+        .pending_admissions
+        .insert(
+            Uuid::now_v7(),
+            ResponseTurnObservation {
+                target_messages: true,
+                ..Default::default()
+            },
+        );
+    assert!(control.target_message_binding_pending(parent, replacement));
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .get_mut(&(parent, replacement))
+        .expect("the replacement relationship should exist")
+        .revoked = true;
+    assert!(!control.target_message_binding_pending(parent, replacement));
+    assert_eq!(
+        control.reserved_response_observation_policy(parent, replacement),
+        None
     );
 }
 
@@ -598,6 +764,88 @@ async fn dropped_frozen_wait_releases_background_delivery() {
     let wait = state.register(parent, None);
     let terminal = terminal(&state, parent, child);
     drop(wait.freeze_for_children([child.thread_id]));
+    assert!(!terminal.wait_owns_presentation().await);
+}
+
+#[tokio::test]
+async fn wait_claims_late_commentary_and_notifies_background_delivery_on_drop() {
+    let control = LocalAgentControl::default();
+    let parent = identity();
+    let child = identity();
+    let wait = control
+        .wait_agent_presentations
+        .register(parent, Some(HashSet::from([child.thread_id])));
+    let terminal = terminal(&control.wait_agent_presentations, parent, child);
+    let turn_id = terminal.inner.turn_id.clone();
+    control
+        .wait_agent_presentations
+        .state()
+        .response_observation_by_observer_child
+        .insert(
+            (parent, child),
+            ResponseObserverRelationship {
+                turns: HashMap::from([(
+                    turn_id.clone(),
+                    ResponseTurnObservation {
+                        commentary_admissions: vec![AgentResponseCommentaryAdmission {
+                            minimum_event_sequence: 12,
+                            after_item_id: None,
+                            canonical_boundary: true,
+                        }],
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+    let mut commit = wait.freeze_for_children([child.thread_id]);
+    let target_turns = commit.claimed_target_turns();
+    commit.claim_commentary_turns(&target_turns);
+    assert_eq!(
+        control.route_response_observer_commentary(parent, child, &turn_id),
+        CommentaryDeliveryRoute::Wait,
+    );
+    let pending = control.wait_commentary_before_terminal(parent, &target_turns);
+    tokio::pin!(pending);
+    assert!(futures::poll!(&mut pending).is_pending());
+
+    let delivery = control
+        .prepare_commentary_observation_delivery_at_sequence(
+            parent,
+            child,
+            &turn_id,
+            "late-commentary",
+            "commentary before the terminal",
+            /*sequence*/ 12,
+        )
+        .expect("eligible commentary");
+    control.publish_response_observation_binding();
+    let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+        .await
+        .expect("wait should observe late commentary");
+    assert_eq!(
+        delivered
+            .into_iter()
+            .map(|delivery| (delivery.child, delivery.turn_id, delivery.delivery))
+            .collect::<Vec<_>>(),
+        vec![(child, turn_id.clone(), delivery)],
+    );
+    assert_eq!(
+        control.route_response_observer_commentary(parent, child, &turn_id),
+        CommentaryDeliveryRoute::Wait,
+    );
+
+    let changed = control.response_observation_changed().notified();
+    tokio::pin!(changed);
+    changed.as_mut().enable();
+    drop(commit);
+    tokio::time::timeout(std::time::Duration::from_secs(5), changed)
+        .await
+        .expect("dropping a wait should wake the retained commentary publisher");
+    assert_eq!(
+        control.route_response_observer_commentary(parent, child, &turn_id),
+        CommentaryDeliveryRoute::Mailbox,
+    );
     assert!(!terminal.wait_owns_presentation().await);
 }
 

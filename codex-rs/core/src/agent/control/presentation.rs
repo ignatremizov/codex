@@ -22,6 +22,7 @@ use uuid::Uuid;
 mod response_observation;
 pub(in crate::agent) use response_observation::ReplacedFinalResponseObservationBinding;
 
+pub(crate) use response_observation::CommentaryDeliveryRoute;
 pub(crate) use response_observation::ResponseObservationBinding;
 pub(crate) use response_observation::ResponseObservationBindingPublication;
 pub(crate) use response_observation::ResponseObservationDeliveryCommit;
@@ -52,6 +53,19 @@ pub(crate) enum TerminalPresentationDelivery {
     Watcher,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TargetMessageAdmission {
+    Steer,
+    Wake(Uuid),
+    PendingWake,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TargetMessageAdmissionMode {
+    SteerOrWake,
+    SeparateTurn,
+}
+
 #[derive(Default)]
 pub(super) struct WaitAgentPresentations {
     state: Mutex<PresentationState>,
@@ -79,6 +93,9 @@ struct PresentationState {
         (SessionPresentationId, SessionPresentationId),
         VecDeque<WatcherTerminalPresentation>,
     >,
+    response_observer_terminal_turns:
+        HashSet<(SessionPresentationId, SessionPresentationId, String)>,
+    wait_commentary_turns: HashSet<(SessionPresentationId, SessionPresentationId, String)>,
 }
 
 struct WaitRegistration {
@@ -158,6 +175,12 @@ pub(crate) struct ClaimedTargetTurn {
     pub(crate) response_item_id: ResponseItemId,
 }
 
+pub(crate) struct WaitCommentaryDelivery {
+    pub(crate) child: SessionPresentationId,
+    pub(crate) turn_id: String,
+    pub(crate) delivery: codex_protocol::protocol::AgentResponseCommentaryDelivery,
+}
+
 pub(crate) struct CompletionWatcherRegistration {
     state: Arc<WaitAgentPresentations>,
     child: SessionPresentationId,
@@ -176,6 +199,7 @@ pub(crate) struct WaitAgentPresentationCommit {
     parent: SessionPresentationId,
     terminals: Vec<Arc<Terminal>>,
     captured_states: HashMap<ThreadId, AgentStatus>,
+    commentary_turns: Vec<(SessionPresentationId, String)>,
 }
 
 impl LocalAgentControl {
@@ -634,6 +658,7 @@ impl WaitAgentPresentationGuard {
             parent: self.parent,
             terminals,
             captured_states,
+            commentary_turns: Vec::new(),
         };
         drop(state);
         self.armed = false;
@@ -692,6 +717,37 @@ impl WaitAgentPresentationCommit {
         (!ids.is_empty()).then_some(ids)
     }
 
+    pub(crate) fn claim_commentary_turns(&mut self, target_turns: &[ClaimedTargetTurn]) {
+        let mut state = self.state.state();
+        self.commentary_turns = target_turns
+            .iter()
+            .filter_map(|target| {
+                let claimed = {
+                    let observation = state
+                        .response_observation_by_observer_child
+                        .get_mut(&(self.parent, target.child))
+                        .and_then(|relationship| relationship.turns.get_mut(&target.turn_id))?;
+                    ((observation.commentary_delivery.is_some()
+                        || !observation.commentary_admissions.is_empty())
+                        && observation.commentary_delivery_route
+                            == response_observation::CommentaryDeliveryRoute::Undecided)
+                        .then(|| {
+                            observation.commentary_delivery_route =
+                                response_observation::CommentaryDeliveryRoute::Wait;
+                        })
+                };
+                claimed.map(|()| {
+                    state.wait_commentary_turns.insert((
+                        self.parent,
+                        target.child,
+                        target.turn_id.clone(),
+                    ));
+                    (target.child, target.turn_id.clone())
+                })
+            })
+            .collect();
+    }
+
     pub(crate) fn commit(self) {
         let mut state = self
             .state
@@ -715,6 +771,8 @@ impl WaitAgentPresentationCommit {
                 state.contexts.remove(&terminal.context_id);
             }
         }
+        drop(state);
+        self.release_commentary_turns();
     }
 }
 
@@ -729,6 +787,30 @@ impl Drop for WaitAgentPresentationCommit {
         for terminal in &self.terminals {
             terminal.release(self.id);
         }
+        self.release_commentary_turns();
+    }
+}
+
+impl WaitAgentPresentationCommit {
+    fn release_commentary_turns(&self) {
+        let mut state = self.state.state();
+        for (child, turn_id) in &self.commentary_turns {
+            state
+                .wait_commentary_turns
+                .remove(&(self.parent, *child, turn_id.clone()));
+            if let Some(observation) = state
+                .response_observation_by_observer_child
+                .get_mut(&(self.parent, *child))
+                .and_then(|relationship| relationship.turns.get_mut(turn_id))
+                && observation.commentary_delivery_route
+                    == response_observation::CommentaryDeliveryRoute::Wait
+            {
+                observation.commentary_delivery_route =
+                    response_observation::CommentaryDeliveryRoute::Mailbox;
+            }
+        }
+        drop(state);
+        self.state.response_observation_changed.notify_waiters();
     }
 }
 

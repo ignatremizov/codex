@@ -3327,6 +3327,7 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_rollback() {
             started_at: None,
             model_context_window: Some(128_000),
             collaboration_mode_kind: ModeKind::Default,
+            agent_queue: None,
         })),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
             client_id: None,
@@ -4787,6 +4788,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(

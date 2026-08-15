@@ -213,7 +213,7 @@ impl LocalAgentControl {
     ) -> CodexResult<()> {
         let parent = observer.session.presentation_id();
         let preview = preview.and_then(non_empty_task_message);
-        let task = if policy.has_model_visible_delivery() {
+        let task = if policy.exposes_source_model_context() {
             match preview.as_ref() {
                 Some(preview) => Some(
                     self.user_task_item(observer, child.thread_id, preview.clone())

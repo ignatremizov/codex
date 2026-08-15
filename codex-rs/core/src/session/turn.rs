@@ -947,6 +947,7 @@ async fn run_hooks_and_record_accepted_inputs(
         return (false, Vec::new());
     }
     let mut blocked_input = false;
+    let mut persistence_failed = false;
     let mut accepted_user_input = false;
     let mut accepted = Vec::new();
     for input_item in input {
@@ -955,7 +956,11 @@ async fn run_hooks_and_record_accepted_inputs(
             blocked_input = true;
             record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
         } else {
-            if matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()) {
+            if matches!(
+                input_item,
+                TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. }
+                    if !content.is_empty()
+            ) {
                 accepted_user_input = true;
             }
             // Tool outputs retain their durability barrier, including in mixed input batches.
@@ -966,7 +971,7 @@ async fn run_hooks_and_record_accepted_inputs(
             } else {
                 persist_context
             };
-            record_pending_input(
+            if let Err(error) = record_pending_input(
                 sess,
                 turn_context,
                 model_info,
@@ -974,18 +979,41 @@ async fn run_hooks_and_record_accepted_inputs(
                 hook_outcome.additional_contexts,
                 input_persist_context,
             )
-            .await;
+            .await
+            {
+                let warning =
+                    format!("admitted input persistence failed: {error}; do not resubmit");
+                sess.settle_queued_input_persistence(
+                    &turn_context.sub_id,
+                    Err(codex_protocol::error::CodexErr::Fatal(warning)),
+                );
+                persistence_failed = true;
+                break;
+            }
             accepted.push(input_item.clone());
         }
     }
-    (blocked_input && !accepted_user_input, accepted)
+    if blocked_input && !accepted_user_input {
+        sess.settle_queued_input_persistence(
+            &turn_context.sub_id,
+            Err(codex_protocol::error::CodexErr::InvalidRequest(
+                "admitted input was blocked by a hook; do not resubmit".to_string(),
+            )),
+        );
+    }
+    (
+        persistence_failed || (blocked_input && !accepted_user_input),
+        accepted,
+    )
 }
 
 fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
     input
         .iter()
         .filter_map(|item| match item {
-            TurnInput::UserInput { content, .. } => Some(content.as_slice()),
+            TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. } => {
+                Some(content.as_slice())
+            }
             TurnInput::ResponseItem(_)
             | TurnInput::FunctionCallOutput(_)
             | TurnInput::InterAgentCommunication(_) => None,
@@ -1342,7 +1370,8 @@ async fn track_turn_resolved_config_analytics(
             num_input_images: input
                 .iter()
                 .filter_map(|item| match item {
-                    TurnInput::UserInput { content, .. } => Some(content.as_slice()),
+                    TurnInput::UserInput { content, .. }
+                    | TurnInput::AgentInput { content, .. } => Some(content.as_slice()),
                     TurnInput::ResponseItem(_)
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::InterAgentCommunication(_) => None,

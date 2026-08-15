@@ -38,6 +38,7 @@ async fn usage_notice_preserves_composer_geometry_and_restores_tip_on_recovery()
             app.chat_widget.apply_external_edit("draft stays".into());
             app.chat_widget.handle_server_notification(
                 ServerNotification::TurnStarted(TurnStartedNotification {
+                    agent_queue: None,
                     thread_id: ThreadId::new().to_string(),
                     turn: Turn {
                         id: "turn".into(),
@@ -340,6 +341,7 @@ async fn running_turn_dismisses_announcement_across_thread_resets() {
     let mut app = crate::app::test_support::make_test_app().await;
     app.chat_widget.handle_server_notification(
         ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification {
+            agent_queue: None,
             thread_id: ThreadId::new().to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "active-turn".to_string(),

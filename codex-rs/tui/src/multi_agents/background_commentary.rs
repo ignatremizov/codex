@@ -1,7 +1,9 @@
 //! Render attributed live commentary or legacy saved commentary without local-answer side effects.
 
+use codex_app_server_protocol::attributed_agent_message_transcript_parts;
 use codex_app_server_protocol::sub_agent_commentary_transcript_parts;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::protocol::is_attributed_agent_message_response_item_id;
 use ratatui::style::Stylize;
 
 use super::AgentMetadata;
@@ -12,6 +14,7 @@ use super::preview_source_lines;
 
 /// Live callers must establish `inter_agent_source` provenance before parsing the text.
 pub(crate) fn background_commentary_history_cell_from_agent_message(
+    id: &str,
     text: &str,
     phase: Option<&MessagePhase>,
     agent_response_preview_lines: usize,
@@ -20,7 +23,11 @@ pub(crate) fn background_commentary_history_cell_from_agent_message(
     if phase != Some(&MessagePhase::Commentary) {
         return None;
     }
-    let (agent_reference, message) = sub_agent_commentary_transcript_parts(text)?;
+    let (agent_reference, message) = sub_agent_commentary_transcript_parts(text).or_else(|| {
+        is_attributed_agent_message_response_item_id(id)
+            .then(|| attributed_agent_message_transcript_parts(text))
+            .flatten()
+    })?;
     let thread_id = parse_thread_id(agent_reference.trim())?;
     let details = vec![CollabDetail::preview(
         preview_source_lines(message),

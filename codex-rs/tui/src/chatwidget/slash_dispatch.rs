@@ -38,6 +38,16 @@ struct PreparedSlashCommandArgs {
     source: SlashCommandDispatchSource,
 }
 
+struct PreparedAgentPromptArgs<'a> {
+    prompt: Option<AgentCommandPrompt<'a>>,
+    has_attached_input: bool,
+    command_text_elements: &'a [TextElement],
+    local_images: Vec<LocalImageAttachment>,
+    remote_image_urls: Vec<String>,
+    mention_bindings: Vec<MentionBinding>,
+    source: SlashCommandDispatchSource,
+}
+
 const SIDE_STARTING_CONTEXT_LABEL: &str = "Side starting...";
 const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
     "Press Ctrl+C to return to the main thread first.";
@@ -750,16 +760,16 @@ impl ChatWidget {
         }
     }
 
-    fn prepared_agent_prompt(
-        &mut self,
-        prompt: Option<AgentCommandPrompt<'_>>,
-        has_attached_input: bool,
-        command_text_elements: &[TextElement],
-        local_images: Vec<LocalImageAttachment>,
-        remote_image_urls: Vec<String>,
-        mention_bindings: Vec<MentionBinding>,
-        source: SlashCommandDispatchSource,
-    ) -> Option<UserMessage> {
+    fn prepared_agent_prompt(&mut self, args: PreparedAgentPromptArgs<'_>) -> Option<UserMessage> {
+        let PreparedAgentPromptArgs {
+            prompt,
+            has_attached_input,
+            command_text_elements,
+            local_images,
+            remote_image_urls,
+            mention_bindings,
+            source,
+        } = args;
         let (text, text_elements) = match prompt {
             Some(prompt) => (
                 prompt.text.to_string(),
@@ -1066,7 +1076,7 @@ impl ChatWidget {
                 let has_attached_input = match source {
                     SlashCommandDispatchSource::Live => {
                         !self.bottom_pane.composer_local_images().is_empty()
-                            || !self.remote_image_urls().is_empty()
+                            || !self.bottom_pane.remote_image_urls().is_empty()
                     }
                     SlashCommandDispatchSource::Queued => {
                         !local_images.is_empty() || !remote_image_urls.is_empty()
@@ -1146,15 +1156,15 @@ impl ChatWidget {
                     _ => None,
                 };
                 if let Some((role, authored_selector, fork, response, prompt)) = spawn {
-                    let prompt = self.prepared_agent_prompt(
+                    let prompt = self.prepared_agent_prompt(PreparedAgentPromptArgs {
                         prompt,
                         has_attached_input,
-                        &text_elements,
+                        command_text_elements: &text_elements,
                         local_images,
                         remote_image_urls,
                         mention_bindings,
                         source,
-                    );
+                    });
                     self.app_event_tx.send(AppEvent::SpawnAgent {
                         source_thread_id,
                         role,
@@ -1171,15 +1181,15 @@ impl ChatWidget {
                     prompt,
                 } = &parsed
                 {
-                    let prompt = self.prepared_agent_prompt(
-                        *prompt,
+                    let prompt = self.prepared_agent_prompt(PreparedAgentPromptArgs {
+                        prompt: *prompt,
                         has_attached_input,
-                        &text_elements,
+                        command_text_elements: &text_elements,
                         local_images,
                         remote_image_urls,
                         mention_bindings,
                         source,
-                    );
+                    });
                     self.app_event_tx.send(AppEvent::ResumeAgent {
                         source_thread_id,
                         selector: selector.clone(),
@@ -1188,10 +1198,11 @@ impl ChatWidget {
                     });
                     return;
                 }
-                if let AgentCommand::Close { selector } = &parsed {
+                if let AgentCommand::Close { selector, response } = &parsed {
                     self.app_event_tx.send(AppEvent::CloseAgent {
                         source_thread_id,
                         selector: selector.clone(),
+                        response_handling: *response,
                     });
                     return;
                 }
@@ -1214,15 +1225,15 @@ impl ChatWidget {
                             .send(AppEvent::OpenAgentPromptQueue(selector.clone()));
                         return;
                     }
-                    let Some(user_message) = self.prepared_agent_prompt(
-                        *prompt,
+                    let Some(user_message) = self.prepared_agent_prompt(PreparedAgentPromptArgs {
+                        prompt: *prompt,
                         has_attached_input,
-                        &text_elements,
+                        command_text_elements: &text_elements,
                         local_images,
                         remote_image_urls,
                         mention_bindings,
                         source,
-                    ) else {
+                    }) else {
                         unreachable!("queue prompt was checked above")
                     };
                     self.app_event_tx.send(AppEvent::QueueAgentPrompt {
@@ -1239,15 +1250,15 @@ impl ChatWidget {
                     prompt,
                 } = &parsed
                 {
-                    let follow_up = self.prepared_agent_prompt(
-                        *prompt,
+                    let follow_up = self.prepared_agent_prompt(PreparedAgentPromptArgs {
+                        prompt: *prompt,
                         has_attached_input,
-                        &text_elements,
+                        command_text_elements: &text_elements,
                         local_images,
                         remote_image_urls,
                         mention_bindings,
                         source,
-                    );
+                    });
                     self.app_event_tx.send(AppEvent::InterruptAgent {
                         source_thread_id,
                         selector: selector.clone(),
@@ -1280,15 +1291,15 @@ impl ChatWidget {
                     self.app_event_tx.send(AppEvent::OpenAgentTarget(selector));
                     return;
                 }
-                let Some(user_message) = self.prepared_agent_prompt(
+                let Some(user_message) = self.prepared_agent_prompt(PreparedAgentPromptArgs {
                     prompt,
                     has_attached_input,
-                    &text_elements,
+                    command_text_elements: &text_elements,
                     local_images,
                     remote_image_urls,
                     mention_bindings,
                     source,
-                ) else {
+                }) else {
                     unreachable!("existing-target prompt was checked above")
                 };
                 self.app_event_tx.send(AppEvent::SubmitAgentPrompt {
