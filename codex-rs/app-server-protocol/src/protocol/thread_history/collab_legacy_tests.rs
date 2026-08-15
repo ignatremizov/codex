@@ -24,6 +24,8 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
         let parent = ThreadId::new();
         let child = ThreadId::new();
         let mut item = CollabAgentToolCallItem {
+            target_messages: Some(true),
+            queue_input: Some(false),
             id: "collaboration".to_string(),
             tool,
             status: CollabAgentToolCallStatus::InProgress,
@@ -43,6 +45,7 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
         let mut builder = ThreadHistoryBuilder::new();
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
             turn_attribution: None,
+            agent_queue: None,
             turn_id: "parent-turn".to_string(),
             root_turn_id: None,
             trace_id: None,
@@ -87,6 +90,8 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
         );
         item.observe_commentary = None;
         item.wake_on_completion = None;
+        item.target_messages = None;
+        item.queue_input = None;
         completed.item = TurnItem::CollabAgentToolCall(item.clone());
         builder.handle_event(&EventMsg::ItemCompleted(completed));
         assert_eq!(

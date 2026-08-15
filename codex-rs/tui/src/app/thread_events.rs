@@ -769,6 +769,7 @@ mod tests {
                 started_at: Some(0),
                 ..test_turn(turn_id, TurnStatus::InProgress, Vec::new())
             },
+            agent_queue: None,
         })
     }
 

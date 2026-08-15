@@ -1290,6 +1290,7 @@ async fn replayed_retryable_app_server_error_keeps_turn_running() {
                 completed_at: None,
                 duration_ms: None,
             },
+            agent_queue: None,
         }),
         Some(ReplayKind::ThreadSnapshot),
     );
@@ -1750,6 +1751,7 @@ async fn live_reasoning_summary_is_not_rendered_twice_when_item_completes() {
                 completed_at: None,
                 duration_ms: None,
             },
+            agent_queue: None,
         }),
         /*replay_kind*/ None,
     );
@@ -1810,6 +1812,7 @@ async fn live_reasoning_summary_drops_empty_parts_without_losing_content() {
                 completed_at: None,
                 duration_ms: None,
             },
+            agent_queue: None,
         }),
         /*replay_kind*/ None,
     );

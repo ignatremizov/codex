@@ -7,6 +7,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserAgentControlAction;
 use codex_protocol::items::UserAgentControlItem;
 use codex_protocol::items::UserAgentControlStatus;
+use codex_protocol::items::UserAgentInputOutcome;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::MessagePhase;
@@ -61,6 +62,7 @@ fn projects_turn_lifecycle_without_prior_builder_state() {
     let started = project(RolloutItem::EventMsg(EventMsg::TurnStarted(
         TurnStartedEvent {
             turn_attribution: None,
+            agent_queue: None,
             turn_id: "turn-1".to_string(),
             root_turn_id: Some("root-turn".into()),
             trace_id: None,
@@ -251,6 +253,9 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
         fork_mode: None,
         observe_commentary: Some(true),
         final_response: Some(AgentResponseFinalDelivery::Wake),
+        target_messages: Some(false),
+        queue_input: Some(false),
+        input_outcome: Some(UserAgentInputOutcome::Admitted),
         status: UserAgentControlStatus::Succeeded,
         error: None,
     });
@@ -283,6 +288,7 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
         target_thread_id,
         agent_ref,
         action,
+        input_outcome,
         status,
         ..
     } = ThreadItem::from(item)
@@ -292,6 +298,10 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
     assert_eq!(target_thread_id, Some(expected_target_thread_id));
     assert_eq!(agent_ref, Some("2".to_string()));
     assert_eq!(action, crate::protocol::v2::UserAgentControlAction::Prompt);
+    assert_eq!(
+        input_outcome,
+        Some(crate::protocol::v2::AgentInputOutcome::Admitted)
+    );
     assert_eq!(
         status,
         crate::protocol::v2::UserAgentControlStatus::Succeeded

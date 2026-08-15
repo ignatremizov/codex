@@ -3,10 +3,15 @@ use codex_protocol::ResponseItemId;
 use codex_thread_store::StoredSubAgentCompletionPresentation;
 use std::collections::HashMap;
 
-/// Positive receipts belonging only to this ephemeral runtime, never reconstructed from history.
+/// Positive publication receipts belonging to this exact runtime, never reconstructed from history.
+///
+/// Context envelopes survive replacement history for both durable and ephemeral sessions. Durable
+/// readers still verify canonical store evidence; these volatile receipts never certify a failed
+/// writer barrier. Ephemeral presentation receipts preserve their own explicit runtime-only scope.
 #[derive(Default)]
-pub(crate) struct CompletionRuntimeProvenance {
+pub(crate) struct CompletionPublicationReceipts {
     pub(crate) contexts: HashMap<ResponseItemId, ResponseItemEnvelope>,
+    /// Only ephemeral sessions retain presentation lifecycle receipts here.
     pub(crate) presentations: HashMap<(String, String), StoredSubAgentCompletionPresentation>,
 }
 

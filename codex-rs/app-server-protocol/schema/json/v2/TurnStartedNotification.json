@@ -5,11 +5,57 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
+    "AgentFinalResponseHandling": {
+      "description": "Final-response handling selected by an explicit user observation replacement.",
+      "enum": [
+        "none",
+        "passive",
+        "wake",
+        "presentation"
+      ],
+      "type": "string"
+    },
+    "AgentInputOutcome": {
+      "description": "Whether a user input submission is known to have been admitted.",
+      "enum": [
+        "admitted",
+        "queued",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "AgentMessageDelivery": {
       "enum": [
         "async"
       ],
       "type": "string"
+    },
+    "AgentQueueTurnMetadata": {
+      "description": "Queue provenance and response handling bound to a newly started target turn.",
+      "properties": {
+        "queueId": {
+          "type": "string"
+        },
+        "responseHandling": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentResponseHandling"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Committed queue-entry policy, including queued source delivery; `null` when source-side persistence degraded after admission."
+        },
+        "sourceThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "queueId",
+        "sourceThreadId"
+      ],
+      "type": "object"
     },
     "AgentResponseFinalDelivery": {
       "description": "Final-response handling retained as durable evidence for an observer.",
@@ -20,6 +66,38 @@
         "wake"
       ],
       "type": "string"
+    },
+    "AgentResponseHandling": {
+      "description": "Response, reverse-message, and admission handling for one target turn.",
+      "properties": {
+        "commentary": {
+          "description": "Deliver the first complete commentary item from the target turn.",
+          "type": "boolean"
+        },
+        "finalResponse": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentFinalResponseHandling"
+            }
+          ],
+          "description": "Select how the target turn's final response reaches the source."
+        },
+        "queueInput": {
+          "description": "Admit supplied input as a distinct queued target turn and queue its model-visible final response for the source's next turn.",
+          "type": "boolean"
+        },
+        "targetMessages": {
+          "description": "Let the target turn send attributed input back to the source.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "commentary",
+        "finalResponse",
+        "queueInput",
+        "targetMessages"
+      ],
+      "type": "object"
     },
     "AsyncUserInputQuestion": {
       "additionalProperties": false,
@@ -1615,6 +1693,14 @@
                 "null"
               ]
             },
+            "queueInput": {
+              "default": null,
+              "description": "Whether input waits in the target-owned queue instead of steering active work.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "reasoningEffort": {
               "anyOf": [
                 {
@@ -1652,6 +1738,14 @@
                 }
               ],
               "description": "Current status of the collab tool call."
+            },
+            "targetMessages": {
+              "default": null,
+              "description": "Whether this call grants replies scoped to the target's admitted turn.",
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "tool": {
               "allOf": [
@@ -1784,6 +1878,16 @@
             },
             "id": {
               "type": "string"
+            },
+            "inputOutcome": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentInputOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "newOwnerSessionId": {
               "type": [
@@ -2661,6 +2765,17 @@
     }
   },
   "properties": {
+    "agentQueue": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AgentQueueTurnMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Present when this exact turn was admitted from the shared agent queue."
+    },
     "threadId": {
       "type": "string"
     },

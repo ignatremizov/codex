@@ -6,6 +6,7 @@ mod registry;
 pub(crate) mod response_observation;
 pub(crate) mod role;
 pub(crate) mod status;
+pub(crate) mod turn_queue;
 pub(crate) mod types;
 mod user_control;
 
@@ -16,6 +17,7 @@ pub use user_control::UserAgentObservationBinding;
 pub use user_control::UserAgentObservationMode;
 pub use user_control::UserAgentOwnershipTransfer;
 pub use user_control::UserAgentPromptResult;
+pub use user_control::UserAgentQueuedTurn;
 pub use user_control::UserAgentReservedPromptResult;
 pub use user_control::UserAgentResponseHandling;
 pub use user_control::UserAgentResumeResult;

@@ -1,4 +1,5 @@
 use super::AdditionalPermissionProfile;
+use super::AgentInputOutcome;
 use super::ExecPolicyAmendment;
 use super::McpToolCallError;
 use super::McpToolCallResult;
@@ -40,6 +41,7 @@ use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::items::UserAgentControlAction as CoreUserAgentControlAction;
 use codex_protocol::items::UserAgentControlStatus as CoreUserAgentControlStatus;
 use codex_protocol::items::UserAgentForkMode as CoreUserAgentForkMode;
+use codex_protocol::items::UserAgentInputOutcome as CoreUserAgentInputOutcome;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -459,6 +461,12 @@ pub enum ThreadItem {
         /// Whether the receiver's terminal response should wake the sender.
         #[serde(default)]
         wake_on_completion: Option<bool>,
+        /// Whether this call grants replies scoped to the target's admitted turn.
+        #[serde(default)]
+        target_messages: Option<bool>,
+        /// Whether input waits in the target-owned queue instead of steering active work.
+        #[serde(default)]
+        queue_input: Option<bool>,
         /// Thread ID of the agent issuing the collab request.
         sender_thread_id: String,
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
@@ -511,6 +519,7 @@ pub enum ThreadItem {
         final_response: Option<AgentResponseFinalDelivery>,
         target_messages: Option<bool>,
         queue_input: Option<bool>,
+        input_outcome: Option<AgentInputOutcome>,
         status: UserAgentControlStatus,
         error: Option<String>,
     },
@@ -1110,6 +1119,8 @@ impl From<CoreTurnItem> for ThreadItem {
                 status: call.status.into(),
                 observe_commentary: call.observe_commentary,
                 wake_on_completion: call.wake_on_completion,
+                target_messages: call.target_messages,
+                queue_input: call.queue_input,
                 sender_thread_id: call.sender_thread_id.to_string(),
                 receiver_thread_ids: call
                     .receiver_thread_ids
@@ -1158,6 +1169,11 @@ impl From<CoreTurnItem> for ThreadItem {
                 final_response: control.final_response,
                 target_messages: control.target_messages,
                 queue_input: control.queue_input,
+                input_outcome: control.input_outcome.map(|outcome| match outcome {
+                    CoreUserAgentInputOutcome::Queued => AgentInputOutcome::Queued,
+                    CoreUserAgentInputOutcome::Admitted => AgentInputOutcome::Admitted,
+                    CoreUserAgentInputOutcome::Unknown => AgentInputOutcome::Unknown,
+                }),
                 status: control.status.into(),
                 error: control.error,
             },

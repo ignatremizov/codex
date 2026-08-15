@@ -104,6 +104,7 @@ fn turn_diff_notifications_render_only_changes() -> anyhow::Result<()> {
     ] {
         processor.process_server_notification(ServerNotification::TurnStarted(
             codex_app_server_protocol::TurnStartedNotification {
+                agent_queue: None,
                 thread_id: "thread-1".to_string(),
                 turn: Turn {
                     id: turn_id.to_string(),

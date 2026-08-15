@@ -18,6 +18,7 @@ use tracing::trace_span;
 
 use super::SessionTask;
 use super::SessionTaskResult;
+use super::TaskStartupOutcome;
 
 #[derive(Default)]
 pub(crate) struct RegularTask;
@@ -37,6 +38,30 @@ impl SessionTask for RegularTask {
         "session_task.turn"
     }
 
+    #[tracing::instrument(name = "session_task.run_startup", skip_all)]
+    async fn run_startup<'a>(
+        &'a self,
+        sess: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        input: &'a [TurnInput],
+        cancellation_token: &'a CancellationToken,
+    ) -> TaskStartupOutcome {
+        sess.emit_turn_started(&ctx, TaskKind::Regular).await;
+        if cancellation_token.is_cancelled() {
+            run_hooks_and_record_inputs(
+                &sess,
+                &ctx,
+                &ctx.capture_current_model_info(),
+                input,
+                PersistContext::Standard,
+            )
+            .await;
+            TaskStartupOutcome::Finish
+        } else {
+            TaskStartupOutcome::Run
+        }
+    }
+
     async fn run(
         self: Arc<Self>,
         sess: Arc<Session>,
@@ -49,10 +74,9 @@ impl SessionTask for RegularTask {
             conversation.id = %sess.thread_id,
             turn.id = %ctx.sub_id,
         );
-        // Regular turns emit `TurnStarted` inline so first-turn lifecycle does
-        // not wait on startup prewarm resolution.
+        // The tracked startup phase emitted `TurnStarted`, so first-turn lifecycle does not wait
+        // on startup prewarm resolution.
         let prewarmed_client_session = async {
-            sess.emit_turn_started(&ctx, TaskKind::Regular).await;
             // Regular-start contributors run once, after the task is visible and interruptible.
             let prepares_mcp = sess
                 .services
