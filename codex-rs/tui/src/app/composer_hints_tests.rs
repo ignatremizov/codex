@@ -44,6 +44,7 @@ async fn usage_notice_preserves_composer_geometry_on_recovery() -> Result<()> {
         if running {
             app.chat_widget.handle_server_notification(
                 ServerNotification::TurnStarted(TurnStartedNotification {
+                    agent_queue: None,
                     thread_id: ThreadId::new().to_string(),
                     turn: Turn {
                         id: "turn".into(),

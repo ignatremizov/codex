@@ -5,4 +5,4 @@
 /**
  * Whether a user input submission is known to have been admitted.
  */
-export type AgentInputOutcome = "admitted" | "unknown";
+export type AgentInputOutcome = "admitted" | "queued" | "unknown";

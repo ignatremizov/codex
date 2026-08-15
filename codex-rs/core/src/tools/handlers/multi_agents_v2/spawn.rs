@@ -76,6 +76,8 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     id: call_id,
                     tool: CollabAgentTool::SpawnAgent,
                     status,
+                    target_messages: None,
+                    queue_input: None,
                     deadline_at_ms: None,
                     sender_thread_id,
                     receiver_thread_ids,

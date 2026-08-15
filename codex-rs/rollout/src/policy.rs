@@ -252,6 +252,7 @@ fn persisted_item_completed_event<'a>(
             ) || matches!(
                 &event.item,
                 TurnItem::AgentMessage(item) if item.has_sub_agent_completion_identity()
+                    || item.is_attributed_agent_input_presentation()
             ))
             .then_some(Cow::Borrowed(ev))
         }
