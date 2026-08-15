@@ -1520,22 +1520,16 @@ async fn run_ratatui_app(
                 let target_session = match lookup {
                     Ok(result) => result?,
                     Err(err) => {
-                        shutdown_startup_session(
-                            app_server.take(),
-                            &mut terminal_restore_guard,
-                        )
-                        .await;
+                        shutdown_startup_session(app_server.take(), &mut terminal_restore_guard)
+                            .await;
                         return Err(err.into());
                     }
                 };
                 match target_session {
                     Some(target_session) => resume_picker::SessionSelection::Fork(target_session),
                     None => {
-                        shutdown_startup_session(
-                            app_server.take(),
-                            &mut terminal_restore_guard,
-                        )
-                        .await;
+                        shutdown_startup_session(app_server.take(), &mut terminal_restore_guard)
+                            .await;
                         return Ok(AppExitInfo {
                             token_usage: crate::token_usage::TokenUsage::default(),
                             thread_id: None,
@@ -1561,11 +1555,8 @@ async fn run_ratatui_app(
                 let target_session = match lookup {
                     Ok(result) => result?,
                     Err(err) => {
-                        shutdown_startup_session(
-                            app_server.take(),
-                            &mut terminal_restore_guard,
-                        )
-                        .await;
+                        shutdown_startup_session(app_server.take(), &mut terminal_restore_guard)
+                            .await;
                         return Err(err.into());
                     }
                 };

@@ -3,15 +3,15 @@ use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::codex_thread::TryStartTurnIfIdleError;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
-use crate::features::Feature;
 use crate::state::ActiveTurn;
 use crate::state::TurnState;
 use crate::tasks::MailboxParentProvenance;
 use crate::tasks::RegularTask;
-use codex_protocol::config_types::ModeKind;
-use codex_protocol::models::ResponseItem;
+use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::models::ResponseItem;
 use std::sync::Arc;
 
 impl Session {
@@ -65,7 +65,7 @@ impl Session {
                 input
                     .into_iter()
                     .map(ResponseItemEnvelope::new)
-                    .map(PendingTurnInput::ResponseItem)
+                    .map(TurnInput::ResponseItem)
                     .collect(),
             )
             .await;
@@ -95,16 +95,20 @@ impl Session {
         if input.is_empty() {
             return Ok(());
         }
-        let has_user_input = input.iter().any(
-            |item| matches!(item, TurnInput::UserInput { content, .. } if !content.is_empty()),
-        );
+        let has_prompt_input = input.iter().any(|item| {
+            matches!(
+                item,
+                TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. }
+                    if !content.is_empty()
+            )
+        });
         if self.input_queue.has_trigger_turn_mailbox_items().await {
             return Err(TryStartTurnIfIdleError::new(
                 TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
                 input,
             ));
         }
-        if !has_user_input && self.collaboration_mode().await.mode == ModeKind::Plan {
+        if !has_prompt_input && self.collaboration_mode().await.mode == ModeKind::Plan {
             return Err(TryStartTurnIfIdleError::new(
                 TryStartTurnIfIdleRejectionReason::PlanMode,
                 input,
@@ -174,7 +178,7 @@ impl Session {
         let turn_context = self
             .new_turn_with_default_settings(uuid::Uuid::new_v4().to_string(), Default::default())
             .await;
-        if !has_user_input && turn_context.mode == ModeKind::Plan {
+        if !has_prompt_input && turn_context.mode() == ModeKind::Plan {
             self.clear_reserved_idle_turn(&turn_state).await;
             self.maybe_start_turn_for_pending_work().await;
             return Err(TryStartTurnIfIdleError::new(
@@ -206,7 +210,10 @@ impl Session {
             ));
         }
 
-        let task_input = if has_user_input {
+        let (input_persisted_sender, input_persisted_receiver) =
+            has_prompt_input.then(tokio::sync::oneshot::channel).unzip();
+        let original_input = input.clone();
+        let task_input = if has_prompt_input {
             self.clear_connector_selection().await;
             for item in &input {
                 if let TurnInput::UserInput { content, .. } = item {
@@ -224,13 +231,25 @@ impl Session {
             turn_context,
             task_input,
             RegularTask::new(),
+            input_persisted_sender,
             MailboxParentProvenance::Ignore,
         )
         .await;
+        if let Some(receiver) = input_persisted_receiver {
+            return receiver
+                .await
+                .unwrap_or(Err(
+                    TryStartTurnIfIdleRejectionReason::TaskEndedBeforePersistence,
+                ))
+                .map_err(|reason| TryStartTurnIfIdleError::new(reason, original_input));
+        }
         Ok(())
     }
 
-    async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
+    pub(super) async fn clear_reserved_idle_turn(
+        &self,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+    ) {
         let mut active_turn_guard = self.active_turn.lock().await;
         if let Some(active_turn) = active_turn_guard.as_ref()
             && active_turn.task.is_none()
@@ -239,35 +258,6 @@ impl Session {
             *active_turn_guard = None;
             self.active_turn_transition.notify_waiters();
         }
-    }
-
-    /// Preserves trusted client provenance while items wait for an active turn.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "active turn checks and turn state updates must remain atomic"
-    )]
-    pub(crate) async fn inject_client_response_items(
-        &self,
-        items: Vec<ResponseItem>,
-        turn_context: &TurnContext,
-    ) {
-        let items = items
-            .into_iter()
-            .map(|item| self.annotate_client_response_item(item))
-            .collect::<Vec<_>>();
-        let mut active = self.active_turn.lock().await;
-        if let Some(active_turn) = active.as_mut() {
-            self.input_queue
-                .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
-                    active_turn.turn_state.as_ref(),
-                    items.into_iter().map(TurnInput::ResponseItem).collect(),
-                )
-                .await;
-            return;
-        }
-        drop(active);
-        self.record_annotated_conversation_items(turn_context, items)
-            .await;
     }
 
     pub(crate) fn annotate_client_response_item(&self, item: ResponseItem) -> ResponseItemEnvelope {

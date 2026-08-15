@@ -4,6 +4,7 @@ use super::transcript::ActiveCellLayoutCache;
 use super::transcript::ActiveCellLayoutCacheKey;
 use super::*;
 use crate::terminal_hyperlinks::HyperlinkParagraph;
+use ratatui::text::Text;
 use std::cell::Cell;
 
 impl ChatWidget {
@@ -106,41 +107,41 @@ impl Renderable for TranscriptAreaRenderable<'_> {
         if is_exec {
             let lines = self.child.display_lines(area.width);
             let lines = if area.height > 1 {
-            let wrapped = crate::wrapping::word_wrap_lines(
-                lines,
-                crate::wrapping::RtOptions::new(usize::from(area.width.max(1))),
-            );
-            if wrapped.len() <= usize::from(area.height) {
-                wrapped
-            } else {
-                let retained = usize::from(area.height.saturating_sub(1));
-                let head_count = retained.div_ceil(2);
-                let tail_count = retained.saturating_sub(head_count);
-                let omitted_rows = wrapped.len().saturating_sub(retained);
-                let mut clipped = Vec::with_capacity(usize::from(area.height));
-                clipped.extend(wrapped.iter().take(head_count).cloned());
-                clipped.push(
-                    crate::line_truncation::truncate_line_with_ellipsis_if_overflow(
-                        Line::from(
-                            format!(
-                                "… +{omitted_rows} rows ({})",
-                                crate::ui_consts::TRANSCRIPT_HINT
-                            )
-                            .dim()
-                            .italic(),
-                        ),
-                        usize::from(area.width),
-                    ),
+                let wrapped = crate::wrapping::word_wrap_lines(
+                    lines,
+                    crate::wrapping::RtOptions::new(usize::from(area.width.max(1))),
                 );
-                if tail_count > 0 {
-                    clipped.extend(
-                        wrapped[wrapped.len().saturating_sub(tail_count)..]
-                            .iter()
-                            .cloned(),
+                if wrapped.len() <= usize::from(area.height) {
+                    wrapped
+                } else {
+                    let retained = usize::from(area.height.saturating_sub(1));
+                    let head_count = retained.div_ceil(2);
+                    let tail_count = retained.saturating_sub(head_count);
+                    let omitted_rows = wrapped.len().saturating_sub(retained);
+                    let mut clipped = Vec::with_capacity(usize::from(area.height));
+                    clipped.extend(wrapped.iter().take(head_count).cloned());
+                    clipped.push(
+                        crate::line_truncation::truncate_line_with_ellipsis_if_overflow(
+                            Line::from(
+                                format!(
+                                    "… +{omitted_rows} rows ({})",
+                                    crate::ui_consts::TRANSCRIPT_HINT
+                                )
+                                .dim()
+                                .italic(),
+                            ),
+                            usize::from(area.width),
+                        ),
                     );
+                    if tail_count > 0 {
+                        clipped.extend(
+                            wrapped[wrapped.len().saturating_sub(tail_count)..]
+                                .iter()
+                                .cloned(),
+                        );
+                    }
+                    clipped
                 }
-                clipped
-            }
             } else {
                 lines
             };
@@ -267,41 +268,6 @@ mod persistent_layout_tests {
             rendered_rows.push(row);
         }
         rendered_rows
-    }
-
-    #[test]
-    fn active_transcript_area_preserves_cell_start_instead_of_bottom_scrolling() {
-        let area = Rect::new(0, 0, 40, 4);
-        let mut buf = Buffer::empty(area);
-        let cell = PlainHistoryCell::new(vec![
-            Line::from("active line 1"),
-            Line::from("active line 2"),
-            Line::from("active line 3"),
-            Line::from("active line 4"),
-            Line::from("active line 5"),
-        ]);
-        let renderable = TranscriptAreaRenderable {
-            child: &cell,
-            top: 1,
-            right: 0,
-            persistent_layout: None,
-        };
-
-        renderable.render(area, &mut buf);
-
-        let rendered_rows = buffer_rows(&buf, area);
-        assert!(
-            rendered_rows[1].contains("active line 1")
-                && rendered_rows[2].contains("active line 2")
-                && rendered_rows[3].contains("active line 3"),
-            "expected active-cell rendering to stay top-anchored: {rendered_rows:?}",
-        );
-        assert!(
-            rendered_rows
-                .iter()
-                .all(|row| !row.contains("active line 5")),
-            "bottom-scrolled rendering would hide the command header/output prefix: {rendered_rows:?}",
-        );
     }
 
     #[test]

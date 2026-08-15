@@ -75,11 +75,11 @@ impl AgentTargetPopup {
     ) -> Self {
         let mut popup = Self {
             targets,
-            query: String::new(),
+            query: query.to_string(),
             scope,
             state: ScrollState::new(),
         };
-        popup.set_query(query);
+        popup.clamp_selection();
         popup
     }
 

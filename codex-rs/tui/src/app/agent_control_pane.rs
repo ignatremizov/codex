@@ -1,6 +1,7 @@
 //! Read-only detail panel for the `/agent` overview.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
@@ -136,7 +137,8 @@ impl App {
                 let is_external = agent_root_thread_id != Some(thread_id)
                     && agent_alias.is_none()
                     && self.agent_navigation.parent_thread_id(thread_id).is_none()
-                    && !self.side_threads.contains_key(&thread_id);
+                    && !self.side_threads.contains_key(&thread_id)
+                    && !self.thread_event_channels.contains_key(&thread_id);
                 let enter_action = if entry.is_closed || is_external || is_transferred {
                     AgentControlEnterAction::InspectTranscript
                 } else {
@@ -190,7 +192,7 @@ impl App {
                 let queued = self
                     .queued_agent_prompts
                     .get(&thread_id)
-                    .map_or(0, |queue| queue.len());
+                    .map_or(0, VecDeque::len);
                 let mut selected_description = vec![uuid.clone(), status.to_string()];
                 if queued > 0 {
                     selected_description.push(format!("{queued} queued"));
@@ -203,7 +205,7 @@ impl App {
                 let status_span = match status {
                     "running" => "running".green(),
                     "errored" => "errored".red(),
-                    "interrupted" => "interrupted".yellow(),
+                    "interrupted" => "interrupted".magenta(),
                     "closed" | "external" | "transferred" => status.dim(),
                     other => other.into(),
                 };
@@ -328,7 +330,7 @@ impl App {
                     .into(),
                 );
                 if has_pending_approval {
-                    detail_lines.push(vec!["Approval: ".bold(), "pending".yellow()].into());
+                    detail_lines.push(vec!["Approval: ".bold(), "pending".magenta()].into());
                 }
                 detail_lines.extend(["".into(), enter_action.hint().dim().into()]);
                 details.push(AgentControlPaneDetails::new(detail_lines));
@@ -344,7 +346,7 @@ impl App {
                 let search_value = [
                     agent_ref.map(|agent_ref| agent_ref.to_string()),
                     Some(name.clone()),
-                    Some(uuid.clone()),
+                    Some(uuid),
                     entry.agent_nickname.clone(),
                     entry.agent_role.clone(),
                     entry.agent_path.clone(),

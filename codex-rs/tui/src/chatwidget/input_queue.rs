@@ -38,8 +38,8 @@ pub(super) struct InputQueueState {
     pub(super) rejected_steer_history_records: VecDeque<UserMessageHistoryRecord>,
     /// Steers already submitted to core but not yet committed into history.
     pub(super) pending_steers: VecDeque<PendingSteer>,
-    /// When set, the next interrupt should resubmit all pending steers as one
-    /// fresh user turn instead of restoring them into the composer.
+    /// When set, Core will carry accepted steers into one continuation after
+    /// interrupt, so the TUI must retain their optimistic entries.
     pub(super) submit_pending_steers_after_interrupt: bool,
     pub(super) suppress_queue_autosend: bool,
     /// Hold submissions while a usage failure or backend-directed model fallback is resolved.

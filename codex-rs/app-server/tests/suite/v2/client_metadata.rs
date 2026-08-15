@@ -1,6 +1,7 @@
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
+use app_test_support::create_fake_parented_rollout_with_explicit_thread_id;
 use app_test_support::create_fake_parented_rollout_with_source;
 use app_test_support::create_fake_rollout;
 use codex_app_server_protocol::ReviewDelivery;
@@ -329,6 +330,18 @@ async fn turn_start_sends_nested_subagent_lineage_after_cold_thread_resume_v2() 
     let root_thread_id_str = root_thread_id.to_string();
     let parent_thread_id = CoreThreadId::new();
     let parent_thread_id_str = parent_thread_id.to_string();
+    create_fake_parented_rollout_with_explicit_thread_id(
+        codex_home.path(),
+        "2025-01-05T11-00-00",
+        "2025-01-05T11:00:00Z",
+        "Saved parent message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+        SessionSource::SubAgent(SubAgentSource::Other("parent".to_string())),
+        parent_thread_id,
+        root_thread_id.into(),
+        /*parent_thread_id*/ Some(root_thread_id),
+    )?;
     let subagent_thread_id = create_fake_parented_rollout_with_source(
         codex_home.path(),
         "2025-01-05T12-00-00",

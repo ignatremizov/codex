@@ -19,6 +19,177 @@ fn session_presentation_id(thread_id: ThreadId) -> SessionPresentationId {
     )
 }
 
+#[test]
+fn target_message_grant_allows_one_idle_wake_and_only_steers_that_wake_turn() {
+    let control = AgentControl::default();
+    let observer = session_presentation_id(ThreadId::new());
+    let target = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    assert!(
+        control
+            .target_message_admission(
+                observer,
+                target,
+                "target-turn",
+                Some("already-active"),
+                /*observer_last_terminal_turn_id*/ None,
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .is_err(),
+        "knowing a same-root target is not enough to send without an exact-turn grant"
+    );
+    let registration = control
+        .register_response_watcher_with_admission(
+            target,
+            observer,
+            &admission,
+            ResponseObservationPolicy::from_turn_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::None,
+                /*target_messages*/ true,
+                /*queue_input*/ false,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            Some("target-turn".to_string()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("target-message watcher");
+
+    assert_eq!(
+        control
+            .target_message_admission(
+                observer,
+                target,
+                "target-turn",
+                Some("already-active"),
+                /*observer_last_terminal_turn_id*/ None,
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .expect("active observer should accept a steer"),
+        TargetMessageAdmission::Steer
+    );
+    let TargetMessageAdmission::Wake(reservation_id) = control
+        .target_message_admission(
+            observer,
+            target,
+            "target-turn",
+            /*observer_active_turn_id*/ None,
+            /*observer_last_terminal_turn_id*/ None,
+            TargetMessageAdmissionMode::SteerOrWake,
+        )
+        .expect("idle observer should reserve its one wake")
+    else {
+        panic!("idle observer should reserve a wake");
+    };
+    assert_eq!(
+        control
+            .target_message_admission(
+                observer,
+                target,
+                "target-turn",
+                /*observer_active_turn_id*/ None,
+                /*observer_last_terminal_turn_id*/ None,
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .expect("concurrent sender should observe the pending reservation"),
+        TargetMessageAdmission::PendingWake
+    );
+    assert_eq!(
+        control
+            .target_message_admission(
+                observer,
+                target,
+                "target-turn",
+                Some("already-active"),
+                /*observer_last_terminal_turn_id*/ None,
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .expect("a reserved future wake must not block an active-turn steer"),
+        TargetMessageAdmission::Steer
+    );
+    assert!(control.commit_target_message_wake(
+        observer,
+        target,
+        "target-turn",
+        reservation_id,
+        "message-wake-turn",
+    ));
+    assert_eq!(
+        control
+            .target_message_admission(
+                observer,
+                target,
+                "target-turn",
+                Some("message-wake-turn"),
+                /*observer_last_terminal_turn_id*/ None,
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .expect("later messages should steer the same wake turn"),
+        TargetMessageAdmission::Steer
+    );
+    assert!(
+        control
+            .target_message_admission(
+                observer,
+                target,
+                "target-turn",
+                /*observer_active_turn_id*/ None,
+                Some("message-wake-turn"),
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .is_err(),
+        "the grant must not start another turn after its wake completes"
+    );
+
+    control.finish_target_message_wake(observer, "message-wake-turn");
+    assert!(
+        control
+            .target_message_admission(
+                observer,
+                target,
+                "target-turn",
+                /*observer_active_turn_id*/ None,
+                Some("message-wake-turn"),
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .is_err(),
+        "finishing the wake should revoke the live reply route"
+    );
+
+    drop(registration);
+    let _renewed_registration = control
+        .register_response_watcher_with_admission(
+            target,
+            observer,
+            &admission,
+            ResponseObservationPolicy::from_turn_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::None,
+                /*target_messages*/ true,
+                /*queue_input*/ false,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            Some("target-turn".to_string()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("renewed target-message watcher");
+    assert!(matches!(
+        control
+            .target_message_admission(
+                observer,
+                target,
+                "target-turn",
+                /*observer_active_turn_id*/ None,
+                Some("message-wake-turn"),
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .expect("a new explicit m dispatch should renew the route"),
+        TargetMessageAdmission::Wake(_)
+    ));
+}
+
 #[tokio::test]
 async fn active_targeted_wait_commits_terminal_presentation() {
     let control = AgentControl::default();
@@ -1393,15 +1564,15 @@ fn explicit_user_observation_promotes_hidden_task_preview_from_the_replaced_turn
         /*target_turn_id*/ None,
         task_preview,
     );
-    control.bind_response_observation_turn_at_sequence(
+    control.bind_response_observation_turn_at_sequence(ResponseObservationTurnBinding {
         parent,
         child,
-        "older-turn",
-        ResponseObservationBinding::NextTurn,
-        /*commentary_boundary*/ None,
-        /*task_preview*/ None,
-        ResponseObservationBindingPublication::Immediate,
-    );
+        turn_id: "older-turn",
+        binding: ResponseObservationBinding::NextTurn,
+        commentary_boundary: None,
+        task_preview: None,
+        publication: ResponseObservationBindingPublication::Immediate,
+    });
 
     assert_eq!(
         control.replace_final_response_observation(
@@ -1452,7 +1623,8 @@ fn explicit_user_observation_cannot_replace_claimed_final_delivery() {
         ),
         (
             FinalResponseObservation::Wake,
-            Some(response_item_id.clone())
+            Some(response_item_id.clone()),
+            false,
         )
     );
 
@@ -1665,15 +1837,18 @@ async fn idle_turn_reservation_rechecks_a_wake_bound_after_idle_detection() {
     let automatic_session = Arc::clone(&session);
     let automatic_turn = tokio::spawn(async move {
         automatic_session
-            .try_start_turn_if_idle(vec![TurnInput::ResponseItem(ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "continue active goal".to_string(),
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            })])
+            .try_start_turn_if_idle(vec![TurnInput::ResponseItem(
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "continue active goal".to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            )])
             .await
     });
 
@@ -1714,6 +1889,9 @@ async fn idle_turn_reservation_rechecks_a_wake_bound_after_idle_detection() {
                 commentary_after_sequences: Vec::new(),
                 commentary_admissions: Vec::new(),
                 commentary_delivery: None,
+                target_messages: false,
+                queue_delivery: false,
+                message_wake_turn_id: None,
                 baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
                 final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::Wake,
                 final_delivery_response_item_id: None,
@@ -1766,6 +1944,46 @@ async fn permanent_watcher_teardown_revokes_its_bound_wake() {
 }
 
 #[test]
+fn queued_turn_observation_retains_queued_source_delivery() {
+    let control = AgentControl::default();
+    let parent = session_presentation_id(ThreadId::new());
+    let child = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    let _registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::from_turn_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::Passive,
+                /*target_messages*/ false,
+                /*queue_input*/ true,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            Some("turn-1".to_string()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("watcher registration");
+    let response_item_id = codex_protocol::ResponseItemId::new("msg");
+
+    assert_eq!(
+        control.prepare_final_response_observation_delivery(
+            parent,
+            child,
+            "turn-1",
+            &response_item_id,
+        ),
+        (
+            FinalResponseObservation::Passive,
+            Some(response_item_id),
+            true,
+        )
+    );
+}
+
+#[test]
 fn fire_and_forget_audit_snapshot_records_canonical_target_without_a_watcher() {
     let control = AgentControl::default();
     let parent = session_presentation_id(ThreadId::new());
@@ -1786,6 +2004,9 @@ fn fire_and_forget_audit_snapshot_records_canonical_target_without_a_watcher() {
             commentary_after_sequences: Vec::new(),
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
+            target_messages: false,
+            queue_delivery: false,
+            message_wake_turn_id: None,
             baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery_response_item_id: None,

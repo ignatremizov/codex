@@ -1,45 +1,56 @@
-# Multi-agent v1 response observation
+# Multi-agent v1 turn coordination and response observation
 
-Status: implemented in this fork
+Status: `c`, `f`, `m`, `q`, and `x` are implemented in this fork.
 
 Related proposal: [Multi-agent v1 short targets](multi-agent-v1-short-targets.md)
 
 ## Summary
 
-Multi-agent v1 should give `spawn_agent`, `send_input`, and `resume_agent` the same compact optional
-response-observation field. The field lets the observer request the target's first commentary
-response, wake when the target turn finishes, or explicitly avoid subscribing to that final
-response.
+Multi-agent v1 gives `spawn_agent`, `send_input`, and `resume_agent` the same compact optional
+target-turn policy field. The field lets the caller request the target's first commentary response,
+wake when the target turn finishes, explicitly avoid subscribing to that final response, grant the
+target a scoped reverse-message route, or queue input and its final reply across distinct turn
+boundaries. `close_agent` accepts the same field for retrospective handling of a completed response;
+`c` and `m` are inert there because close starts no target turn.
 
-The proposed model-facing flags are:
+The model-facing flags are:
 
 - `c`: observe the first subsequent commentary response.
 - `f`: observe the target turn's final response and wake the sender if it is idle.
+- `m`: let the target send attributed input back to the caller during that exact target turn.
+- `q`: queue supplied input as a distinct next target turn and its final reply as source next-turn
+  input.
 - `x`: keep the final response in the transcript without adding it to model context.
 
 The field is additive. Omitting it preserves each tool's current behavior for the selected target
 turn: the final response is delivered passively, but it does not wake an idle observer.
 
 This is a compatible v1 extension, not a new multi-agent v3 contract. It keeps the existing
-lifecycle tools, `wait_agent`, canonical thread UUIDs, and active-turn steering behavior. A mailbox
-or observation registry may implement the behavior internally without becoming another
-model-facing communication API.
+lifecycle tools, `wait_agent`, canonical thread UUIDs, and default active-turn steering behavior.
+It adds no second model-facing message or task API: `send_input` remains the single operation for
+immediate, queued, parent, child, and sibling input.
 
 ## Implementation
 
 The implementation keeps the wire policy, runtime observation state, and durable audit and
 delivery state separate:
 
-- `core/src/agent/response_observation.rs` parses the shared `w` field into a named policy.
+- `core/src/agent/response_observation.rs` parses the shared `w` field into a named target-turn
+  policy whose response observation, reverse-message capability, and input admission are separate
+  typed parts.
 - `core/src/agent/control/presentation/response_observation/` owns the per-observer aggregate,
   turn binding, stable delivery identities, wait ownership, and durable snapshots.
 - `core/src/session/response_observation/` publishes only complete commentary items and final
   response events, resolves input admission to an exact target turn, and reconstructs target
   response state for live watcher replacement.
-- V1 `send_input` forwards its task payload unchanged as `UserInput`. Direct inter-agent replies
-  remain an explicit workflow in which the target UUID is supplied in orchestration context;
-  routine acknowledgements and results use commentary and final-response observation without
-  injecting sender UUIDs into target context.
+- Parent-to-descendant V1 `send_input` without `m` forwards its task payload unchanged as
+  `UserInput`, preserving the current non-attributed delegation contract. `m` adds a model-visible,
+  source-relative reply route for the exact admitted target turn. Upward and peer input must use
+  such a live route; accepted messages become attributed agent communication rather than fabricated
+  user input.
+- `q` stores complete structured input and its target-turn policy in one process-lifetime FIFO.
+  Admission to the target, response observation, and any `m` grant occur together only when that
+  queued entry starts its own turn.
 - The TUI reserves `Main [default]` metadata for its primary thread, so child-side send and
   commentary rows remain readable even when app-server events carry only the parent's UUID.
 - Core treats a bound `f` wake as pending automatic work when deciding whether to emit the
@@ -81,10 +92,9 @@ thread, user, rollout, or another observer. When an explicit `wait_agent` owns t
 model-visible `Finished waiting` result owns presentation instead of emitting a duplicate
 completion row.
 
-V1 currently accepts full thread UUIDs as lifecycle targets. The names in prose examples are
-descriptive labels only; nickname or compact-reference input remains owned by the parallel
-short-target proposal. Observation registration happens only after the current V1 parser has
-resolved the full UUID.
+V1 accepts root-scoped refs, persisted nicknames, and full thread UUIDs as lifecycle targets.
+Observation, queue, and message-grant registration happens only after the shared resolver has
+produced a canonical UUID.
 
 Successful child final responses are intentionally delivered in full. They are product-authored
 agent context, like retained compaction content, and are not subject to the error-message
@@ -96,7 +106,7 @@ than bulk output. Error payloads may still use the existing bounded error render
 
 V1 can already send several instructions to one running agent, and a completion can arrive in a
 parent's active model turn without an explicit `wait_agent`. The current contract still leaves
-three gaps:
+five gaps:
 
 1. The sender cannot request the target's useful first commentary response. This is important when
    the response acknowledges, interprets, or questions a steer before the target eventually
@@ -106,13 +116,18 @@ three gaps:
 3. The sender cannot state that a message is informational and that the target's eventual,
    potentially unrelated final response should remain user-visible without being injected into
    the sender's model context.
+4. A target cannot ask its caller a mid-turn question unless orchestration manually reveals a
+   canonical UUID. Automatically exposing every sender would silently add a general continuation
+   capability, while continuing to hide every sender prevents deliberate peer coordination.
+5. A second instruction to a busy target always steers its active turn. The caller cannot state
+   that the instruction is a separate FIFO task with its own response policy.
 
 These gaps encourage unnecessary `wait_agent` polling and make sibling communication awkward.
 V2 addresses related concerns with separate message, follow-up-task, wait, and mailbox concepts,
 but that splits sending and response observation across a larger model-facing contract.
 
 V1 can express the useful behavior by keeping one sending operation and adding a compact
-observation policy.
+target-turn policy.
 
 The primary `x` workflow is child-to-parent coordination during a long child turn. A child can send
 an important scope, contract, or implementation update to its parent immediately without
@@ -134,6 +149,10 @@ strictly one-way.
 - Let a sender receive the first coherent commentary response to a steer.
 - Let a target-turn final observation survive the sender completing or starting other turns.
 - Let informational messages avoid adding an unsolicited final response to model context.
+- Let a caller deliberately open a bounded, attributed target-to-caller message route without
+  making sender discovery an ambient V1 capability.
+- Let a caller queue several distinct turns for one agent without steering or conflating their
+  response policies.
 - Keep explicit `wait_agent` useful for deadlines, multi-target waits, and late inspection.
 - Support multiple observers of the same target turn independently.
 - Preserve complete TUI, transcript, and rollout auditability even when model delivery is
@@ -151,39 +170,37 @@ strictly one-way.
 - Treating `x` as an unsubscribe or cancellation operation.
 - Allowing a later informational steer to cancel an earlier requested final wake.
 - Hiding agent activity from the user, transcript, rollout, or client APIs.
+- Treating thread UUID knowledge as authority to use a scoped `m` reply route.
+- Restoring queued work or live reverse-message grants across shutdown, cold resume, or fork.
+- Allowing one `m` grant to start an unbounded sequence of caller turns.
 
-## Proposed tool field
+## Tool field
 
-The JSON tool schemas for `spawn_agent`, `send_input`, and `resume_agent` should add the same
-optional compact string field. Its wire name is `w`. `send_input.w` carries the full process-focused
-guidance; `spawn_agent.w` and `resume_agent.w` refer to it rather than repeating the same text in
-model context. The schema intentionally leaves `w` as a string instead of enumerating values.
-Runtime parsing remains authoritative for accepted values and model-visible validation errors.
+The JSON tool schemas for `spawn_agent`, `send_input`, and `resume_agent` use the same optional
+compact string field. Its wire name remains `w`: the field describes wake and event handling for
+one target turn, including how that turn is admitted and whether it receives a reverse-message
+route. `send_input.w` carries the full process-focused guidance; `spawn_agent.w` and
+`resume_agent.w` refer to it rather than repeating the same text in model context. The schema
+intentionally leaves `w` as a string instead of enumerating every combination. Runtime parsing
+remains authoritative for accepted values and model-visible validation errors.
 
-The examples in this proposal use full UUIDs because that is the targeting syntax V1 currently
-accepts. Persisted nicknames may replace them if the parallel short-target proposal is implemented:
+Examples may use full UUIDs when canonical identity matters. V1 also accepts durable root-scoped
+refs and nicknames, so routine calls can use shorter targets:
 
 ```json
 {
-  "target": "019faa07-aa3d-78d3-9eca-66cd8626adad",
+  "target": "2",
   "message": "Implement spec 123.",
-  "w": "cf"
+  "w": "fm"
 }
 ```
 
 The schema description should explain the flags in full, while model-authored calls pay only for
 the compact field and characters.
 
-Accepted canonical values are:
-
-- `c`
-- `f`
-- `cf`
-- `x`
-- `cx`
-- `fx`
-- `cfx`
-
+Accepted flags are `c`, `f`, `m`, `q`, and `x`. A value contains each selected flag at most once in
+canonical `cfmqx` order. Existing values such as `c`, `f`, `cf`, `x`, `cx`, `fx`, and `cfx`
+therefore remain valid, while new values include `m`, `q`, `fm`, `fq`, `mq`, `cfm`, and `cfmq`.
 The field should be omitted for the default mode. Unknown characters, duplicates, and noncanonical
 ordering should produce a model-visible validation error rather than being silently ignored.
 
@@ -192,11 +209,14 @@ characters or positional booleans through the implementation.
 
 All three tools should route through the same observation-policy parser and registry:
 
-- `spawn_agent.w` observes the spawned agent's initial turn.
-- `send_input.w` observes the target turn that accepts the input.
+- `spawn_agent.w` applies to the spawned agent's initial turn. A new target is already idle, so `q`
+  naturally admits the initial input immediately.
+- `send_input.w` applies to the target turn that accepts the input. Without `q`, an active target is
+  steered. With `q`, the complete input waits for its own FIFO turn.
 - `resume_agent.w` observes the target's active turn, or its next turn if the resumed target is
   currently idle or already completed and the policy requests commentary or model delivery. A
-  bare `x` returns the synchronous status without retaining a next-turn observer.
+  bare `x` returns the synchronous status without retaining a next-turn observer. Because resume
+  carries no input, `q` only confirms next-turn binding and does not create queued work.
 
 The synchronous tool result remains available regardless of `w`. For example, `resume_agent` may
 return the saved result of a previously completed turn; `x` controls future event delivery and
@@ -204,7 +224,18 @@ does not erase that direct tool response.
 
 ## Per-call semantics
 
-Each accepted call contributes a commentary request and a final-delivery disposition:
+Each accepted call independently selects four policy axes:
+
+| Flag | Policy axis | Effect |
+| --- | --- | --- |
+| `c` | Commentary | Deliver the first subsequent complete commentary item. |
+| `f` | Final response | Upgrade passive final delivery to one automatic caller wake. |
+| `m` | Reverse messages | Give the target turn an attributed route back to the caller, with at most one idle wake. |
+| `q` | Turn boundaries | Queue supplied input for a distinct FIFO target turn and queue its final reply for the source's next turn. |
+| `x` | Final response | Keep the final response presentation-only unless another call already requested stronger delivery. |
+
+Omitted flags mean no commentary, passive final delivery, no reverse route, and immediate admission
+that steers an active target. The familiar response-only combinations retain their behavior:
 
 | `w` value | Commentary | Final disposition |
 | --- | --- | --- |
@@ -277,6 +308,130 @@ rather than forwarding all commentary by default. It also supports observing the
 item: the immediate acknowledgement sometimes enables course correction, while later progress
 messages are usually noise.
 
+## Scoped reverse messages
+
+`m` grants the target of one accepted call a reply capability to that call's source. It is an
+explicit promotion of V1 inter-agent communication, not a different presentation mode:
+
+- The target receives source attribution and a compact source-relative selector only after the
+  grant binds to its exact target turn.
+- The route authorizes `send_input` to that source. Knowledge of the source UUID alone does not
+  create or extend the grant.
+- A reverse message is attributed agent input. It must render as `<agent> sends:` in the source TUI
+  and persist as agent communication rather than appearing as genuine user input.
+- The reverse `send_input` call has its own `w` policy. `cx` is the common target-to-caller choice:
+  the target receives the caller's first acknowledgement but does not subscribe to the caller's
+  unrelated final response.
+
+When the source has an active turn, accepted reverse messages steer that turn. When it is idle, the
+first accepted reverse message may start one wake turn. Further messages from the same grant may
+steer that exact wake turn while it remains active, but they cannot start another source turn after
+it finishes. This one-idle-wake allowance closes the useful coordination loop without making one
+grant a renewable heartbeat.
+
+The grant is directional and does not propagate. Receiving an attributed message does not grant
+the source a new route, mint a sibling capability, or renew the target's existing route. A parent,
+peer, or user must explicitly include `m` on another dispatch to establish another target-turn
+grant.
+
+Core carries attributed input through a distinct internal admission type. The model receives the
+structured `<agent_message>` envelope and any attachments, while the rollout records a separately
+identified agent-message presentation for transcript and TUI projection. Clients must not promote
+ordinary user text merely because it resembles that envelope.
+The explicitly promoted payload is preserved in full, matching successful child-completion
+delivery.
+
+The grant ends when any of these occurs:
+
+- the granted target turn reaches a terminal state;
+- the one source wake turn finishes;
+- source or target is explicitly closed;
+- source or target ownership changes;
+- the live process shuts down, or either thread is cold-resumed or forked.
+
+Lifecycle and response-observation cleanup must revoke the exact grant generation without deleting
+a newer grant for the same thread IDs. TUI and rollout audit state should retain who granted the
+route, its target turn, whether its idle wake was consumed, and every attributed message, but cold
+reconstruction must not reactivate it.
+
+`m` does not expose `resume_agent`, `close_agent`, spawn, or ownership-transfer authority over the
+source. It authorizes only attributed input through `send_input`. Existing parent-to-child
+orchestration remains controlled by the graph owner; upward or peer input that relies on the
+promoted reply route must pass the live grant check.
+
+## Queued target turns and replies
+
+`q` queues both boundaries of an exchange. A `send_input` call with `q` against an active target
+appends the complete structured input and its `c`/`f`/`m`/`x` policy to that target's
+process-lifetime FIFO. It does not steer the active target turn. When the target is idle at
+admission, the input starts immediately because it is already the next distinct turn.
+
+The admitted target turn's final reply enters the source's ordinary next-turn input queue instead
+of steering source work that is still active. If the source is idle, that queued reply starts its
+next turn immediately. Otherwise it waits until the current source turn ends, matching user Tab
+queue behavior. This reply boundary applies with omitted/passive handling as well as `f`; `x`
+remains presentation-only and therefore has no model-visible reply to queue.
+
+Each queued entry is independent. For example:
+
+```json
+{"target":"reviewer","message":"Review the authorization boundary.","w":"fq"}
+```
+
+```json
+{"target":"reviewer","message":"Next, review cancellation and rollback behavior.","w":"fmq"}
+```
+
+If the reviewer is already active, the first entry waits for its own turn and the second follows it.
+Each final response is bound independently, and only the second future target turn receives the
+reverse-message grant. Replies that become ready before the same source boundary may share one
+next source turn, in delivery order, just like multiple queued user inputs.
+
+Queue ordering and response binding use these rules:
+
+- Entries start one at a time in FIFO order.
+- An entry's response observation and `m` route bind only after that entry wins exact target-turn
+  admission; they never attach to the turn that was active when it was queued.
+- The existing `turn/started` event carries the admitted queue entry ID, source thread, and
+  committed `c`/`f`/`m`/`q`/`x` policy for that queue entry. Clients promote any pending next-turn
+  observation and merge the queue entry's policy from that one lifecycle event; there is no
+  separate queue-start notification.
+- Core withholds the queue entry's handling until the source-side observation state and task
+  linkage commit. If either degrades after target input admission, the turn still carries queue
+  provenance, its entry handling is absent, and the source receives the post-admission warning.
+- Queued turn-start publication is a tracked startup boundary. Interrupting the target may cancel
+  ordinary work immediately, but forced abort waits for this boundary to publish the admitted input
+  and queue provenance before ending the turn.
+- A response policy already reserved for the target's next turn is consumed by the queued turn and
+  combines with the queue entry under the normal observation rules. In particular, an earlier
+  pending `f` continues to win over a later queued `x` for that turn.
+- Target completion racing queue insertion either starts the entry immediately or leaves it queued
+  for the same next-turn slot, never both.
+- Later immediate input may steer currently active work but cannot overtake a queued entry at an
+  idle-turn boundary.
+- `q` starts a source turn for the queued final reply after any current source turn ends. Adding
+  `f` keeps the intent explicit but does not turn the reply into an active-turn steer. Calling
+  `wait_agent` before that entry starts can observe the preceding target turn instead.
+- A reverse `q` message consumes the grant's one future wake. While it remains queued, another
+  non-`q` message may still steer a source turn that is already active, but cannot reserve a
+  competing idle wake.
+- Interrupting active work leaves queued entries intact. Explicitly closing the target cancels its
+  pending entries; closing the source cancels entries that source authored.
+- A later admission failure, or response handling that degrades after input admission, emits a
+  source-thread warning. Already-admitted input is never retried.
+- Queue state is visible to the user and source transcript while live, but remains process-local
+  until an entry becomes durable target input. Shutdown, cold resume, and fork do not replay
+  unadmitted entries.
+
+`q` is meaningful on calls that carry input. A prompted spawn already has an idle target and
+therefore starts immediately, but its final reply still waits for the source's next-turn boundary.
+`resume_agent` carries no input, so `q` merely preserves next-turn binding for the other selected
+flags; it does not manufacture an empty queue entry.
+
+The user-facing `/agent queue` command and model-facing `send_input(..., w:"q")` must use the same
+target-owned FIFO and lifecycle boundary. Maintaining independent TUI and model queues would make
+ordering, cancellation, inspection, and race behavior depend on which client authored the entry.
+
 ## Live durable target-turn observations
 
 Final observation is aggregated over:
@@ -304,13 +459,28 @@ requested delivery is durably handled. A later turn started directly in the targ
 delivered to the old observer. The observer must use a new `spawn_agent`, `send_input`, or
 `resume_agent` call to observe that later work.
 
-Explicit `close_agent` revokes any still-pending presentation-only, passive, or wake observation
-for the closed target and its live descendants across every live observer. Shutdown therefore
-cannot deliver a queued final response or silently recover an old V1 watcher. Child publication
-and reopening serialize with the direct parent's close boundary, preventing a late child runtime
-from remaining beneath a closed parent. The same close rule applies when the target uses the v2
-orchestration path. Revocation also removes any still-unclaimed completion-context authorization
-owned by the closed child, so a queued wake cannot become model-visible after close supersedes it.
+Explicit `close_agent` revokes any still-pending presentation-only, passive, or wake observation,
+reverse-message grant, and unadmitted queued input for the closed target and its live descendants
+across every live observer. Shutdown therefore cannot deliver a queued final response, admit stale
+queued work, or silently recover an old V1 watcher. Child publication and reopening serialize with
+the direct parent's close boundary, preventing a late child runtime from remaining beneath a
+closed parent. The same close rule applies when the target uses the v2 orchestration path.
+Revocation also removes any still-unclaimed completion-context authorization owned by the closed
+child, so a queued wake cannot become model-visible after close supersedes it.
+
+Close response replay is a new explicit delivery after that revocation, not restoration of the old
+observer. For a completed target, omitted handling passively replays the exact final response only
+when it is absent from the source's effective model history. `f` wakes for that replay, `q` queues
+it for the source's next turn, and `x` suppresses model-visible replay. When a source-visible target
+identity and exact completed status remain in effective history through a structured `wait_agent`
+result or canonical automatic-delivery envelope, close omits the duplicate. Prose mentions and
+compaction summaries do not count as delivery receipts, so a replacement boundary permits exact
+replay. An exact completion already pending in the source mailbox or next-turn queue also
+suppresses a second replay. Non-completed lifecycle states have no final response for these flags
+to affect. User-authored `/agent close` retains the source session's native V1 or V2 completion
+envelope. Replay remains a live-session operation, like the process-lifetime user queue; an
+unconsumed replay is not reconstructed after process shutdown, and the target rollout remains
+available for explicit resume.
 
 `resume_agent` and `close_agent` reject the caller's own thread UUID before changing observation or
 lifecycle state. Resuming the current runtime is meaningless, while closing it from its own tool
@@ -380,6 +550,15 @@ For `send_input`, admission-time binding matters when:
 
 The observation registry should use the resolved target turn ID returned by admission. It must
 not guess from a status snapshot taken before submission.
+
+Queued admission binds both the queue entry's policy and any existing next-turn reservation in the
+source-side observation transaction before allowing the target to publish `TurnStarted`. The
+reservation is therefore consumed for that exact turn even if the target cannot persist its
+turn-start event. If an interrupt arrives while that binding is pending, the target still records
+the queued prompt and every steer already admitted to the turn before publishing `TurnAborted`.
+If the queue entry's new response policy or task context degrades after admission, compensation
+removes only that entry's contribution; the older durable reservation remains bound to the exact
+turn.
 
 Admission to a still-active regular turn is also a commitment to sample that input. If the task
 has already made its last pending-input check but has not yet atomically detached from the active
@@ -528,7 +707,10 @@ This enables pair workflows without explicit polling:
 
 - A backend and frontend coder can exchange interpretation updates with `c`.
 - A supervisor can request a final report with `f`.
-- A coder can send an informational update to a supervisor with `x`.
+- A supervisor can grant a coder an exact-turn route with `m`; the coder can send an informational
+  update back with `x` or request one acknowledgement with `cx`.
+- An orchestrator can queue several independent review lenses with `q` while keeping each result
+  bound to its own target turn.
 - A user-resumed coder can observe a delegated reviewer while the supervisor independently
   validates the same review.
 
@@ -645,8 +827,8 @@ Regardless of `w`:
 - The target input remains in the target rollout.
 - The canonical collaboration tool item records the resolved sender and receiver UUIDs.
 - V1 spawn, input, and resume items record whether the effective policy receives first commentary
-  and wakes on completion; app-server exposes these as `observeCommentary` and
-  `wakeOnCompletion`, and the TUI states both decisions.
+  and wakes on completion, whether it grants reverse messages, and whether supplied input was
+  queued; app-server and the TUI expose each decision independently.
 - Commentary and final responses remain available to the user through the target transcript.
 - Completion status remains visible through agent inspection.
 - TUI presentation must not imply that an `x` completion was delivered to the observer model.
@@ -698,9 +880,10 @@ that previously referred to that identity.
 
 This is a v1 extension.
 
-V2 may reuse the same internal observation registry, mailbox storage, delivery deduplication, and
-target-turn binding. Its existing `send_message`, `followup_task`, and wait schemas need not change
-as part of this proposal.
+V2 should reuse the same observation registry, target-owned queue, message-grant state, delivery
+deduplication, and target-turn binding. Its existing `send_message` and `followup_task` operations
+may adapt to the shared machinery internally; they must not create a second queue or bypass the
+one-wake `m` boundary when V1 and V2 agents share one graph.
 
 A v3 would be justified only by intentionally replacing both public tool sets with a new
 orchestration contract. Adding an optional, backward-compatible response policy to V1 does not
@@ -764,13 +947,13 @@ boundary.
 The tool description should convey these rules concisely:
 
 ```text
-Optional response handling for target agent turn. Omit for normal passive delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically. Continue parallel work, or finish your current turn to wait; completion wakes you when idle. f and wait_agent are alternatives for same target turn. x: do not subscribe this call to final reply; use to notify parent mid-turn so parent's later completion is not injected into current task. Can combine as cf or cx.
+Optional target-turn handling. Omit for passive final delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. m: let target send attributed input back during this turn; at most one message may wake you when idle, and later messages only steer that wake turn. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags may combine in cfmqx order.
 ```
 
 `spawn_agent.w` and `resume_agent.w` use:
 
 ```text
-Same response handling as send_input.w.
+Same target-turn handling as send_input.w.
 ```
 
 Examples:
@@ -800,6 +983,18 @@ Examples:
 ```
 
 ```json
+{"target":"reviewer","message":"Review the authorization boundary and ask me if the intended policy is ambiguous.","w":"fm"}
+```
+
+```json
+{"target":"reviewer","message":"After that, review cancellation and rollback behavior.","w":"fq"}
+```
+
+```json
+{"target":"main","message":"The API needs one product decision before I can continue.","w":"cx"}
+```
+
+```json
 {"id":"019faa07-aa3d-78d3-9eca-66cd8626adad","w":"cf"}
 ```
 
@@ -816,6 +1011,31 @@ Implementation should cover:
 - `c` waiting for the first complete commentary item rather than forwarding streaming fragments.
 - Several pending `c` requests being satisfied by one commentary without duplicate injection.
 - `c` injecting into an active observer and waking an idle observer.
+- `m` exposing an attributed source-relative reply target only for the exact admitted target turn.
+- A target without `m` being unable to infer authority from a known source UUID.
+- An `m` target steering an active source, waking an idle source once, steering that exact wake
+  turn again, and being unable to start a second source turn.
+- Reverse messages persisting and rendering with sender attribution rather than as user input.
+- A reverse `send_input` applying its own `c`/`f`/`x` policy independently of the grant that
+  authorized it.
+- Target completion, source or target close, ownership transfer, shutdown, cold resume, and fork
+  revoking live `m` authority without deleting newer grants or historical audit.
+- A received reverse message not creating or renewing another communication grant.
+- `q` against an active target returning promptly without steering that turn, then starting one
+  distinct FIFO turn after completion.
+- `q` against an idle target starting immediately.
+- A queued target turn's model-visible final response entering the source's next-turn queue rather
+  than steering active source work.
+- Several queued entries preserving FIFO order and binding their own response and `m` policies only
+  to the turns they start.
+- Queue insertion racing target completion admitting each entry exactly once without allowing later
+  immediate input to overtake the reserved idle-turn boundary.
+- Interrupt preserving queued work, while source close, target close, shutdown, cold resume, and
+  fork discard unadmitted entries.
+- User `/agent queue` and model `w:q` sharing one inspectable target-owned queue.
+- Close replay suppressing a completion still present in effective model history, restoring one
+  removed by replacement history, and honoring passive, wake, queued, and presentation-only
+  handling.
 - A pending `c` or `f` mailbox delivery not blocking the observer from closing the same target
   before that delivery reaches the next model-input boundary, while preserving the response that
   already won admission.
@@ -913,6 +1133,12 @@ Implementation should cover:
   instead of repeating an enum in every model-visible schema.
 - Apply the same policy to `spawn_agent`, `send_input`, and `resume_agent`; do not retain separate
   implicit listener implementations when the shared observation mechanism can express them.
+- Keep response observation, reverse-message authority, and input admission as separate typed
+  policy axes even though model calls encode them in one compact string.
+- Treat `m` as a one-target-turn capability with one idle source wake, not as passive delivery or a
+  permanent graph subscription.
+- Treat `q` as next-turn input admission. Reuse the user `/agent queue` FIFO rather than maintaining
+  transport-specific queues.
 - Expose only the first complete commentary item. Streaming commentary and additional progress
   modes are outside the initial contract.
 - Treat an explicit any/all mode for multi-target `wait_agent` as useful follow-up work rather

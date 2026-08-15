@@ -1026,6 +1026,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 TurnStartedNotification {
                     thread_id: response.review_thread_id.clone(),
                     turn: response.turn.clone(),
+                    agent_queue: None,
                 },
             ));
             let task_id = response.turn.id;

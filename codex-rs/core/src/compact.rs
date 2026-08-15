@@ -819,10 +819,8 @@ fn build_compacted_history_preserving_mcp_context(
     summary_text: &str,
     max_tokens: usize,
 ) -> Vec<ResponseItemEnvelope> {
-    let retained_history = collect_annotated_mcp_and_recent_user_items_with_limit(
-        history_items,
-        max_tokens,
-    );
+    let retained_history =
+        collect_annotated_mcp_and_recent_user_items_with_limit(history_items, max_tokens);
     build_compacted_history_with_limit(retained_history, &[], summary_text, 0)
 }
 
@@ -837,8 +835,7 @@ fn build_local_compacted_history(
         .iter()
         .map(|envelope| envelope.item.clone())
         .collect::<Vec<_>>();
-    let _ =
-        crate::context::sanitize_compacted_media_prefix(&mut raw_items, compacted_prefix_len);
+    let _ = crate::context::sanitize_compacted_media_prefix(&mut raw_items, compacted_prefix_len);
     crate::context::expire_compacted_media_references(&mut raw_items[..compacted_prefix_len]);
     let _ = crate::context::sanitize_compacted_media(&mut raw_items[compacted_prefix_len..]);
     for (envelope, item) in replacement_history_items.iter_mut().zip(raw_items) {
@@ -869,9 +866,7 @@ fn build_local_compacted_history(
         let insertion_index = compacted_history.len().saturating_sub(1);
         compacted_history.insert(
             insertion_index,
-            ResponseItemEnvelope::new(standalone_compacted_image_omission_message(
-                omission_text,
-            )),
+            ResponseItemEnvelope::new(standalone_compacted_image_omission_message(omission_text)),
         );
     }
     compacted_history
@@ -999,39 +994,6 @@ pub(crate) fn collect_annotated_mcp_server_use_context_items(
         .collect()
 }
 
-pub(crate) fn preserve_mcp_server_use_context_items(
-    history: Vec<ResponseItem>,
-    additional_history_items: &[ResponseItem],
-) -> Vec<ResponseItem> {
-    if history.iter().any(is_mcp_server_use_context_item) {
-        return history;
-    }
-
-    let mcp_context = collect_mcp_server_use_context_items(additional_history_items);
-    if mcp_context.is_empty() {
-        return history;
-    }
-
-    // Replacement histories built by current compaction paths carry MCP-use blocks explicitly.
-    // This fallback only preserves blocks for older/foreign compactors that omitted them; it never
-    // dedupes or rewrites an existing replacement history.
-    insert_context_items_at_compaction_boundary(history, mcp_context)
-}
-
-pub(crate) fn preserve_promoted_skills_inventory_item(
-    history: Vec<ResponseItem>,
-    additional_history_items: &[ResponseItem],
-) -> Vec<ResponseItem> {
-    if promoted_skills_inventory_text(&history).is_some() {
-        return history;
-    }
-    let inventory = promoted_skills_inventory_text(additional_history_items)
-        .map(developer_message_item)
-        .into_iter()
-        .collect();
-    insert_context_items_at_compaction_boundary(history, inventory)
-}
-
 pub(crate) fn preserve_annotated_promoted_skills_inventory_item(
     history: Vec<ResponseItemEnvelope>,
     additional_history_items: &[ResponseItemEnvelope],
@@ -1078,16 +1040,6 @@ fn promoted_skills_inventory_text(items: &[ResponseItem]) -> Option<String> {
     None
 }
 
-fn developer_message_item(text: String) -> ResponseItem {
-    ResponseItem::Message {
-        id: None,
-        role: "developer".to_string(),
-        content: vec![ContentItem::InputText { text }],
-        phase: None,
-        internal_chat_message_metadata_passthrough: None,
-    }
-}
-
 pub(crate) fn preserve_annotated_mcp_server_use_context_items(
     history: Vec<ResponseItemEnvelope>,
     additional_history_items: &[ResponseItemEnvelope],
@@ -1112,13 +1064,6 @@ pub(crate) fn insert_mcp_server_use_context_items_at_compaction_boundary(
     mcp_context: Vec<ResponseItem>,
 ) -> Vec<ResponseItem> {
     insert_context_items_at_compaction_boundary(history, mcp_context)
-}
-
-pub(crate) fn insert_post_compaction_context_items(
-    history: Vec<ResponseItem>,
-    context_items: Vec<ResponseItem>,
-) -> Vec<ResponseItem> {
-    insert_context_items_at_compaction_boundary(history, context_items)
 }
 
 fn insert_context_items_at_compaction_boundary(
@@ -1222,16 +1167,6 @@ fn is_mcp_server_use_context_item(item: &ResponseItem) -> bool {
         | ContentItem::InputAudio { .. }
         | ContentItem::OutputText { .. } => false,
     })
-}
-
-fn user_message_item(text: String) -> ResponseItem {
-    ResponseItem::Message {
-        id: None,
-        role: "user".to_string(),
-        content: vec![ContentItem::InputText { text }],
-        phase: None,
-        internal_chat_message_metadata_passthrough: None,
-    }
 }
 
 fn build_compacted_history_with_limit(
@@ -1394,7 +1329,7 @@ async fn drain_to_completed(
         match event {
             Ok(ResponseEvent::OutputItemDone(item)) => {
                 if let Some(message) =
-                    get_last_assistant_message_from_turn(std::slice::from_ref(&item))
+                    get_last_assistant_message_from_turn(std::slice::from_ref(&item).iter())
                 {
                     last_assistant_message = message;
                 }

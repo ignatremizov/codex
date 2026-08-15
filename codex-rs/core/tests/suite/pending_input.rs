@@ -156,6 +156,65 @@ async fn standalone_tool_output_starts_instruction_turn() -> anyhow::Result<()> 
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_mailbox_precedes_the_next_user_prompt_in_the_first_request() -> anyhow::Result<()> {
+    const MAILBOX_TEXT: &str = "passive completion waiting while idle";
+    const USER_PROMPT: &str = "inspect the pending passive completion";
+
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            ev_response_created("idle-mailbox-before-user"),
+            ev_completed("idle-mailbox-before-user"),
+        ]),
+    )
+    .await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+
+    submit_queue_only_agent_mail(test.codex.as_ref(), MAILBOX_TEXT).await;
+    let submission = test
+        .codex
+        .start_turn_if_idle(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: USER_PROMPT.to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    assert!(matches!(submission, StartIfIdleSubmission::Started { .. }));
+    wait_for_turn_complete(test.codex.as_ref()).await;
+
+    let input = response.single_request().input();
+    let mailbox_index = input
+        .iter()
+        .position(|item| {
+            item["type"] == "agent_message"
+                && item["content"].as_array().is_some_and(|content| {
+                    content
+                        .iter()
+                        .any(|part| part["type"] == "input_text" && part["text"] == MAILBOX_TEXT)
+                })
+        })
+        .expect("pending mailbox input should reach the first request");
+    let user_prompt_index = input
+        .iter()
+        .position(|item| {
+            item["type"] == "message"
+                && item["role"] == "user"
+                && item["content"].as_array().is_some_and(|content| {
+                    content
+                        .iter()
+                        .any(|part| part["type"] == "input_text" && part["text"] == USER_PROMPT)
+                })
+        })
+        .expect("fresh user prompt should reach the first request");
+    assert!(
+        mailbox_index < user_prompt_index,
+        "mail already pending while idle must precede the next user prompt"
+    );
+
+    Ok(())
+}
+
 async fn assert_idle_user_input_reaches_the_first_model_request(
     mode: ModeKind,
 ) -> anyhow::Result<()> {
@@ -1024,7 +1083,7 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_ite
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn queued_inter_agent_mail_does_not_restart_after_final_answer() {
+async fn idle_inter_agent_mail_precedes_prompt_without_restarting_or_redelivery() {
     let first_chunks = vec![
         chunk(ev_response_created("resp-1")),
         chunk(ev_message_item_added("msg-1", "")),
@@ -1056,12 +1115,26 @@ async fn queued_inter_agent_mail_does_not_restart_after_final_answer() {
     let mut requests = server.requests().await;
     assert_eq!(requests.len(), 1);
     let request: Value = from_slice(&requests[0]).expect("parse request");
+    let input = request["input"].as_array().expect("request input");
+    let agent_message_index = input
+        .iter()
+        .position(|item| item.get("type").and_then(Value::as_str) == Some("agent_message"))
+        .expect("idle child update should be included in the first turn");
+    let user_prompt_index = input
+        .iter()
+        .position(|item| {
+            item.get("type").and_then(Value::as_str) == Some("message")
+                && item.get("role").and_then(Value::as_str) == Some("user")
+                && item["content"].as_array().is_some_and(|content| {
+                    content
+                        .iter()
+                        .any(|part| part["type"] == "input_text" && part["text"] == "first prompt")
+                })
+        })
+        .expect("first user prompt should be included");
     assert!(
-        request["input"]
-            .as_array()
-            .expect("request input")
-            .iter()
-            .all(|item| item.get("type").and_then(Value::as_str) != Some("agent_message"))
+        agent_message_index < user_prompt_index,
+        "mail already pending while idle must precede the user prompt"
     );
 
     submit_user_input(&codex, "second prompt").await;
@@ -1071,13 +1144,20 @@ async fn queued_inter_agent_mail_does_not_restart_after_final_answer() {
     assert_eq!(requests.len(), 2);
     let request: Value = from_slice(&requests[1]).expect("parse request");
     let input = request["input"].as_array().expect("request input");
-    let agent_message = input
+    let child_update_count = input
         .iter()
-        .find(|item| item.get("type").and_then(Value::as_str) == Some("agent_message"))
-        .expect("queued child update should be included in the next turn");
+        .filter(|item| {
+            item.get("type").and_then(Value::as_str) == Some("agent_message")
+                && item["content"].as_array().is_some_and(|content| {
+                    content.iter().any(|part| {
+                        part["type"] == "input_text" && part["text"] == "queued child update"
+                    })
+                })
+        })
+        .count();
     assert_eq!(
-        agent_message["content"],
-        json!([{"type": "input_text", "text": "queued child update"}])
+        child_update_count, 1,
+        "mail preserved in history must not be injected a second time"
     );
     let user_input = message_input_texts(&request, "user")
         .into_iter()

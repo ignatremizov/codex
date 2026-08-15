@@ -292,15 +292,9 @@ impl ChatWidget {
             | ServerNotification::TurnModerationMetadata(_)
             | ServerNotification::FuzzyFileSearchSessionUpdated(_)
             | ServerNotification::FuzzyFileSearchSessionCompleted(_)
-            | ServerNotification::ThreadRealtimeStarted(_)
-            | ServerNotification::ThreadRealtimeItemAdded(_)
             | ServerNotification::ThreadRealtimeItemStarted(_)
             | ServerNotification::ThreadRealtimeItemTranscriptDelta(_)
             | ServerNotification::ThreadRealtimeItemCompleted(_)
-            | ServerNotification::ThreadRealtimeOutputAudioDelta(_)
-            | ServerNotification::ThreadRealtimeError(_)
-            | ServerNotification::ThreadRealtimeClosed(_)
-            | ServerNotification::ThreadRealtimeSdp(_)
             | ServerNotification::ThreadRealtimeTranscriptDelta(_)
             | ServerNotification::ThreadRealtimeTranscriptDone(_)
             | ServerNotification::WindowsWorldWritableWarning(_)
@@ -444,6 +438,8 @@ impl ChatWidget {
                 status,
                 observe_commentary,
                 wake_on_completion,
+                target_messages,
+                queue_input,
                 sender_thread_id,
                 receiver_thread_ids,
                 receiver_agents,
@@ -458,6 +454,8 @@ impl ChatWidget {
                     status,
                     observe_commentary,
                     wake_on_completion,
+                    target_messages,
+                    queue_input,
                     sender_thread_id,
                     receiver_thread_ids,
                     receiver_agents,

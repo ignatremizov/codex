@@ -1,8 +1,11 @@
 use super::*;
-use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
+use crate::agent::agent_resolver::resolve_resumable_v1_agent_target;
+use crate::agent::control::CloseAgentResponseDisposition;
+use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::tools::handlers::multi_agents_spec::create_close_agent_tool_v1;
 use codex_protocol::error::CodexErrorDetails;
 use codex_tools::ToolSpec;
+use std::sync::Arc;
 
 pub(crate) struct Handler;
 
@@ -42,7 +45,14 @@ async fn handle_close_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: CloseAgentArgs = parse_arguments(&arguments)?;
-    let agent_id = resolve_controlled_v1_agent_target(&session, &args.target).await?;
+    let requested_response_observation = args.w;
+    let response_observation = requested_response_observation.unwrap_or_default();
+    let observe_commentary = requested_response_observation.map(|_| false);
+    let wake_on_completion = requested_response_observation
+        .and_then(ResponseObservationPolicy::wake_on_completion_item_value);
+    let target_messages = requested_response_observation.map(|_| false);
+    let queue_input = requested_response_observation.map(ResponseObservationPolicy::queue_input);
+    let agent_id = resolve_resumable_v1_agent_target(&session, &args.target).await?;
     if agent_id == session.thread_id {
         return Err(FunctionCallError::RespondToModel(
             "an agent cannot close itself; return your result instead".to_string(),
@@ -53,9 +63,21 @@ async fn handle_close_agent(
             "a child agent cannot close Main".to_string(),
         ));
     }
-    let receiver_agent = session.services.agent_control.get_agent_metadata(agent_id);
-    let known_agent = receiver_agent.is_some();
-    let receiver_agent = receiver_agent.unwrap_or_default();
+    let receiver_agent = session
+        .services
+        .agent_control
+        .get_agent_metadata(agent_id)
+        .unwrap_or_default();
+    let close_response = session
+        .services
+        .agent_control
+        .prepare_close_agent_response(
+            Arc::clone(&session),
+            codex_protocol::protocol::MultiAgentVersion::V1,
+            agent_id,
+        )
+        .await
+        .map_err(|err| collab_agent_error(agent_id, err))?;
     session
         .emit_turn_item_started(
             &turn,
@@ -63,8 +85,10 @@ async fn handle_close_agent(
                 id: call_id.clone(),
                 tool: CollabAgentTool::CloseAgent,
                 status: CollabAgentToolCallStatus::InProgress,
-                observe_commentary: None,
-                wake_on_completion: None,
+                observe_commentary,
+                wake_on_completion,
+                target_messages,
+                queue_input,
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![agent_id],
@@ -84,9 +108,7 @@ async fn handle_close_agent(
         .await
     {
         Ok(mut status_rx) => status_rx.borrow_and_update().clone(),
-        Err(err)
-            if known_agent && matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) =>
-        {
+        Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
             session.services.agent_control.get_status(agent_id).await
         }
         Err(err) => {
@@ -98,8 +120,10 @@ async fn handle_close_agent(
                         id: call_id.clone(),
                         tool: CollabAgentTool::CloseAgent,
                         status: collab_tool_call_status(&status, Some(agent_id)),
-                        observe_commentary: None,
-                        wake_on_completion: None,
+                        observe_commentary,
+                        wake_on_completion,
+                        target_messages,
+                        queue_input,
                         deadline_at_ms: None,
                         sender_thread_id: session.thread_id(),
                         receiver_thread_ids: vec![agent_id],
@@ -119,19 +143,29 @@ async fn handle_close_agent(
             return Err(collab_agent_error(agent_id, err));
         }
     };
-    let result = Box::pin(session.services.agent_control.close_agent(agent_id))
-        .await
-        .map_err(|err| collab_agent_error(agent_id, err))
-        .map(|_| ());
+    let result = Box::pin(
+        session
+            .services
+            .agent_control
+            .close_agent_with_status(agent_id),
+    )
+    .await
+    .map_err(|err| collab_agent_error(agent_id, err));
+    let completed_status = result
+        .as_ref()
+        .map(|closed| closed.previous_status.clone())
+        .unwrap_or_else(|_| status.clone());
     session
         .emit_turn_item_completed(
             &turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                 id: call_id,
                 tool: CollabAgentTool::CloseAgent,
-                status: collab_tool_call_status(&status, Some(agent_id)),
-                observe_commentary: None,
-                wake_on_completion: None,
+                status: collab_tool_call_status(&completed_status, Some(agent_id)),
+                observe_commentary,
+                wake_on_completion,
+                target_messages,
+                queue_input,
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![agent_id],
@@ -143,15 +177,20 @@ async fn handle_close_agent(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                agents_states: [(agent_id, status.clone())].into_iter().collect(),
+                agents_states: [(agent_id, completed_status.clone())].into_iter().collect(),
                 completion_presentation_agent_ids: None,
             }),
         )
         .await;
-    result?;
+    let closed = result?;
+    let response_delivery = close_response
+        .deliver(&closed.previous_status, response_observation)
+        .await;
+    let previous_status = status_for_close_output(&closed.previous_status, response_delivery);
 
     Ok(CloseAgentResult {
-        previous_status: status,
+        previous_status,
+        response_delivery,
     })
 }
 
@@ -164,6 +203,7 @@ impl CoreToolRuntime for Handler {
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct CloseAgentResult {
     pub(crate) previous_status: AgentStatus,
+    pub(crate) response_delivery: CloseAgentResponseDisposition,
 }
 
 impl ToolOutput for CloseAgentResult {
@@ -187,4 +227,45 @@ impl ToolOutput for CloseAgentResult {
 #[derive(Debug, Deserialize)]
 struct CloseAgentArgs {
     target: String,
+    w: Option<ResponseObservationPolicy>,
+}
+
+fn status_for_close_output(
+    status: &AgentStatus,
+    response_delivery: CloseAgentResponseDisposition,
+) -> AgentStatus {
+    match (status, response_delivery) {
+        (
+            AgentStatus::Completed(Some(_)),
+            CloseAgentResponseDisposition::Suppressed
+            | CloseAgentResponseDisposition::AlreadyVisible
+            | CloseAgentResponseDisposition::Delivered
+            | CloseAgentResponseDisposition::Queued
+            | CloseAgentResponseDisposition::PresentationOnly,
+        ) => AgentStatus::Completed(None),
+        (
+            AgentStatus::PendingInit
+            | AgentStatus::Running
+            | AgentStatus::Interrupted
+            | AgentStatus::Completed(_)
+            | AgentStatus::Errored(_)
+            | AgentStatus::Shutdown
+            | AgentStatus::NotFound,
+            CloseAgentResponseDisposition::NotApplicable,
+        )
+        | (
+            AgentStatus::PendingInit
+            | AgentStatus::Running
+            | AgentStatus::Interrupted
+            | AgentStatus::Completed(None)
+            | AgentStatus::Errored(_)
+            | AgentStatus::Shutdown
+            | AgentStatus::NotFound,
+            CloseAgentResponseDisposition::Suppressed
+            | CloseAgentResponseDisposition::AlreadyVisible
+            | CloseAgentResponseDisposition::Delivered
+            | CloseAgentResponseDisposition::Queued
+            | CloseAgentResponseDisposition::PresentationOnly,
+        ) => status.clone(),
+    }
 }

@@ -1,12 +1,14 @@
 //! Context fragments injected into model input.
 
 mod agent_context_identity;
+mod agent_reply_route;
 mod approved_command_prefix_saved;
 mod apps_instructions;
+mod attributed_agent_message;
 mod available_plugins_instructions;
 mod base_instructions;
-mod compaction_summary;
 mod compacted_media;
+mod compaction_summary;
 mod contextual_user_message;
 mod current_time_reminder;
 mod developer_instructions;
@@ -53,15 +55,16 @@ mod user_shell_command;
 pub(crate) mod world_state;
 
 pub(crate) use agent_context_identity::AgentContextIdentity;
+pub(crate) use agent_reply_route::AgentReplyRoute;
 pub(crate) use approved_command_prefix_saved::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
 pub(crate) use approved_command_prefix_saved::ApprovedCommandPrefixSaved;
 pub(crate) use apps_instructions::AppsInstructions;
+pub(crate) use attributed_agent_message::AttributedAgentMessage;
 pub(crate) use available_plugins_instructions::AvailablePluginsInstructions;
 pub(crate) use base_instructions::BaseInstructionsFragment;
 pub(crate) use codex_context_fragments::AdditionalContextDeveloperFragment;
 pub(crate) use codex_context_fragments::AdditionalContextUserFragment;
 pub use codex_context_fragments::ContextualUserFragment;
-pub(crate) use compaction_summary::CompactionSummary;
 pub(crate) use compacted_media::CompactedImageOmission;
 pub(crate) use compacted_media::CompactedMediaSanitization;
 pub(crate) use compacted_media::annotated_compacted_image_omission;
@@ -72,6 +75,7 @@ pub(crate) use compacted_media::is_standalone_compacted_image_omission_message;
 pub(crate) use compacted_media::sanitize_compacted_media;
 pub(crate) use compacted_media::sanitize_compacted_media_prefix;
 pub(crate) use compacted_media::standalone_compacted_image_omission_message;
+pub(crate) use compaction_summary::CompactionSummary;
 pub(crate) use contextual_user_message::is_contextual_user_fragment;
 pub(crate) use contextual_user_message::is_user_authorization_message;
 pub(crate) use contextual_user_message::parse_visible_hook_prompt_message;

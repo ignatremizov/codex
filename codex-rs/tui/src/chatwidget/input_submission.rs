@@ -33,7 +33,7 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn user_inputs_from_message(&self, user_message: &UserMessage) -> Vec<UserInput> {
+    pub(crate) fn user_inputs_from_message(&self, user_message: &UserMessage) -> Vec<UserInput> {
         let UserMessage {
             text,
             local_images,
@@ -45,11 +45,11 @@ impl ChatWidget {
             .iter()
             .map(|url| UserInput::Image {
                 url: url.clone(),
-                /*detail*/ None,
+                detail: None,
             })
             .chain(local_images.iter().map(|image| UserInput::LocalImage {
                 path: image.path.clone(),
-                /*detail*/ None,
+                detail: None,
             }))
             .collect::<Vec<_>>();
         if !text.is_empty() {

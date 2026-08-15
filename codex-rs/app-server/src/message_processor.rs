@@ -1293,6 +1293,12 @@ impl MessageProcessor {
             ClientRequest::AgentAliasList { params, .. } => {
                 self.thread_processor.agent_alias_list(params).await
             }
+            ClientRequest::AgentQueueList { params, .. } => {
+                self.thread_processor.agent_queue_list(params).await
+            }
+            ClientRequest::AgentQueueDelete { params, .. } => {
+                self.thread_processor.agent_queue_delete(params).await
+            }
             ClientRequest::AgentControl { params, .. } => {
                 self.thread_processor
                     .agent_control(&request_id, params)

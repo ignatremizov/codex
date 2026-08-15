@@ -1,5 +1,4 @@
 use super::ContextualUserFragment;
-use super::agent_context_identity::AgentContextIdentity;
 use super::world_state::PreviousSectionState;
 use super::world_state::WorldStateSection;
 use codex_protocol::AgentPath;
@@ -12,7 +11,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TokenBudgetContext {
-    agent_name: String,
+    agent_path: AgentPath,
     first_window_id: Uuid,
     previous_window_id: Option<Uuid>,
     window_id: Uuid,
@@ -21,25 +20,14 @@ pub(crate) struct TokenBudgetContext {
 
 impl TokenBudgetContext {
     pub(crate) fn new(
-        agent: AgentContextIdentity,
+        agent_path: AgentPath,
         first_window_id: Uuid,
         previous_window_id: Option<Uuid>,
         window_id: Uuid,
         thread_hint: Option<String>,
     ) -> Self {
-        let agent_name = match agent {
-            AgentContextIdentity::V1 {
-                agent_id,
-                agent_ref,
-                nickname,
-            } => nickname
-                .or_else(|| agent_ref.map(|agent_ref| agent_ref.to_string()))
-                .unwrap_or_else(|| agent_id.to_string()),
-            AgentContextIdentity::V2 { agent_path, .. } => agent_path.to_string(),
-            AgentContextIdentity::Canonical { agent_id } => agent_id.to_string(),
-        };
         Self {
-            agent_name,
+            agent_path,
             first_window_id,
             previous_window_id,
             window_id,
@@ -73,7 +61,7 @@ impl ContextualUserFragment for TokenBudgetContext {
         let first_window_id = self.first_window_id;
         let window_id = self.window_id;
         let mut lines = vec![
-            format!("Agent name: {}", self.agent_name),
+            format!("Agent name: {}", self.agent_path),
             format!("First context window id: {first_window_id}"),
             format!("Current context window id: {window_id}"),
         ];
@@ -89,17 +77,17 @@ impl ContextualUserFragment for TokenBudgetContext {
 
 impl WorldStateSection for TokenBudgetContext {
     const ID: &'static str = "context_window";
-    type Snapshot = String;
+    type Snapshot = AgentPath;
 
     fn snapshot(&self) -> Self::Snapshot {
-        self.agent_name.clone()
+        self.agent_path.clone()
     }
 
     fn render_diff(
         &self,
         previous: PreviousSectionState<'_, Self::Snapshot>,
     ) -> Option<Box<dyn ContextualUserFragment>> {
-        matches!(previous, PreviousSectionState::Known(agent_name) if agent_name != &self.agent_name)
+        matches!(previous, PreviousSectionState::Known(agent_path) if agent_path != &self.agent_path)
             .then(|| Box::new(self.clone()) as Box<dyn ContextualUserFragment>)
     }
 }

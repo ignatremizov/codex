@@ -4,6 +4,7 @@ use crate::context::GuardianReviewEvidence;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
+use crate::session::TurnInput;
 use crate::session::new_submission_id;
 use crate::session::session::Session;
 use crate::session::step_settings::StepSettingsUpdate;
@@ -438,8 +439,8 @@ impl CodexThread {
             .ensure_execution_capacity_for_turn_start(self)
             .await?;
         match self
-            .session
-            .start_turn_if_idle_with_lease(request, reservation_lease)
+            .io
+            .start_turn_if_idle_with_lease(&self.session, request, reservation_lease)
             .await?
         {
             TurnInputSubmission::Started { turn_id } => {

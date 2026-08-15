@@ -10,6 +10,10 @@ use crate::CodexThread;
 
 impl CodexThread {
     /// Persist and publish a user-authored agent control action in the source transcript.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active-turn decision and durable append must remain atomic"
+    )]
     pub async fn record_user_agent_control(&self, item: UserAgentControlItem) -> CodexResult<()> {
         let item_id = item.id.clone();
         // Keep the active-turn decision and durable append atomic with source turn

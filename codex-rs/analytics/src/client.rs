@@ -758,6 +758,7 @@ fn session_event_to_analytics_notification(
                     started_at: started.started_at,
                     ..analytics_turn(&started.turn_id, TurnStatus::InProgress)
                 },
+                agent_queue: None,
             })
         }
         EventMsg::TurnComplete(completed) => {

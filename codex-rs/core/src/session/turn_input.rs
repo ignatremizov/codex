@@ -16,7 +16,7 @@ use super::thread_settings;
 use super::turn_context::NewTurnContextOptions;
 use super::turn_context::TurnContext;
 use crate::state::ActiveTurn;
-use crate::state::TurnState;
+use crate::tasks::MailboxParentProvenance;
 use crate::tasks::RegularTask;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::error::CodexErr;
@@ -206,31 +206,41 @@ pub(super) async fn handle(
         }
         TurnInputMode::StartIfIdle => {
             let kind = match &request.input {
-                SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
+                SubmittedTurnInput::UserInput { content, .. }
+                | SubmittedTurnInput::AgentInput { content, .. }
+                    if !content.is_empty() =>
+                {
                     TurnStartKind::User
                 }
                 SubmittedTurnInput::UserInput { .. }
+                | SubmittedTurnInput::AgentInput { .. }
                 | SubmittedTurnInput::ResponseItem(_)
                 | SubmittedTurnInput::InterAgentCommunication(_) => TurnStartKind::Automatic,
             };
             start_if_idle(session, request, submission_id.clone(), kind).await
         }
         TurnInputMode::Steer { expected_turn_id } => {
-            steer(
-                session,
-                request,
-                expected_turn_id,
-                submission_id.clone(),
-            )
-            .await
+            steer(session, request, expected_turn_id, submission_id.clone()).await
         }
     };
     match &result {
         Ok(TurnInputSubmission::NotSubmitted { reason }) => {
-            session.reject_input_turn_admission(
-                &submission_id,
-                CodexErr::InvalidRequest(format!("turn input was not submitted: {reason:?}")),
-            );
+            let rejection = match (session.input_turn_admission_policy(&submission_id), reason) {
+                (super::InputTurnAdmissionPolicy::SteerOnly, NotSubmittedReason::NoActiveTurn) => {
+                    CodexErr::InvalidRequest(super::STEER_ONLY_TARGET_ENDED_ERROR.to_string())
+                }
+                (super::InputTurnAdmissionPolicy::Queued, NotSubmittedReason::NotIdle) => {
+                    let actual = session
+                        .active_agent_response_turn_id()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    CodexErr::InvalidRequest(format!(
+                        "{}`{actual}`",
+                        super::QUEUED_INPUT_ACTIVE_ERROR_PREFIX
+                    ))
+                }
+                _ => CodexErr::InvalidRequest(format!("turn input was not submitted: {reason:?}")),
+            };
+            session.reject_input_turn_admission(&submission_id, rejection);
         }
         Err(error) => {
             session.reject_input_turn_admission(
@@ -272,19 +282,29 @@ async fn start_or_steer(
         ..
     } = request;
     let has_explicit_input = match &input {
-        SubmittedTurnInput::UserInput { content, .. } => !content.is_empty(),
+        SubmittedTurnInput::UserInput { content, .. }
+        | SubmittedTurnInput::AgentInput { content, .. } => !content.is_empty(),
         SubmittedTurnInput::ResponseItem(ResponseItem::FunctionCallOutput {
             call_id: None,
             ..
         }) => true,
         _ => {
             return Err(CodexErr::InvalidRequest(
-                "only user input or standalone function-call outputs can start or steer a turn"
+                "only user or agent input, or standalone function-call outputs, can start or \
+                 steer a turn"
                     .to_string(),
             ));
         }
     };
-    let can_start_root_turn = start.parent_turn_id.is_none() && start.root_turn_id.is_none();
+    let can_start_root_turn = matches!(
+        &input,
+        SubmittedTurnInput::UserInput { .. }
+            | SubmittedTurnInput::ResponseItem(ResponseItem::FunctionCallOutput {
+                call_id: None,
+                ..
+            })
+    ) && start.parent_turn_id.is_none()
+        && start.root_turn_id.is_none();
     let incoming_root_turn_id = start
         .parent_turn_id
         .as_ref()
@@ -379,7 +399,15 @@ pub(super) async fn start_if_idle_with_lease(
         responsesapi_client_metadata,
         ..
     } = request;
-    let can_start_root_turn = start.parent_turn_id.is_none() && start.root_turn_id.is_none();
+    let can_start_root_turn = matches!(
+        &input,
+        SubmittedTurnInput::UserInput { .. }
+            | SubmittedTurnInput::ResponseItem(ResponseItem::FunctionCallOutput {
+                call_id: None,
+                ..
+            })
+    ) && start.parent_turn_id.is_none()
+        && start.root_turn_id.is_none();
     if session.input_queue.has_trigger_turn_mailbox_items().await {
         return Ok(TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::PendingTriggerTurn,
@@ -488,7 +516,13 @@ pub(super) async fn start_if_idle_with_lease(
         session.capture_input_turn_admission_resolution(submission_id.clone());
     session.resolve_input_turn_admission(&submission_id, admission_resolution);
     session
-        .start_task(turn_context, task_input, RegularTask::new())
+        .start_task(
+            turn_context,
+            task_input,
+            RegularTask::new(),
+            /*input_persisted*/ None,
+            MailboxParentProvenance::Ignore,
+        )
         .await;
     Ok(TurnInputSubmission::Started {
         turn_id: submission_id,
@@ -509,9 +543,12 @@ async fn steer(
         responsesapi_client_metadata,
         ..
     } = request;
-    if !matches!(&input, SubmittedTurnInput::UserInput { .. }) {
+    if !matches!(
+        &input,
+        SubmittedTurnInput::UserInput { .. } | SubmittedTurnInput::AgentInput { .. }
+    ) {
         return Err(CodexErr::InvalidRequest(
-            "only user input can steer a turn".to_string(),
+            "only user or agent input can steer a turn".to_string(),
         ));
     }
     let incoming_root_turn_id = start
@@ -582,17 +619,7 @@ impl Session {
         }
     }
 
-    async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
-        let mut active_turn_guard = self.active_turn.lock().await;
-        if let Some(active_turn) = active_turn_guard.as_ref()
-            && active_turn.task.is_none()
-            && Arc::ptr_eq(&active_turn.turn_state, turn_state)
-        {
-            *active_turn_guard = None;
-        }
-    }
-
-    /// Inject additional user input or a standalone tool output into the active turn.
+    /// Inject additional user or agent input, or a standalone tool output, into the active turn.
     ///
     /// Returns the active turn id when accepted.
     #[expect(
@@ -641,7 +668,12 @@ impl Session {
             }
         }
 
-        if matches!(input, SubmittedTurnInput::UserInput { content, .. } if content.is_empty()) {
+        if matches!(
+            input,
+            SubmittedTurnInput::UserInput { content, .. }
+                | SubmittedTurnInput::AgentInput { content, .. }
+                if content.is_empty()
+        ) {
             return Err(NotSubmittedReason::EmptyInput);
         }
         // Compare JSON values directly instead of serialized schema text.
@@ -672,6 +704,13 @@ impl Session {
                     client_id: client_id.clone(),
                 }
             }
+            SubmittedTurnInput::AgentInput {
+                content,
+                presentation,
+            } => TurnInput::AgentInput {
+                content: std::mem::take(content),
+                presentation: presentation.clone(),
+            },
             input => pending_turn_input(input.clone()),
         };
         pending_input.push(input);
@@ -717,6 +756,13 @@ fn pending_turn_input(input: SubmittedTurnInput) -> TurnInput {
         SubmittedTurnInput::UserInput { content, client_id } => {
             TurnInput::UserInput { content, client_id }
         }
+        SubmittedTurnInput::AgentInput {
+            content,
+            presentation,
+        } => TurnInput::AgentInput {
+            content,
+            presentation,
+        },
         SubmittedTurnInput::ResponseItem(mut item)
             if matches!(
                 &item,

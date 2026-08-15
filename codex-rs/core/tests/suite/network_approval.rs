@@ -407,7 +407,12 @@ async fn cancelled_guardian_network_review_fails_closed_without_rewriting_turn_s
     while !saw_turn_aborted || !saw_guardian_aborted {
         let event = tokio::time::timeout(Duration::from_secs(5), test.codex.next_event())
             .await
-            .context("timed out waiting for parent and Guardian cancellation")?
+            .with_context(|| {
+                format!(
+                    "timed out waiting for parent and Guardian cancellation \
+                     (turn_aborted={saw_turn_aborted}, guardian_aborted={saw_guardian_aborted})"
+                )
+            })?
             .context("event stream ended while waiting for cancellation")?;
         saw_turn_aborted |= matches!(&event.msg, EventMsg::TurnAborted(_));
         saw_guardian_aborted |= matches!(
@@ -952,7 +957,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
         network_fetch_args(LOCAL_ENVIRONMENT_ID),
     )
     .await?;
-    submit_managed_network_turn(
+    let second_turn_id = submit_managed_network_turn(
         &test,
         "the once decision must prompt again",
         environments.clone(),
@@ -960,7 +965,9 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
         AskForApproval::OnRequest,
     )
     .await?;
-    let approval = expect_network_approval(&test, LOCAL_ENVIRONMENT_ID).await?;
+    let approval = expect_network_approval_for_turn(&test, LOCAL_ENVIRONMENT_ID, &second_turn_id)
+        .await
+        .context("second one-shot network approval")?;
     assert_eq!(approval.approval_id.as_deref(), None);
     assert_ne!(approval.call_id, first_approval_call_id);
     test.codex
@@ -1000,7 +1007,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
         network_exec_args(&different_port_command),
     )
     .await?;
-    submit_managed_network_turn(
+    let port_turn_id = submit_managed_network_turn(
         &test,
         "a different port must prompt",
         environments,
@@ -1008,13 +1015,15 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
         AskForApproval::OnRequest,
     )
     .await?;
-    let approval = expect_network_approval_target(
+    let approval = expect_network_approval_target_for_turn(
         &test,
         LOCAL_ENVIRONMENT_ID,
         &different_port_target,
         NetworkApprovalProtocol::Http,
+        &port_turn_id,
     )
-    .await?;
+    .await
+    .context("different-port network approval")?;
     test.codex
         .submit(Op::ExecApproval {
             id: approval.effective_approval_id(),
@@ -1048,7 +1057,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
         ]),
     )
     .await;
-    submit_managed_network_turn(
+    let socks_turn_id = submit_managed_network_turn(
         &test,
         "a different protocol must prompt and the user abort must stay a user outcome",
         vec![local(test.cwd.abs())],
@@ -1056,13 +1065,15 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
         AskForApproval::OnRequest,
     )
     .await?;
-    let approval = expect_network_approval_target(
+    let approval = expect_network_approval_target_for_turn(
         &test,
         LOCAL_ENVIRONMENT_ID,
         &socks_target,
         NetworkApprovalProtocol::Socks5Tcp,
+        &socks_turn_id,
     )
-    .await?;
+    .await
+    .context("SOCKS network approval")?;
     test.codex
         .submit(Op::ExecApproval {
             id: approval.effective_approval_id(),
@@ -1091,8 +1102,7 @@ async fn latest_network_rejection_wins_for_multiple_reviews_of_one_execution() -
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test =
-        managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let call_id = "network-multiple-reviews";
     let second_target = format!("http://{NETWORK_TEST_HOST}:81");
     let command = format!(
@@ -1266,8 +1276,7 @@ async fn denying_network_policy_amendment_persists_and_blocks_request() -> Resul
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test =
-        managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let responses = mount_exec_network_turn(
         &server,
         "resp-network-deny-amendment",
@@ -1919,7 +1928,11 @@ async fn owner_network_policy_follows_the_selected_remote_command() -> Result<()
     skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut scenarios = vec![("ROOTED", managed_network_unified_exec_test(&server).await?)];
+    let mut scenarios = vec![(
+        "ROOTED",
+        managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::RemoteAndLocal)
+            .await?,
+    )];
     for (scenario, configured_controller) in [("ROOTLESS", false), ("USER_ROOTED", true)] {
         let mut builder = test_codex().with_config(move |config| {
             for feature in [Feature::UnifiedExec, Feature::ExecPermissionApprovals] {
@@ -2025,7 +2038,7 @@ async fn owner_network_policy_follows_the_selected_remote_command() -> Result<()
             } else {
                 remote_network_proxy_request_command(&marker)
             };
-            let mut args = network_exec_args(&command);
+            let mut args = network_exec_args_for_environment(&command, REMOTE_ENVIRONMENT_ID);
             args["environment_id"] = json!(REMOTE_ENVIRONMENT_ID);
             if suffix == "ESCALATED" {
                 args["sandbox_permissions"] = json!("require_escalated");

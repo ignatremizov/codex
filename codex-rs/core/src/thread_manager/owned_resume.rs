@@ -3,6 +3,7 @@ use codex_agent_graph_store::AgentAliasState;
 use codex_agent_graph_store::AllocateAgentAliasRequest;
 
 use super::*;
+use crate::agent::control::ControlledResumeRegistration;
 use crate::agent::control::LiveAgentMetadataDisposition;
 use crate::agent::control::agent_alias_lifecycle_status;
 use crate::agent::control::setup_cleanup::SetupCleanupGuard;
@@ -83,22 +84,33 @@ impl ThreadManager {
                             persisted_source.and_then(SessionSource::get_nickname),
                         )
                     } else {
-                        let stored = self
+                        match self
                             .state
                             .read_stored_thread(ReadThreadParams {
                                 thread_id: ancestry_root,
                                 include_archived: true,
                                 include_history: false,
                             })
-                            .await?;
-                        (
-                            stored
-                                .parent_thread_id
-                                .or_else(|| stored.source.parent_thread_id()),
-                            stored
-                                .agent_nickname
-                                .or_else(|| stored.source.get_nickname()),
-                        )
+                            .await
+                        {
+                            Ok(stored) => (
+                                stored
+                                    .parent_thread_id
+                                    .or_else(|| stored.source.parent_thread_id()),
+                                stored
+                                    .agent_nickname
+                                    .or_else(|| stored.source.get_nickname()),
+                            ),
+                            Err(err)
+                                if matches!(
+                                    err.details(),
+                                    codex_protocol::error::CodexErrorDetails::ThreadNotFound(_)
+                                ) =>
+                            {
+                                (None, None)
+                            }
+                            Err(err) => return Err(err),
+                        }
                     };
                     if let Some(parent_thread_id) = parent_thread_id {
                         missing_edges.push(MissingPersistedAgentEdge {
@@ -268,7 +280,7 @@ impl ThreadManager {
             .state
             .load_agent_model_context(thread_id, stored_thread.history_mode)
             .await?
-            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+            .unwrap_or_default();
         let initial_history = InitialHistory::Resumed(ResumedHistory {
             conversation_id: thread_id,
             history: Arc::new(history),
@@ -538,7 +550,7 @@ impl ThreadManager {
                 Ok(_) => {
                     let registration_commit = controlled_registration
                         .take()
-                        .map(|registration| registration.commit());
+                        .map(ControlledResumeRegistration::commit);
                     match self.state.publish_thread(&resumed.thread).await {
                         Ok(()) => {
                             if let Some(registration_commit) = registration_commit {

@@ -92,6 +92,7 @@ use codex_protocol::turn_input::TurnInput as SubmittedTurnInput;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
+use codex_rollout::rollout::rollout_without_exact_rollback_ranges;
 use codex_tools::ToolSpec;
 use codex_utils_path_uri::PathUri;
 use std::collections::BTreeMap;
@@ -2526,9 +2527,7 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
             .await
             .expect("record initial history");
         assert_eq!(
-            strip_response_item_ids(&raw_history_items(
-                &resumed_session.clone_history().await,
-            )),
+            strip_response_item_ids(&raw_history_items(&resumed_session.clone_history().await,)),
             strip_response_item_ids(std::slice::from_ref(&expected_item))
         );
     }
@@ -2646,7 +2645,8 @@ async fn record_inter_agent_communication_preserves_trusted_completion_context_i
         .await;
 
     let history = session.clone_history().await;
-    let [item] = history.raw_items() else {
+    let history_items = raw_history_items(&history);
+    let [item] = history_items.as_slice() else {
         panic!("expected exactly one history item");
     };
     assert_eq!(item.id(), Some(&response_item_id));
@@ -2732,7 +2732,7 @@ async fn completion_communication_reuses_a_previously_committed_response_item() 
         1
     );
     assert_eq!(
-        session.clone_history().await.raw_items(),
+        raw_history_items(&session.clone_history().await),
         persisted_items.as_slice()
     );
 }
@@ -2819,7 +2819,8 @@ async fn completion_communication_commit_survives_caller_cancellation() {
     .await
     .expect("detached completion recording should finish");
     let history = session.clone_history().await;
-    let [item] = history.raw_items() else {
+    let history_items = raw_history_items(&history);
+    let [item] = history_items.as_slice() else {
         panic!("expected exactly one history item");
     };
     assert_eq!(item.id(), Some(&response_item_id));
@@ -2842,6 +2843,9 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
         commentary_after_sequences: Vec::new(),
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
+        target_messages: false,
+        queue_delivery: false,
+        message_wake_turn_id: None,
         baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::Passive,
         final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
         final_delivery_response_item_id: Some(response_item_id.clone()),
@@ -2887,7 +2891,7 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
         })
         .await
         .expect("load canonical history");
-    let history = codex_protocol::rollout::rollout_without_exact_rollback_ranges(&history.items);
+    let history = rollout_without_exact_rollback_ranges(&history.items);
     let persisted_item = history
         .iter()
         .find_map(|rollout_item| match rollout_item {
@@ -2900,8 +2904,8 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
         })
         .expect("persisted passive completion context");
     assert_eq!(
-        session.clone_history().await.raw_items(),
-        std::slice::from_ref(persisted_item)
+        raw_history_items(&session.clone_history().await),
+        std::slice::from_ref(&persisted_item.item)
     );
     assert_eq!(
         history
@@ -2961,6 +2965,9 @@ async fn response_observation_replacement_persists_task_and_policy_in_one_record
         commentary_after_sequences: Vec::new(),
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
+        target_messages: false,
+        queue_delivery: false,
+        message_wake_turn_id: None,
         baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
         final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: None,
@@ -2987,24 +2994,17 @@ async fn response_observation_replacement_persists_task_and_policy_in_one_record
         })
         .await
         .expect("load canonical replacement record");
-    let persisted = codex_protocol::rollout::rollout_without_exact_rollback_ranges(&history.items);
+    let persisted = rollout_without_exact_rollback_ranges(&history.items);
     let replacement_records = persisted
         .iter()
-        .filter(|item| {
-            matches!(
-                item,
-                RolloutItem::AgentResponseObservation(persisted)
-                    if persisted == &observation
-            )
+        .filter_map(|item| match item {
+            RolloutItem::AgentResponseObservation(persisted) => Some(persisted.clone()),
+            _ => None,
         })
-        .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(
-        replacement_records,
-        vec![RolloutItem::AgentResponseObservation(observation)]
-    );
+    assert_eq!(replacement_records, vec![observation]);
     assert!(
-        session.clone_history().await.raw_items().is_empty(),
+        session.clone_history().await.raw_items().len() == 0,
         "an uncertain durability result must require reload instead of mutating live context"
     );
 }
@@ -3029,7 +3029,8 @@ async fn record_inter_agent_communication_normalizes_untrusted_completion_contex
         .await;
 
     let history = session.clone_history().await;
-    let [item] = history.raw_items() else {
+    let history_items = raw_history_items(&history);
+    let [item] = history_items.as_slice() else {
         panic!("expected exactly one history item");
     };
     assert!(
@@ -3534,6 +3535,7 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_rollback() {
             started_at: None,
             model_context_window: Some(128_000),
             collaboration_mode_kind: ModeKind::Default,
+            agent_queue: None,
         })),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
             client_id: None,
@@ -3574,7 +3576,10 @@ async fn marked_compacted_history_recomputes_usage_invalidated_by_rollback() {
         .expect("record rolled-back marked history");
 
     let history = session.clone_history().await;
-    assert_eq!(history.raw_items(), &[assistant_message("summary")]);
+    assert_eq!(
+        raw_history_items(&history),
+        vec![assistant_message("summary")]
+    );
     let expected_tokens = history
         .estimate_token_count_with_base_instructions(&session.get_base_instructions().await)
         .expect("estimate rolled-back history");
@@ -3697,7 +3702,7 @@ async fn repaired_image_heavy_history_recomputes_stale_rollout_token_usage() {
 
     let history = session.clone_history().await;
     assert!(
-        history.raw_items().iter().all(|item| {
+        history.raw_items().all(|item| {
             !matches!(
                 item,
                 ResponseItem::Message { content, .. }
@@ -3723,13 +3728,7 @@ async fn resume_persists_media_policy_certification_for_a_media_free_legacy_chec
     let media_free_history = vec![assistant_message("legacy summary")];
     let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
         message: "media-free legacy checkpoint".to_string(),
-        replacement_history: Some(
-            media_free_history
-                .iter()
-                .cloned()
-                .map(Into::into)
-                .collect(),
-        ),
+        replacement_history: Some(media_free_history.iter().cloned().map(Into::into).collect()),
         window_number: Some(1),
         ..Default::default()
     })];
@@ -3789,13 +3788,7 @@ async fn media_free_certification_persistence_failures_do_not_block_resume() {
         let media_free_history = vec![assistant_message("legacy summary")];
         let source_history = Arc::new(vec![RolloutItem::Compacted(CompactedItem {
             message: "media-free legacy checkpoint".to_string(),
-            replacement_history: Some(
-                media_free_history
-                    .iter()
-                    .cloned()
-                    .map(Into::into)
-                    .collect(),
-            ),
+            replacement_history: Some(media_free_history.iter().cloned().map(Into::into).collect()),
             window_number: Some(1),
             ..Default::default()
         })]);
@@ -3813,8 +3806,8 @@ async fn media_free_certification_persistence_failures_do_not_block_resume() {
         .expect("optional certification failure should not block resume");
 
         assert_eq!(
-            session.clone_history().await.raw_items(),
-            &media_free_history
+            raw_history_items(&session.clone_history().await),
+            media_free_history
         );
         assert_eq!(store.calls().await.discard_thread, 0);
         let persisted = codex_thread_store::ThreadStore::load_history(
@@ -4559,7 +4552,7 @@ async fn fork_persists_media_repair_and_recomputed_usage_in_child_history() {
 
     let child_history = session.clone_history().await;
     assert!(
-        child_history.raw_items().iter().all(|item| {
+        child_history.raw_items().all(|item| {
             !matches!(
                 item,
                 ResponseItem::Message { content, .. }
@@ -4633,7 +4626,10 @@ async fn fork_persists_media_repair_and_recomputed_usage_in_child_history() {
         .await;
     assert!(reconstruction.repair.is_none());
     assert!(!reconstruction.should_recompute_token_usage);
-    assert_eq!(reconstruction.history.as_slice(), child_history.raw_items());
+    assert_eq!(
+        reconstruction.history.as_slice(),
+        child_history.annotated_items()
+    );
 }
 
 #[tokio::test]
@@ -5611,6 +5607,7 @@ async fn thread_rollback_persists_required_repair_after_the_rollback_marker() {
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
@@ -5671,7 +5668,7 @@ async fn thread_rollback_persists_required_repair_after_the_rollback_marker() {
             .as_ref()
             .is_some_and(|history| history.iter().all(|item| {
                 !matches!(
-                    item,
+                    &item.item,
                     ResponseItem::Message { content, .. }
                         if content
                             .iter()
@@ -5798,6 +5795,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5827,7 +5825,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             let state = sess.state.lock().await;
             let history = state.clone_history();
             (
-                history.raw_items().to_vec(),
+                history.raw_items().cloned().collect::<Vec<_>>(),
                 state.auto_compact_window_number(),
                 state.auto_compact_window_ids(),
                 state.previous_turn_settings(),
@@ -5879,7 +5877,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
                 let state = sess.state.lock().await;
                 let history = state.clone_history();
                 (
-                    history.raw_items().to_vec(),
+                    history.raw_items().cloned().collect::<Vec<_>>(),
                     state.auto_compact_window_number(),
                     state.auto_compact_window_ids(),
                     state.previous_turn_settings(),
@@ -5941,7 +5939,7 @@ async fn thread_rollback_commits_canonical_history_before_installing_live_state(
             recovered.repair.as_ref().map(|repair| repair.persistence),
             expected_recovered_repair_persistence
         );
-        assert!(live_history.raw_items().iter().all(|item| {
+        assert!(live_history.raw_items().all(|item| {
             !matches!(
                 item,
                 ResponseItem::Message { content, .. }
@@ -10242,7 +10240,7 @@ async fn codex_exec_mailbox_delivery_does_not_start_a_turn_after_primary_complet
     );
     session
         .input_queue
-        .enqueue_mailbox_communication(communication, /*parent_turn_id*/ None)
+        .enqueue_mailbox_communication(communication, TurnStartOptions::default())
         .await;
 
     session
@@ -10291,7 +10289,8 @@ async fn shutdown_persists_an_accepted_completion_mailbox_item() {
     assert!(handlers::shutdown(&session, "sub-1".to_string()).await);
 
     let history = session.clone_history().await;
-    let [item] = history.raw_items() else {
+    let history_items = raw_history_items(&history);
+    let [item] = history_items.as_slice() else {
         panic!("expected the accepted completion context");
     };
     assert_eq!(item.id(), Some(&response_item_id));
@@ -10388,7 +10387,8 @@ async fn shutdown_waits_for_an_in_flight_completion_commit() {
     assert!(shutdown.await.expect("shutdown task"));
 
     let history = session.clone_history().await;
-    let [item] = history.raw_items() else {
+    let history_items = raw_history_items(&history);
+    let [item] = history_items.as_slice() else {
         panic!("expected the accepted completion context");
     };
     assert_eq!(item.id(), Some(&response_item_id));
@@ -14077,15 +14077,19 @@ async fn task_finish_continues_late_input() {
 
     let client_id = "late-steer-client-id";
     session
-        .steer_input(
-            vec![UserInput::Text {
-                text: "late steer".to_string(),
-                text_elements: Vec::new(),
-            }],
-            /*additional_context*/ Default::default(),
+        .steer_input_with_response_observation_boundary_and_policy(
+            PromptTurnDraft {
+                input: vec![UserInput::Text {
+                    text: "late steer".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                additional_context: Default::default(),
+                client_user_message_id: Some(client_id.to_string()),
+                responsesapi_client_metadata: None,
+                prompt_kind: PromptInputKind::User,
+            },
             /*expected_turn_id*/ Some(&turn_context.sub_id),
-            /*client_user_message_id*/ Some(client_id.to_string()),
-            /*responsesapi_client_metadata*/ None,
+            InputTurnAdmissionPolicy::AnyTurn,
         )
         .await
         .expect("steer should be accepted while the task is still active");
@@ -14269,15 +14273,19 @@ async fn steer_input_returns_the_response_boundary_captured_during_admission() {
     let (snapshot, _subscription) = sess.subscribe_agent_responses();
 
     let resolution = sess
-        .steer_input_with_response_observation_boundary(
-            vec![UserInput::Text {
-                text: "new instruction".to_string(),
-                text_elements: Vec::new(),
-            }],
-            /*additional_context*/ Default::default(),
+        .steer_input_with_response_observation_boundary_and_policy(
+            PromptTurnDraft {
+                input: vec![UserInput::Text {
+                    text: "new instruction".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                additional_context: Default::default(),
+                client_user_message_id: None,
+                responsesapi_client_metadata: None,
+                prompt_kind: PromptInputKind::User,
+            },
             Some(&tc.sub_id),
-            /*client_user_message_id*/ None,
-            /*responsesapi_client_metadata*/ None,
+            InputTurnAdmissionPolicy::AnyTurn,
         )
         .await
         .expect("steer should be admitted");

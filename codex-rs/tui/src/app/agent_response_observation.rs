@@ -24,6 +24,8 @@ impl App {
             status,
             observe_commentary,
             wake_on_completion,
+            target_messages,
+            queue_input,
             sender_thread_id,
             receiver_thread_ids,
             agents_states,
@@ -33,15 +35,21 @@ impl App {
             return;
         };
         let observer = ThreadId::from_string(sender_thread_id).ok();
-        let response_handling = match (*observe_commentary, *wake_on_completion) {
-            (Some(false), Some(false)) | (None, _) => None,
-            (Some(true), Some(false)) => Some(AgentResponseHandling::Commentary),
-            (Some(false), Some(true)) => Some(AgentResponseHandling::Wake),
-            (Some(true), Some(true)) => Some(AgentResponseHandling::CommentaryWake),
-            (Some(false), None) => Some(AgentResponseHandling::Presentation),
-            (Some(true), None) => Some(AgentResponseHandling::CommentaryPresentation),
-        };
+        let response_handling = observe_commentary.map(|commentary| {
+            let final_response = match wake_on_completion {
+                Some(true) => codex_app_server_protocol::AgentFinalResponseHandling::Wake,
+                Some(false) => codex_app_server_protocol::AgentFinalResponseHandling::Passive,
+                None => codex_app_server_protocol::AgentFinalResponseHandling::Presentation,
+            };
+            AgentResponseHandling::new(
+                commentary,
+                final_response,
+                target_messages.unwrap_or(false),
+                /*queue_input*/ false,
+            )
+        });
         let records_observation = observe_commentary.is_some()
+            && *queue_input != Some(true)
             && matches!(
                 tool,
                 codex_app_server_protocol::CollabAgentTool::SpawnAgent

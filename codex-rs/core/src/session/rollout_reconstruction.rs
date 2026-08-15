@@ -2,8 +2,8 @@ use super::*;
 use crate::context::world_state::WorldStateSnapshot;
 use crate::context_manager::is_model_generated_item;
 use crate::context_manager::is_user_turn_boundary;
-use codex_history::rollout::exact_rollback_removed_items;
 use codex_history::ResponseItemEnvelope;
+use codex_history::rollout::exact_rollback_removed_items;
 use codex_protocol::ResponseItemId;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
@@ -216,7 +216,7 @@ fn collect_user_agent_task_context_response_item_ids(
 ) -> HashSet<ResponseItemId> {
     items
         .iter()
-        .filter_map(ResponseItemEnvelope::id)
+        .filter_map(|item| item.id())
         .filter(|id| is_user_agent_task_context_response_item_id(id.as_str()))
         .cloned()
         .collect()
@@ -689,8 +689,8 @@ impl Session {
                             &user_messages,
                             &compacted.message,
                         );
-                        history.replace_annotated(rebuilt);
                         repaired_prefix_len = rebuilt.len();
+                        history.replace_annotated(rebuilt);
                         completion_context_response_item_ids =
                             sub_agent_completion_context_response_item_ids(
                                 history.annotated_items(),
@@ -913,8 +913,7 @@ fn sanitize_annotated_compacted_media_prefix(
         .iter()
         .map(|envelope| envelope.item.clone())
         .collect::<Vec<_>>();
-    let sanitization =
-        crate::context::sanitize_compacted_media_prefix(&mut raw_items, prefix_len);
+    let sanitization = crate::context::sanitize_compacted_media_prefix(&mut raw_items, prefix_len);
     for (envelope, item) in items.iter_mut().zip(raw_items) {
         envelope.item = item;
     }

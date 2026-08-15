@@ -492,6 +492,8 @@ impl UserInput {
 pub struct TurnStartedNotification {
     pub thread_id: String,
     pub turn: Turn,
+    /// Present when this exact turn was admitted from the shared agent queue.
+    pub agent_queue: Option<super::AgentQueueTurnMetadata>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

@@ -3,6 +3,8 @@ use super::turn::agent_message_text;
 use crate::agent::agent_status_from_event;
 use crate::agent::control::ResponseObservationDeliveryCommit;
 use crate::agent::status::is_final;
+use codex_history::RolloutItem;
+use codex_history::rollout::rollout_without_exact_rollback_ranges;
 use codex_protocol::ResponseItemId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -12,9 +14,8 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 use codex_thread_store::LoadThreadHistoryParams;
+use codex_thread_store::PersistContext;
 use codex_thread_store::ThreadStoreError;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,8 +23,11 @@ use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
+mod agent_queue_start;
 mod recovery;
 
+use self::agent_queue_start::AgentQueueTurnStart;
+pub(crate) use self::agent_queue_start::AgentQueueTurnStartPermit;
 pub(crate) use self::recovery::agent_response_events_from_rollout;
 pub(super) use self::recovery::initial_agent_response_observation_state;
 
@@ -64,11 +68,18 @@ pub(crate) struct InputTurnAdmissionResolution {
     pub(crate) after_item_id: Option<String>,
 }
 
+pub(crate) struct SubmittedInputTurn {
+    pub(crate) submission_id: String,
+    pub(crate) resolution: InputTurnAdmissionResolution,
+    pub(crate) queue_start_permit: Option<AgentQueueTurnStartPermit>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum InputTurnAdmissionPolicy {
     #[default]
     AnyTurn,
-    IdleOnly,
+    Queued,
+    SteerOnly,
 }
 
 #[derive(Default)]
@@ -80,8 +91,9 @@ pub(super) struct AgentResponseObservationState {
     last_commentary_item_id: Option<String>,
     next_subscriber_id: u64,
     subscribers: HashMap<u64, AgentResponseSubscriber>,
-    input_admissions: HashMap<String, oneshot::Sender<CodexResult<InputTurnAdmissionResolution>>>,
+    input_admissions: HashMap<String, oneshot::Sender<CodexResult<SubmittedInputTurn>>>,
     input_admission_policies: HashMap<String, InputTurnAdmissionPolicy>,
+    agent_queue_turns: HashMap<String, AgentQueueTurnStart>,
     communication_deliveries: HashMap<ResponseItemId, PendingCommunicationDelivery>,
 }
 
@@ -111,7 +123,7 @@ pub(crate) struct AgentResponseSubscription {
 pub(crate) struct InputTurnAdmission {
     submission_id: String,
     state: std::sync::Weak<Mutex<AgentResponseObservationState>>,
-    receiver: Option<oneshot::Receiver<CodexResult<InputTurnAdmissionResolution>>>,
+    receiver: Option<oneshot::Receiver<CodexResult<SubmittedInputTurn>>>,
     submitted: bool,
 }
 
@@ -145,7 +157,7 @@ impl InputTurnAdmission {
         self.submitted = true;
     }
 
-    pub(crate) async fn recv(mut self) -> Option<CodexResult<InputTurnAdmissionResolution>> {
+    pub(crate) async fn recv(mut self) -> Option<CodexResult<SubmittedInputTurn>> {
         self.receiver.take()?.await.ok()
     }
 }
@@ -159,6 +171,9 @@ impl Drop for InputTurnAdmission {
             state.input_admissions.remove(&self.submission_id);
             if !self.submitted {
                 state.input_admission_policies.remove(&self.submission_id);
+                state.agent_queue_turns.remove(&self.submission_id);
+            } else if let Some(queue_start) = state.agent_queue_turns.get_mut(&self.submission_id) {
+                queue_start.readiness_sender = None;
             }
         }
     }
@@ -309,6 +324,7 @@ impl Session {
         &self,
         submission_id: String,
         policy: InputTurnAdmissionPolicy,
+        agent_queue_turn: Option<codex_protocol::protocol::AgentQueueTurnMetadata>,
     ) -> InputTurnAdmission {
         let (sender, receiver) = oneshot::channel();
         let mut state = self
@@ -319,6 +335,17 @@ impl Session {
         state
             .input_admission_policies
             .insert(submission_id.clone(), policy);
+        if let Some(metadata) = agent_queue_turn {
+            let (readiness_sender, readiness_receiver) = oneshot::channel();
+            state.agent_queue_turns.insert(
+                submission_id.clone(),
+                AgentQueueTurnStart {
+                    metadata,
+                    readiness_sender: Some(readiness_sender),
+                    readiness_receiver,
+                },
+            );
+        }
         InputTurnAdmission {
             submission_id,
             state: Arc::downgrade(&self.response_observation_state),
@@ -381,8 +408,25 @@ impl Session {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.input_admission_policies.remove(submission_id);
+        let queue_start_permit =
+            if let Some(mut queue_start) = state.agent_queue_turns.remove(submission_id) {
+                let permit = queue_start
+                    .readiness_sender
+                    .take()
+                    .map(|readiness| AgentQueueTurnStartPermit { readiness });
+                state
+                    .agent_queue_turns
+                    .insert(resolution.target_turn_id.clone(), queue_start);
+                permit
+            } else {
+                None
+            };
         if let Some(sender) = state.input_admissions.remove(submission_id) {
-            let _ = sender.send(Ok(resolution));
+            let _ = sender.send(Ok(SubmittedInputTurn {
+                submission_id: submission_id.to_string(),
+                resolution,
+                queue_start_permit,
+            }));
         }
     }
 
@@ -392,6 +436,7 @@ impl Session {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.input_admission_policies.remove(submission_id);
+        state.agent_queue_turns.remove(submission_id);
         if let Some(sender) = state.input_admissions.remove(submission_id) {
             let _ = sender.send(Err(error));
         }
@@ -530,10 +575,20 @@ impl Session {
             .cloned()
             .map(RolloutItem::AgentResponseObservation)
             .collect::<Vec<_>>();
-        if let Some(live_thread) = self.live_thread()
-            && let Err(err) = live_thread
-                .append_items_and_flush_canonical(&rollout_items)
-                .await
+        if let Err(err) = self
+            .try_ensure_rollout_materialized(PersistContext::Standard)
+            .await
+        {
+            tracing::warn!("failed to materialize agent response observation state: {err}");
+            return false;
+        }
+        let Some(live_thread) = self.live_thread() else {
+            tracing::warn!("cannot persist agent response observation without a live thread");
+            return false;
+        };
+        if let Err(err) = live_thread
+            .append_items_and_flush_canonical(&rollout_items)
+            .await
         {
             tracing::warn!("failed to persist replaced agent response observation state: {err}");
             return false;
@@ -561,14 +616,20 @@ impl Session {
             .cloned()
             .map(RolloutItem::AgentResponseObservation)
             .collect::<Vec<_>>();
-        let result = match self.live_thread() {
-            Some(live_thread) => {
-                live_thread
-                    .append_items_and_flush_canonical(&rollout_items)
-                    .await
-            }
-            None => Ok(()),
+        if let Err(err) = self
+            .try_ensure_rollout_materialized(PersistContext::Standard)
+            .await
+        {
+            tracing::warn!("failed to materialize agent response observation state: {err}");
+            return false;
+        }
+        let Some(live_thread) = self.live_thread() else {
+            tracing::warn!("cannot persist agent response observation without a live thread");
+            return false;
         };
+        let result = live_thread
+            .append_items_and_flush_canonical(&rollout_items)
+            .await;
         match result {
             Ok(()) => true,
             Err(err) => {
@@ -597,8 +658,15 @@ impl Session {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         publish_agent_response_event_locked(
             &mut state,
-            AgentResponseEvent::Terminal { turn_id, status },
+            AgentResponseEvent::Terminal {
+                turn_id: turn_id.clone(),
+                status,
+            },
         );
+        drop(state);
+        self.services
+            .agent_control
+            .finish_target_message_wake(self.presentation_id(), &turn_id);
     }
 
     /// Returns whether `turn_id` still owns the session-wide status slot.
@@ -658,6 +726,7 @@ pub(super) fn apply_agent_response_event_state(
         AgentResponseEvent::Terminal {
             turn_id, status, ..
         } => {
+            state.agent_queue_turns.remove(turn_id);
             if state.latest_admitted_turn_id.is_none() {
                 state.latest_admitted_turn_id = Some(turn_id.clone());
             }
@@ -675,6 +744,7 @@ pub(super) fn apply_agent_response_event_state(
             }
         }
         AgentResponseEvent::TurnAborted { turn_id, .. } => {
+            state.agent_queue_turns.remove(turn_id);
             if state.latest_admitted_turn_id.is_none() {
                 state.latest_admitted_turn_id = Some(turn_id.clone());
             }
@@ -701,7 +771,8 @@ fn agent_response_event(event: &EventMsg, sequence: u64) -> Option<AgentResponse
         }),
         EventMsg::ItemCompleted(event) => match &event.item {
             TurnItem::AgentMessage(item)
-                if matches!(item.phase.as_ref(), Some(MessagePhase::Commentary)) =>
+                if matches!(item.phase.as_ref(), Some(MessagePhase::Commentary))
+                    && !item.is_attributed_agent_input_presentation() =>
             {
                 Some(AgentResponseEvent::Commentary {
                     turn_id: event.turn_id.clone(),

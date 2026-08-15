@@ -63,7 +63,7 @@ pub(crate) struct AgentNavigationState {
     parent_threads: HashMap<ThreadId, ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
-    /// Live response observation keyed by `(observer, target)`.
+    /// Live response observation keyed by observer, target, and exact/next-turn binding.
     response_observations: AgentResponseObservationState,
     /// Source threads holding response handling for the target's next user-authored turn.
     pending_reserved_prompt_sources: HashMap<ThreadId, ThreadId>,
@@ -468,6 +468,16 @@ impl AgentNavigationState {
 
     pub(crate) fn clear_response_observation(&mut self, observer: ThreadId, target: ThreadId) {
         self.response_observations.remove(observer, target);
+    }
+
+    pub(crate) fn clear_response_observation_binding(
+        &mut self,
+        observer: ThreadId,
+        target: ThreadId,
+        binding: AgentResponseObservationBinding,
+    ) {
+        self.response_observations
+            .remove_binding(observer, target, binding);
     }
 
     pub(crate) fn reserve_prompt_response(&mut self, source: ThreadId, target: ThreadId) {

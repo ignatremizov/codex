@@ -355,6 +355,7 @@ mod tests {
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
         );
         state.track_current_turn_event(

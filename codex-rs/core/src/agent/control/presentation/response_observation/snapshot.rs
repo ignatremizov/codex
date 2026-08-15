@@ -73,6 +73,9 @@ impl AgentControl {
             commentary_after_sequences: Vec::new(),
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
+            target_messages: false,
+            queue_delivery: false,
+            message_wake_turn_id: None,
             baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery_response_item_id: None,
@@ -152,6 +155,9 @@ impl AgentControl {
             commentary_after_sequences: Vec::new(),
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
+            target_messages: false,
+            queue_delivery: false,
+            message_wake_turn_id: None,
             baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery_response_item_id: match commit.kind {
@@ -170,7 +176,7 @@ impl AgentControl {
         claimed_target_turns
             .iter()
             .flat_map(|target| {
-                let (_final_response, response_item_id) = self
+                let (_final_response, response_item_id, _queue_delivery) = self
                     .prepare_final_response_observation_delivery(
                         parent,
                         target.child,
@@ -217,6 +223,9 @@ fn response_observation_snapshots_for_relationship(
         commentary_after_sequences: Vec::new(),
         commentary_admissions: pending.commentary_admissions.clone(),
         commentary_delivery: pending.commentary_delivery.clone(),
+        target_messages: pending.target_messages,
+        queue_delivery: pending.queue_delivery,
+        message_wake_turn_id: pending.message_wake_turn_id.clone(),
         baseline_final_delivery: relationship.baseline_final_response.into(),
         final_delivery: pending.final_response.into(),
         final_delivery_response_item_id: pending.final_delivery_response_item_id.clone(),
@@ -237,6 +246,9 @@ fn response_observation_snapshots_for_relationship(
                 commentary_after_sequences: Vec::new(),
                 commentary_admissions: observation.commentary_admissions.clone(),
                 commentary_delivery: observation.commentary_delivery.clone(),
+                target_messages: observation.target_messages,
+                queue_delivery: observation.queue_delivery,
+                message_wake_turn_id: observation.message_wake_turn_id.clone(),
                 baseline_final_delivery: relationship.baseline_final_response.into(),
                 final_delivery: observation.final_response.into(),
                 final_delivery_response_item_id: observation

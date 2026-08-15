@@ -34,6 +34,12 @@ pub enum TurnInput {
         content: Vec<UserInput>,
         client_id: Option<String>,
     },
+    /// Core-authored agent input whose transcript presentation is trusted
+    /// independently from its model-visible content.
+    AgentInput {
+        content: Vec<UserInput>,
+        presentation: crate::protocol::AgentInputPresentation,
+    },
     ResponseItem(ResponseItem),
     InterAgentCommunication(InterAgentCommunication),
 }
@@ -156,7 +162,7 @@ pub enum CyberAccessProgram {
 /// `final_output_json_schema` is a compatibility requirement: Core only
 /// accepts the steer if the active turn already uses the same schema. For
 /// child input, Core also compares root lineage to detect ambiguity.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TurnStartOptions {
     /// Source classification for the caller that starts a new turn.
     /// Ignored when the submitted input steers an active turn.

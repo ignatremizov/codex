@@ -20,8 +20,8 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
-use codex_rollout::RolloutItem;
 use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
+use codex_rollout::RolloutItem;
 use codex_rollout::persisted_rollout_items;
 
 use crate::AppendThreadItemsParams;
@@ -543,6 +543,7 @@ pub enum InMemoryThreadStoreFailure {
     AgentResponseObservationFlush,
     AgentResponseObservationHistoryRead,
     UserAgentTaskContextFlush,
+    TurnStartedAppend,
     ThreadMetadataUpdate,
 }
 
@@ -559,6 +560,7 @@ impl InMemoryThreadStoreFailure {
             Self::AgentResponseObservationFlush => "agent response observation flush",
             Self::AgentResponseObservationHistoryRead => "agent response observation history read",
             Self::UserAgentTaskContextFlush => "user agent task context flush",
+            Self::TurnStartedAppend => "turn started append",
             Self::ThreadMetadataUpdate => "thread metadata update",
         }
     }
@@ -601,6 +603,7 @@ struct InMemoryThreadStoreState {
     compacted_media_repair_flush_rollback: Option<(ThreadId, usize)>,
     fail_next_rollback_verification_read: bool,
     fail_next_rollback_response_read: bool,
+    user_agent_task_context_flush_failure: bool,
 }
 
 impl InMemoryThreadStore {
@@ -1168,6 +1171,9 @@ fn append_persisted_items_to_state(
                 if observation.promoted_task_context.is_some()
         )
     });
+    let appends_turn_started = persisted_items
+        .iter()
+        .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))));
     let planned_agent_response_observation_flush_failure = if appends_agent_response_observation
         && matches!(durability, InMemoryAppendDurability::Flushed)
         && state.agent_response_observation_flush_failures_remaining > 0
@@ -1266,11 +1272,24 @@ fn append_persisted_items_to_state(
                 Some(InMemoryThreadStoreFailure::AgentResponseObservationFlush)
             }
             Some(InMemoryThreadStoreFailure::UserAgentTaskContextFlush)
-                if appends_user_agent_task_context
-                    && matches!(durability, InMemoryAppendDurability::Flushed) =>
+                if appends_user_agent_task_context =>
             {
                 state.fail_next_operation = None;
-                Some(InMemoryThreadStoreFailure::UserAgentTaskContextFlush)
+                if matches!(durability, InMemoryAppendDurability::Flushed) {
+                    Some(InMemoryThreadStoreFailure::UserAgentTaskContextFlush)
+                } else {
+                    state.user_agent_task_context_flush_failure = true;
+                    None
+                }
+            }
+            Some(InMemoryThreadStoreFailure::TurnStartedAppend) if appends_turn_started => {
+                state.fail_next_operation = None;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::TurnStartedAppend.operation()
+                    ),
+                });
             }
             Some(
                 InMemoryThreadStoreFailure::CompactedMediaRepairAppend
@@ -1283,6 +1302,7 @@ fn append_persisted_items_to_state(
                 | InMemoryThreadStoreFailure::AgentResponseObservationFlush
                 | InMemoryThreadStoreFailure::AgentResponseObservationHistoryRead
                 | InMemoryThreadStoreFailure::UserAgentTaskContextFlush
+                | InMemoryThreadStoreFailure::TurnStartedAppend
                 | InMemoryThreadStoreFailure::ThreadMetadataUpdate,
             )
             | None => None,
@@ -1362,6 +1382,15 @@ impl ThreadStore for InMemoryThreadStore {
                     message: format!(
                         "injected in-memory thread-store {} failure",
                         InMemoryThreadStoreFailure::CompactedMediaRepairFlush.operation()
+                    ),
+                });
+            }
+            if state.user_agent_task_context_flush_failure {
+                state.user_agent_task_context_flush_failure = false;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::UserAgentTaskContextFlush.operation()
                     ),
                 });
             }

@@ -8,6 +8,7 @@
 //! shapes. It stays local to migration because core's live predicate also knows about dynamically
 //! registered contextual fragments that thread-store should not depend on.
 
+use std::borrow::Borrow;
 use std::collections::HashSet;
 
 use codex_protocol::ResponseItemId;
@@ -16,9 +17,6 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
-use codex_protocol::ResponseItemId;
-use std::borrow::Borrow;
-use std::collections::HashSet;
 
 /// Match the rollback boundaries used by non-paginated history reconstruction without
 /// treating every persisted lifecycle as a user turn. This intentionally stays
@@ -51,8 +49,7 @@ pub(super) fn drop_last_n_user_turns<T>(
     history: &mut Vec<T>,
     num_turns: u32,
     committed_response_item_ids: &HashSet<ResponseItemId>,
-)
-where
+) where
     T: Borrow<ResponseItem> + Clone,
 {
     if num_turns == 0 {

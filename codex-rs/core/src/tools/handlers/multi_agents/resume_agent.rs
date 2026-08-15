@@ -79,7 +79,7 @@ async fn handle_resume_agent(
     let task_name = resume_plan
         .ownership
         .transfers_ownership()
-        .then(|| format!("model-adopt-{}", uuid::Uuid::now_v7()));
+        .then(|| format!("model_adopt_{}", uuid::Uuid::now_v7().as_simple()));
     let resumed_session_source = thread_spawn_source(
         session.thread_id(),
         &turn.session_source,
@@ -116,6 +116,8 @@ async fn handle_resume_agent(
                 status: CollabAgentToolCallStatus::InProgress,
                 observe_commentary: Some(args.w.commentary()),
                 wake_on_completion: args.w.wake_on_completion_item_value(),
+                target_messages: Some(args.w.target_messages()),
+                queue_input: Some(args.w.queue_input()),
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![receiver_thread_id],
@@ -196,6 +198,8 @@ async fn handle_resume_agent(
                 status: collab_tool_call_status(&status, Some(receiver_thread_id)),
                 observe_commentary: Some(args.w.commentary()),
                 wake_on_completion: args.w.wake_on_completion_item_value(),
+                target_messages: Some(args.w.target_messages()),
+                queue_input: Some(args.w.queue_input()),
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id(),
                 receiver_thread_ids: vec![receiver_thread_id],

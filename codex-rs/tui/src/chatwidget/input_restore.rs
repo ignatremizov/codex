@@ -245,21 +245,13 @@ impl ChatWidget {
             }
         }
 
-        // The server has already discarded pending input by the time the
-        // interrupted turn reaches the UI, so any unacknowledged steers still
-        // tracked here must be restored locally instead of waiting for a later commit.
+        // Core carries accepted steers into one automatic continuation turn after interrupt.
+        // Keep those optimistic entries until their canonical user-message events arrive instead
+        // of submitting duplicate input.
         if send_pending_steers_immediately {
-            let pending_steers = self
-                .input_queue
-                .pending_steers
-                .drain(..)
-                .map(|pending| (pending.user_message, pending.history_record))
-                .collect::<Vec<_>>();
-            if !pending_steers.is_empty() {
-                let (user_message, history_record) =
-                    merge_user_messages_with_history_record(pending_steers);
-                self.submit_user_message_with_history_record(user_message, history_record);
-            } else if let Some(combined) = self.drain_pending_messages_for_restore() {
+            if self.input_queue.pending_steers.is_empty()
+                && let Some(combined) = self.drain_pending_messages_for_restore()
+            {
                 self.restore_composer_state(combined);
             }
         } else if let Some(combined) = self.drain_pending_messages_for_restore() {

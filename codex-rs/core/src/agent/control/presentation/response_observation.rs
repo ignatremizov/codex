@@ -1,6 +1,8 @@
 use super::*;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::AgentResponseCommentaryAdmission;
 use codex_protocol::protocol::AgentResponseCommentaryDelivery;
 use codex_protocol::protocol::AgentResponseObservation;
@@ -8,12 +10,19 @@ use codex_protocol::protocol::AgentResponseObservation;
 mod delivery;
 mod snapshot;
 
+pub(crate) use self::delivery::ResponseObservationTurnBinding;
+
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ResponseTurnObservation {
     pub(super) task_preview: Option<String>,
     pub(super) commentary_admissions: Vec<AgentResponseCommentaryAdmission>,
     pub(super) commentary_delivery: Option<AgentResponseCommentaryDelivery>,
+    pub(super) commentary_delivery_route: CommentaryDeliveryRoute,
     pub(super) final_response: FinalResponseObservation,
+    pub(super) target_messages: bool,
+    pub(super) queue_delivery: bool,
+    pub(super) message_wake_reservation_id: Option<Uuid>,
+    pub(super) message_wake_turn_id: Option<String>,
     pub(super) final_delivery_response_item_id: Option<ResponseItemId>,
     pub(super) committed_delivery_response_item_ids: Vec<ResponseItemId>,
 }
@@ -24,11 +33,24 @@ impl Default for ResponseTurnObservation {
             task_preview: None,
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
+            commentary_delivery_route: CommentaryDeliveryRoute::Undecided,
             final_response: FinalResponseObservation::None,
+            target_messages: false,
+            queue_delivery: false,
+            message_wake_reservation_id: None,
+            message_wake_turn_id: None,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::agent::control) enum CommentaryDeliveryRoute {
+    #[default]
+    Undecided,
+    Mailbox,
+    Wait,
 }
 
 impl ResponseTurnObservation {
@@ -60,6 +82,14 @@ impl ResponseTurnObservation {
                 });
         }
         self.final_response = self.final_response.max(policy.final_response());
+        if policy.target_messages() {
+            if !self.target_messages {
+                self.message_wake_reservation_id = None;
+                self.message_wake_turn_id = None;
+            }
+            self.target_messages = true;
+        }
+        self.queue_delivery |= policy.queue_input();
     }
 }
 
@@ -141,7 +171,7 @@ pub(in crate::agent::control) struct PreparedFinalResponseObservationReplacement
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::agent) enum ReplacedFinalResponseObservationBinding {
+pub(crate) enum ReplacedFinalResponseObservationBinding {
     ActiveTurn,
     NextTurn,
     UndeliveredCompletion,
@@ -229,6 +259,206 @@ impl AgentControl {
             .is_some_and(|observation| observation.final_response == FinalResponseObservation::Wake)
     }
 
+    pub(crate) fn target_message_admission(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+        target_turn_id: &str,
+        observer_active_turn_id: Option<&str>,
+        observer_last_terminal_turn_id: Option<&str>,
+        mode: TargetMessageAdmissionMode,
+    ) -> CodexResult<TargetMessageAdmission> {
+        let may_steer = mode == TargetMessageAdmissionMode::SteerOrWake;
+        let mut state = self.wait_agent_presentations.state();
+        let observation = state
+            .response_observation_by_observer_child
+            .get_mut(&(observer, target))
+            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
+            .filter(|observation| observation.target_messages)
+            .ok_or_else(|| {
+                CodexErr::InvalidRequest(format!(
+                    "agent {} has no message route to {} for turn {target_turn_id}",
+                    target.thread_id, observer.thread_id
+                ))
+            })?;
+        if observation.message_wake_reservation_id.is_some() {
+            return if observer_active_turn_id.is_some() && may_steer {
+                Ok(TargetMessageAdmission::Steer)
+            } else {
+                Ok(TargetMessageAdmission::PendingWake)
+            };
+        }
+        match observation.message_wake_turn_id.as_deref() {
+            None if observer_active_turn_id.is_some() && may_steer => {
+                Ok(TargetMessageAdmission::Steer)
+            }
+            None => {
+                let reservation_id = Uuid::now_v7();
+                observation.message_wake_reservation_id = Some(reservation_id);
+                Ok(TargetMessageAdmission::Wake(reservation_id))
+            }
+            Some(wake_turn_id) if observer_active_turn_id == Some(wake_turn_id) && may_steer => {
+                Ok(TargetMessageAdmission::Steer)
+            }
+            Some(wake_turn_id) if observer_last_terminal_turn_id == Some(wake_turn_id) => {
+                Err(CodexErr::InvalidRequest(format!(
+                    "agent message route to {} already used its idle wake",
+                    observer.thread_id
+                )))
+            }
+            Some(_) if observer_active_turn_id.is_none() && may_steer => {
+                Ok(TargetMessageAdmission::PendingWake)
+            }
+            Some(_) => Err(CodexErr::InvalidRequest(format!(
+                "agent message route to {} belongs to another source turn",
+                observer.thread_id
+            ))),
+        }
+    }
+
+    pub(crate) fn target_message_binding_pending(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+    ) -> bool {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(observer, target))
+            .is_some_and(|relationship| {
+                relationship
+                    .pending_next_turn
+                    .as_ref()
+                    .is_some_and(|observation| observation.target_messages)
+                    || relationship
+                        .pending_admissions
+                        .values()
+                        .any(|observation| observation.target_messages)
+            })
+    }
+
+    pub(crate) fn response_observation_changed(&self) -> &Notify {
+        &self.wait_agent_presentations.response_observation_changed
+    }
+
+    pub(crate) fn commit_target_message_wake(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+        target_turn_id: &str,
+        reservation_id: Uuid,
+        wake_turn_id: &str,
+    ) -> bool {
+        let mut state = self.wait_agent_presentations.state();
+        let Some(observation) = state
+            .response_observation_by_observer_child
+            .get_mut(&(observer, target))
+            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
+            .filter(|observation| observation.target_messages)
+        else {
+            return false;
+        };
+        if observation.message_wake_reservation_id != Some(reservation_id) {
+            return false;
+        }
+        observation.message_wake_reservation_id = None;
+        let committed = match observation.message_wake_turn_id.as_deref() {
+            None => {
+                observation.message_wake_turn_id = Some(wake_turn_id.to_string());
+                true
+            }
+            Some(existing) => existing == wake_turn_id,
+        };
+        drop(state);
+        if committed {
+            self.wait_agent_presentations
+                .response_observation_changed
+                .notify_waiters();
+        }
+        committed
+    }
+
+    pub(crate) fn rollback_target_message_wake_reservation(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+        target_turn_id: &str,
+        reservation_id: Uuid,
+    ) {
+        let mut state = self.wait_agent_presentations.state();
+        let changed = if let Some(observation) = state
+            .response_observation_by_observer_child
+            .get_mut(&(observer, target))
+            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
+            && observation.message_wake_reservation_id == Some(reservation_id)
+        {
+            observation.message_wake_reservation_id = None;
+            true
+        } else {
+            false
+        };
+        drop(state);
+        if changed {
+            self.wait_agent_presentations
+                .response_observation_changed
+                .notify_waiters();
+        }
+    }
+
+    pub(crate) fn finish_target_message_wake(
+        &self,
+        observer: SessionPresentationId,
+        wake_turn_id: &str,
+    ) {
+        let mut changed_children = Vec::new();
+        let mut state = self.wait_agent_presentations.state();
+        for ((parent, child), relationship) in &mut state.response_observation_by_observer_child {
+            if *parent != observer {
+                continue;
+            }
+            for observation in relationship.turns.values_mut() {
+                if observation.message_wake_turn_id.as_deref() == Some(wake_turn_id)
+                    && observation.target_messages
+                {
+                    observation.target_messages = false;
+                    observation.message_wake_reservation_id = None;
+                    changed_children.push(*child);
+                }
+            }
+        }
+        drop(state);
+        if changed_children.is_empty() {
+            return;
+        }
+        changed_children.sort_by_key(|child| (child.thread_id.to_string(), child.instance_id));
+        changed_children.dedup();
+        self.wait_agent_presentations
+            .response_observation_changed
+            .notify_waiters();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let control = self.clone();
+            let wake_turn_id = wake_turn_id.to_string();
+            runtime.spawn(async move {
+                let _transaction = control
+                    .acquire_response_observation_transaction(observer)
+                    .await;
+                for child in changed_children {
+                    if !control
+                        .persist_response_observation_snapshot(observer, child)
+                        .await
+                    {
+                        tracing::warn!(
+                            observer_thread_id = %observer.thread_id,
+                            target_thread_id = %child.thread_id,
+                            wake_turn_id,
+                            "failed to persist completed agent-message wake state"
+                        );
+                    }
+                }
+            });
+        }
+    }
+
     pub(in crate::agent::control) fn pending_next_turn_response_observation(
         &self,
         observer: SessionPresentationId,
@@ -240,9 +470,11 @@ impl AgentControl {
             .get(&(observer, target))
             .and_then(|relationship| relationship.pending_next_turn.as_ref())
             .map(|observation| {
-                ResponseObservationPolicy::from_parts(
+                ResponseObservationPolicy::from_turn_parts(
                     /*commentary*/ !observation.commentary_admissions.is_empty(),
                     observation.final_response,
+                    observation.target_messages,
+                    observation.queue_delivery,
                 )
             })
     }
@@ -318,6 +550,7 @@ impl AgentControl {
             .notify_waiters();
     }
 
+    #[cfg(test)]
     pub(in crate::agent::control) fn replace_final_response_observation(
         &self,
         parent: SessionPresentationId,
@@ -575,11 +808,13 @@ impl AgentControl {
         admission: &Arc<SubmissionAdmission>,
         observation: &AgentResponseObservation,
     ) -> Option<CompletionWatcherRegistration> {
-        let policy = ResponseObservationPolicy::from_parts(
+        let policy = ResponseObservationPolicy::from_turn_parts(
             observation.pending_commentary
                 || !observation.commentary_after_sequences.is_empty()
                 || !observation.commentary_admissions.is_empty(),
             observation.final_delivery.into(),
+            observation.target_messages,
+            observation.queue_delivery,
         );
         let binding = ResponseObservationBinding::NextTurn;
         let registration = self.register_response_watcher_with_admission(
@@ -624,6 +859,9 @@ impl AgentControl {
                     .collect();
             }
             turn_observation.commentary_delivery = observation.commentary_delivery.clone();
+            turn_observation.target_messages = observation.target_messages;
+            turn_observation.queue_delivery = observation.queue_delivery;
+            turn_observation.message_wake_turn_id = observation.message_wake_turn_id.clone();
             turn_observation.final_delivery_response_item_id =
                 observation.final_delivery_response_item_id.clone();
             turn_observation.committed_delivery_response_item_ids =

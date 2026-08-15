@@ -5,17 +5,18 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use tokio::sync::Notify;
 
 #[derive(Default)]
-pub(super) struct AgentExecutionLimiter {
+pub(crate) struct AgentExecutionLimiter {
     active: AtomicUsize,
     max_threads: OnceLock<usize>,
+    changed: Notify,
 }
 
 pub(crate) struct AgentExecutionGuard {
@@ -25,6 +26,7 @@ pub(crate) struct AgentExecutionGuard {
 impl Drop for AgentExecutionGuard {
     fn drop(&mut self) {
         self.limiter.active.fetch_sub(1, Ordering::AcqRel);
+        self.limiter.changed.notify_waiters();
     }
 }
 
@@ -37,15 +39,6 @@ impl AgentControl {
             .await
     }
 
-    pub(crate) async fn ensure_execution_capacity_for_op(
-        &self,
-        thread_id: ThreadId,
-        op: &Op,
-    ) -> CodexResult<()> {
-        self.ensure_execution_capacity_for_thread_start(thread_id, op_starts_turn(op))
-            .await
-    }
-
     pub(super) async fn ensure_execution_capacity_for_thread_start(
         &self,
         thread_id: ThreadId,
@@ -55,7 +48,7 @@ impl AgentControl {
             return Ok(());
         }
         let state = self.upgrade()?;
-        let thread = state.get_thread(thread_id).await?;
+        let thread = state.get_thread_including_pending(thread_id).await?;
         self.ensure_execution_capacity_for_retained_thread_start(&thread)
             .await
     }
@@ -100,6 +93,10 @@ impl AgentControl {
         is_execution_limited(multi_agent_version, session_source)
             .then(|| Arc::clone(&self.agent_execution_limiter).guard())
     }
+
+    pub(super) async fn wait_for_execution_capacity(&self) {
+        self.agent_execution_limiter.wait_for_capacity().await;
+    }
 }
 
 impl AgentExecutionLimiter {
@@ -119,11 +116,18 @@ impl AgentExecutionLimiter {
         self.active.fetch_add(1, Ordering::AcqRel);
         AgentExecutionGuard { limiter: self }
     }
-}
 
-fn op_starts_turn(op: &Op) -> bool {
-    matches!(op, Op::UserInput { .. })
-        || matches!(op, Op::InterAgentCommunication { communication } if communication.trigger_turn)
+    async fn wait_for_capacity(&self) {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.has_capacity() {
+                return;
+            }
+            changed.await;
+        }
+    }
 }
 
 fn is_execution_limited(

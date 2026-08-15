@@ -1,4 +1,5 @@
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::AgentStatus;
 use serde::Deserialize;
 
 const MESSAGE_TYPE_PREFIX: &str = "Message Type: ";
@@ -9,11 +10,19 @@ const SUB_AGENT_COMMENTARY_PREFIX: &str = "<subagent_commentary>\n";
 const SUB_AGENT_COMMENTARY_SUFFIX: &str = "\n</subagent_commentary>";
 const SUB_AGENT_COMMENTARY_TRANSCRIPT_PREFIX: &str = "Agent commentary from `";
 const SUB_AGENT_COMMENTARY_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
+const ATTRIBUTED_AGENT_MESSAGE_TRANSCRIPT_PREFIX: &str = "Agent message from `";
+const ATTRIBUTED_AGENT_MESSAGE_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
 
 #[derive(Deserialize)]
 struct SubAgentCommentaryEnvelope {
     agent_id: ThreadId,
     message: String,
+}
+
+#[derive(Deserialize)]
+struct SubAgentNotificationEnvelope {
+    agent_id: ThreadId,
+    status: AgentStatus,
 }
 
 pub(super) fn transcript_text(author: &str, recipient: &str, text: &str) -> String {
@@ -35,10 +44,24 @@ pub(super) fn transcript_text(author: &str, recipient: &str, text: &str) -> Stri
     }
 }
 
+pub(super) fn sub_agent_notification(text: &str) -> Option<(ThreadId, AgentStatus)> {
+    let body = text
+        .strip_prefix("<subagent_notification>\n")?
+        .strip_suffix("\n</subagent_notification>")?;
+    let notification = serde_json::from_str::<SubAgentNotificationEnvelope>(body).ok()?;
+    Some((notification.agent_id, notification.status))
+}
+
 /// Parses canonical V1 subagent commentary transcript text into agent identity and message.
 pub fn sub_agent_commentary_transcript_parts(text: &str) -> Option<(&str, &str)> {
     text.strip_prefix(SUB_AGENT_COMMENTARY_TRANSCRIPT_PREFIX)?
         .split_once(SUB_AGENT_COMMENTARY_TRANSCRIPT_SEPARATOR)
+}
+
+/// Parses canonical attributed V1 agent input into agent identity and message.
+pub fn attributed_agent_message_transcript_parts(text: &str) -> Option<(&str, &str)> {
+    text.strip_prefix(ATTRIBUTED_AGENT_MESSAGE_TRANSCRIPT_PREFIX)?
+        .split_once(ATTRIBUTED_AGENT_MESSAGE_TRANSCRIPT_SEPARATOR)
 }
 
 fn sub_agent_commentary_envelope(text: &str) -> Option<SubAgentCommentaryEnvelope> {

@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use tracing::warn;
 
 #[derive(Default)]
-pub(super) struct V2Residency {
+pub(crate) struct V2Residency {
     state: Mutex<V2ResidencyState>,
 }
 
@@ -73,7 +73,7 @@ impl AgentControl {
         state: &Arc<ThreadManagerState>,
         thread_id: ThreadId,
     ) {
-        if let Ok(thread) = state.get_thread(thread_id).await
+        if let Ok(thread) = state.get_thread_including_pending(thread_id).await
             && is_resident_candidate(thread.as_ref())
         {
             self.v2_residency.touch(thread_id);
@@ -144,13 +144,23 @@ impl V2Residency {
                 continue;
             };
             let Some(candidate_thread) = manager
-                .get_thread(candidate_thread_id)
+                .get_thread_including_pending(candidate_thread_id)
                 .await
                 .ok()
                 .filter(|thread| is_resident_candidate(thread))
             else {
                 continue;
             };
+            // Queue insertion and admission use this same lifecycle boundary. A pending entry
+            // therefore pins the target until its worker starts the next turn or cancels it;
+            // unloading here would make the worker mistake capacity eviction for explicit close.
+            if manager
+                .agent_turn_queue
+                .has_pending_involving(candidate_thread_id)
+            {
+                self.touch(candidate_thread_id);
+                continue;
+            }
             if !is_unloadable(candidate_thread.as_ref()).await {
                 self.touch(candidate_thread_id);
                 continue;

@@ -336,30 +336,35 @@ impl App {
                 true
             }
             Err(err) => {
-                if existing_entry.is_none() && !has_replay_channel {
-                    self.agent_navigation.remove(thread_id);
-                    return false;
-                }
                 let is_closed = Self::closed_state_for_thread_read_error(
                     &err,
                     existing_entry.as_ref().map(|entry| entry.is_closed),
                 );
                 if let Some(entry) = existing_entry {
+                    if !has_replay_channel && is_closed {
+                        self.agent_navigation.remove(thread_id);
+                        return false;
+                    }
                     self.upsert_agent_picker_thread(
                         thread_id,
                         entry.agent_nickname,
                         entry.agent_role,
                         is_closed,
                     );
-                } else {
+                    self.agent_navigation
+                        .set_running(thread_id, /*is_running*/ false);
+                    !is_closed
+                } else if has_replay_channel {
                     self.upsert_agent_picker_thread(
                         thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                        is_closed,
+                        /*is_closed*/ true,
                     );
+                    self.agent_navigation
+                        .set_running(thread_id, /*is_running*/ false);
+                    false
+                } else {
+                    false
                 }
-                self.agent_navigation
-                    .set_running(thread_id, /*is_running*/ false);
-                true
             }
         }
     }

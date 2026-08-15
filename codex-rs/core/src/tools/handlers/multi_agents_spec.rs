@@ -20,8 +20,9 @@ const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
     "Model override for the new agent. Omit unless an explicit override is needed.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
-const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional response handling for target agent turn. Omit for normal passive delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically. Continue parallel work, or finish your current turn to wait; completion wakes you when idle. f and wait_agent are alternatives for same target turn. x: do not subscribe this call to final reply; use to notify parent mid-turn so parent's later completion is not injected into current task. Can combine as cf or cx.";
-const RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION: &str = "Same response handling as send_input.w.";
+const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional target-turn handling. Omit for passive final delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. m: let target send attributed input back during this turn; at most one message may wake you when idle, and later messages only steer that wake turn. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags may combine in cfmqx order.";
+const RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION: &str =
+    "Same target-turn handling as send_input.w.";
 const MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION: usize = 5;
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
 
@@ -171,7 +172,7 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
         (
             "interrupt".to_string(),
             JsonSchema::boolean(Some(
-                "True interrupts the current task and handles this message immediately; false or omitted queues it."
+                "True interrupts the current task and handles this message immediately; false or omitted steers active work unless w contains q."
                     .to_string(),
             )),
         ),
@@ -312,7 +313,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
         description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "wait_agent".to_string(),
-            description: "Wait when a result is required before next action or a timeout is useful. Returns when any target reaches final status or timeout expires; completed status includes final message. For same target turn, wait_agent and w containing f are alternatives, not a sequence; an f subscription remains active through commentary and other work until completion."
+            description: "Wait when a result is required before next action or a timeout is useful. Returns when any target reaches final status or timeout expires; completed status includes final message. For same target turn, wait_agent and w containing f are alternatives, not a sequence; an f subscription remains active through commentary and other work until completion. A q reply arrives in your next turn; wait_agent can return for the preceding target turn before queue admission."
                 .to_string(),
             strict: false,
             defer_loading: None,
@@ -356,23 +357,29 @@ pub fn create_list_agents_tool() -> ToolSpec {
 }
 
 pub fn create_close_agent_tool_v1() -> ToolSpec {
-    let properties = BTreeMap::from([(
-        "target".to_string(),
-        JsonSchema::string(Some("Agent to close.".to_string())),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "target".to_string(),
+            JsonSchema::string(Some("Agent to close.".to_string())),
+        ),
+        (
+            "w".to_string(),
+            response_observation_schema(
+                "Optional completed-response handling. Omit for passive replay when the exact response is absent from current model context. f: wake for replay. q: queue replay for your next turn. x: keep replay presentation-only. c and m have no effect because close starts no target turn. Flags may combine in cfmqx order.",
+            ),
+        ),
+    ]);
 
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: MULTI_AGENT_V1_NAMESPACE.to_string(),
         description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "close_agent".to_string(),
-            description: "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore. Cannot target current thread; return your result instead.".to_string(),
+            description: "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. A completed response is replayed only when it is absent from current model context; use w to change that replay handling. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore. Cannot target current thread; return your result instead.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(properties, Some(vec!["target".to_string()]), Some(false.into())),
-            output_schema: Some(agent_previous_status_output_schema(
-                "The agent status observed before shutdown was requested.",
-            )),
+            output_schema: Some(close_agent_output_schema()),
         })],
     })
 }
@@ -488,7 +495,7 @@ fn send_input_output_schema() -> Value {
         "properties": {
             "submission_id": {
                 "type": "string",
-                "description": "Identifier for the queued input submission."
+                "description": "Identifier for the accepted input or queued turn."
             }
         },
         "required": ["submission_id"],
@@ -587,6 +594,24 @@ fn agent_previous_status_output_schema(previous_status_description: &str) -> Val
             }
         },
         "required": ["previous_status"],
+        "additionalProperties": false
+    })
+}
+
+fn close_agent_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "previous_status": {
+                "description": "The agent status observed before shutdown was requested. A completed payload is omitted when delivered separately, already visible, queued, or presentation-only.",
+                "allOf": [agent_status_output_schema()]
+            },
+            "response_delivery": {
+                "type": "string",
+                "description": "How the completed response was handled."
+            }
+        },
+        "required": ["previous_status", "response_delivery"],
         "additionalProperties": false
     })
 }

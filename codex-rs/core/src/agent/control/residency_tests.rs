@@ -1,8 +1,11 @@
 use crate::StartThreadOptions;
 use crate::ThreadManager;
 use crate::agent::AgentControl;
+use crate::agent::control::AgentControlInput;
 use crate::agent::control::InitialTerminalObservation;
+use crate::agent::control::ResponseObserverKind;
 use crate::agent::response_observation::ResponseObservationPolicy;
+use crate::agent::turn_queue::QueuedAgentTurn;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::test_config;
@@ -21,8 +24,10 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
@@ -134,7 +139,7 @@ async fn residency_does_not_evict_an_agent_with_an_owned_lifecycle_boundary() {
 }
 
 #[tokio::test]
-async fn interrupted_v2_agent_reloads_after_residency_eviction() {
+async fn residency_does_not_evict_an_agent_with_a_queued_turn() {
     let mut config = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.max_concurrent_threads_per_session = 2;
@@ -152,6 +157,84 @@ async fn interrupted_v2_agent_reloads_after_residency_eviction() {
         .await
         .expect("start root thread");
     let control = manager.agent_control();
+    let state = control.upgrade().expect("thread manager should be live");
+    let first_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("first resident slot");
+    let first =
+        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker-1").await;
+    first_slot.commit(first.thread_id);
+    mark_thread_completed(first.thread.as_ref()).await;
+    let queue_id = Uuid::now_v7();
+    assert!(state.agent_turn_queue.enqueue(QueuedAgentTurn {
+        id: queue_id,
+        control: control.clone(),
+        source: root.thread.session.presentation_id(),
+        target_thread_id: first.thread_id,
+        input: AgentControlInput::User(vec![UserInput::Text {
+            text: "queued work".to_string(),
+            text_elements: Vec::new(),
+        }]),
+        start_options: Default::default(),
+        response_observation: ResponseObservationPolicy::default(),
+        task_preview: Some("queued work".to_string()),
+        authored_selector: None,
+        target_message_wake: None,
+    }));
+
+    let reservation = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await;
+    let Err(err) = reservation else {
+        panic!("queued work should prevent residency eviction");
+    };
+    assert_matches::assert_matches!(err.details(), CodexErrorDetails::AgentLimitReached { .. });
+    let still_loaded = manager
+        .get_thread(first.thread_id)
+        .await
+        .expect("queued resident should remain loaded");
+    assert!(Arc::ptr_eq(&still_loaded, &first.thread));
+
+    assert!(
+        state
+            .agent_turn_queue
+            .cancel(control.session_id(), queue_id)
+    );
+    assert!(state.agent_turn_queue.stop_worker_if_empty(first.thread_id));
+    let replacement_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("resident should become evictable after queue cancellation");
+    drop(replacement_slot);
+    let Err(err) = manager.get_thread(first.thread_id).await else {
+        panic!("released resident should be evicted");
+    };
+    assert_matches::assert_matches!(
+        err.details(),
+        CodexErrorDetails::ThreadNotFound(thread_id) if *thread_id == first.thread_id
+    );
+}
+
+#[tokio::test]
+async fn interrupted_v2_agent_reloads_after_residency_eviction() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root thread");
+    let control = root.thread.session.services.agent_control.clone();
     let state = control.upgrade().expect("thread manager should be live");
 
     let first_slot = control
@@ -300,7 +383,7 @@ async fn completed_v2_eviction_does_not_rebind_retired_foreign_v1_watcher() {
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start root thread");
-    let child_owner = manager.agent_control();
+    let child_owner = root.thread.session.services.agent_control.clone();
     let foreign_observer = manager.agent_control();
     let state = child_owner
         .upgrade()
@@ -346,13 +429,6 @@ async fn completed_v2_eviction_does_not_rebind_retired_foreign_v1_watcher() {
         )
         .await
         .expect("foreign V1 watcher should attach");
-    assert!(
-        !Arc::ptr_eq(
-            &child_owner.wait_agent_presentations,
-            &foreign_observer.wait_agent_presentations,
-        ),
-        "test requires distinct owner and observer presentation registries"
-    );
     mark_thread_completed(first.thread.as_ref()).await;
 
     let pending_slot = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -397,8 +473,8 @@ async fn completed_v2_eviction_does_not_rebind_retired_foreign_v1_watcher() {
     let reloaded_presentation = reloaded.session.presentation_id();
     assert_ne!(reloaded_presentation, first_presentation);
     assert!(
-        !foreign_observer.has_completion_watcher(root_presentation, reloaded_presentation),
-        "completed one-shot V1 observation must not subscribe to a later reloaded runtime"
+        child_owner.has_completion_watcher(root_presentation, reloaded_presentation),
+        "the reloaded V2 runtime should retain its native owner watcher"
     );
     assert!(
         foreign_observer

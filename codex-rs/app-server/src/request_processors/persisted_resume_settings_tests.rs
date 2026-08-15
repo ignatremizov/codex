@@ -12,6 +12,7 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::TurnContextItem;
+use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout::RolloutItem;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -87,6 +88,17 @@ fn turn_context_item(
     })
 }
 
+fn turn_started_item(turn_id: &str) -> RolloutItem {
+    RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+        turn_id: turn_id.to_string(),
+        trace_id: None,
+        started_at: None,
+        model_context_window: None,
+        collaboration_mode_kind: ModeKind::Default,
+        agent_queue: None,
+    }))
+}
+
 #[test]
 fn latest_settings_snapshot_wins() {
     let expected = PersistedResumeSettings {
@@ -159,4 +171,29 @@ fn older_reviewer_is_used_when_latest_turn_context_omits_it() {
             active_permission_profile: None,
         })
     );
+}
+
+#[test]
+fn settings_applied_during_turn_win_over_stale_turn_context() {
+    let expected = PersistedResumeSettings {
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+        active_permission_profile: Some(ActivePermissionProfile::new("dev")),
+    };
+    let history = vec![
+        turn_started_item("turn-1"),
+        settings_item(
+            AskForApproval::Never,
+            ApprovalsReviewer::AutoReview,
+            Some(ActivePermissionProfile::new("dev")),
+        ),
+        turn_context_item(
+            "turn-1",
+            AskForApproval::OnRequest,
+            Some(ApprovalsReviewer::User),
+            Some(ActivePermissionProfile::read_only()),
+        ),
+    ];
+
+    assert_eq!(latest_persisted_resume_settings(&history), Some(expected));
 }

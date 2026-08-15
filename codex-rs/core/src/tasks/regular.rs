@@ -17,6 +17,7 @@ use tracing::trace_span;
 
 use super::SessionTask;
 use super::SessionTaskResult;
+use super::TaskStartupOutcome;
 
 #[derive(Default)]
 pub(crate) struct RegularTask;
@@ -36,6 +37,34 @@ impl SessionTask for RegularTask {
         "session_task.turn"
     }
 
+    async fn run_startup<'a>(
+        &'a self,
+        sess: Arc<Session>,
+        ctx: Arc<TurnContext>,
+        input: &'a [TurnInput],
+        cancellation_token: &'a CancellationToken,
+    ) -> TaskStartupOutcome {
+        let agent_queue = sess.await_agent_queue_turn_metadata(&ctx.sub_id).await;
+        sess.send_event(
+            ctx.as_ref(),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: ctx.sub_id.clone(),
+                trace_id: ctx.trace_id.clone(),
+                started_at: ctx.turn_timing_state.started_at_unix_secs().await,
+                model_context_window: ctx.model_context_window(),
+                collaboration_mode_kind: ctx.mode(),
+                agent_queue,
+            }),
+        )
+        .await;
+        if cancellation_token.is_cancelled() {
+            run_hooks_and_record_inputs(&sess, &ctx, input, PersistContext::Standard).await;
+            TaskStartupOutcome::Finish
+        } else {
+            TaskStartupOutcome::Run
+        }
+    }
+
     async fn run(
         self: Arc<Self>,
         sess: Arc<Session>,
@@ -44,18 +73,9 @@ impl SessionTask for RegularTask {
         cancellation_token: CancellationToken,
     ) -> SessionTaskResult {
         let run_turn_span = trace_span!("run_turn");
-        // Regular turns emit `TurnStarted` inline so first-turn lifecycle does
-        // not wait on startup prewarm resolution.
+        // The tracked startup phase emitted `TurnStarted`, so first-turn lifecycle does not wait
+        // on startup prewarm resolution.
         let prewarmed_client_session = async {
-            let event = EventMsg::TurnStarted(TurnStartedEvent {
-                turn_id: ctx.sub_id.clone(),
-                trace_id: ctx.trace_id.clone(),
-                started_at: ctx.turn_timing_state.started_at_unix_secs().await,
-                model_context_window: ctx.model_context_window(),
-                collaboration_mode_kind: ctx.mode(),
-                agent_queue: None,
-            });
-            sess.send_event(ctx.as_ref(), event).await;
             sess.set_server_reasoning_included(/*included*/ false).await;
             sess.consume_startup_prewarm_for_regular_turn(&cancellation_token)
                 .await

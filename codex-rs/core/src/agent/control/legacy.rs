@@ -104,9 +104,10 @@ impl AgentControl {
 
     /// Submit a shutdown request for a live agent without marking it explicitly closed in
     /// persisted spawn-edge state.
+    #[cfg(test)]
     pub(crate) async fn shutdown_live_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
-        let thread = match state.get_thread(agent_id).await {
+        let thread = match state.get_thread_including_pending(agent_id).await {
             Ok(thread) => thread,
             Err(err) => {
                 let _ = state
@@ -124,13 +125,23 @@ impl AgentControl {
 
     /// Mark `agent_id` as explicitly closed in persisted spawn-edge state, then shut down the
     /// agent and any live descendants reached from the in-memory tree.
+    #[cfg(test)]
     pub(crate) async fn close_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
+        self.close_agent_with_status(agent_id)
+            .await
+            .map(|_| String::new())
+    }
+
+    pub(crate) async fn close_agent_with_status(
+        &self,
+        agent_id: ThreadId,
+    ) -> CodexResult<ClosedAgent> {
         let state = self.upgrade()?;
         let lifecycle_lock = state.agent_lifecycle_lock(agent_id);
         let _lifecycle_guard = lifecycle_lock.lock_owned().await;
         self.require_current_agent_ownership(agent_id).await?;
         let known_agent = self.state.agent_metadata_for_thread(agent_id).is_some();
-        let target_thread = match state.get_thread(agent_id).await {
+        let target_thread = match state.get_thread_including_pending(agent_id).await {
             Ok(thread) => Some(thread),
             Err(err)
                 if known_agent
@@ -147,6 +158,10 @@ impl AgentControl {
         let persist_target_closed = match target_thread.as_ref() {
             Some(thread) => !thread.config_snapshot().await.ephemeral,
             None => known_agent,
+        };
+        let previous_status = match target_thread.as_ref() {
+            Some(thread) => thread.agent_status().await,
+            None => AgentStatus::NotFound,
         };
 
         // Membership changes take the direct parent's lifecycle lock before publishing or
@@ -174,7 +189,7 @@ impl AgentControl {
 
         let mut descendant_threads = Vec::new();
         for descendant_id in &descendant_ids {
-            match state.get_thread(*descendant_id).await {
+            match state.get_thread_including_pending(*descendant_id).await {
                 Ok(thread) => descendant_threads.push(thread),
                 Err(err)
                     if matches!(
@@ -184,12 +199,26 @@ impl AgentControl {
                 Err(err) => return Err(err),
             }
         }
+        let closed_thread_ids = std::iter::once(agent_id)
+            .chain(descendant_ids.iter().copied())
+            .collect::<Vec<_>>();
+        // Queue admission takes the target lifecycle boundary before this source boundary. Since
+        // the complete closing subtree is already locked, waiting here cannot invert that order.
+        // Once these guards are held, close can either fail without cancelling work or commit and
+        // cancel every prompt authored by the closing subtree before any worker admits it.
+        let _source_admission_guards = state
+            .agent_turn_queue
+            .acquire_source_admissions(closed_thread_ids.iter().copied())
+            .await;
 
         // Do not make a durable alias Closed, or revoke response delivery, until every currently
         // live subtree member has crossed a rollout durability barrier. A flush failure therefore
         // leaves the complete subtree active and retryable instead of publishing a partial close.
         for thread in target_thread.iter().chain(descendant_threads.iter()) {
-            thread.session.ensure_rollout_materialized().await;
+            thread
+                .session
+                .ensure_rollout_materialized(PersistContext::Standard)
+                .await;
             thread.session.flush_rollout().await?;
         }
         if persist_target_closed {
@@ -202,7 +231,10 @@ impl AgentControl {
         // Persisted descendant edges deliberately remain Open: explicitly resuming the closed
         // target may reopen its prior subtree, but every response relationship below is fresh.
         let mut affected_wake_observers = HashSet::new();
-        for closed_thread_id in std::iter::once(agent_id).chain(descendant_ids.iter().copied()) {
+        state
+            .agent_turn_queue
+            .cancel_for_threads(closed_thread_ids.iter().copied());
+        for closed_thread_id in closed_thread_ids {
             state.advance_agent_lifecycle_generation(closed_thread_id);
             affected_wake_observers
                 .extend(self.revoke_response_observations_for_child(closed_thread_id));
@@ -232,9 +264,9 @@ impl AgentControl {
                         CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
                     ) =>
             {
-                Ok(String::new())
+                Ok(ClosedAgent { previous_status })
             }
-            result => result,
+            result => result.map(|_| ClosedAgent { previous_status }),
         }
     }
 
@@ -252,7 +284,11 @@ impl AgentControl {
                 )
                 .await
             }
-            None => Err(CodexErr::ThreadNotFound(agent_id)),
+            None => {
+                self.forget_v2_residency(agent_id);
+                self.release_spawned_thread(SpawnedThreadRelease::AbsentThread(agent_id));
+                Err(CodexErr::ThreadNotFound(agent_id))
+            }
         };
         for thread in descendant_threads {
             match self

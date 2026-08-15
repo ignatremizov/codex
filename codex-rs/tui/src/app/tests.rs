@@ -141,6 +141,10 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MAX_THREAD_GOAL_OBJECTIVE_CHARS;
+use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::SessionMeta;
+use codex_protocol::protocol::SessionSource as RolloutSessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
@@ -330,6 +334,7 @@ async fn threadless_mcp_inventory_result_is_buffered_for_primary_thread_after_sw
         /*request_seq*/ None,
         Ok(vec![McpServerStatus {
             name: "docs".to_string(),
+            runtime_status: None,
             plugin_id: None,
             server_info: None,
             allow_implicit_invocation: true,
@@ -932,13 +937,124 @@ async fn inactive_thread_close_clears_queued_agent_prompts_without_draining_them
         Some(ThreadEventAttachment::ReplayOnly)
     );
     assert!(
-        std::iter::from_fn(|| app_event_rx.try_recv().ok()).all(|event| !matches!(
-            event,
-            AppEvent::DrainAgentPromptQueue {
-                target_thread_id
-            } if target_thread_id == thread_id
+        std::iter::from_fn(|| app_event_rx.try_recv().ok())
+            .all(|event| !matches!(event, AppEvent::RefreshAgentPromptQueue)),
+        "thread close must cancel queued work instead of refreshing it as pending"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn queued_start_merges_entry_handling_with_next_turn_reservation() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let source_thread_id = ThreadId::new();
+    let thread_id = ThreadId::new();
+    app.queued_agent_prompts.insert(thread_id, VecDeque::new());
+    app.agent_navigation.note_response_observation(
+        source_thread_id,
+        thread_id,
+        AgentResponseObservationBinding::NextTurn,
+        Some(codex_app_server_protocol::AgentResponseHandling::Wake),
+    );
+    app.agent_navigation
+        .reserve_prompt_response(source_thread_id, thread_id);
+    while app_event_rx.try_recv().is_ok() {}
+    let mut notification = turn_started_notification(thread_id, "turn-1");
+    let ServerNotification::TurnStarted(started) = &mut notification else {
+        unreachable!("helper returns turn/started")
+    };
+    started.agent_queue = Some(codex_app_server_protocol::AgentQueueTurnMetadata {
+        queue_id: "00000000-0000-7000-8000-000000000001".to_string(),
+        source_thread_id: source_thread_id.to_string(),
+        response_handling: Some(codex_app_server_protocol::AgentResponseHandling::new(
+            /*commentary*/ false,
+            codex_app_server_protocol::AgentFinalResponseHandling::Presentation,
+            /*target_messages*/ false,
+            /*queue_input*/ true,
         )),
-        "thread close must cancel queued work instead of scheduling admission"
+    });
+
+    app.enqueue_thread_notification(thread_id, notification)
+        .await?;
+
+    assert_eq!(
+        app.agent_navigation
+            .response_observation(source_thread_id, thread_id),
+        Some(
+            crate::app::agent_observation_display::AgentResponseObservationDisplay {
+                binding: AgentResponseObservationBinding::Bound,
+                commentary: false,
+                target_messages: false,
+                queue_delivery: true,
+                final_response:
+                    crate::app::agent_observation_display::AgentFinalResponseDisplay::Wake,
+            }
+        )
+    );
+    assert_eq!(app.agent_navigation.reserved_prompt_source(thread_id), None);
+    app.agent_navigation.mark_stopped(thread_id);
+    assert_eq!(
+        app.agent_navigation
+            .response_observation(source_thread_id, thread_id),
+        None
+    );
+    assert!(
+        std::iter::from_fn(|| app_event_rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::RefreshAgentPromptQueue)),
+        "starting a queued turn should remove its pre-admission queue row"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn degraded_queued_start_still_consumes_next_turn_reservation() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let source_thread_id = ThreadId::new();
+    let thread_id = ThreadId::new();
+    app.queued_agent_prompts.insert(thread_id, VecDeque::new());
+    app.agent_navigation.note_response_observation(
+        source_thread_id,
+        thread_id,
+        AgentResponseObservationBinding::NextTurn,
+        Some(codex_app_server_protocol::AgentResponseHandling::Wake),
+    );
+    app.agent_navigation
+        .reserve_prompt_response(source_thread_id, thread_id);
+    while app_event_rx.try_recv().is_ok() {}
+    let mut notification = turn_started_notification(thread_id, "turn-1");
+    let ServerNotification::TurnStarted(started) = &mut notification else {
+        unreachable!("helper returns turn/started")
+    };
+    started.agent_queue = Some(codex_app_server_protocol::AgentQueueTurnMetadata {
+        queue_id: "00000000-0000-7000-8000-000000000001".to_string(),
+        source_thread_id: source_thread_id.to_string(),
+        response_handling: None,
+    });
+
+    app.enqueue_thread_notification(thread_id, notification)
+        .await?;
+
+    assert_eq!(
+        app.agent_navigation
+            .response_observation(source_thread_id, thread_id),
+        Some(
+            crate::app::agent_observation_display::AgentResponseObservationDisplay {
+                binding: AgentResponseObservationBinding::Bound,
+                commentary: false,
+                target_messages: false,
+                queue_delivery: false,
+                final_response:
+                    crate::app::agent_observation_display::AgentFinalResponseDisplay::Wake,
+            }
+        )
+    );
+    assert_eq!(app.agent_navigation.reserved_prompt_source(thread_id), None);
+    assert!(
+        std::iter::from_fn(|| app_event_rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::RefreshAgentPromptQueue)),
+        "starting a degraded queued turn should still remove its pre-admission queue row"
     );
 
     Ok(())
@@ -2157,6 +2273,8 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
                 observe_commentary: None,
                 wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
@@ -2201,6 +2319,8 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
                 observe_commentary: Some(false),
                 wake_on_completion: Some(false),
+                target_messages: Some(false),
+                queue_input: Some(false),
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -2245,6 +2365,8 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
                         status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
                         observe_commentary,
                         wake_on_completion,
+                        target_messages: Some(false),
+                        queue_input: Some(false),
                         sender_thread_id: observer_thread_id.to_string(),
                         receiver_thread_ids: vec![receiver_thread_id.to_string()],
                         receiver_agents: Vec::new(),
@@ -2299,6 +2421,8 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: false,
+                target_messages: false,
+                queue_delivery: false,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Passive,
             }
@@ -2322,6 +2446,8 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: true,
+                target_messages: false,
+                queue_delivery: false,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Presentation,
             }
@@ -2518,6 +2644,7 @@ async fn picker_refresh_hydrates_root_and_keeps_transferred_aliases_inspectable(
                     state: codex_app_server_protocol::AgentAliasState::Transferred,
                 },
             ],
+            queued: Vec::new(),
         }),
     );
 
@@ -2866,7 +2993,7 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
 #[test]
 fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
     const WORKER_THREADS: usize = 1;
-    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+    const TEST_STACK_SIZE_BYTES: usize = 32 * 1024 * 1024;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(WORKER_THREADS)
@@ -2907,7 +3034,7 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
 #[test]
 fn selected_and_resumed_v1_and_v2_children_accept_direct_input() -> Result<()> {
     const WORKER_THREADS: usize = 1;
-    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+    const TEST_STACK_SIZE_BYTES: usize = 32 * 1024 * 1024;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(WORKER_THREADS)
@@ -4001,7 +4128,11 @@ async fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disable
     ))
     .await
     .expect("embedded app server");
-    let thread_id = ThreadId::new();
+    let thread_id = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?
+        .session
+        .thread_id;
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
@@ -4591,6 +4722,7 @@ async fn replayed_file_change_approval_recovers_snapshot_changes() {
                 },
             ))],
             input_state: None,
+            active_turn_timing: None,
         },
         /*resume_restored_queue*/ false,
     );
@@ -7138,6 +7270,7 @@ fn turn_started_notification(thread_id: ThreadId, turn_id: &str) -> ServerNotifi
             started_at: Some(0),
             ..test_turn(turn_id, TurnStatus::InProgress, Vec::new())
         },
+        agent_queue: None,
     })
 }
 
@@ -8872,6 +9005,8 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                                 codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
                             observe_commentary: None,
                             wake_on_completion: None,
+                            target_messages: None,
+                            queue_input: None,
                             sender_thread_id: ThreadId::new().to_string(),
                             receiver_thread_ids: vec![receiver_thread_id.to_string()],
                             receiver_agents: Vec::new(),
@@ -8926,6 +9061,8 @@ async fn metadata_free_collab_notification_preserves_cached_agent_label() {
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
                 observe_commentary: Some(false),
                 wake_on_completion: Some(false),
+                target_messages: Some(false),
+                queue_input: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {

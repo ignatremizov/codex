@@ -15,10 +15,10 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 use codex_rollout::CompactedItem;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
-use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 
 use super::migration_error;
 use super::rollback;
@@ -142,11 +142,9 @@ impl RollbackPlanner {
             self.pending_delivery_metadata_index,
             &line.item,
         ) {
-            (
-                Some(boundary),
-                Some(metadata_index),
-                RolloutItem::ResponseItem(response),
-            ) if matches!(&response.item, ResponseItem::AgentMessage { .. }) => {
+            (Some(boundary), Some(metadata_index), RolloutItem::ResponseItem(response))
+                if matches!(&response.item, ResponseItem::AgentMessage { .. }) =>
+            {
                 Some((boundary, metadata_index))
             }
             _ => None,

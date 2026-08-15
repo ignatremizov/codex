@@ -508,7 +508,7 @@ fn non_last_reasoning_tokens_return_zero_when_no_user_messages() {
     let history =
         create_history_with_items(vec![reasoning_with_encrypted_content(/*len*/ 800)]);
 
-    assert_eq!(history.get_non_last_reasoning_items_tokens(), 0);
+    assert_eq!(history.estimated_non_last_reasoning_items_tokens(), 0);
 }
 
 #[test]
@@ -523,7 +523,7 @@ fn non_last_reasoning_tokens_ignore_entries_after_last_user() {
     // first: (900 * 0.75 - 650) / 4 = 6.25 tokens
     // second: (1000 * 0.75 - 650) / 4 = 25 tokens
     // first + second = 62.5
-    assert_eq!(history.get_non_last_reasoning_items_tokens(), 32);
+    assert_eq!(history.estimated_non_last_reasoning_items_tokens(), 32);
 }
 
 #[test]
@@ -1238,7 +1238,7 @@ fn drop_last_n_user_turns_preserves_trusted_user_agent_task_context() {
     history.drop_last_n_user_turns(/*num_turns*/ 1);
 
     assert_eq!(
-        history.raw_items(),
+        raw_items(&history),
         vec![user_msg("u1"), assistant_msg("a1"), task]
     );
 }

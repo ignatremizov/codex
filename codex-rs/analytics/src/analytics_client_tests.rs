@@ -419,6 +419,7 @@ fn sample_turn_started_notification(thread_id: &str, turn_id: &str) -> ServerNot
             completed_at: None,
             duration_ms: None,
         },
+        agent_queue: None,
     })
 }
 
@@ -5206,6 +5207,7 @@ async fn image_generation_events_preserve_transparent_background_metadata() {
                         thread_id: "thread-2".to_string(),
                         turn_id: "turn-2".to_string(),
                         started_at_ms: 998,
+                        deadline_at_ms: None,
                         item: item.clone(),
                     },
                 ))),
@@ -5310,6 +5312,8 @@ async fn turn_event_counts_completed_tool_items() {
             status: CollabAgentToolCallStatus::Completed,
             observe_commentary: None,
             wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             sender_thread_id: "thread-2".to_string(),
             receiver_thread_ids: vec!["thread-child".to_string()],
             receiver_agents: Vec::new(),
@@ -5330,6 +5334,7 @@ async fn turn_event_counts_completed_tool_items() {
             kind: SubAgentActivityKind::Completed,
             agent_thread_id: "thread-child".to_string(),
             agent_path: "/root/child".to_string(),
+            prompt: None,
         },
         ThreadItem::WebSearch(WebSearchItem {
             id: "web-1".to_string(),

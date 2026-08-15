@@ -1,6 +1,8 @@
 use crate::CodexAppsToolsCache;
 use crate::agent::AgentControl;
+use crate::agent::control::WaitAgentPresentations;
 use crate::agent::control::setup_cleanup::SetupCleanupGuard;
+use crate::agent::turn_queue::AgentTurnQueue;
 use crate::attestation::AttestationProvider;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
@@ -13,6 +15,8 @@ use crate::rollout::truncation;
 use crate::session::ForkPersistence;
 use crate::session::GitEnrichmentPolicy;
 use crate::session::INITIAL_SUBMIT_ID;
+use crate::session::InputTurnAdmissionPolicy;
+use crate::session::STEER_ONLY_TARGET_ENDED_ERROR;
 use crate::session::SessionIo;
 use crate::session::SessionSpawnArgs;
 use crate::session::resolve_multi_agent_version;
@@ -73,8 +77,11 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
-use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
+use codex_protocol::turn_input::TurnInput;
+use codex_protocol::turn_input::TurnInputMode;
+use codex_protocol::turn_input::TurnInputRequest;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_rollout::state_db::StateDbHandle;
 use codex_skills_extension::HostSkillsService;
 use codex_thread_store::InMemoryThreadStore;
@@ -141,8 +148,48 @@ fn capture_test_op(op: &Op) -> Option<Op> {
             communication: communication.clone(),
             start_options: start_options.clone(),
         }),
+        Op::UserInput {
+            items,
+            final_output_json_schema,
+            responsesapi_client_metadata,
+            additional_context,
+            thread_settings,
+        } => Some(Op::UserInput {
+            items: items.clone(),
+            final_output_json_schema: final_output_json_schema.clone(),
+            responsesapi_client_metadata: responsesapi_client_metadata.clone(),
+            additional_context: additional_context.clone(),
+            thread_settings: thread_settings.clone(),
+        }),
+        Op::AgentInput {
+            items,
+            presentation,
+        } => Some(Op::AgentInput {
+            items: items.clone(),
+            presentation: presentation.clone(),
+        }),
         Op::Shutdown => Some(Op::Shutdown),
         _ => None,
+    }
+}
+
+fn capture_turn_input_request_for_test(request: &TurnInputRequest) -> Option<Op> {
+    match &request.input {
+        TurnInput::UserInput { content, .. } => Some(Op::UserInput {
+            items: content.clone(),
+            final_output_json_schema: request.start.final_output_json_schema.clone(),
+            responsesapi_client_metadata: request.responsesapi_client_metadata.clone(),
+            additional_context: request.additional_context.clone(),
+            thread_settings: request.thread_settings.clone(),
+        }),
+        TurnInput::AgentInput {
+            content,
+            presentation,
+        } => Some(Op::AgentInput {
+            items: content.clone(),
+            presentation: presentation.clone(),
+        }),
+        TurnInput::ResponseItem(_) | TurnInput::InterAgentCommunication(_) => None,
     }
 }
 
@@ -220,6 +267,15 @@ pub struct NewThread {
     pub thread_id: ThreadId,
     pub thread: Arc<CodexThread>,
     pub session_configured: SessionConfiguredEvent,
+}
+
+impl std::fmt::Debug for NewThread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewThread")
+            .field("thread_id", &self.thread_id)
+            .field("session_configured", &self.session_configured)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Internal spawn/resume result that records whether this call installed the runtime.
@@ -492,6 +548,11 @@ pub(crate) struct ThreadManagerState {
     /// observers owned by a different `AgentControl` attached to the same live thread.
     agent_lifecycle_generations: std::sync::Mutex<HashMap<ThreadId, u64>>,
     agent_lifecycle_changed: Arc<Notify>,
+    pub(crate) agent_turn_queue: Arc<AgentTurnQueue>,
+    /// Response observations are keyed by exact source/target presentations, but must remain
+    /// discoverable across root control planes so an authoritative close or ownership transfer
+    /// can revoke every observer of the affected runtime.
+    wait_agent_presentations: Arc<WaitAgentPresentations>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
 }
@@ -625,6 +686,8 @@ impl ThreadManager {
                 agent_lifecycle_locks: std::sync::Mutex::new(HashMap::new()),
                 agent_lifecycle_generations: std::sync::Mutex::new(HashMap::new()),
                 agent_lifecycle_changed: Arc::new(Notify::new()),
+                agent_turn_queue: Arc::new(AgentTurnQueue::default()),
+                wait_agent_presentations: Arc::default(),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -779,6 +842,8 @@ impl ThreadManager {
                 agent_lifecycle_locks: std::sync::Mutex::new(HashMap::new()),
                 agent_lifecycle_generations: std::sync::Mutex::new(HashMap::new()),
                 agent_lifecycle_changed: Arc::new(Notify::new()),
+                agent_turn_queue: Arc::new(AgentTurnQueue::default()),
+                wait_agent_presentations: Arc::default(),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
             }),
@@ -967,6 +1032,13 @@ impl ThreadManager {
         self.state.get_thread(thread_id).await
     }
 
+    pub(crate) async fn get_thread_including_pending(
+        &self,
+        thread_id: ThreadId,
+    ) -> CodexResult<Arc<CodexThread>> {
+        self.state.get_thread_including_pending(thread_id).await
+    }
+
     /// Updates metadata for loaded and cold threads through one entrypoint.
     ///
     /// Loaded threads route through `CodexThread`/`LiveThread`, so metadata changes stay ordered
@@ -1109,7 +1181,9 @@ impl ThreadManager {
             parent.session.services.agent_control.clone(),
         );
         request.parent_thread_id = Some(parent_thread_id);
-        Box::pin(self.state.spawn_thread(request)).await
+        Box::pin(self.state.spawn_thread(request))
+            .await
+            .map(ThreadSpawnResult::into_new_thread)
     }
 
     /// Allocates a thread ID before startup so a caller can associate host-owned state with it.
@@ -1149,7 +1223,9 @@ impl ThreadManager {
         forked_from_thread_id: ThreadId,
         mut options: StartThreadOptions,
     ) -> CodexResult<NewThread> {
-        let fork_source = self.get_thread(forked_from_thread_id).await?;
+        let fork_source = self
+            .get_thread_including_pending(forked_from_thread_id)
+            .await?;
         // Persist queued rollout updates before reading the fork snapshot.
         fork_source.ensure_rollout_materialized().await;
         fork_source.flush_rollout().await?;
@@ -1565,7 +1641,7 @@ impl ThreadManager {
                 Some(source_thread_id) => {
                     let live_session_id = self
                         .state
-                        .get_thread(source_thread_id)
+                        .get_thread_including_pending(source_thread_id)
                         .await
                         .ok()
                         .map(|thread| thread.session.session_id());
@@ -1726,6 +1802,7 @@ impl ThreadManager {
             Arc::downgrade(&self.state),
             self.state.thread_id_generator.clone(),
             /*rollout_budget*/ None,
+            Arc::clone(&self.state.wait_agent_presentations),
         )
     }
 
@@ -1734,6 +1811,7 @@ impl ThreadManager {
             Arc::downgrade(&self.state),
             self.state.thread_id_generator.clone(),
             config.rollout_budget.clone(),
+            Arc::clone(&self.state.wait_agent_presentations),
         )
     }
 
@@ -1780,7 +1858,7 @@ impl ThreadManagerState {
         thread_id: ThreadId,
     ) -> CodexResult<tokio::sync::OwnedMutexGuard<()>> {
         let guard = self.agent_lifecycle_lock(thread_id).lock_owned().await;
-        self.get_thread(thread_id).await?;
+        self.get_thread_including_pending(thread_id).await?;
         Ok(guard)
     }
 
@@ -2042,38 +2120,77 @@ impl ThreadManagerState {
     pub(crate) async fn send_user_input_to_thread(
         &self,
         thread: &Arc<CodexThread>,
-        op: Op,
-        parent_turn_id: Option<String>,
-    ) -> CodexResult<(String, crate::session::InputTurnAdmissionResolution)> {
-        debug_assert!(matches!(op, Op::UserInput { .. }));
+        request: TurnInputRequest,
+    ) -> CodexResult<crate::session::SubmittedInputTurn> {
         let thread_id = thread.session.thread_id();
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
+            && let Some(captured_op) = capture_turn_input_request_for_test(&request)
         {
-            log.push((thread_id, op.clone()));
+            log.push((thread_id, captured_op));
         }
         thread
             .io
-            .submit_user_input_with_turn_admission(thread.session.as_ref(), op, parent_turn_id)
+            .submit_turn_input_with_admission(
+                thread.session.as_ref(),
+                request,
+                TurnInputMode::StartOrSteer,
+                InputTurnAdmissionPolicy::AnyTurn,
+                /*agent_queue_turn*/ None,
+            )
             .await
     }
 
-    pub(crate) async fn send_idle_user_input_to_thread(
+    pub(crate) async fn send_queued_user_input_to_thread(
         &self,
         thread: &Arc<CodexThread>,
-        op: Op,
-        parent_turn_id: Option<String>,
-    ) -> CodexResult<(String, crate::session::InputTurnAdmissionResolution)> {
-        debug_assert!(matches!(op, Op::UserInput { .. }));
+        request: TurnInputRequest,
+        agent_queue_turn: codex_protocol::protocol::AgentQueueTurnMetadata,
+    ) -> CodexResult<crate::session::SubmittedInputTurn> {
         let thread_id = thread.session.thread_id();
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
+            && let Some(captured_op) = capture_turn_input_request_for_test(&request)
         {
-            log.push((thread_id, op.clone()));
+            log.push((thread_id, captured_op));
         }
         thread
             .io
-            .submit_idle_user_input_with_turn_admission(thread.session.as_ref(), op, parent_turn_id)
+            .submit_turn_input_with_admission(
+                thread.session.as_ref(),
+                request,
+                TurnInputMode::StartIfIdle,
+                InputTurnAdmissionPolicy::Queued,
+                Some(agent_queue_turn),
+            )
+            .await
+    }
+
+    pub(crate) async fn send_steer_only_input_to_thread(
+        &self,
+        thread: &Arc<CodexThread>,
+        request: TurnInputRequest,
+    ) -> CodexResult<crate::session::SubmittedInputTurn> {
+        let thread_id = thread.session.thread_id();
+        if let Some(ops_log) = &self.ops_log
+            && let Ok(mut log) = ops_log.lock()
+            && let Some(captured_op) = capture_turn_input_request_for_test(&request)
+        {
+            log.push((thread_id, captured_op));
+        }
+        let expected_turn_id = thread
+            .session
+            .active_agent_response_turn_id()
+            .ok_or_else(|| CodexErr::InvalidRequest(STEER_ONLY_TARGET_ENDED_ERROR.to_string()))?;
+        thread
+            .io
+            .submit_turn_input_with_admission(
+                thread.session.as_ref(),
+                request,
+                TurnInputMode::Steer { expected_turn_id },
+                InputTurnAdmissionPolicy::SteerOnly,
+                /*agent_queue_turn*/ None,
+            )
             .await
     }
 
@@ -2115,6 +2232,10 @@ impl ThreadManagerState {
     }
 
     /// Remove `thread` only while it remains the manager's current instance for its thread ID.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "pending and active thread registrations must be synchronized atomically"
+    )]
     pub(crate) async fn remove_thread_if_current(
         &self,
         thread: &Arc<CodexThread>,
@@ -2154,6 +2275,10 @@ impl ThreadManagerState {
     /// may release that state while the exact pending reservation remains current, or while both
     /// maps are empty for this ID. A different current instance owns any metadata that may have
     /// replaced it.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "pending and active thread registrations must be synchronized atomically"
+    )]
     pub(crate) async fn remove_thread_if_current_or_cleanup_if_absent(
         &self,
         thread: &Arc<CodexThread>,
@@ -2196,6 +2321,11 @@ impl ThreadManagerState {
     }
 
     /// Run cleanup only while no thread instance is registered for `thread_id`.
+    #[cfg(test)]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "pending and active thread registrations must be checked atomically"
+    )]
     pub(crate) async fn run_if_thread_absent(
         &self,
         thread_id: ThreadId,
@@ -2290,7 +2420,7 @@ impl ThreadManagerState {
         };
         let inherited_multi_agent_version = match inherited_thread_id {
             Some(thread_id) => self
-                .get_thread(thread_id)
+                .get_thread_including_pending(thread_id)
                 .await
                 .ok()
                 .and_then(|thread| thread.multi_agent_version()),
@@ -2337,7 +2467,7 @@ impl ThreadManagerState {
         let instructions = match inherited_thread_id {
             // The spawn path retains only thread IDs, so look up the live
             // runtime again here to inherit its user instructions.
-            Some(thread_id) => match self.get_thread(thread_id).await {
+            Some(thread_id) => match self.get_thread_including_pending(thread_id).await {
                 Ok(thread) => thread.session.user_instructions().await,
                 Err(_) => None,
             },
@@ -2361,7 +2491,10 @@ impl ThreadManagerState {
             }) => Some(*parent_thread_id),
             _ => parent_thread_id.or(forked_from_thread_id),
         };
-        let thread = self.get_thread(inherited_thread_id?).await.ok()?;
+        let thread = self
+            .get_thread_including_pending(inherited_thread_id?)
+            .await
+            .ok()?;
         let originator = thread.config_snapshot().await.originator;
         (!originator.is_empty()).then_some(originator)
     }
@@ -2554,7 +2687,7 @@ impl ThreadManagerState {
         let Some(parent_thread_id) = parent_thread_id else {
             return ClientMcpExtensions::default();
         };
-        self.get_thread(parent_thread_id)
+        self.get_thread_including_pending(parent_thread_id)
             .await
             .map(|parent| parent.session.services.client_mcp_extensions.clone())
             .unwrap_or_default()
@@ -2842,6 +2975,10 @@ impl ThreadManagerState {
         Ok(new_thread)
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "pending and active thread registrations must be synchronized atomically"
+    )]
     async fn finalize_thread_spawn(
         &self,
         session: Arc<Session>,
@@ -2926,6 +3063,10 @@ impl ThreadManagerState {
         )))
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "pending and active thread registrations must be synchronized atomically"
+    )]
     pub(crate) async fn publish_thread(&self, thread: &Arc<CodexThread>) -> CodexResult<()> {
         let thread_id = thread.session.thread_id();
         let mut pending_threads = self.pending_threads.write().await;
@@ -2989,7 +3130,7 @@ impl ThreadManagerState {
         // spawn preparation and session construction. Tracing is diagnostic, so
         // that race should not block child creation; the child simply starts
         // without a parent rollout trace.
-        self.get_thread(*parent_thread_id)
+        self.get_thread_including_pending(*parent_thread_id)
             .await
             .ok()
             .map(|thread| thread.session.services.rollout_thread_trace.clone())
