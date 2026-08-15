@@ -19,6 +19,7 @@ use ts_rs::TS;
 const SUB_AGENT_COMPLETION_VISIBLE_ID_PREFIX: &str = "msg";
 const SUB_AGENT_COMPLETION_NOT_VISIBLE_ID_PREFIX: &str = "msgx";
 const SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX: &str = "amsg_x";
+const USER_AGENT_TASK_CONTEXT_ID_PREFIX: &str = "msg_t";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_PREFIX: &str = "Agent final answer from `";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
 
@@ -111,6 +112,16 @@ pub fn is_sub_agent_completion_context_response_item_id(id: &str) -> bool {
     has_uuid_v7_suffix(id, SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX)
 }
 
+/// Creates the model-context item ID for a user-authored agent task linkage.
+pub fn new_user_agent_task_context_response_item_id() -> ResponseItemId {
+    ResponseItemId::new(USER_AGENT_TASK_CONTEXT_ID_PREFIX)
+}
+
+/// Returns whether a response item is a core-authored user-agent task linkage.
+pub fn is_user_agent_task_context_response_item_id(id: &str) -> bool {
+    has_uuid_v7_suffix(id, USER_AGENT_TASK_CONTEXT_ID_PREFIX)
+}
+
 /// Returns the terminal status encoded in a canonical background-completion item ID.
 pub fn sub_agent_completion_status_from_response_item_id(
     id: &str,
@@ -183,7 +194,9 @@ impl AgentMessageItem {
 
 /// Prevents an ordinary provider-authored agent message from using the reserved completion ID.
 pub fn ordinary_agent_message_response_item_id(id: &str) -> String {
-    if sub_agent_completion_status_from_response_item_id(id).is_some() {
+    if sub_agent_completion_status_from_response_item_id(id).is_some()
+        || is_user_agent_task_context_response_item_id(id)
+    {
         format!("agent_{id}")
     } else {
         id.to_string()

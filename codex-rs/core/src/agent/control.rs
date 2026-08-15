@@ -67,18 +67,28 @@ use uuid::Uuid;
 use self::execution::AgentExecutionLimiter;
 use self::residency::V2Residency;
 
+mod aliases;
 mod budget;
+pub(crate) use aliases::AgentResumeOwnership;
 mod completion;
 mod completion_watcher;
 mod presentation;
 mod response_delivery;
 mod response_observer;
 mod response_submission;
+mod user_dispatch;
+mod user_observation;
+mod user_resume;
+mod user_spawn;
+pub(in crate::agent) use presentation::ReplacedFinalResponseObservationBinding;
+pub(crate) use user_dispatch::ResponseObservationSubmission;
+pub(crate) use user_dispatch::ResumeUserInputAdmission;
 mod restore_environments;
 mod restore_metadata;
 mod restore_publication;
 mod restore_v2;
 mod resume;
+mod resume_registration;
 pub(crate) use presentation::AgentTerminalPresentation;
 pub(crate) use presentation::CompletionParentAdoption;
 pub(crate) use presentation::CompletionParentBinding;
@@ -121,6 +131,7 @@ const MAX_ENVIRONMENT_SUBAGENT_BYTES: usize = 1_024;
 pub(crate) struct LocalAgentControl {
     /// session_id is equal to the root thread's ID.
     session_id: SessionId,
+    session_id_is_bound: bool,
     /// Weak handle back to the global thread registry/state.
     /// This is `Weak` to avoid reference cycles and shadow persistence of the form
     /// `ThreadManagerState -> CodexThread -> Session -> SessionServices -> ThreadManagerState`.
@@ -158,6 +169,7 @@ impl LocalAgentControl {
     ) -> Self {
         let control = Self {
             session_id: SessionId::default(),
+            session_id_is_bound: false,
             manager,
             thread_id_generator,
             state: Arc::default(),
@@ -176,12 +188,17 @@ impl LocalAgentControl {
 
     pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
         self.session_id = session_id;
+        self.session_id_is_bound = true;
         self.agent_execution_limiter.initialize(max_threads);
         self
     }
 
     pub(crate) fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    pub(crate) fn bound_session_id(&self) -> Option<SessionId> {
+        self.session_id_is_bound.then_some(self.session_id)
     }
 
     pub(crate) fn generate_thread_id(&self) -> ThreadId {
@@ -426,6 +443,8 @@ impl LocalAgentControl {
     /// Interrupt the current task for an existing agent thread.
     pub(crate) async fn interrupt_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
+        let _lifecycle = state.acquire_live_agent_lifecycle(agent_id).await?;
+        self.require_current_agent_ownership(agent_id).await?;
         let thread = state.get_thread(agent_id).await?;
         self.handle_thread_request_result(
             agent_id,
@@ -839,37 +858,6 @@ impl LocalAgentControl {
         }
 
         Ok(children_by_parent)
-    }
-
-    async fn persist_thread_spawn_edge_for_source(
-        &self,
-        child_thread: &crate::CodexThread,
-        child_thread_id: ThreadId,
-        session_source: Option<&SessionSource>,
-    ) {
-        let Some(parent_thread_id) = session_source.and_then(SessionSource::parent_thread_id)
-        else {
-            return;
-        };
-        if child_thread.config_snapshot().await.ephemeral {
-            return;
-        }
-        let Ok(state) = self.upgrade() else {
-            return;
-        };
-        let Some(agent_graph_store) = state.agent_graph_store() else {
-            return;
-        };
-        if let Err(err) = agent_graph_store
-            .upsert_thread_spawn_edge(
-                parent_thread_id,
-                child_thread_id,
-                codex_agent_graph_store::ThreadSpawnEdgeStatus::Open,
-            )
-            .await
-        {
-            warn!("failed to persist thread-spawn edge: {err}");
-        }
     }
 
     async fn live_thread_spawn_descendants(

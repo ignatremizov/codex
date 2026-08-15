@@ -365,6 +365,10 @@ impl ChatWidget {
         self.bottom_pane.shortcut_overlay_visible()
     }
 
+    pub(crate) fn dismiss_selection_view(&mut self, view_id: &'static str) -> bool {
+        self.bottom_pane.dismiss_view_by_id(view_id)
+    }
+
     pub(crate) fn no_modal_or_popup_active(&self) -> bool {
         self.bottom_pane.no_modal_or_popup_active()
     }

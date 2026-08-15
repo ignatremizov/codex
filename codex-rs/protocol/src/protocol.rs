@@ -115,7 +115,9 @@ pub use crate::request_user_input::RequestUserInputEvent;
 pub use crate::sub_agent_completion::SubAgentCompletionModelVisibility;
 pub use crate::sub_agent_completion::SubAgentCompletionStatus;
 pub use crate::sub_agent_completion::is_sub_agent_completion_context_response_item_id;
+pub use crate::sub_agent_completion::is_user_agent_task_context_response_item_id;
 pub use crate::sub_agent_completion::new_sub_agent_completion_context_response_item_id;
+pub use crate::sub_agent_completion::new_user_agent_task_context_response_item_id;
 pub use crate::sub_agent_completion::ordinary_agent_message_response_item_id;
 pub use crate::sub_agent_completion::sub_agent_completion_item;
 pub use crate::sub_agent_completion::sub_agent_completion_item_with_visibility;
@@ -3380,10 +3382,50 @@ pub struct AgentResponseObservation {
     pub committed_delivery_response_item_ids: Vec<ResponseItemId>,
 }
 
+impl AgentResponseObservation {
+    pub fn promoted_task_context_item(&self) -> Option<ResponseItem> {
+        self.promoted_task_context.as_ref().and_then(|item| {
+            is_user_agent_task_context_response_item_id(item.response_item_id.as_str()).then(|| {
+                ResponseItem::Message {
+                    id: Some(item.response_item_id.clone()),
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: item.text.clone(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+            })
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
 pub struct AgentResponsePromotedTaskContext {
     pub response_item_id: ResponseItemId,
     pub text: String,
+}
+
+impl AgentResponsePromotedTaskContext {
+    pub fn from_response_item(item: &ResponseItem) -> Option<Self> {
+        let ResponseItem::Message {
+            id: Some(response_item_id),
+            role,
+            content,
+            ..
+        } = item
+        else {
+            return None;
+        };
+        let [ContentItem::InputText { text }] = content.as_slice() else {
+            return None;
+        };
+        (role == "user" && is_user_agent_task_context_response_item_id(response_item_id.as_str()))
+            .then(|| Self {
+                response_item_id: response_item_id.clone(),
+                text: text.clone(),
+            })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]

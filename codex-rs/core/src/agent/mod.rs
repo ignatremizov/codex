@@ -7,6 +7,19 @@ pub(crate) mod response_observation;
 pub(crate) mod role;
 pub(crate) mod status;
 pub(crate) mod types;
+mod user_control;
+
+pub use user_control::UserAgentFinalResponseHandling;
+pub use user_control::UserAgentForkMode;
+pub use user_control::UserAgentInputOutcome;
+pub use user_control::UserAgentObservationBinding;
+pub use user_control::UserAgentObservationMode;
+pub use user_control::UserAgentOwnershipTransfer;
+pub use user_control::UserAgentPromptResult;
+pub use user_control::UserAgentReservedPromptResult;
+pub use user_control::UserAgentResponseHandling;
+pub use user_control::UserAgentResumeResult;
+pub use user_control::UserAgentSpawnResult;
 
 pub(crate) use codex_protocol::protocol::AgentStatus;
 pub(crate) use control::LocalAgentControl;

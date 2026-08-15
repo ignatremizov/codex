@@ -35,6 +35,9 @@ pub use codex_protocol::items::McpAppDisplayMode;
 pub use codex_protocol::items::McpAppUi;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
 use codex_protocol::items::TurnItem as CoreTurnItem;
+use codex_protocol::items::UserAgentControlAction as CoreUserAgentControlAction;
+use codex_protocol::items::UserAgentControlStatus as CoreUserAgentControlStatus;
+use codex_protocol::items::UserAgentForkMode as CoreUserAgentForkMode;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -42,6 +45,7 @@ use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand as CoreParsedCommand;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
@@ -231,6 +235,71 @@ impl CommandAction {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserAgentControlAction {
+    Spawn,
+    Prompt,
+    QueuedPrompt,
+    Resume,
+    Interrupt,
+    Close,
+    Observe,
+}
+
+impl From<CoreUserAgentControlAction> for UserAgentControlAction {
+    fn from(value: CoreUserAgentControlAction) -> Self {
+        match value {
+            CoreUserAgentControlAction::Spawn => Self::Spawn,
+            CoreUserAgentControlAction::Prompt => Self::Prompt,
+            CoreUserAgentControlAction::QueuedPrompt => Self::QueuedPrompt,
+            CoreUserAgentControlAction::Resume => Self::Resume,
+            CoreUserAgentControlAction::Interrupt => Self::Interrupt,
+            CoreUserAgentControlAction::Close => Self::Close,
+            CoreUserAgentControlAction::Observe => Self::Observe,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserAgentControlStatus {
+    Succeeded,
+    Unknown,
+    Failed,
+}
+
+impl From<CoreUserAgentControlStatus> for UserAgentControlStatus {
+    fn from(value: CoreUserAgentControlStatus) -> Self {
+        match value {
+            CoreUserAgentControlStatus::Succeeded => Self::Succeeded,
+            CoreUserAgentControlStatus::Unknown => Self::Unknown,
+            CoreUserAgentControlStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserAgentForkMode {
+    None,
+    All,
+    LastNTurns { turns: u32 },
+}
+
+impl From<CoreUserAgentForkMode> for UserAgentForkMode {
+    fn from(value: CoreUserAgentForkMode) -> Self {
+        match value {
+            CoreUserAgentForkMode::None => Self::None,
+            CoreUserAgentForkMode::All => Self::All,
+            CoreUserAgentForkMode::LastNTurns { turns } => Self::LastNTurns { turns },
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type")]
@@ -413,6 +482,30 @@ pub enum ThreadItem {
         agent_path: String,
         prompt: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    UserAgentControl {
+        id: String,
+        action: UserAgentControlAction,
+        authored_selector: Option<String>,
+        target_thread_id: Option<String>,
+        previous_owner_session_id: Option<String>,
+        new_owner_session_id: Option<String>,
+        #[serde(rename = "ref")]
+        #[ts(rename = "ref")]
+        agent_ref: Option<String>,
+        nickname: Option<String>,
+        role: Option<String>,
+        prompt_preview: Option<String>,
+        resumed_target: bool,
+        fork_mode: Option<UserAgentForkMode>,
+        observe_commentary: Option<bool>,
+        final_response: Option<AgentResponseFinalDelivery>,
+        target_messages: Option<bool>,
+        queue_input: Option<bool>,
+        status: UserAgentControlStatus,
+        error: Option<String>,
+    },
     WebSearch(WebSearchItem),
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -500,6 +593,7 @@ impl ThreadItem {
             | ThreadItem::DynamicToolCall { id, .. }
             | ThreadItem::CollabAgentToolCall { id, .. }
             | ThreadItem::SubAgentActivity { id, .. }
+            | ThreadItem::UserAgentControl { id, .. }
             | ThreadItem::ImageView { id, .. }
             | ThreadItem::EnteredReviewMode { id, .. }
             | ThreadItem::ExitedReviewMode { id, .. }
@@ -1033,6 +1127,28 @@ impl From<CoreTurnItem> for ThreadItem {
                 agent_thread_id: activity.agent_thread_id.to_string(),
                 agent_path: String::from(activity.agent_path),
                 prompt: activity.prompt,
+            },
+            CoreTurnItem::UserAgentControl(control) => ThreadItem::UserAgentControl {
+                id: control.id,
+                action: control.action.into(),
+                authored_selector: control.authored_selector,
+                target_thread_id: control.target_thread_id.map(|id| id.to_string()),
+                previous_owner_session_id: control
+                    .previous_owner_session_id
+                    .map(|id| id.to_string()),
+                new_owner_session_id: control.new_owner_session_id.map(|id| id.to_string()),
+                agent_ref: control.agent_ref.map(|agent_ref| agent_ref.to_string()),
+                nickname: control.nickname,
+                role: control.role,
+                prompt_preview: control.prompt_preview,
+                resumed_target: control.resumed_target,
+                fork_mode: control.fork_mode.map(Into::into),
+                observe_commentary: control.observe_commentary,
+                final_response: control.final_response,
+                target_messages: control.target_messages,
+                queue_input: control.queue_input,
+                status: control.status.into(),
+                error: control.error,
             },
             CoreTurnItem::WebSearch(search) => ThreadItem::WebSearch(WebSearchItem {
                 id: search.id,

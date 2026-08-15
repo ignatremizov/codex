@@ -96,7 +96,7 @@ pub(crate) enum InitialContextInjection {
 /// `CompactedItem`. Canonical checkpoints additionally retain acknowledged mailbox completion
 /// context that is deliberately absent from the live history until its lease is consumed.
 pub(crate) struct CompactedHistoryMetadata {
-    /// Exact completion payloads included in the successful compaction request.
+    /// Exact completion/task payloads included in the successful compaction request.
     pub(crate) completion_source_items: Vec<ResponseItem>,
     pub(crate) message: String,
     pub(crate) compaction_summary_tokens: Option<i64>,
@@ -108,11 +108,15 @@ pub(crate) struct CompactedHistoryMetadata {
 }
 
 pub(crate) fn completion_source_items(items: &[ResponseItem]) -> Vec<ResponseItem> {
+    // These are candidates from the actual request, not proof of canonical provenance. Checkpoint
+    // publication matches full payloads against acknowledged completion and task receipts.
     items
         .iter()
         .filter(|item| {
             item.id().is_some_and(|id| {
                 codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
+                    id.as_str(),
+                ) || codex_protocol::protocol::is_user_agent_task_context_response_item_id(
                     id.as_str(),
                 )
             })

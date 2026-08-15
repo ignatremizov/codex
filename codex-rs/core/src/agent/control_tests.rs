@@ -293,6 +293,7 @@ impl AgentControlHarness {
         let parent_thread_id = session_source.parent_thread_id();
         let new_thread = state
             .spawn_new_thread_with_source(
+                crate::thread_manager::ThreadRegistration::Immediate,
                 config,
                 self.control.clone(),
                 session_source,
@@ -3017,11 +3018,17 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
     let turn_context = parent_thread.session.new_default_turn().await;
     let parent_spawn_call_id = "spawn-call-compacted-usage-hints".to_string();
     let compacted_notification = ContextualUserFragment::into(SubagentNotification::new(
-        "/root/older-worker",
+        crate::context::AgentContextIdentity::V2 {
+            agent_id: ThreadId::new(),
+            agent_path: AgentPath::try_from("/root/older-worker").expect("older worker path"),
+        },
         AgentStatus::Completed(Some("compacted runtime notification".to_string())),
     ));
     let suffix_notification = ContextualUserFragment::into(SubagentNotification::new(
-        "/root/recent-worker",
+        crate::context::AgentContextIdentity::V2 {
+            agent_id: ThreadId::new(),
+            agent_path: AgentPath::try_from("/root/recent-worker").expect("recent worker path"),
+        },
         AgentStatus::Completed(Some("suffix runtime notification".to_string())),
     ));
     let quoted_notification =
@@ -4633,7 +4640,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
     assert_eq!(
         history_contains_text(
             history.raw_items(),
-            &format!("\"agent_path\":\"{child_thread_id}\"")
+            &format!("\"agent_id\":\"{child_thread_id}\"")
         ),
         true
     );
@@ -6202,3 +6209,6 @@ mod parent_binding_tests;
 
 #[path = "control_response_observation_tests.rs"]
 mod response_observation_tests;
+
+#[path = "control_user_observation_tests.rs"]
+mod user_observation_tests;

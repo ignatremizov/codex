@@ -10,6 +10,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::SubAgentSource;
@@ -152,6 +153,18 @@ impl LocalAgentControl {
             let parent_id = terminal.parent();
             let context_id = terminal.completion_context_response_item_id();
             let result = async {
+                let agent = control
+                    .model_visible_agent_identity_for_version(
+                        parent
+                            .multi_agent_version()
+                            .unwrap_or(MultiAgentVersion::V1),
+                        outcome.thread_id,
+                    )
+                    .await?;
+                let notification = crate::session_prefix::format_subagent_notification_message(
+                    agent,
+                    &outcome.status,
+                );
                 let communication = child_path.and_then(|child_path| {
                     let parent_path = child_path
                         .as_str()
@@ -179,11 +192,7 @@ impl LocalAgentControl {
                         role: "user".to_string(),
                         phase: None,
                         content: vec![codex_protocol::models::ContentItem::InputText {
-                            text: crate::session_prefix::format_subagent_notification_message(
-                                &reference,
-                                outcome.thread_id,
-                                &outcome.status,
-                            ),
+                            text: notification.clone(),
                         }],
                         internal_chat_message_metadata_passthrough: None,
                     },
@@ -220,11 +229,7 @@ impl LocalAgentControl {
                         parent_id.thread_id,
                         &AgentResultTracePayload {
                             child_agent_path: &reference,
-                            message: &crate::session_prefix::format_subagent_notification_message(
-                                &reference,
-                                outcome.thread_id,
-                                &outcome.status,
-                            ),
+                            message: &notification,
                             status: &outcome.status,
                         },
                     );

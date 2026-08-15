@@ -22,9 +22,7 @@ impl ChatWidget {
             .map(|duration| duration / 1_000)
             .or_else(|| {
                 if replay_kind.is_none() {
-                    self.bottom_pane
-                        .status_elapsed()
-                        .map(|elapsed| elapsed.as_secs())
+                    self.turn_lifecycle.elapsed_seconds(Instant::now())
                 } else {
                     None
                 }

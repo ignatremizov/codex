@@ -6,6 +6,8 @@ use super::restore_metadata::apply_restored_agent_model;
 use super::restore_metadata::apply_restored_v2_agent_role;
 use super::resume_role::apply_resumed_agent_role;
 use super::spawn::load_agent_model_context;
+use super::user_resume::RestoredAgent;
+use super::user_resume::ResumeAuthority;
 use super::*;
 use crate::codex_thread::CodexThread;
 use codex_protocol::mcp::ClientMcpExtensions;
@@ -18,28 +20,53 @@ impl LocalAgentControl {
         thread_id: ThreadId,
         session_source: SessionSource,
     ) -> CodexResult<ThreadId> {
+        let session_source = if self.bound_session_id().is_some() {
+            self.canonical_controlled_resume_source(thread_id, session_source)
+                .await?
+        } else {
+            session_source
+        };
         let root_depth = thread_spawn_depth(&session_source).unwrap_or(0);
-        let (resumed_thread, resumed_multi_agent_version) =
-            Box::pin(self.resume_single_agent_from_rollout(
-                config.clone(),
-                thread_id,
-                session_source,
-                /*initial_history_override*/ None,
-                /*client_mcp_extensions_override*/ None,
-            ))
-            .await?;
+        let restored = Box::pin(self.resume_single_agent_from_rollout(
+            config.clone(),
+            thread_id,
+            session_source,
+            /*initial_history_override*/ None,
+            /*client_mcp_extensions_override*/ None,
+        ))
+        .await?;
+        let resumed_thread = restored.thread;
+        let resumed_multi_agent_version = restored.version;
         let resumed_thread_id = resumed_thread.session.thread_id();
+        self.restore_open_agent_descendants(
+            &config,
+            thread_id,
+            root_depth,
+            resumed_multi_agent_version,
+        )
+        .await?;
+        Ok(resumed_thread_id)
+    }
+
+    pub(super) async fn restore_open_agent_descendants(
+        &self,
+        config: &Config,
+        thread_id: ThreadId,
+        root_depth: i32,
+        resumed_multi_agent_version: MultiAgentVersion,
+    ) -> CodexResult<()> {
         let state = self.upgrade()?;
         if config.multi_agent_version_from_features() == MultiAgentVersion::V2
             || resumed_multi_agent_version == MultiAgentVersion::V2
         {
-            return Ok(resumed_thread_id);
+            return Ok(());
         }
         let Some(agent_graph_store) = state.agent_graph_store() else {
-            return Ok(resumed_thread_id);
+            return Ok(());
         };
 
         let mut resume_queue = VecDeque::from([(thread_id, root_depth)]);
+        let mut visited = HashSet::from([thread_id]);
         while let Some((parent_thread_id, parent_depth)) = resume_queue.pop_front() {
             let child_ids = match agent_graph_store
                 .list_thread_spawn_children(
@@ -58,7 +85,14 @@ impl LocalAgentControl {
             };
 
             for child_thread_id in child_ids {
-                let child_depth = parent_depth + 1;
+                if !visited.insert(child_thread_id) {
+                    return Err(CodexErr::InvalidRequest(
+                        "cyclic persisted agent subtree".into(),
+                    ));
+                }
+                let child_depth = parent_depth
+                    .checked_add(1)
+                    .ok_or_else(|| CodexErr::InvalidRequest("agent depth overflow".into()))?;
                 let child_resumed = if state.get_thread(child_thread_id).await.is_ok() {
                     true
                 } else {
@@ -79,7 +113,7 @@ impl LocalAgentControl {
                     ))
                     .await
                     {
-                        Ok((_, _)) => true,
+                        Ok(_) => true,
                         Err(err) => {
                             warn!("failed to resume descendant thread {child_thread_id}: {err}");
                             false
@@ -92,7 +126,7 @@ impl LocalAgentControl {
             }
         }
 
-        Ok(resumed_thread_id)
+        Ok(())
     }
 
     pub(crate) async fn resume_v2_agent_from_history(
@@ -103,21 +137,26 @@ impl LocalAgentControl {
         initial_history: InitialHistory,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> CodexResult<Arc<CodexThread>> {
-        let (resumed_thread, multi_agent_version) =
-            Box::pin(self.resume_single_agent_from_rollout_unlocked(
-                config,
-                thread_id,
-                session_source,
-                Some(initial_history),
-                Some(client_mcp_extensions),
-            ))
-            .await?;
-        if multi_agent_version != MultiAgentVersion::V2 {
+        let authority = if self.current_agent_alias(thread_id).await?.is_some() {
+            ResumeAuthority::Controlled
+        } else {
+            ResumeAuthority::Recorded
+        };
+        let restored = Box::pin(self.resume_single_agent_from_rollout_unlocked(
+            config,
+            thread_id,
+            session_source,
+            Some(initial_history),
+            Some(client_mcp_extensions),
+            authority,
+        ))
+        .await?;
+        if restored.version != MultiAgentVersion::V2 {
             return Err(CodexErr::InvalidRequest(format!(
                 "persisted spawned child {thread_id} is not running Multi-Agent V2"
             )));
         }
-        Ok(resumed_thread)
+        Ok(restored.thread)
     }
 
     async fn resume_single_agent_from_rollout(
@@ -127,12 +166,19 @@ impl LocalAgentControl {
         session_source: SessionSource,
         initial_history_override: Option<InitialHistory>,
         client_mcp_extensions_override: Option<ClientMcpExtensions>,
-    ) -> CodexResult<(Arc<CodexThread>, MultiAgentVersion)> {
+    ) -> CodexResult<RestoredAgent> {
         let control = self.clone();
         tokio::spawn(async move {
             let state = control.upgrade()?;
             let lock = state.v2_spawn_resume_lock(thread_id);
             let _guard = lock.lock_owned().await;
+            let authority = if control.bound_session_id().is_some()
+                && control.current_agent_alias(thread_id).await?.is_some()
+            {
+                ResumeAuthority::ModelControlled
+            } else {
+                ResumeAuthority::Recorded
+            };
             control
                 .resume_single_agent_from_rollout_unlocked(
                     config,
@@ -140,6 +186,7 @@ impl LocalAgentControl {
                     session_source,
                     initial_history_override,
                     client_mcp_extensions_override,
+                    authority,
                 )
                 .await
         })
@@ -147,14 +194,15 @@ impl LocalAgentControl {
         .map_err(|error| CodexErr::Fatal(format!("agent restoration worker failed: {error}")))?
     }
 
-    async fn resume_single_agent_from_rollout_unlocked(
+    pub(super) async fn resume_single_agent_from_rollout_unlocked(
         &self,
         mut config: Config,
         thread_id: ThreadId,
         session_source: SessionSource,
         initial_history_override: Option<InitialHistory>,
         client_mcp_extensions_override: Option<ClientMcpExtensions>,
-    ) -> CodexResult<(Arc<CodexThread>, MultiAgentVersion)> {
+        authority: ResumeAuthority,
+    ) -> CodexResult<RestoredAgent> {
         let state = self.upgrade()?;
         state.check_restoration_fence(thread_id)?;
         if state.get_thread(thread_id).await.is_ok() {
@@ -162,6 +210,13 @@ impl LocalAgentControl {
                 "thread {thread_id} is already loaded; use its current runtime"
             )));
         }
+        if matches!(
+            authority,
+            ResumeAuthority::Controlled | ResumeAuthority::ModelControlled
+        ) {
+            self.require_current_agent_ownership(thread_id).await?;
+        }
+        self.sync_durable_agent_nickname_reservations().await?;
         let stored_thread = state
             .read_stored_thread(ReadThreadParams {
                 thread_id,
@@ -284,7 +339,26 @@ impl LocalAgentControl {
                 agent_role,
                 agent_nickname,
             }) => {
-                if let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                if !matches!(authority, ResumeAuthority::Recorded) {
+                    let agent_nickname = if matches!(authority, ResumeAuthority::Transfer { .. }) {
+                        self.find_session_agent_alias(thread_id)
+                            .await?
+                            .and_then(|alias| alias.nickname)
+                            .or(agent_nickname)
+                    } else {
+                        agent_nickname
+                    };
+                    let (source, metadata) = self.prepare_thread_spawn(
+                        &mut reservation,
+                        &config,
+                        parent_thread_id,
+                        depth,
+                        agent_path,
+                        agent_role.or(resumed_agent_role),
+                        agent_nickname,
+                    )?;
+                    (source, metadata, true)
+                } else if let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     agent_path,
                     agent_role,
                     agent_nickname,
@@ -337,7 +411,12 @@ impl LocalAgentControl {
                 )));
             }
         }
-        if multi_agent_version == MultiAgentVersion::V2 {
+        if multi_agent_version == MultiAgentVersion::V2
+            || matches!(
+                authority,
+                ResumeAuthority::Controlled | ResumeAuthority::Transfer { .. }
+            )
+        {
             apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
             config.model_reasoning_effort = stored_reasoning_effort;
         }
@@ -387,6 +466,11 @@ impl LocalAgentControl {
         let resumed_thread = state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
                 registration: crate::thread_manager::ThreadRegistration::Deferred,
+                ownership_override: (!matches!(authority, ResumeAuthority::Recorded)
+                    && session_source.is_non_root_agent())
+                .then_some(crate::session::AgentSessionOwnershipOverride {
+                    session_id: self.session_id(),
+                }),
                 config: config.clone(),
                 initial_history,
                 agent_control: self.clone(),
@@ -425,6 +509,51 @@ impl LocalAgentControl {
         let mut agent_metadata = agent_metadata;
         agent_metadata.agent_id = Some(resumed_thread.thread_id);
         let registration_metadata = agent_metadata.clone();
+        let transferred_descendants = match &authority {
+            ResumeAuthority::Transfer { descendants, .. } => descendants.clone(),
+            ResumeAuthority::Recorded
+            | ResumeAuthority::ModelControlled
+            | ResumeAuthority::Controlled => Vec::new(),
+        };
+        let persistence = match authority {
+            ResumeAuthority::Recorded
+            | ResumeAuthority::ModelControlled
+            | ResumeAuthority::Controlled => {
+                self.current_agent_alias(thread_id).await.map(|alias| {
+                    super::aliases::PersistedAgentSpawn {
+                        alias,
+                        transfer: None,
+                    }
+                })
+            }
+            transfer @ ResumeAuthority::Transfer { .. } => {
+                self.persist_thread_spawn_for_source(
+                    resumed_thread.thread.as_ref(),
+                    thread_id,
+                    Some(&notification_source),
+                    transfer.persistence(),
+                )
+                .await
+            }
+        };
+        let persisted = match persistence {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                return Err(self
+                    .cleanup_unpublished_restoration(&resumed_thread.thread, error)
+                    .await);
+            }
+        };
+        if matches!(
+            persisted.transfer,
+            Some(codex_agent_graph_store::AgentAliasTransfer::Transferred { .. })
+        ) {
+            // Revoke future old-owner observations before publishing the new runtime.
+            // Accepted exact-instance receipts retain their independent capability.
+            for id in std::iter::once(thread_id).chain(transferred_descendants) {
+                state.advance_agent_lifecycle_generation(id);
+            }
+        }
         if let Err(error) = self
             .publish_restored_agent(&resumed_thread.thread, parent.as_ref(), || {
                 if register_resumed_agent && !reservation.commit_if_absent(registration_metadata) {
@@ -436,22 +565,45 @@ impl LocalAgentControl {
             })
             .await
         {
-            return Err(self
+            let error = self
                 .cleanup_unpublished_restoration(&resumed_thread.thread, error)
-                .await);
+                .await;
+            if matches!(
+                persisted.transfer,
+                Some(codex_agent_graph_store::AgentAliasTransfer::Transferred { .. })
+            ) {
+                return Ok(RestoredAgent {
+                    thread: resumed_thread.thread,
+                    version: multi_agent_version,
+                    persisted,
+                    post_commit_warning: Some(format!(
+                        "ownership transferred, but runtime publication failed: {error}"
+                    )),
+                });
+            }
+            return Err(error);
         }
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(resumed_thread.thread_id);
         }
-        if multi_agent_version != MultiAgentVersion::V2 {
-            self.persist_thread_spawn_edge_for_source(
+        if multi_agent_version != MultiAgentVersion::V2
+            && state
+                .agent_graph_store()
+                .is_some_and(|graph| !graph.supports_agent_aliases())
+        {
+            self.persist_thread_spawn_for_source(
                 resumed_thread.thread.as_ref(),
-                resumed_thread.thread_id,
+                thread_id,
                 Some(&notification_source),
+                super::aliases::ThreadSpawnPersistence::Resume,
             )
-            .await;
+            .await?;
         }
-
-        Ok((resumed_thread.thread, multi_agent_version))
+        Ok(RestoredAgent {
+            thread: resumed_thread.thread,
+            version: multi_agent_version,
+            persisted,
+            post_commit_warning: None,
+        })
     }
 }

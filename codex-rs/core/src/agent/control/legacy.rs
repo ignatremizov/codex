@@ -75,43 +75,57 @@ impl LocalAgentControl {
         let lock = state.v2_spawn_resume_lock(agent_id);
         let _guard = lock.lock_owned().await;
         let fence = state.restoration_fence(agent_id);
-        let known_agent =
-            fence.is_some() || self.state.agent_metadata_for_thread(agent_id).is_some();
+        let known_agent = fence.is_some()
+            || self.state.agent_metadata_for_thread(agent_id).is_some()
+            || self.current_agent_alias(agent_id).await?.is_some();
+        // Child publication takes its direct parent's lifecycle gate. Retain every
+        // discovered descendant gate and re-snapshot until subtree membership is stable.
+        let mut descendants = Vec::new();
+        let mut locked = HashSet::from([agent_id]);
+        let mut descendant_guards = Vec::new();
+        loop {
+            let mut added = false;
+            for child_id in self.live_thread_spawn_descendants(agent_id).await? {
+                if locked.insert(child_id) {
+                    descendant_guards.push(state.agent_lifecycle_lock(child_id).lock_owned().await);
+                    descendants.push(child_id);
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+        if fence.is_none() {
+            if known_agent {
+                self.require_current_agent_ownership(agent_id).await?;
+            }
+            // Failure before this barrier must not close the alias or revoke future
+            // observations for a subtree whose durable history could not be flushed.
+            for id in std::iter::once(agent_id).chain(descendants.iter().copied()) {
+                if let Ok(thread) = state.get_thread(id).await {
+                    thread
+                        .session
+                        .ensure_rollout_materialized(PersistContext::Standard)
+                        .await;
+                    thread.session.flush_rollout().await?;
+                }
+            }
+        }
         if let Some(fence) = &fence {
             state.close_fenced_restoration_edge(fence).await?;
         } else {
             match state.get_thread(agent_id).await {
                 Ok(thread) => {
-                    if !thread.config_snapshot().await.ephemeral
-                        && let Some(agent_graph_store) = state.agent_graph_store()
-                        && let Err(err) = agent_graph_store
-                            .set_thread_spawn_edge_status(
-                                agent_id,
-                                codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
-                            )
-                            .await
-                    {
-                        return Err(CodexErr::Fatal(format!(
-                            "failed to persist thread-spawn edge status for {agent_id}: {err}"
-                        )));
+                    if !thread.config_snapshot().await.ephemeral {
+                        self.persist_agent_closed(agent_id).await?;
                     }
                 }
                 Err(err)
                     if known_agent
                         && matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) =>
                 {
-                    if let Some(agent_graph_store) = state.agent_graph_store()
-                        && let Err(err) = agent_graph_store
-                            .set_thread_spawn_edge_status(
-                                agent_id,
-                                codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
-                            )
-                            .await
-                    {
-                        return Err(CodexErr::Fatal(format!(
-                            "failed to persist stale thread-spawn edge status for {agent_id}: {err}"
-                        )));
-                    }
+                    self.persist_agent_closed(agent_id).await?;
                 }
                 Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
                 Err(err) => {
@@ -119,7 +133,6 @@ impl LocalAgentControl {
                 }
             }
         }
-        let descendants = self.live_thread_spawn_descendants(agent_id).await?;
         // An explicit close revokes future live recovery across every observer control.
         // Accepted exact-session deliveries are drained independently; their receipts are
         // never moved to a later runtime with the same rollout UUID.
@@ -131,7 +144,7 @@ impl LocalAgentControl {
         }
         let result = self.shutdown_live_agent_unlocked(agent_id).await;
         for child_id in descendants {
-            match Box::pin(self.shutdown_live_agent(child_id)).await {
+            match Box::pin(self.shutdown_live_agent_unlocked(child_id)).await {
                 Err(error)
                     if !matches!(
                         error.details(),

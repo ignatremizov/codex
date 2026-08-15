@@ -114,6 +114,7 @@ use crate::ThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreFuture;
 use crate::ThreadStoreResult;
+use crate::ThreadWriterReservation;
 use crate::TimelinePage;
 use crate::TurnPage;
 use crate::UpdateProjectParams;
@@ -528,6 +529,21 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(async move { live_writer::resume_thread(self, params).await })
     }
 
+    fn reserve_thread_writers(
+        &self,
+        mut thread_ids: Vec<ThreadId>,
+    ) -> ThreadStoreFuture<'_, ThreadWriterReservation> {
+        Box::pin(async move {
+            thread_ids.sort_by_key(ToString::to_string);
+            thread_ids.dedup();
+            let mut reservations = Vec::with_capacity(thread_ids.len());
+            for thread_id in thread_ids {
+                reservations.push(self.acquire_writer_lock(thread_id)?);
+            }
+            Ok(ThreadWriterReservation::new(reservations))
+        })
+    }
+
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move { live_writer::append_items(self, params).await })
     }
@@ -827,6 +843,8 @@ impl ThreadStore for LocalThreadStore {
 mod tests {
     #[path = "acquisition_tests.rs"]
     mod acquisition_tests;
+    #[path = "writer_reservation_tests.rs"]
+    mod writer_reservation_tests;
     use std::sync::Arc;
 
     use codex_protocol::ThreadId;

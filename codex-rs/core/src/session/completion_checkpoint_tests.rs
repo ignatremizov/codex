@@ -1,4 +1,7 @@
 use super::*;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
+use codex_protocol::protocol::AgentResponseObservation;
+use codex_protocol::protocol::AgentResponsePromotedTaskContext;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::ThreadStore;
 
@@ -177,6 +180,88 @@ async fn acknowledged_completion_survives_stale_checkpoint_before_or_after_consu
                 .await
                 .acknowledged_completion_contexts
                 .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn acknowledged_task_survives_stale_but_not_source_covered_compaction() {
+    let (mut session, _, _) = make_session_and_context_with_rx().await;
+    attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique")).await;
+    let task = ResponseItem::Message {
+        id: Some(new_user_agent_task_context_response_item_id()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<user_agent_task>review the child result</user_agent_task>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let snapshot = AgentResponseObservation {
+        observer_thread_id: session.thread_id,
+        target_thread_id: codex_protocol::ThreadId::new(),
+        target_turn_id: Some("actual-target-turn".to_string()),
+        task_preview: None,
+        promoted_task_context: AgentResponsePromotedTaskContext::from_response_item(&task),
+        pending_commentary: false,
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        target_messages: false,
+        queue_delivery: false,
+        message_wake_turn_id: None,
+        baseline_final_delivery: AgentResponseFinalDelivery::Passive,
+        final_delivery: AgentResponseFinalDelivery::Wake,
+        final_delivery_response_item_id: None,
+        committed_delivery_response_item_ids: Vec::new(),
+    };
+    let transaction = Arc::new(tokio::sync::Mutex::new(())).lock_owned().await;
+    session
+        .commit_user_agent_task(transaction, vec![snapshot], Some(task.clone()), || Ok(()))
+        .await
+        .expect("acknowledged canonical task");
+    let mut different_payload = task.clone();
+    if let ResponseItem::Message { content, .. } = &mut different_payload {
+        *content = vec![ContentItem::InputText {
+            text: "different input with the same reserved identity".to_string(),
+        }];
+    }
+    // A stale request and a same-ID/different-payload request both retain the accepted task.
+    // Only the last request contains the exact acknowledged payload and may summarize it.
+    for request_input in [Vec::new(), vec![different_payload], vec![task.clone()]] {
+        let expected = if request_input.contains(&task) {
+            Vec::new()
+        } else {
+            vec![task.clone()]
+        };
+        let (window_number, window_ids) = session.advance_auto_compact_window().await;
+        let installed = session
+            .publish_compacted_history(
+                Vec::new(),
+                /*reference_context_item*/ None,
+                /*world_state_baseline*/ None,
+                CompactedHistoryMetadata {
+                    completion_source_items: crate::compact::completion_source_items(
+                        &request_input,
+                    ),
+                    message: "compacted task context".to_string(),
+                    compaction_summary_tokens: None,
+                    window_number,
+                    window_ids,
+                    compaction_response_id: None,
+                    compaction_model_hash: None,
+                    reviewer_compaction_hash: None,
+                },
+            )
+            .await
+            .expect("publish task checkpoint");
+        assert_eq!(
+            installed
+                .iter()
+                .filter(|item| item.id() == task.id())
+                .map(|item| item.item.clone())
+                .collect::<Vec<_>>(),
+            expected,
         );
     }
 }

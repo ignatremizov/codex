@@ -1,5 +1,6 @@
 mod managed;
 mod observation;
+mod owned_resume;
 mod restoration_fence;
 mod shared_instructions;
 pub(crate) use restoration_fence::RestorationFence;
@@ -422,6 +423,7 @@ pub(crate) enum ThreadRegistration {
 
 pub(crate) struct ResumeThreadWithHistoryOptions {
     pub(crate) registration: ThreadRegistration,
+    pub(crate) ownership_override: Option<crate::session::AgentSessionOwnershipOverride>,
     pub(crate) config: Config,
     pub(crate) initial_history: InitialHistory,
     pub(crate) agent_control: LocalAgentControl,
@@ -1284,33 +1286,14 @@ impl ThreadManager {
         {
             return Ok(restored_thread);
         }
-        let _lifecycle_guard = match &initial_history {
-            InitialHistory::Resumed(resumed) => {
-                let lifecycle_lock = self.state.agent_lifecycle_lock(resumed.conversation_id);
-                Some(lifecycle_lock.lock_owned().await)
-            }
-            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
-        };
-
-        let agent_control = self.agent_control_for_config(&config);
-        let (session_source, thread_source) = initial_history
-            .get_resumed_session_sources()
-            .unwrap_or_else(|| (self.state.session_source.clone(), None));
-        let options = StartThreadOptions {
+        self.resume_thread_with_current_owner(
+            config,
             initial_history,
-            session_source: Some(session_source),
-            thread_source,
+            auth_manager,
             parent_trace,
             client_mcp_extensions,
-            ..StartThreadOptions::new(config)
-        };
-        Box::pin(self.state.spawn_thread(ThreadSpawnRequest::new(
-            options,
-            auth_manager,
-            agent_control,
-        )))
+        )
         .await
-        .map(ThreadSpawnResult::into_new_thread)
     }
 
     pub(crate) async fn start_thread_with_user_shell_override_for_tests(
@@ -1971,6 +1954,7 @@ impl ThreadManagerState {
         agent_control: LocalAgentControl,
     ) -> CodexResult<NewThread> {
         Box::pin(self.spawn_new_thread_with_source(
+            ThreadRegistration::Immediate,
             config,
             agent_control,
             self.session_source.clone(),
@@ -1989,6 +1973,7 @@ impl ThreadManagerState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn_new_thread_with_source(
         &self,
+        registration: ThreadRegistration,
         config: Config,
         agent_control: LocalAgentControl,
         session_source: SessionSource,
@@ -2013,6 +1998,7 @@ impl ThreadManagerState {
         };
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.auth_manager), agent_control);
+        request.registration = registration;
         request.parent_thread_id = parent_thread_id;
         request.forked_from_thread_id = forked_from_thread_id;
         request.inherited_environments = inherited_environments;
@@ -2028,6 +2014,7 @@ impl ThreadManagerState {
     ) -> CodexResult<ThreadSpawnResult> {
         let ResumeThreadWithHistoryOptions {
             registration,
+            ownership_override,
             config,
             initial_history,
             agent_control,
@@ -2049,7 +2036,7 @@ impl ThreadManagerState {
                 .as_ref()
                 .map(TurnEnvironmentSnapshot::to_selections)
         });
-        let options = StartThreadOptions {
+        let mut options = StartThreadOptions {
             initial_history,
             session_source: Some(session_source),
             thread_source,
@@ -2057,6 +2044,9 @@ impl ThreadManagerState {
             client_mcp_extensions,
             ..StartThreadOptions::new(config)
         };
+        if let Some(ownership_override) = ownership_override {
+            options.thread_extension_init.insert(ownership_override);
+        }
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.auth_manager), agent_control);
         request.parent_thread_id = parent_thread_id;
@@ -2070,6 +2060,7 @@ impl ThreadManagerState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn fork_thread_with_source(
         &self,
+        registration: ThreadRegistration,
         config: Config,
         initial_history: InitialHistory,
         history_mode: Option<ThreadHistoryMode>,
@@ -2096,6 +2087,7 @@ impl ThreadManagerState {
         };
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.auth_manager), agent_control);
+        request.registration = registration;
         request.parent_thread_id = parent_thread_id;
         request.forked_from_thread_id = forked_from_thread_id;
         request.inherited_environments = inherited_environments;

@@ -729,6 +729,19 @@ fn final_message_separator_includes_worked_label_after_one_minute() {
 }
 
 #[test]
+fn final_message_separator_timing_snapshot() {
+    let completed = FinalMessageSeparator::new(Some(125), /*runtime_metrics*/ None);
+    let rendered = render_lines(&completed.display_lines(/*width*/ 60)).join("\n");
+
+    insta::assert_snapshot!(
+        rendered,
+        @r"
+      Worked for 2m 5s
+    "
+    );
+}
+
+#[test]
 fn ps_output_empty_snapshot() {
     let cell = new_unified_exec_processes_output(Vec::new());
     let rendered = render_lines(&cell.display_lines(/*width*/ 60)).join("\n");

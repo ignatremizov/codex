@@ -140,6 +140,7 @@ async fn fixture() -> Fixture {
         .upgrade()
         .expect("manager")
         .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
+            ownership_override: None,
             registration: crate::thread_manager::ThreadRegistration::Deferred,
             config: config.clone(),
             initial_history: InitialHistory::New,

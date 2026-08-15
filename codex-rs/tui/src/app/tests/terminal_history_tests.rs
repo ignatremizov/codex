@@ -128,6 +128,7 @@ async fn buffered_terminal_starts_follow_attachment_intent_not_queue_autosend() 
                     )),
                 ],
                 active_reasoning_item: None,
+                active_turn_timing: None,
                 input_state: None,
             },
             /*resume_restored_queue*/ false,
@@ -197,6 +198,7 @@ async fn cold_snapshot_keeps_draft_and_queue_without_restoring_turn_ownership() 
             turns: Vec::new(),
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state,
         },
         /*resume_restored_queue*/ false,
@@ -238,6 +240,7 @@ async fn replay_only_snapshot_clears_stale_pending_start_for_new_user_turn() {
         ThreadEventSnapshot {
             delegated_turns: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             session: Some(session),
             turns: Vec::new(),
             events: Vec::new(),
@@ -267,6 +270,7 @@ async fn replay_only_snapshot_keeps_command_history_without_restoring_background
         ThreadEventSnapshot {
             delegated_turns: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             session: None,
             turns: vec![test_turn(
                 "turn-1",

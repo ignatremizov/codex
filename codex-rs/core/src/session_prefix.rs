@@ -1,9 +1,9 @@
 use codex_protocol::AgentPath;
-use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
 
+use crate::context::AgentContextIdentity;
 use crate::context::ContextualUserFragment;
 use crate::context::InterAgentCompletionMessage;
 use crate::context::SubagentCommentary;
@@ -20,8 +20,7 @@ const ERROR_NEXT_ACTION: &str = "This agent's turn failed. If you still need thi
 
 // TODO(jif) unify with structured schema
 pub(crate) fn format_subagent_notification_message(
-    agent_reference: &str,
-    agent_id: ThreadId,
+    agent: AgentContextIdentity,
     status: &AgentStatus,
 ) -> String {
     let status = match status {
@@ -36,17 +35,16 @@ pub(crate) fn format_subagent_notification_message(
         | AgentStatus::Shutdown
         | AgentStatus::NotFound => status.clone(),
     };
-    SubagentNotification::new(agent_reference, agent_id, status).render()
+    SubagentNotification::new(agent, status).render()
 }
 
 pub(crate) fn format_subagent_commentary_message(
-    agent_reference: &str,
-    agent_id: ThreadId,
+    agent: AgentContextIdentity,
     turn_id: &str,
     item_id: &str,
     message: &str,
 ) -> String {
-    SubagentCommentary::new(agent_reference, agent_id, turn_id, item_id, message).render()
+    SubagentCommentary::new(agent, turn_id, item_id, message).render()
 }
 
 pub(crate) fn format_inter_agent_completion_message(
@@ -73,10 +71,35 @@ pub(crate) fn format_inter_agent_completion_message(
 mod tests;
 
 pub(crate) fn format_subagent_context_line(
-    agent_reference: &str,
+    agent: &AgentContextIdentity,
     agent_nickname: Option<&str>,
 ) -> String {
-    match agent_nickname.filter(|nickname| !nickname.is_empty()) {
+    let (agent_reference, identity_nickname) = match agent {
+        AgentContextIdentity::V1 {
+            agent_id,
+            agent_ref,
+            nickname,
+        } => match agent_ref {
+            Some(agent_ref) => (agent_ref.to_string(), nickname.as_deref()),
+            None => (
+                nickname.clone().unwrap_or_else(|| agent_id.to_string()),
+                /*identity_nickname*/ None,
+            ),
+        },
+        AgentContextIdentity::V2 { agent_path, .. } => {
+            (
+                agent_path.name().to_string(),
+                /*identity_nickname*/ None,
+            )
+        }
+        AgentContextIdentity::Canonical { agent_id } => {
+            (agent_id.to_string(), /*identity_nickname*/ None)
+        }
+    };
+    match identity_nickname
+        .or(agent_nickname)
+        .filter(|nickname| !nickname.is_empty())
+    {
         Some(agent_nickname) => format!("- {agent_reference}: {agent_nickname}"),
         None => format!("- {agent_reference}"),
     }

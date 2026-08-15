@@ -1,6 +1,8 @@
 mod shared;
 
 mod account;
+mod agent_alias;
+mod agent_control;
 mod application;
 mod apps;
 mod attestation;
@@ -41,6 +43,8 @@ mod user_verification;
 mod windows_sandbox;
 
 pub use account::*;
+pub use agent_alias::*;
+pub use agent_control::*;
 pub use application::*;
 pub use apps::*;
 pub use attestation::*;

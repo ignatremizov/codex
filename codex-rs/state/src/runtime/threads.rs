@@ -129,23 +129,10 @@ WHERE id = ? AND preview = ''
         child_thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-INSERT INTO thread_spawn_edges (
-    parent_thread_id,
-    child_thread_id,
-    status
-) VALUES (?, ?, ?)
-ON CONFLICT(child_thread_id) DO UPDATE SET
-    parent_thread_id = excluded.parent_thread_id,
-    status = excluded.status
-            "#,
-        )
-        .bind(parent_thread_id.to_string())
-        .bind(child_thread_id.to_string())
-        .bind(status.as_ref())
-        .execute(self.pool.as_ref())
-        .await?;
+        let mut tx = self.pool.begin().await?;
+        upsert_thread_spawn_edge_in_transaction(&mut tx, parent_thread_id, child_thread_id, status)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -155,12 +142,26 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         child_thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<()> {
-        sqlx::query("UPDATE thread_spawn_edges SET status = ? WHERE child_thread_id = ?")
-            .bind(status.as_ref())
-            .bind(child_thread_id.to_string())
-            .execute(self.pool.as_ref())
-            .await?;
+        let mut tx = self.pool.begin().await?;
+        set_thread_spawn_edge_status_in_transaction(&mut tx, child_thread_id, status).await?;
+        tx.commit().await?;
         Ok(())
+    }
+
+    /// Find the direct persisted parent of `child_thread_id`.
+    pub async fn find_thread_spawn_parent(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> anyhow::Result<Option<ThreadId>> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT parent_thread_id FROM thread_spawn_edges WHERE child_thread_id = ?",
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_optional(self.pool.as_ref())
+        .await?
+        .map(ThreadId::try_from)
+        .transpose()
+        .map_err(Into::into)
     }
 
     /// List direct spawned children of `parent_thread_id` whose edge matches `status`.
@@ -1161,6 +1162,27 @@ ON CONFLICT(id) DO UPDATE SET
 
         let mut tx = self.pool.begin().await?;
         for thread_id_string in &thread_id_strings {
+            sqlx::query(
+                r#"
+INSERT OR IGNORE INTO agent_alias_tombstones (thread_id)
+SELECT ?
+WHERE EXISTS (SELECT 1 FROM threads WHERE id = ?)
+   OR EXISTS (SELECT 1 FROM agent_aliases WHERE thread_id = ?)
+   OR EXISTS (
+       SELECT 1 FROM thread_spawn_edges
+       WHERE parent_thread_id = ? OR child_thread_id = ?
+   )
+                "#,
+            )
+            .bind(thread_id_string)
+            .bind(thread_id_string)
+            .bind(thread_id_string)
+            .bind(thread_id_string)
+            .bind(thread_id_string)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for thread_id_string in &thread_id_strings {
             sqlx::query("DELETE FROM thread_dynamic_tools WHERE thread_id = ?")
                 .bind(thread_id_string)
                 .execute(&mut *tx)
@@ -1356,6 +1378,47 @@ pub(super) fn extract_memory_mode(items: &[RolloutItem]) -> Option<String> {
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::EventMsg(_) => None,
     })
+}
+
+pub(super) async fn upsert_thread_spawn_edge_in_transaction(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    parent_thread_id: ThreadId,
+    child_thread_id: ThreadId,
+    status: crate::DirectionalThreadSpawnEdgeStatus,
+) -> anyhow::Result<()> {
+    super::agent_aliases::require_not_deleted(tx, parent_thread_id).await?;
+    super::agent_aliases::require_not_deleted(tx, child_thread_id).await?;
+    sqlx::query(
+        r#"
+INSERT INTO thread_spawn_edges (
+    parent_thread_id,
+    child_thread_id,
+    status
+) VALUES (?, ?, ?)
+ON CONFLICT(child_thread_id) DO UPDATE SET
+    parent_thread_id = excluded.parent_thread_id,
+    status = excluded.status
+        "#,
+    )
+    .bind(parent_thread_id.to_string())
+    .bind(child_thread_id.to_string())
+    .bind(status.as_ref())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn set_thread_spawn_edge_status_in_transaction(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    child_thread_id: ThreadId,
+    status: crate::DirectionalThreadSpawnEdgeStatus,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE thread_spawn_edges SET status = ? WHERE child_thread_id = ?")
+        .bind(status.as_ref())
+        .bind(child_thread_id.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 fn thread_spawn_parent_thread_id_from_source_str(source: &str) -> Option<ThreadId> {
@@ -1968,6 +2031,55 @@ mod tests {
 
         assert_eq!(runtime.delete_thread(missing_thread_id).await?, 0);
         assert_thread_cleanup_state(&runtime, missing_thread_id).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_tombstone_rolls_back_with_failed_final_state_transaction() -> Result<()> {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
+        let thread_id = ThreadId::new();
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_id,
+                codex_home.clone(),
+            ))
+            .await?;
+        runtime
+            .ensure_agent_alias_namespace(thread_id.into())
+            .await?;
+        sqlx::query(
+            "CREATE TRIGGER fail_final_delete BEFORE DELETE ON threads BEGIN SELECT RAISE(ABORT, 'injected final deletion failure'); END",
+        ).execute(runtime.pool.as_ref()).await?;
+        assert!(runtime.delete_thread(thread_id).await.is_err());
+        assert!(runtime.get_thread(thread_id).await?.is_some());
+        assert!(
+            runtime
+                .find_current_agent_alias_by_thread(thread_id)
+                .await?
+                .is_some()
+        );
+        let tombstones: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_alias_tombstones WHERE thread_id = ?")
+                .bind(thread_id.to_string())
+                .fetch_one(runtime.pool.as_ref())
+                .await?;
+        assert_eq!(tombstones, 0);
+        sqlx::query("DROP TRIGGER fail_final_delete")
+            .execute(runtime.pool.as_ref())
+            .await?;
+        runtime.delete_thread(thread_id).await?;
+        assert!(
+            runtime
+                .find_current_agent_alias_by_thread(thread_id)
+                .await?
+                .is_none()
+        );
         Ok(())
     }
 

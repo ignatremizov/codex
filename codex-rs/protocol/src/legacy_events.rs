@@ -567,7 +567,7 @@ impl TurnItem {
             TurnItem::CommandExecution(_)
             | TurnItem::DynamicToolCall(_)
             | TurnItem::CollabAgentToolCall(_) => Vec::new(),
-            TurnItem::SubAgentActivity(_) => Vec::new(),
+            TurnItem::SubAgentActivity(_) | TurnItem::UserAgentControl(_) => Vec::new(),
             TurnItem::WebSearch(item) => vec![item.as_legacy_event()],
             TurnItem::ImageView(item) => {
                 vec![EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
@@ -647,6 +647,7 @@ impl HasLegacyEvent for ItemCompletedEvent {
             TurnItem::SubAgentActivity(item) => {
                 vec![item.as_legacy_event(self.completed_at_ms)]
             }
+            TurnItem::UserAgentControl(_) => Vec::new(),
             TurnItem::EnteredReviewMode(item) => {
                 vec![item.as_legacy_event(self.turn_id.clone())]
             }

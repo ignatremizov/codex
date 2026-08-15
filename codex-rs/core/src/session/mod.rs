@@ -245,7 +245,12 @@ mod world_state_publication;
 pub(crate) use reasoning_effort::RequestEffortUsage;
 mod completion_admission;
 mod completion_replay;
+mod observed_input;
 mod response_observation;
+pub(crate) use observed_input::ObservedTurnInputSubmission;
+mod agent_identity;
+mod user_agent_publication;
+pub(crate) use agent_identity::AgentSessionOwnershipOverride;
 pub(crate) use response_observation::AgentResponseEvent;
 pub(crate) use response_observation::AgentResponseSubscription;
 pub(crate) use response_observation::InputTurnAdmissionResolution;
@@ -1076,40 +1081,25 @@ impl SessionIo {
     pub(crate) async fn submit_turn_input_with_admission(
         &self,
         session: &Session,
-        mut request: TurnInputRequest,
+        request: TurnInputRequest,
         mode: TurnInputMode,
     ) -> CodexResult<(String, InputTurnAdmissionResolution)> {
-        if !self
-            .session
-            .upgrade()
-            .is_some_and(|target| std::ptr::eq(target.as_ref(), session))
+        match self
+            .submit_observed_turn_input(session, request, mode)
+            .await?
         {
-            return Err(CodexErr::InvalidRequest(
-                "input admission belongs to another session".to_string(),
-            ));
+            ObservedTurnInputSubmission::Admitted {
+                submission_id,
+                resolution,
+            } => Ok((submission_id, resolution)),
+            ObservedTurnInputSubmission::NotSubmitted { reason } => Err(CodexErr::InvalidRequest(
+                format!("turn input was not submitted: {reason:?}"),
+            )),
+            ObservedTurnInputSubmission::AdmittedWithoutObservation { warning, .. }
+            | ObservedTurnInputSubmission::Indeterminate { warning, .. } => {
+                Err(CodexErr::Fatal(warning))
+            }
         }
-        let id = new_submission_id();
-        let admission = session.register_input_turn_admission(id.clone());
-        let (reply, routing) = oneshot::channel();
-        let trace = request.trace.take();
-        self.submit_with_id(Submission {
-            id: id.clone(),
-            op: Op::TurnInput {
-                request: Box::new(request),
-                mode,
-                reply,
-            },
-            trace,
-            parent_turn_id: None,
-            root_turn_id: None,
-        })
-        .await?;
-        routing.await.map_err(|_| CodexErr::InternalAgentDied)??;
-        let resolution = admission
-            .recv()
-            .await
-            .ok_or(CodexErr::InternalAgentDied)??;
-        Ok((id, resolution))
     }
 
     pub(crate) async fn submit_turn_input(
@@ -3404,9 +3394,11 @@ impl Session {
         prepare_audio_response_items(&mut items);
         // Most response items get their passthrough turn ID at the durable history boundary.
         for item in &mut items {
-            // Only the dedicated acknowledged-completion path may retain this namespace.
+            // Only the dedicated acknowledged completion/task paths may retain these namespaces.
             if item.id().is_some_and(|id| {
                 codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
+                    id.as_str(),
+                ) || codex_protocol::protocol::is_user_agent_task_context_response_item_id(
                     id.as_str(),
                 )
             }) {
@@ -4189,9 +4181,8 @@ impl Session {
             }
             separate_developer_sections.push(
                 crate::context::TokenBudgetContext::new(
-                    session_source
-                        .get_agent_path()
-                        .unwrap_or_else(codex_protocol::AgentPath::root),
+                    self.current_model_visible_agent_identity(turn_context.multi_agent_version)
+                        .await,
                     auto_compact_window_ids.first_window_id,
                     auto_compact_window_ids.previous_window_id,
                     auto_compact_window_ids.window_id,

@@ -41,6 +41,7 @@ use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
 mod canonicalizer;
+mod context_provenance;
 mod exact_rollback;
 mod legacy_event;
 mod line_parser;
@@ -854,7 +855,19 @@ impl LocalThreadStore {
         let source_file = File::open(source_path).await.map_err(migration_error)?;
         let mut source = BufReader::with_capacity(PROJECTION_BATCH_BYTES as usize, source_file);
         let mut bytes = Vec::new();
-        let mut planner = RollbackPlanner::new();
+        let mut provenance = context_provenance::ContextProvenance::default();
+        while let Some(record) = read_rollout_record(&mut source, &mut bytes).await? {
+            limiter.account(record.byte_count).await;
+            if let Some(line) = record.line {
+                provenance.observe(&line.item);
+            } else {
+                provenance.break_adjacency();
+            }
+        }
+        let source_file = File::open(source_path).await.map_err(migration_error)?;
+        let mut source = BufReader::with_capacity(PROJECTION_BATCH_BYTES as usize, source_file);
+        let mut bytes = Vec::new();
+        let mut planner = RollbackPlanner::new(provenance.finish());
         while let Some(record) = read_rollout_record(&mut source, &mut bytes).await? {
             limiter.account(record.byte_count).await;
             if let Some(line) = record.line {

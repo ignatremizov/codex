@@ -74,6 +74,13 @@ impl LocalAgentControl {
             .get_resumed_session_sources()
             .map(|(session_source, _)| session_source)
             .unwrap_or(stored_thread.source);
+        let canonical_session_source = if self.current_agent_alias(thread_id).await?.is_some() {
+            self.require_current_agent_ownership(thread_id).await?;
+            self.canonical_controlled_resume_source(thread_id, canonical_session_source)
+                .await?
+        } else {
+            canonical_session_source
+        };
         self.ensure_v2_agent_loaded_from_source_and_history(
             config,
             thread_id,
@@ -497,8 +504,19 @@ impl LocalAgentControl {
             .reserve_v2_residency_slot(&state, &config, Some(thread_id))
             .await?;
         let notification_source = session_source.clone();
+        let ownership_override = if self.current_agent_alias(thread_id).await?.is_some()
+            && session_source.is_non_root_agent()
+        {
+            self.require_current_agent_ownership(thread_id).await?;
+            Some(crate::session::AgentSessionOwnershipOverride {
+                session_id: self.session_id(),
+            })
+        } else {
+            None
+        };
         match state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
+                ownership_override,
                 registration: crate::thread_manager::ThreadRegistration::Deferred,
                 config,
                 initial_history,

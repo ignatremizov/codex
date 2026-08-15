@@ -109,6 +109,7 @@ mod user_verification_routes;
 #[path = "tests/worktree_background_terminals_tests.rs"]
 mod worktree_background_terminals_tests;
 
+use super::agent_observation_display::AgentResponseObservationBinding;
 use super::*;
 use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
@@ -1045,6 +1046,52 @@ async fn active_thread_drain_yields_after_frame_deadline_without_dropping_events
 }
 
 #[tokio::test]
+async fn inactive_thread_close_clears_queued_agent_prompts_without_draining_them() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Hopper".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    app.queued_agent_prompts.insert(thread_id, VecDeque::new());
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.enqueue_thread_notification(thread_id, thread_closed_notification(thread_id))
+        .await?;
+
+    assert_eq!(
+        app.agent_navigation.get(&thread_id),
+        Some(&AgentPickerThreadEntry {
+            agent_nickname: Some("Hopper".to_string()),
+            agent_role: Some("worker".to_string()),
+            agent_path: None,
+            is_running: false,
+            is_closed: true,
+        })
+    );
+    assert!(!app.queued_agent_prompts.contains_key(&thread_id));
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(ThreadEventChannel::attachment),
+        Some(ThreadEventAttachment::ReplayOnly)
+    );
+    assert!(
+        std::iter::from_fn(|| app_event_rx.try_recv().ok()).all(|event| !matches!(
+            event,
+            AppEvent::DrainAgentPromptQueue {
+                target_thread_id
+            } if target_thread_id == thread_id
+        )),
+        "thread close must cancel queued work instead of scheduling admission"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn selected_side_thread_close_is_handled_by_foreground_event_owner() -> Result<()> {
     let mut app = make_test_app().await;
     let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
@@ -1365,6 +1412,44 @@ async fn active_turn_id_for_thread_uses_snapshot_turns() {
 }
 
 #[tokio::test]
+async fn stored_active_thread_uses_the_focused_widgets_exact_turn_origin() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+    app.thread_event_channels.insert(
+        thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            session.clone(),
+            Vec::new(),
+        ),
+    );
+    app.activate_thread_channel(thread_id).await;
+    app.chat_widget.handle_thread_session(session);
+
+    let expected_started_at = Instant::now() - Duration::from_secs(/*secs*/ 42);
+    app.chat_widget
+        .restore_active_turn("turn-1", expected_started_at);
+    app.thread_event_channels[&thread_id]
+        .store
+        .lock()
+        .await
+        .set_active_turn_id("turn-1".to_string());
+
+    app.store_active_thread_receiver().await;
+
+    let snapshot = app.thread_event_channels[&thread_id]
+        .store
+        .lock()
+        .await
+        .snapshot();
+    assert_eq!(
+        snapshot.active_turn_timing,
+        Some(("turn-1".to_string(), expected_started_at))
+    );
+}
+
+#[tokio::test]
 async fn replayed_turn_complete_submits_restored_queued_follow_up() {
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
@@ -1401,6 +1486,7 @@ async fn replayed_turn_complete_submits_restored_queued_follow_up() {
                 turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
             ))],
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: Some(input_state),
         },
         /*resume_restored_queue*/ true,
@@ -1456,6 +1542,7 @@ async fn replay_only_thread_keeps_restored_queue_visible() {
                 turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
             ))],
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: Some(input_state),
         },
         /*resume_restored_queue*/ false,
@@ -1493,6 +1580,7 @@ async fn replay_thread_snapshot_keeps_queue_when_running_state_only_comes_from_s
         .chat_widget
         .capture_thread_input_state()
         .expect("expected queued follow-up state");
+    let active_turn_timing = input_state.active_turn_timing();
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
         make_chatwidget_manual_with_sender().await;
@@ -1507,6 +1595,7 @@ async fn replay_thread_snapshot_keeps_queue_when_running_state_only_comes_from_s
             turns: Vec::new(),
             events: vec![],
             active_reasoning_item: None,
+            active_turn_timing,
             input_state: Some(input_state),
         },
         /*resume_restored_queue*/ true,
@@ -1544,6 +1633,7 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_queue_state() 
         .chat_widget
         .capture_thread_input_state()
         .expect("expected queued follow-up state");
+    let expected_active_turn_timing = input_state.active_turn_timing();
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
         make_chatwidget_manual_with_sender().await;
@@ -1558,6 +1648,7 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_queue_state() 
             turns: vec![test_turn("turn-1", TurnStatus::InProgress, Vec::new())],
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: expected_active_turn_timing.clone(),
             input_state: Some(input_state),
         },
         /*resume_restored_queue*/ true,
@@ -1566,6 +1657,12 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_queue_state() 
     assert_eq!(
         app.chat_widget.queued_user_message_texts(),
         vec!["queued follow-up".to_string()]
+    );
+    assert_eq!(
+        app.chat_widget
+            .capture_thread_input_state()
+            .and_then(|state| state.active_turn_timing()),
+        expected_active_turn_timing
     );
     assert!(
         new_op_rx.try_recv().is_err(),
@@ -1589,12 +1686,152 @@ async fn replay_thread_snapshot_in_progress_turn_restores_running_state_without_
             turns: vec![test_turn("turn-1", TurnStatus::InProgress, Vec::new())],
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
     );
 
     assert!(app.chat_widget.is_task_running_for_test());
+}
+
+#[tokio::test]
+async fn replay_snapshot_uses_store_active_turn_after_transition_events_are_evicted() {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+    app.chat_widget.handle_thread_session(session.clone());
+    app.chat_widget.handle_server_notification(
+        turn_started_notification(thread_id, "turn-1"),
+        /*replay_kind*/ None,
+    );
+    let input_state = app
+        .chat_widget
+        .capture_thread_input_state()
+        .expect("expected running turn input state");
+    let stale_input_turn_timing = input_state.active_turn_timing();
+
+    let mut store = ThreadEventStore::new(/*capacity*/ 1);
+    store.set_active_turn_id("turn-1".to_string());
+    store.input_state = Some(input_state);
+    store.push_notification(turn_completed_notification(
+        thread_id,
+        "turn-1",
+        TurnStatus::Completed,
+    ));
+    store.push_notification(turn_started_notification(thread_id, "turn-2"));
+    store.push_notification(ServerNotification::Warning(WarningNotification {
+        thread_id: Some(thread_id.to_string()),
+        message: "newest retained event".to_string(),
+    }));
+
+    assert_eq!(store.active_turn_id(), Some("turn-2"));
+    assert_eq!(store.buffer.len(), 1);
+    let expected_active_turn_timing = store.active_turn_timing();
+    let snapshot = store.snapshot();
+    assert_eq!(snapshot.active_turn_timing, expected_active_turn_timing);
+    assert_eq!(
+        snapshot
+            .input_state
+            .as_ref()
+            .and_then(ThreadInputState::active_turn_timing),
+        stale_input_turn_timing
+    );
+
+    let (chat_widget, _app_event_tx, _rx, _new_op_rx) = make_chatwidget_manual_with_sender().await;
+    app.chat_widget = chat_widget;
+    app.chat_widget.handle_thread_session(session);
+    app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
+
+    assert_eq!(
+        app.chat_widget
+            .capture_thread_input_state()
+            .and_then(|state| state.active_turn_timing()),
+        expected_active_turn_timing
+    );
+}
+
+#[tokio::test]
+async fn replay_snapshot_clears_stale_running_state_after_completion_event_is_evicted() {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+    app.chat_widget.handle_thread_session(session.clone());
+    app.chat_widget
+        .restore_user_message_to_composer(crate::chatwidget::UserMessage::from("start work"));
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let input_state = app
+        .chat_widget
+        .capture_thread_input_state()
+        .expect("expected pending turn input state");
+
+    let mut store = ThreadEventStore::new(/*capacity*/ 1);
+    store.input_state = Some(input_state);
+    store.push_notification(turn_started_notification(thread_id, "turn-1"));
+    store.push_notification(turn_completed_notification(
+        thread_id,
+        "turn-1",
+        TurnStatus::Completed,
+    ));
+    store.push_notification(ServerNotification::Warning(WarningNotification {
+        thread_id: Some(thread_id.to_string()),
+        message: "completion was evicted".to_string(),
+    }));
+
+    assert_eq!(store.active_turn_timing(), None);
+    assert_eq!(store.buffer.len(), 1);
+    let snapshot = store.snapshot();
+    assert_eq!(snapshot.active_turn_timing, None);
+    assert!(
+        snapshot.input_state.is_some(),
+        "captured pending-start state should survive so replay proves it is reconciled"
+    );
+
+    let (chat_widget, _app_event_tx, _rx, _new_op_rx) = make_chatwidget_manual_with_sender().await;
+    app.chat_widget = chat_widget;
+    app.chat_widget.handle_thread_session(session);
+    app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
+
+    assert!(!app.chat_widget.is_task_running_for_test());
+    assert_eq!(
+        app.chat_widget
+            .capture_thread_input_state()
+            .and_then(|state| state.active_turn_timing()),
+        None
+    );
+}
+
+#[tokio::test]
+async fn replay_snapshot_restores_active_turn_when_start_event_and_input_state_are_absent() {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+    let mut store = ThreadEventStore::new(/*capacity*/ 1);
+    store.push_notification(turn_started_notification(thread_id, "turn-1"));
+    store.push_notification(ServerNotification::Warning(WarningNotification {
+        thread_id: Some(thread_id.to_string()),
+        message: "start was evicted".to_string(),
+    }));
+
+    assert_eq!(store.buffer.len(), 1);
+    let expected_active_turn_timing = store.active_turn_timing();
+    let snapshot = store.snapshot();
+    assert_eq!(snapshot.active_turn_timing, expected_active_turn_timing);
+    assert_eq!(snapshot.input_state, None);
+
+    let (chat_widget, _app_event_tx, _rx, _new_op_rx) = make_chatwidget_manual_with_sender().await;
+    app.chat_widget = chat_widget;
+    app.chat_widget.handle_thread_session(session);
+    app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
+
+    assert!(app.chat_widget.is_task_running_for_test());
+    assert_eq!(
+        app.chat_widget
+            .capture_thread_input_state()
+            .and_then(|state| state.active_turn_timing()),
+        expected_active_turn_timing
+    );
 }
 
 #[tokio::test]
@@ -1619,6 +1856,7 @@ async fn replay_thread_snapshot_does_not_submit_queue_before_replay_catches_up()
         .chat_widget
         .capture_thread_input_state()
         .expect("expected queued follow-up state");
+    let expected_active_turn_timing = input_state.active_turn_timing();
 
     let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
         make_chatwidget_manual_with_sender().await;
@@ -1642,6 +1880,7 @@ async fn replay_thread_snapshot_does_not_submit_queue_before_replay_catches_up()
                 ))),
             ],
             active_reasoning_item: None,
+            active_turn_timing: expected_active_turn_timing.clone(),
             input_state: Some(input_state),
         },
         /*resume_restored_queue*/ true,
@@ -1654,6 +1893,12 @@ async fn replay_thread_snapshot_does_not_submit_queue_before_replay_catches_up()
     assert_eq!(
         app.chat_widget.queued_user_message_texts(),
         vec!["queued follow-up".to_string()]
+    );
+    assert_eq!(
+        app.chat_widget
+            .capture_thread_input_state()
+            .and_then(|state| state.active_turn_timing()),
+        expected_active_turn_timing
     );
 
     app.chat_widget.handle_server_notification(
@@ -1776,6 +2021,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_for_draft_submit() {
             turns: Vec::new(),
             events: vec![],
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: Some(input_state),
         },
         /*resume_restored_queue*/ true,
@@ -1862,6 +2108,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_without_input() {
             turns: Vec::new(),
             events: vec![],
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: Some(input_state),
         },
         /*resume_restored_queue*/ true,
@@ -1924,6 +2171,7 @@ async fn replayed_interrupted_turn_restores_queued_input_to_composer() {
                 turn_completed_notification(thread_id, "turn-1", TurnStatus::Interrupted),
             ))],
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: Some(input_state),
         },
         /*resume_restored_queue*/ true,
@@ -2043,7 +2291,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
 }
 
 #[tokio::test]
-async fn collab_wake_subscription_tracks_current_and_resume_next_turn_policies() {
+async fn collab_response_observation_tracks_current_and_resume_next_turn_policies() {
     let mut app = make_test_app().await;
     let observer_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000125").expect("valid thread id");
@@ -2052,6 +2300,8 @@ async fn collab_wake_subscription_tracks_current_and_resume_next_turn_policies()
     let completed_tool =
         |id: &str,
          tool: codex_app_server_protocol::CollabAgentTool,
+         observe_commentary: Option<bool>,
+         wake_on_completion: Option<bool>,
          target_status: codex_app_server_protocol::CollabAgentStatus| {
             ServerNotification::ItemCompleted(
                 codex_app_server_protocol::ItemCompletedNotification {
@@ -2062,8 +2312,8 @@ async fn collab_wake_subscription_tracks_current_and_resume_next_turn_policies()
                         id: id.to_string(),
                         tool,
                         status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
-                        observe_commentary: Some(false),
-                        wake_on_completion: Some(true),
+                        observe_commentary,
+                        wake_on_completion,
                         sender_thread_id: observer_thread_id.to_string(),
                         receiver_thread_ids: vec![receiver_thread_id.to_string()],
                         receiver_agents: Vec::new(),
@@ -2085,6 +2335,8 @@ async fn collab_wake_subscription_tracks_current_and_resume_next_turn_policies()
     let send = completed_tool(
         "send-1",
         codex_app_server_protocol::CollabAgentTool::SendInput,
+        Some(false),
+        Some(true),
         codex_app_server_protocol::CollabAgentStatus::Running,
     );
     app.enqueue_thread_notification(observer_thread_id, send.clone())
@@ -2123,6 +2375,8 @@ async fn collab_wake_subscription_tracks_current_and_resume_next_turn_policies()
     let old_final = completed_tool(
         "older-send-result",
         codex_app_server_protocol::CollabAgentTool::SendInput,
+        Some(false),
+        Some(true),
         codex_app_server_protocol::CollabAgentStatus::Completed,
     );
     app.enqueue_thread_notification(observer_thread_id, old_final)
@@ -2142,9 +2396,56 @@ async fn collab_wake_subscription_tracks_current_and_resume_next_turn_policies()
             .has_wake_subscription(observer_thread_id, receiver_thread_id)
     );
 
+    let passive_send = completed_tool(
+        "send-passive",
+        codex_app_server_protocol::CollabAgentTool::SendInput,
+        Some(false),
+        Some(false),
+        codex_app_server_protocol::CollabAgentStatus::Running,
+    );
+    app.cache_collab_response_observation_for_notification(&passive_send);
+    assert_eq!(
+        app.agent_navigation
+            .response_observation(observer_thread_id, receiver_thread_id),
+        Some(
+            crate::app::agent_observation_display::AgentResponseObservationDisplay {
+                binding: AgentResponseObservationBinding::Bound,
+                commentary: false,
+                final_response:
+                    crate::app::agent_observation_display::AgentFinalResponseDisplay::Passive,
+            }
+        )
+    );
+    app.agent_navigation
+        .clear_response_observation(observer_thread_id, receiver_thread_id);
+
+    let commentary_presentation_send = completed_tool(
+        "send-commentary-presentation",
+        codex_app_server_protocol::CollabAgentTool::SendInput,
+        Some(true),
+        None,
+        codex_app_server_protocol::CollabAgentStatus::Running,
+    );
+    app.cache_collab_response_observation_for_notification(&commentary_presentation_send);
+    assert_eq!(
+        app.agent_navigation
+            .response_observation(observer_thread_id, receiver_thread_id),
+        Some(
+            crate::app::agent_observation_display::AgentResponseObservationDisplay {
+                binding: AgentResponseObservationBinding::Bound,
+                commentary: true,
+                final_response:
+                    crate::app::agent_observation_display::AgentFinalResponseDisplay::Presentation,
+            }
+        )
+    );
+    app.agent_navigation.mark_stopped(receiver_thread_id);
+
     let resume = completed_tool(
         "resume-1",
         codex_app_server_protocol::CollabAgentTool::ResumeAgent,
+        Some(false),
+        Some(true),
         codex_app_server_protocol::CollabAgentStatus::Completed,
     );
     app.enqueue_thread_notification(observer_thread_id, resume.clone())
@@ -2237,7 +2538,11 @@ async fn archived_untracked_threads_do_not_appear_in_agent_picker() -> Result<()
         render_bottom_popup(&app.chat_widget, /*width*/ 80)
     );
     assert_eq!(
-        app.agent_navigation.ordered_thread_ids(),
+        app.agent_navigation
+            .ordered_threads()
+            .into_iter()
+            .map(|(thread_id, _)| thread_id)
+            .collect::<Vec<_>>(),
         vec![primary_thread_id]
     );
     assert_eq!(app.active_thread_id, Some(primary_thread_id));
@@ -2269,8 +2574,128 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
             is_closed: true,
         })
     );
-    assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
+    assert_eq!(
+        app.agent_navigation
+            .ordered_threads()
+            .into_iter()
+            .map(|(thread_id, _)| thread_id)
+            .collect::<Vec<_>>(),
+        vec![thread_id]
+    );
     Ok(())
+}
+
+#[tokio::test]
+async fn unknown_uuid_read_failure_does_not_create_an_external_agent_row() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let unknown_thread_id = ThreadId::new();
+
+    assert!(
+        !app.refresh_agent_picker_thread_liveness(&mut app_server, unknown_thread_id)
+            .await
+    );
+    assert_eq!(app.agent_navigation.get(&unknown_thread_id), None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn picker_refresh_hydrates_root_and_keeps_transferred_aliases_inspectable() {
+    let mut app = Box::pin(make_test_app()).await;
+    let root = ThreadId::new();
+    let displayed_child = ThreadId::new();
+    let transferred = ThreadId::new();
+    app.primary_thread_id = Some(displayed_child);
+    app.active_thread_id = Some(displayed_child);
+    let request_id = app
+        .agent_navigation
+        .begin_picker_refresh(displayed_child)
+        .expect("picker refresh id");
+
+    app.apply_agent_picker_thread_refresh(
+        displayed_child,
+        request_id,
+        Ok(crate::app_event::AgentPickerRefresh {
+            threads: vec![Thread {
+                id: root.to_string(),
+                extra: None,
+                session_id: root.to_string(),
+                forked_from_id: None,
+                parent_thread_id: None,
+                preview: "root".to_string(),
+                ephemeral: false,
+                section: None,
+                section_entered_at: None,
+                project_id: None,
+                history_mode: Default::default(),
+                model_provider: "openai".to_string(),
+                created_at: 1,
+                updated_at: 1,
+                recency_at: Some(1),
+                status: codex_app_server_protocol::ThreadStatus::Idle,
+                path: None,
+                cwd: test_path_buf("/tmp/project").abs(),
+                cli_version: "0.0.0".to_string(),
+                source: codex_app_server_protocol::SessionSource::Cli,
+                can_accept_direct_input: None,
+                thread_source: None,
+                agent_nickname: None,
+                agent_role: None,
+                git_info: None,
+                name: None,
+                turns: Vec::new(),
+            }],
+            aliases: vec![
+                codex_app_server_protocol::AgentAlias {
+                    thread_id: root.to_string(),
+                    agent_ref: "1".to_string(),
+                    nickname: Some("Main".to_string()),
+                    state: codex_app_server_protocol::AgentAliasState::Active,
+                },
+                codex_app_server_protocol::AgentAlias {
+                    thread_id: displayed_child.to_string(),
+                    agent_ref: "2".to_string(),
+                    nickname: Some("Hume".to_string()),
+                    state: codex_app_server_protocol::AgentAliasState::Active,
+                },
+                codex_app_server_protocol::AgentAlias {
+                    thread_id: transferred.to_string(),
+                    agent_ref: "3".to_string(),
+                    nickname: Some("Noether".to_string()),
+                    state: codex_app_server_protocol::AgentAliasState::Transferred,
+                },
+            ],
+        }),
+    );
+
+    assert!(
+        app.agent_navigation
+            .get(&root)
+            .is_some_and(|entry| !entry.is_closed),
+        "the explicit root metadata read should make Main selectable from a child-launched TUI"
+    );
+    assert_eq!(
+        app.agent_navigation.get(&transferred),
+        Some(&AgentPickerThreadEntry {
+            agent_nickname: Some("Noether".to_string()),
+            agent_role: None,
+            agent_path: None,
+            is_running: false,
+            is_closed: true,
+        })
+    );
+    assert_eq!(
+        app.agent_navigation
+            .ordered_threads()
+            .into_iter()
+            .map(|(thread_id, _)| thread_id)
+            .collect::<Vec<_>>(),
+        vec![root, displayed_child, transferred]
+    );
 }
 
 #[tokio::test]
@@ -2454,13 +2879,32 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
             agent_path: "/root/worker".to_string(),
             is_running_hint: true,
         });
-    app.agent_navigation.note_wake_subscription(
+    app.agent_navigation
+        .replace_aliases(vec![codex_app_server_protocol::AgentAlias {
+            thread_id: thread_id.to_string(),
+            agent_ref: "2".to_string(),
+            nickname: None,
+            state: codex_app_server_protocol::AgentAliasState::Active,
+        }]);
+    app.agent_navigation.note_response_observation(
         observer_thread_id,
         thread_id,
-        crate::app::agent_navigation::WakeSubscriptionBinding::Bound,
+        crate::app::agent_observation_display::AgentResponseObservationBinding::Bound,
+        Some(codex_app_server_protocol::AgentResponseHandling::Wake),
     );
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    app.thread_event_channels
+        .get(&thread_id)
+        .expect("agent event channel")
+        .store
+        .lock()
+        .await
+        .push_request(exec_approval_request(
+            thread_id, "turn-1", "call-1", /*approval_id*/ None,
+        ));
+    app.refresh_pending_thread_approvals().await;
 
     assert_app_snapshot!(
         "path_backed_agent_picker",
@@ -4108,6 +4552,7 @@ async fn replay_snapshot_with_pending_request_retains_warnings_without_covering_
                 ))),
             ],
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
@@ -5457,6 +5902,7 @@ async fn side_thread_snapshot_does_not_refresh_from_fork_history() {
         turns: Vec::new(),
         events: Vec::new(),
         active_reasoning_item: None,
+        active_turn_timing: None,
         input_state: None,
     };
 
@@ -5489,6 +5935,7 @@ async fn side_thread_snapshot_skips_session_header_preamble() {
         turns: Vec::new(),
         events: Vec::new(),
         active_reasoning_item: None,
+        active_turn_timing: None,
         input_state: None,
     };
 
@@ -5665,6 +6112,7 @@ async fn active_side_thread_renders_live_mcp_startup_notifications() {
             turns: Vec::new(),
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
@@ -6314,6 +6762,8 @@ async fn make_test_app() -> App {
         agent_navigation: AgentNavigationState::default(),
         pending_server_profiles: HashMap::new(),
         agents_overview: Default::default(),
+        queued_agent_prompts: HashMap::new(),
+        agent_command_recovery: HashMap::new(),
         side_threads: HashMap::new(),
         abandoned_side_threads: HashSet::new(),
         active_thread_id: None,
@@ -6420,6 +6870,8 @@ pub(super) async fn make_test_app_with_channels() -> (
             agent_navigation: AgentNavigationState::default(),
             pending_server_profiles: HashMap::new(),
             agents_overview: Default::default(),
+            queued_agent_prompts: HashMap::new(),
+            agent_command_recovery: HashMap::new(),
             side_threads: HashMap::new(),
             abandoned_side_threads: HashSet::new(),
             active_thread_id: None,
@@ -8884,6 +9336,7 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
             ],
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
@@ -8978,6 +9431,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                 ),
             ))],
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
@@ -9109,6 +9563,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
         turns: Vec::new(),
         events: Vec::new(),
         active_reasoning_item: None,
+        active_turn_timing: None,
         input_state: None,
     };
 

@@ -71,6 +71,7 @@ pub(crate) struct InputTurnAdmissionResolution {
 
 #[derive(Default)]
 pub(super) struct AgentResponseObservationState {
+    pub(super) task_contexts: HashMap<ResponseItemId, codex_history::UserAgentTaskContextEvidence>,
     pub(super) active_turn_id: Option<String>,
     pub(super) latest_admitted_turn_id: Option<String>,
     pub(super) live_turn_id: Option<String>,

@@ -851,6 +851,85 @@ async fn list_history_keeps_legacy_threads_unsupported() {
 }
 
 #[tokio::test]
+async fn search_finds_user_agent_control_audit_terms() {
+    let (_home, store, thread_id) = store_with_mode(ThreadHistoryMode::Paginated).await;
+    let db = history_db(&store).await;
+    insert_turn(
+        db,
+        thread_id,
+        "control-turn",
+        /*rollout_ordinal*/ 1,
+        "completed",
+        /*error_json*/ None,
+        /*first_user_item_id*/ None,
+        /*final_agent_item_id*/ None,
+    )
+    .await;
+    let item = codex_app_server_protocol::ThreadItem::UserAgentControl {
+        id: "control-item".to_string(),
+        action: codex_app_server_protocol::UserAgentControlAction::QueuedPrompt,
+        authored_selector: Some("Hume".to_string()),
+        target_thread_id: Some(ThreadId::new().to_string()),
+        previous_owner_session_id: None,
+        new_owner_session_id: None,
+        agent_ref: Some("2".to_string()),
+        nickname: Some("Hume".to_string()),
+        role: Some("reviewer".to_string()),
+        prompt_preview: Some("Review the response lifecycle.".to_string()),
+        resumed_target: true,
+        fork_mode: None,
+        observe_commentary: Some(true),
+        final_response: Some(codex_app_server_protocol::AgentFinalResponseHandling::Wake),
+        status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,
+        error: None,
+    };
+    sqlx::query(
+        "INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, \
+         updated_at_ordinal, created_at_ms, item_type, item_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(thread_id.to_string())
+    .bind("control-turn")
+    .bind("control-item")
+    .bind(2_i64)
+    .bind(2_i64)
+    .bind(2_000_i64)
+    .bind("userAgentControl")
+    .bind(serde_json::to_string(&item).expect("serialize control item"))
+    .execute(db)
+    .await
+    .expect("insert control item");
+
+    for search_term in [
+        "queued prompt",
+        "resumed target",
+        "Hume",
+        "response lifecycle",
+        "commentary",
+        "wake on response",
+        "succeeded",
+    ] {
+        let occurrences = store
+            .search_thread_occurrences(SearchThreadOccurrencesParams {
+                thread_id,
+                search_term: search_term.to_string(),
+                cursor: None,
+                page_size: 1,
+            })
+            .await
+            .expect("search control audit");
+        assert_eq!(
+            occurrences
+                .items
+                .iter()
+                .map(|occurrence| occurrence.item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["control-item"],
+            "search term {search_term:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn lineage_reads_page_across_parent_and_child_segments() {
     let (home, store, child_id) = store_with_mode(ThreadHistoryMode::Paginated).await;
     let root_id = ThreadId::default();

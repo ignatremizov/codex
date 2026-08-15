@@ -1,16 +1,22 @@
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_state::StateRuntime;
 use std::sync::Arc;
 
+use crate::AgentAlias;
+use crate::AgentAliasTransfer;
 use crate::AgentGraphStore;
 use crate::AgentGraphStoreError;
 use crate::AgentGraphStoreFuture;
+use crate::AllocateAgentAliasRequest;
+use crate::ReserveForkAgentAliasesRequest;
 use crate::ThreadSpawnEdgeStatus;
+use crate::TransferAgentAliasRequest;
 
 /// SQLite-backed implementation of [`AgentGraphStore`] using an existing state runtime.
 #[derive(Clone)]
 pub struct LocalAgentGraphStore {
-    state_db: Arc<StateRuntime>,
+    pub(super) state_db: Arc<StateRuntime>,
 }
 
 impl std::fmt::Debug for LocalAgentGraphStore {
@@ -29,6 +35,106 @@ impl LocalAgentGraphStore {
 }
 
 impl AgentGraphStore for LocalAgentGraphStore {
+    fn supports_agent_aliases(&self) -> bool {
+        true
+    }
+
+    fn ensure_agent_alias_namespace(
+        &self,
+        session_id: SessionId,
+    ) -> AgentGraphStoreFuture<'_, AgentAlias> {
+        self.ensure_agent_alias_namespace_impl(session_id)
+    }
+
+    fn reserve_agent_aliases_for_fork(
+        &self,
+        request: ReserveForkAgentAliasesRequest,
+    ) -> AgentGraphStoreFuture<'_, ()> {
+        self.reserve_agent_aliases_for_fork_impl(request)
+    }
+
+    fn discard_fork_agent_alias_reservations(
+        &self,
+        fork_session_id: SessionId,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        self.discard_fork_agent_alias_reservations_impl(fork_session_id)
+    }
+
+    fn allocate_agent_alias(
+        &self,
+        request: AllocateAgentAliasRequest,
+    ) -> AgentGraphStoreFuture<'_, AgentAlias> {
+        self.allocate_agent_alias_impl(request)
+    }
+
+    fn activate_agent_alias(
+        &self,
+        request: AllocateAgentAliasRequest,
+    ) -> AgentGraphStoreFuture<'_, AgentAlias> {
+        self.activate_agent_alias_impl(request)
+    }
+
+    fn transfer_agent_alias(
+        &self,
+        request: TransferAgentAliasRequest,
+    ) -> AgentGraphStoreFuture<'_, AgentAliasTransfer> {
+        self.transfer_agent_alias_impl(request)
+    }
+
+    fn set_agent_lifecycle_state(
+        &self,
+        session_id: SessionId,
+        thread_id: ThreadId,
+        status: ThreadSpawnEdgeStatus,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        self.set_agent_lifecycle_state_impl(session_id, thread_id, status)
+    }
+
+    fn find_agent_alias_by_thread(
+        &self,
+        session_id: SessionId,
+        thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, Option<AgentAlias>> {
+        self.find_agent_alias_by_thread_impl(session_id, thread_id)
+    }
+
+    fn find_current_agent_alias_by_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, Option<AgentAlias>> {
+        self.find_current_agent_alias_by_thread_impl(thread_id)
+    }
+
+    fn find_agent_alias_by_ref(
+        &self,
+        session_id: SessionId,
+        agent_ref: u64,
+    ) -> AgentGraphStoreFuture<'_, Option<AgentAlias>> {
+        self.find_agent_alias_by_ref_impl(session_id, agent_ref)
+    }
+
+    fn find_agent_alias_by_nickname(
+        &self,
+        session_id: SessionId,
+        nickname: &str,
+    ) -> AgentGraphStoreFuture<'_, Option<AgentAlias>> {
+        self.find_agent_alias_by_nickname_impl(session_id, nickname)
+    }
+
+    fn list_agent_aliases(
+        &self,
+        session_id: SessionId,
+    ) -> AgentGraphStoreFuture<'_, Vec<AgentAlias>> {
+        self.list_agent_aliases_impl(session_id)
+    }
+
+    fn list_agent_nickname_reservations(
+        &self,
+        session_id: SessionId,
+    ) -> AgentGraphStoreFuture<'_, Vec<String>> {
+        self.list_agent_nickname_reservations_impl(session_id)
+    }
+
     fn upsert_thread_spawn_edge(
         &self,
         parent_thread_id: ThreadId,
@@ -55,6 +161,18 @@ impl AgentGraphStore for LocalAgentGraphStore {
         Box::pin(async move {
             self.state_db
                 .set_thread_spawn_edge_status(child_thread_id, to_state_status(status))
+                .await
+                .map_err(internal_error)
+        })
+    }
+
+    fn find_thread_spawn_parent(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, Option<ThreadId>> {
+        Box::pin(async move {
+            self.state_db
+                .find_thread_spawn_parent(child_thread_id)
                 .await
                 .map_err(internal_error)
         })
@@ -109,7 +227,9 @@ impl AgentGraphStore for LocalAgentGraphStore {
     }
 }
 
-fn to_state_status(status: ThreadSpawnEdgeStatus) -> codex_state::DirectionalThreadSpawnEdgeStatus {
+pub(super) fn to_state_status(
+    status: ThreadSpawnEdgeStatus,
+) -> codex_state::DirectionalThreadSpawnEdgeStatus {
     match status {
         ThreadSpawnEdgeStatus::Open => codex_state::DirectionalThreadSpawnEdgeStatus::Open,
         ThreadSpawnEdgeStatus::Closed => codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
@@ -179,6 +299,21 @@ mod tests {
             )
             .await
             .expect("open child edge should insert");
+
+        assert_eq!(
+            store
+                .find_thread_spawn_parent(first_child_thread_id)
+                .await
+                .expect("first parent should load"),
+            Some(parent_thread_id)
+        );
+        assert_eq!(
+            store
+                .find_thread_spawn_parent(ThreadId::new())
+                .await
+                .expect("missing parent query should succeed"),
+            None
+        );
 
         let all_children = store
             .list_thread_spawn_children(parent_thread_id, /*status_filter*/ None)
