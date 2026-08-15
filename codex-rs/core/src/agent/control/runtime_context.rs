@@ -5,9 +5,11 @@ use super::LocalAgentRuntime;
 use crate::agent::types::AgentMetadata;
 use crate::session_prefix::format_subagent_context_line;
 use crate::thread_manager::ThreadManagerState;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::MultiAgentVersion;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -39,23 +41,28 @@ impl LocalAgentRuntime {
 
     pub(crate) async fn format_legacy_environment_context_subagents(
         &self,
+        session_id: SessionId,
         parent_thread_id: ThreadId,
     ) -> String {
         let Ok(agents) = self.open_thread_spawn_children(parent_thread_id).await else {
             return String::new();
         };
-        agents
-            .into_iter()
-            .map(|(thread_id, metadata)| {
-                let reference = metadata
-                    .agent_path
-                    .as_ref()
-                    .map(|path| path.name().to_string())
-                    .unwrap_or_else(|| thread_id.to_string());
-                format_subagent_context_line(&reference, metadata.agent_nickname.as_deref())
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        let control = self.control(session_id);
+        let mut lines = Vec::with_capacity(agents.len());
+        for (thread_id, metadata) in agents {
+            let identity = control
+                .model_visible_agent_identity_for_version(MultiAgentVersion::V1, thread_id)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%thread_id, %error, "could not resolve subagent context identity");
+                    crate::context::AgentContextIdentity::Canonical { agent_id: thread_id }
+                });
+            lines.push(format_subagent_context_line(
+                &identity,
+                metadata.agent_nickname.as_deref(),
+            ));
+        }
+        lines.join("\n")
     }
 
     pub(super) async fn open_thread_spawn_children(

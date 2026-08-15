@@ -8,6 +8,7 @@ use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::MultiAgentMessageDelivery;
 use crate::config::PermissionProfileSnapshot;
+use crate::context::AgentContextIdentity;
 use crate::context::SubagentNotification;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentState;
@@ -454,19 +455,26 @@ async fn spawn_agent_limit_failure_emits_bounded_metric() {
         .with_runtime_reader(),
     )
     .expect("create in-memory metrics client");
-    let (mut session, mut turn) = make_session_and_context().await;
-    turn.session_telemetry = turn.session_telemetry.clone().with_metrics(metrics.clone());
+    let (_session, turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
     config.agent_max_threads = Some(0);
     config.apps_mcp_product_sku = Some("codex".to_string());
-    turn.config = Arc::new(config);
     let manager = thread_manager();
-    set_agent_control(&mut session, manager.agent_control());
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start the metric fixture's owning parent");
+    let mut turn = parent.thread.session.new_default_turn().await;
+    let context = Arc::get_mut(&mut turn).expect("new unshared turn");
+    context.session_telemetry = context
+        .session_telemetry
+        .clone()
+        .with_metrics(metrics.clone());
 
     let Err(err) = SpawnAgentHandler::default()
         .handle(invocation(
-            Arc::new(session),
-            Arc::new(turn),
+            Arc::clone(&parent.thread.session),
+            turn,
             "spawn_agent",
             function_payload(json!({"message": "inspect this repo"})),
         ))
@@ -508,6 +516,11 @@ async fn spawn_agent_limit_failure_emits_bounded_metric() {
             ("reason".to_string(), "limit_reached".to_string()),
         ])
     );
+    parent
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("stop the metric fixture's parent");
 }
 
 #[tokio::test]
@@ -3373,8 +3386,9 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
     assert_eq!(
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
-            child_thread_id.to_string().as_str(),
-            child_thread_id,
+            AgentContextIdentity::Canonical {
+                agent_id: child_thread_id,
+            },
             &AgentStatus::Completed(Some("child done".to_string())),
         )]
     );
@@ -3596,8 +3610,7 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
     assert_eq!(
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
-            agent_id.to_string().as_str(),
-            agent_id,
+            AgentContextIdentity::Canonical { agent_id },
             &AgentStatus::Completed(Some("standalone done".to_string())),
         )]
     );
@@ -3682,8 +3695,9 @@ async fn live_adoption_reconciles_terminal_that_raced_observed_running_status() 
     assert_eq!(
         subagent_notification_texts(parent.thread.session.as_ref()).await,
         vec![format_subagent_notification_message(
-            child.thread_id.to_string().as_str(),
-            child.thread_id,
+            AgentContextIdentity::Canonical {
+                agent_id: child.thread_id,
+            },
             &AgentStatus::Completed(Some("completed during adoption".to_string())),
         )]
     );
@@ -3838,8 +3852,9 @@ async fn live_adoption_synthesizes_terminal_from_final_snapshot_status() {
     assert_eq!(
         subagent_notification_texts(parent.thread.session.as_ref()).await,
         vec![format_subagent_notification_message(
-            child.thread_id.to_string().as_str(),
-            child.thread_id,
+            AgentContextIdentity::Canonical {
+                agent_id: child.thread_id,
+            },
             &AgentStatus::Shutdown,
         )]
     );

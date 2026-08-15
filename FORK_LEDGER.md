@@ -197,6 +197,41 @@ Full first-commentary delivery remains the explicitly requested, product-reviewe
 Remote compilation, tests, schemas, complete snapshots, and final owning-commit formatting remain
 outstanding; source review and authored regression cases are not executable qualification.
 
+### User-controlled dispatch and durable aliases
+
+Ownership anchor: `feat(multi-agent): add user-controlled agent dispatch and durable aliases`.
+Explicit user commands resolve root-scoped aliases and canonical UUIDs, spawn configured roles,
+prompt or resume existing agents, inspect transcripts, and control future response observation.
+The native `LocalAgentRuntime` owns these capabilities; a selected host controller does not
+silently fall through to local user control. Generic host resume and shared model operations
+retain their existing interfaces. Explicit user history forks differ from autonomous delegation
+only at the documented history-inheritance and depth gates, not at permissions or environment
+authority. Entrypoints are `core/src/agent/user_control/`, `agent/control/user_*`,
+`thread_manager/owned_resume.rs`, and the app-server v2 agent-control processor.
+
+`agent-graph-store` and `state/src/runtime/agent_aliases/` retain root identity, nickname/ref
+reservations, tombstones, and exclusive transfer checks. Released migration 10049 remains
+immutable; its legacy numbering repair is checksum-qualified, and tombstones use migration
+10054. Late ancestry backfill preserves closed edges and unmaterialized Main identity. Sorted
+writer reservations and captured lifecycle gates separate graph ownership from a live runtime.
+One provisional spawn owner joins the original graph write, preserves history behind published
+or uncertain aliases, and never disposes of a child whose input outcome may already be admitted.
+
+Typed input receipts distinguish proven admission, a lost observation cursor, and an unknown
+routing outcome; the latter never invents a target turn or authorizes automatic resubmission.
+Source control audit and task promotion use the current single-attempt publisher and prepared
+source envelopes. Task metadata, identity, and adjacent canonical evidence remain unchanged
+across checkpoint retention; new MCP attribution belongs on replacement-owned records, not an
+acknowledged task. Abandoned publication workers quarantine the exact source rather than
+retrying or compensating already accepted target work. Source audit is not model progress.
+
+The TUI retains structured inputs, native audio markers, source-relative draft recovery,
+read-only transcript inspection, external-writer guards, current reconnect reconciliation,
+dictation/voice ownership, and launch-time screen policy. Its held prompts are process-local,
+not the later backend queue or scoped-reply framework. Later APIs and their prerequisite repairs
+remain assigned to their actual feature owners. Formatting, remote compilation, tests, generated
+contracts, and complete snapshot qualification remain outstanding.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.

@@ -106,7 +106,10 @@ impl Session {
                 MultiAgentVersion::Disabled | MultiAgentVersion::V1 => {
                     self.services
                         .local_agent_runtime
-                        .format_legacy_environment_context_subagents(self.thread_id)
+                        .format_legacy_environment_context_subagents(
+                            self.session_id(),
+                            self.thread_id,
+                        )
                         .await
                 }
             }
@@ -128,10 +131,8 @@ impl Session {
         if token_budget_enabled {
             let window_ids = self.state.lock().await.auto_compact_window_ids();
             world_state.add_section(TokenBudgetContext::new(
-                turn_context
-                    .session_source
-                    .get_agent_path()
-                    .unwrap_or_else(codex_protocol::AgentPath::root),
+                self.current_model_visible_agent_identity(turn_context.multi_agent_version)
+                    .await,
                 window_ids.first_window_id,
                 window_ids.previous_window_id,
                 window_ids.window_id,

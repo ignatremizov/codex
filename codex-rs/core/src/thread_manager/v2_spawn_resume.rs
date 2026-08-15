@@ -103,30 +103,63 @@ impl ThreadManager {
         history: &InitialHistory,
     ) -> CodexResult<LocalAgentControl> {
         let fallback = || self.agent_control_for_config(config);
-        let InitialHistory::Resumed(resumed) = history else { return Ok(fallback()) };
+        let InitialHistory::Resumed(resumed) = history else {
+            return Ok(fallback());
+        };
         if self.state.agent_control_factory.is_some()
             || history.get_multi_agent_version() != Some(MultiAgentVersion::V2)
             || history.get_resumed_parent_thread_id().is_some()
-            || history.get_resumed_session_sources().is_some_and(|(source, _)| source.is_non_root_agent())
+            || history
+                .get_resumed_session_sources()
+                .is_some_and(|(source, _)| source.is_non_root_agent())
         {
             return Ok(fallback());
         }
-        let session_id = resumed.history.iter().rev().find_map(|item| match item {
-            RolloutItem::SessionMeta(meta) if meta.meta.id == resumed.conversation_id => Some(meta.meta.session_id),
-            _ => None,
-        }).unwrap_or_else(|| resumed.conversation_id.into());
+        let session_id = resumed
+            .history
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                RolloutItem::SessionMeta(meta) if meta.meta.id == resumed.conversation_id => {
+                    Some(meta.meta.session_id)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| resumed.conversation_id.into());
+        Ok(self
+            .retained_native_control_for_session(session_id)
+            .await?
+            .unwrap_or_else(fallback))
+    }
+
+    /// Recover one coherent live native tree, never choose an arbitrary descendant registry.
+    pub(super) async fn retained_native_control_for_session(
+        &self,
+        session_id: SessionId,
+    ) -> CodexResult<Option<LocalAgentControl>> {
+        self.state.ensure_native_agent_control()?;
         let threads = self.state.threads.read().await;
         let mut retained: Option<LocalAgentControl> = None;
-        for thread in threads.values().filter(|thread| thread.is_running() && thread.session.session_id() == session_id) {
-            let current = thread.session.services.local_agent_runtime.control(session_id);
-            if retained.as_ref().is_some_and(|owner| !owner.runtime.shares_tree_with(&current.runtime)) {
+        for thread in threads
+            .values()
+            .filter(|thread| thread.is_running() && thread.session.session_id() == session_id)
+        {
+            let current = thread
+                .session
+                .services
+                .local_agent_runtime
+                .control(session_id);
+            if retained
+                .as_ref()
+                .is_some_and(|owner| !owner.runtime.shares_tree_with(&current.runtime))
+            {
                 return Err(CodexErr::InvalidRequest(
                     "live descendants disagree about the resumed root's control; close the conflicting runtimes first".to_string(),
                 ));
             }
             retained = Some(current);
         }
-        Ok(retained.unwrap_or_else(fallback))
+        Ok(retained)
     }
 
     pub(super) async fn try_resume_persisted_v2_spawn(
@@ -213,13 +246,27 @@ impl ThreadManagerState {
             )));
         }
 
+        let session_source = if self
+            .current_agent_alias(resume.child_thread_id)
+            .await?
+            .is_some()
+        {
+            owner
+                .canonical_controlled_resume_source(
+                    resume.child_thread_id,
+                    resume.session_source.clone(),
+                )
+                .await?
+        } else {
+            resume.session_source.clone()
+        };
         let restored_thread = match resume.edge_status {
             ThreadSpawnEdgeStatus::Open => {
                 owner
                     .ensure_v2_agent_loaded_from_history(
                         config.clone(),
                         resume.child_thread_id,
-                        resume.session_source.clone(),
+                        session_source.clone(),
                         initial_history.clone(),
                         client_mcp_extensions.clone(),
                         Arc::clone(&parent_thread),
@@ -231,7 +278,7 @@ impl ThreadManagerState {
                     .resume_v2_agent_from_history(
                         config.clone(),
                         resume.child_thread_id,
-                        resume.session_source.clone(),
+                        session_source,
                         initial_history.clone(),
                         client_mcp_extensions.clone(),
                         Arc::clone(&parent_thread),
@@ -387,21 +434,49 @@ async fn resolve_persisted_v2_spawn_resume(
     }) else {
         return Ok(None);
     };
-    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id, ..
-    }) = &session_meta.source
-    else {
+    if !session_meta.source.is_non_root_agent()
+        && agent_graph_store
+            .as_ref()
+            .is_none_or(|graph| !graph.supports_agent_aliases())
+    {
         return Ok(None);
-    };
+    }
     let agent_graph_store = agent_graph_store.ok_or_else(|| {
         CodexErr::InvalidRequest(format!(
             "cannot resume spawned V2 child {} because its persisted agent graph is unavailable; restore the graph state and retry",
             resumed.conversation_id
         ))
     })?;
+    let alias = if agent_graph_store.supports_agent_aliases() {
+        agent_graph_store
+            .find_current_agent_alias_by_thread(resumed.conversation_id)
+            .await
+            .map_err(|error| CodexErr::Fatal(error.to_string()))?
+    } else {
+        None
+    };
+    let (session_id, parent_thread_id) = match alias {
+        Some(alias) if ThreadId::from(alias.session_id) == resumed.conversation_id => {
+            return Ok(None);
+        }
+        Some(alias) => {
+            let parent = agent_graph_store
+                .find_thread_spawn_parent(resumed.conversation_id)
+                .await
+                .map_err(|error| CodexErr::Fatal(error.to_string()))?
+                .ok_or_else(|| {
+                    CodexErr::InvalidRequest("owned V2 child has no parent edge".into())
+                })?;
+            (alias.session_id, parent)
+        }
+        None => match session_meta.source.parent_thread_id() {
+            Some(parent) => (session_meta.session_id, parent),
+            None => return Ok(None),
+        },
+    };
 
     let closed_children = agent_graph_store
-        .list_thread_spawn_children(*parent_thread_id, Some(ThreadSpawnEdgeStatus::Closed))
+        .list_thread_spawn_children(parent_thread_id, Some(ThreadSpawnEdgeStatus::Closed))
         .await
         .map_err(|err| {
             CodexErr::Fatal(format!(
@@ -413,7 +488,7 @@ async fn resolve_persisted_v2_spawn_resume(
         ThreadSpawnEdgeStatus::Closed
     } else {
         let open_children = agent_graph_store
-            .list_thread_spawn_children(*parent_thread_id, Some(ThreadSpawnEdgeStatus::Open))
+            .list_thread_spawn_children(parent_thread_id, Some(ThreadSpawnEdgeStatus::Open))
             .await
             .map_err(|err| {
                 CodexErr::Fatal(format!(
@@ -432,8 +507,8 @@ async fn resolve_persisted_v2_spawn_resume(
 
     Ok(Some(PersistedV2SpawnResume {
         child_thread_id: resumed.conversation_id,
-        parent_thread_id: *parent_thread_id,
-        session_id: session_meta.session_id,
+        parent_thread_id,
+        session_id,
         session_source: session_meta.source.clone(),
         edge_status,
     }))

@@ -823,12 +823,19 @@ impl ThreadHistoryBuilder {
             .as_ref()
             .is_some_and(|turn| turn.id == turn_id)
             || self.turns.iter().any(|turn| turn.id == turn_id);
-        let is_orphaned_standalone_item = is_completion_presentation && !turn_exists;
+        let is_standalone_user_control = matches!(
+            item,
+            codex_protocol::items::TurnItem::UserAgentControl(control) if control.id == turn_id
+        );
+        let is_orphaned_standalone_item =
+            !turn_exists && (is_completion_presentation || is_standalone_user_control);
         if is_orphaned_standalone_item {
-            self.upsert_inter_agent_item_in_turn_id(
-                turn_id,
-                ThreadItem::from(orphaned_sub_agent_completion_presentation(item)),
-            );
+            let item = if is_completion_presentation {
+                orphaned_sub_agent_completion_presentation(item)
+            } else {
+                item.clone()
+            };
+            self.upsert_inter_agent_item_in_turn_id(turn_id, ThreadItem::from(item));
             return;
         }
         if let codex_protocol::items::TurnItem::CommandExecution(command) = item {
@@ -856,6 +863,7 @@ impl ThreadHistoryBuilder {
             | codex_protocol::items::TurnItem::DynamicToolCall(_)
             | codex_protocol::items::TurnItem::CollabAgentToolCall(_)
             | codex_protocol::items::TurnItem::SubAgentActivity(_)
+            | codex_protocol::items::TurnItem::UserAgentControl(_)
             | codex_protocol::items::TurnItem::Extension(_)
             | codex_protocol::items::TurnItem::EnteredReviewMode(_)
             | codex_protocol::items::TurnItem::ExitedReviewMode(_) => true,
@@ -2080,6 +2088,10 @@ impl From<&PendingTurn> for Turn {
 #[cfg(test)]
 #[path = "thread_history_inter_agent_tests.rs"]
 mod inter_agent_tests;
+
+#[cfg(test)]
+#[path = "thread_history_user_control_tests.rs"]
+mod user_control_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

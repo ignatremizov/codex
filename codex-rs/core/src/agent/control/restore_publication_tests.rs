@@ -2,6 +2,7 @@ use super::*;
 use crate::thread_manager::NewThread;
 use crate::thread_manager::StartThreadOptions;
 use crate::thread_manager::ThreadManager;
+use crate::thread_manager::ThreadSpawnResult;
 use codex_agent_graph_store::AgentGraphStore;
 use codex_agent_graph_store::AgentGraphStoreError;
 use codex_agent_graph_store::AgentGraphStoreFuture;
@@ -16,6 +17,9 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use tokio::sync::Notify;
+
+#[path = "spawn_guard_tests.rs"]
+mod spawn_guard_tests;
 
 #[derive(Default)]
 struct FaultGraph {
@@ -100,8 +104,9 @@ struct Fixture {
     manager: ThreadManager,
     owner: LocalAgentControl,
     parent: NewThread,
-    child: NewThread,
+    child: ThreadSpawnResult,
     graph: Arc<FaultGraph>,
+    store: Arc<InMemoryThreadStore>,
 }
 
 async fn fixture() -> Fixture {
@@ -112,6 +117,7 @@ async fn fixture() -> Fixture {
     let _ = config.features.enable(Feature::MultiAgentV2);
     let auth = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
     let graph = Arc::new(FaultGraph::default());
+    let store = Arc::new(InMemoryThreadStore::default());
     let manager = ThreadManager::new(
         &config,
         Arc::clone(&auth),
@@ -123,7 +129,7 @@ async fn fixture() -> Fixture {
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         crate::thread_manager::passthrough_image_store(),
-        Arc::new(InMemoryThreadStore::default()),
+        store.clone(),
         Some(graph.clone()),
         Uuid::new_v4().to_string(),
         /*attestation_provider*/ None,
@@ -151,6 +157,7 @@ async fn fixture() -> Fixture {
         .upgrade()
         .expect("manager")
         .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
+            ownership_override: None,
             registration: crate::thread_manager::ThreadRegistration::Deferred,
             config: config.clone(),
             initial_history: InitialHistory::New,
@@ -187,6 +194,7 @@ async fn fixture() -> Fixture {
         parent,
         child,
         graph,
+        store,
     }
 }
 

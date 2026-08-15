@@ -166,6 +166,8 @@ impl GoalAccountingState {
             return;
         };
         match item {
+            // A user control action is source-side audit, not progress by this model turn.
+            TurnItem::UserAgentControl(_) => {}
             TurnItem::AgentMessage(message) => {
                 let has_text = message.content.iter().any(|content| match content {
                     AgentMessageContent::Text { text } => !text.trim().is_empty(),
@@ -645,3 +647,7 @@ fn should_clear_active_goal(
         | ThreadGoalStatus::Complete => true,
     }
 }
+
+#[cfg(test)]
+#[path = "accounting_user_control_tests.rs"]
+mod user_control_tests;

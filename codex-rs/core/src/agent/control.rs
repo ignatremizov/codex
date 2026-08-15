@@ -58,17 +58,27 @@ pub(crate) use self::runtime::AgentControlInit;
 pub(crate) use self::runtime::LocalAgentRuntime;
 
 mod api;
+mod aliases;
 mod budget;
+pub(crate) use aliases::AgentResumeOwnership;
 mod completion;
 mod completion_watcher;
 mod presentation;
 mod response_delivery;
 mod response_observer;
 mod response_submission;
+mod user_dispatch;
+mod user_observation;
+mod user_resume;
+mod user_spawn;
+pub(in crate::agent) use presentation::ReplacedFinalResponseObservationBinding;
+pub(crate) use user_dispatch::ResponseObservationSubmission;
+pub(crate) use user_dispatch::ResumeUserInputAdmission;
 mod restore_environments;
 mod restore_metadata;
 mod restore_publication;
 mod restore_v2;
+mod resume_registration;
 pub(crate) use presentation::AgentTerminalPresentation;
 pub(crate) use presentation::CompletionParentAdoption;
 pub(crate) use presentation::CompletionParentBinding;
@@ -113,6 +123,7 @@ pub(crate) struct LocalAgentControl {
     /// session_id is equal to the root thread's ID.
     session_id: SessionId,
     pub(crate) runtime: LocalAgentRuntime,
+    session_id_is_bound: bool,
 }
 
 impl Default for LocalAgentControl {
@@ -135,17 +146,23 @@ impl LocalAgentControl {
         Self {
             session_id: SessionId::default(),
             runtime: LocalAgentRuntime::new(manager, thread_id_generator, rollout_budget),
+            session_id_is_bound: false,
         }
     }
 
     pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
         self.session_id = session_id;
         self.runtime.agent_execution_limiter.initialize(max_threads);
+        self.session_id_is_bound = true;
         self
     }
 
     pub(crate) fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    pub(crate) fn bound_session_id(&self) -> Option<SessionId> {
+        self.session_id_is_bound.then_some(self.session_id)
     }
 
     /// Send rich user input items to an existing agent thread.
@@ -379,11 +396,15 @@ impl LocalAgentControl {
     /// Interrupt the current task for an existing agent thread.
     pub(crate) async fn interrupt_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
+        // A stopped runtime still needs exact-instance cleanup. The live-only
+        // admission helper would return NotFound before that cleanup can run.
+        let _lifecycle = state.agent_lifecycle_lock(agent_id).lock_owned().await;
         let thread = state.get_thread(agent_id).await?;
-        self.handle_thread_request_result(
-            agent_id,
-            &state,
-            &thread,
+        thread.ensure_not_unloading()?;
+        state.check_restoration_fence(agent_id)?;
+        self.require_current_agent_ownership(agent_id).await?;
+        let result = if thread.is_running() {
+            thread.session.submission_admission.check_ready()?;
             state
                 .send_op_to_thread(
                     &thread,
@@ -391,9 +412,12 @@ impl LocalAgentControl {
                     /*parent_turn_id*/ None,
                     /*root_turn_id*/ None,
                 )
-                .await,
-        )
-        .await
+                .await
+        } else {
+            Err(CodexErr::InternalAgentDied)
+        };
+        self.handle_thread_request_result(agent_id, &state, &thread, result)
+            .await
     }
 
     async fn handle_thread_request_result(
@@ -627,37 +651,6 @@ impl LocalAgentControl {
         }
 
         Some(Arc::clone(&parent_thread.session.services.exec_policy))
-    }
-
-    async fn persist_thread_spawn_edge_for_source(
-        &self,
-        child_thread: &crate::CodexThread,
-        child_thread_id: ThreadId,
-        session_source: Option<&SessionSource>,
-    ) {
-        let Some(parent_thread_id) = session_source.and_then(SessionSource::parent_thread_id)
-        else {
-            return;
-        };
-        if child_thread.config_snapshot().await.ephemeral {
-            return;
-        }
-        let Ok(state) = self.runtime.upgrade() else {
-            return;
-        };
-        let Some(agent_graph_store) = state.agent_graph_store() else {
-            return;
-        };
-        if let Err(err) = agent_graph_store
-            .upsert_thread_spawn_edge(
-                parent_thread_id,
-                child_thread_id,
-                codex_agent_graph_store::ThreadSpawnEdgeStatus::Open,
-            )
-            .await
-        {
-            warn!("failed to persist thread-spawn edge: {err}");
-        }
     }
 }
 

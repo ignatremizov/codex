@@ -345,6 +345,10 @@ impl ChatWidget {
         self.bottom_pane.selected_index_for_present_view(view_id)
     }
 
+    pub(crate) fn has_view(&self, view_id: &'static str) -> bool {
+        self.bottom_pane.has_view(view_id)
+    }
+
     pub(crate) fn selected_index_for_active_view(&self, view_id: &'static str) -> Option<usize> {
         self.bottom_pane.selected_index_for_active_view(view_id)
     }
@@ -360,6 +364,10 @@ impl ChatWidget {
 
     pub(crate) fn shortcut_overlay_visible(&self) -> bool {
         self.bottom_pane.shortcut_overlay_visible()
+    }
+
+    pub(crate) fn dismiss_selection_view(&mut self, view_id: &'static str) -> bool {
+        self.bottom_pane.dismiss_view_by_id(view_id)
     }
 
     pub(crate) fn no_modal_or_popup_active(&self) -> bool {

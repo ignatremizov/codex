@@ -45,6 +45,31 @@ pub(crate) async fn prepare_agent_spawn_config(
     step_context: &StepContext,
     options: SpawnConfigOptions<'_>,
 ) -> Result<PreparedSpawnConfig, String> {
+    prepare_spawn_config(session, step_context, options, SpawnConfigAuthority::Model).await
+}
+
+/// User-controlled forks retain the same captured role, model, and permission preparation.
+/// Only the autonomous model's history-inheritance gate differs for an explicit user request.
+pub(crate) async fn prepare_user_agent_spawn_config(
+    session: &Session,
+    step_context: &StepContext,
+    options: SpawnConfigOptions<'_>,
+) -> Result<PreparedSpawnConfig, String> {
+    prepare_spawn_config(session, step_context, options, SpawnConfigAuthority::User).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpawnConfigAuthority {
+    Model,
+    User,
+}
+
+async fn prepare_spawn_config(
+    session: &Session,
+    step_context: &StepContext,
+    options: SpawnConfigOptions<'_>,
+    authority: SpawnConfigAuthority,
+) -> Result<PreparedSpawnConfig, String> {
     let turn = step_context.turn.as_ref();
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, step_context)?;
@@ -57,7 +82,8 @@ pub(crate) async fn prepare_agent_spawn_config(
     )
     .await?;
     apply_spawn_agent_role(session, &mut config, options.role_name).await?;
-    if options.fork_mode.is_some() && !config.agent_allow_history_forks {
+    if authority == SpawnConfigAuthority::Model
+        && options.fork_mode.is_some() && !config.agent_allow_history_forks {
         return Err(
             "Parent-history forks are disabled by user configuration. Spawn without inherited \
              history, or ask the user to set `agents.allow_history_forks = true` globally or in \

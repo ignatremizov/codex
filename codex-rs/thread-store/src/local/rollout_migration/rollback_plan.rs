@@ -23,10 +23,16 @@ use codex_rollout::RetainedInputSource;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
 
+use super::context_provenance::ContextProofs;
+use super::context_provenance::normalize_unproven_tasks;
 use super::migration_error;
 use super::rollback;
 use super::rollback_replay::ModelReplayPlanner;
 use crate::ThreadStoreResult;
+
+#[cfg(test)]
+#[path = "rollback_plan_tests.rs"]
+mod tests;
 
 #[derive(Clone)]
 struct CompactionFrame {
@@ -34,6 +40,7 @@ struct CompactionFrame {
     boundary_depth: usize,
     owner: Option<usize>,
     item: CompactedItem,
+    removed_context: Vec<codex_history::ResponseItemEnvelope>,
 }
 
 #[derive(Clone)]
@@ -61,6 +68,7 @@ pub(super) struct RollbackPlan {
     record_boundaries: Vec<Option<usize>>,
     boundary_alive: Vec<bool>,
     compacted_items: HashMap<usize, CompactedItem>,
+    trusted_contexts: ContextProofs,
 }
 
 impl RollbackPlan {
@@ -73,6 +81,7 @@ impl RollbackPlan {
         record_index: usize,
         mut line: RolloutLine,
     ) -> ThreadStoreResult<Option<RolloutLine>> {
+        normalize_unproven_tasks(&mut line.item, &self.trusted_contexts);
         let boundary = self
             .record_boundaries
             .get(record_index)
@@ -106,7 +115,7 @@ pub(super) struct RollbackPlanner {
     pending_context_records: Vec<usize>,
     pending_user_response: Option<PendingUserResponse>,
     pending_delivery_boundary: Option<usize>,
-    pending_observed_response: Option<(ResponseItemId, usize, usize)>,
+    trusted_contexts: ContextProofs,
     turn_boundaries: HashMap<String, usize>,
     turn_initial_boundaries: HashMap<String, usize>,
     call_boundaries: HashMap<(String, String), Option<usize>>,
@@ -116,7 +125,7 @@ pub(super) struct RollbackPlanner {
 }
 
 impl RollbackPlanner {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(trusted_contexts: ContextProofs) -> Self {
         Self {
             record_boundaries: Vec::new(),
             boundaries: Vec::new(),
@@ -126,7 +135,7 @@ impl RollbackPlanner {
             pending_context_records: Vec::new(),
             pending_user_response: None,
             pending_delivery_boundary: None,
-            pending_observed_response: None,
+            trusted_contexts,
             turn_boundaries: HashMap::new(),
             turn_initial_boundaries: HashMap::new(),
             call_boundaries: HashMap::new(),
@@ -138,6 +147,8 @@ impl RollbackPlanner {
 
     pub(super) fn observe(&mut self, line: &RolloutLine) -> ThreadStoreResult<()> {
         let index = self.record_boundaries.len();
+        let mut line = line.clone();
+        normalize_unproven_tasks(&mut line.item, &self.trusted_contexts);
         self.model_replay.observe(index, &line.item);
         self.record_boundaries
             .push(self.boundary_stack.last().copied());
@@ -158,10 +169,7 @@ impl RollbackPlanner {
             _ => None,
         };
         self.pending_user_response = None;
-        self.pending_delivery_boundary = None;
-        if !matches!(&line.item, RolloutItem::AgentResponseObservation(_)) {
-            self.pending_observed_response = None;
-        }
+        let preceding_metadata = self.pending_delivery_boundary.take();
 
         match &line.item {
             RolloutItem::SessionMeta(_) => self.record_boundaries[index] = None,
@@ -179,14 +187,14 @@ impl RollbackPlanner {
                             .and_then(|metadata| metadata.user_input_order),
                     });
                 }
-                if let Some(boundary) = paired_delivery_boundary {
+                let trusted =
+                    response.id().and_then(|id| self.trusted_contexts.get(id)) == Some(response);
+                if let Some(metadata_index) = paired_delivery_boundary {
+                    let boundary = self.start_boundary(metadata_index);
                     self.record_boundaries[index] = Some(boundary);
                     self.boundaries[boundary].message_id = response.id().cloned();
                     self.boundaries[boundary].input_source = response.metadata.as_ref().into();
-                    if let Some(id) = response.id().filter(|id| id.as_str().starts_with("amsg_")) {
-                        self.pending_observed_response =
-                            Some((id.clone(), self.boundaries[boundary].record_index, index));
-                    }
+                    self.boundaries[boundary].is_communication = true;
                 } else if rollback::counts_as_boundary(&response.item) {
                     let boundary = self.start_boundary(index);
                     self.boundaries[boundary].message_id = response.id().cloned();
@@ -201,11 +209,17 @@ impl RollbackPlanner {
                             content: content.clone(),
                         });
                     }
-                } else if rollback::is_pre_turn_context_update(&response.item) {
+                } else if !trusted && rollback::is_pre_turn_context_update(&response.item) {
                     // Until another user boundary arrives, this is trailing context for the
                     // previous turn. Keep that fallback owner so rollback drops it when there is
                     // no later turn to attach it to.
                     self.pending_context_records.push(index);
+                }
+                if trusted {
+                    self.record_boundaries[index] = None;
+                    if let Some(metadata_index) = preceding_metadata {
+                        self.record_boundaries[metadata_index] = None;
+                    }
                 }
                 if let ResponseItem::FunctionCall { call_id, .. } = &response.item
                     && let Some(turn_id) = response.turn_id().or(self.active_turn_id.as_deref())
@@ -247,7 +261,14 @@ impl RollbackPlanner {
                 self.record_boundaries[index] = Some(boundary);
             }
             RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
-                self.assign_targeted_record(index, Some(event.turn_id.as_str()));
+                if matches!(
+                    &event.item,
+                    codex_protocol::items::TurnItem::UserAgentControl(_)
+                ) {
+                    self.record_boundaries[index] = None;
+                } else {
+                    self.assign_targeted_record(index, Some(event.turn_id.as_str()));
+                }
             }
             RolloutItem::EventMsg(event) => {
                 self.assign_targeted_record(index, explicit_event_turn_id(event));
@@ -257,9 +278,9 @@ impl RollbackPlanner {
                 self.boundaries[boundary].is_communication = true;
             }
             RolloutItem::InterAgentCommunicationMetadata { .. } => {
-                let boundary = self.start_boundary(index);
-                self.boundaries[boundary].is_communication = true;
-                self.pending_delivery_boundary = Some(boundary);
+                // Metadata is not itself an instruction. Wait for the adjacent attributed
+                // response before creating a delivery boundary; task links are out of band.
+                self.pending_delivery_boundary = Some(index);
             }
             RolloutItem::Compacted(item) => {
                 let owner = self
@@ -272,6 +293,7 @@ impl RollbackPlanner {
                     boundary_depth: self.boundary_stack.len(),
                     owner,
                     item: item.clone(),
+                    removed_context: Vec::new(),
                 });
             }
             RolloutItem::TurnContext(_) => {
@@ -287,16 +309,8 @@ impl RollbackPlanner {
             RolloutItem::TokenUsageRecord(record) => {
                 self.assign_targeted_record(index, Some(record.turn_id.as_str()));
             }
-            RolloutItem::AgentResponseObservation(observation) => {
+            RolloutItem::AgentResponseObservation(_) => {
                 self.record_boundaries[index] = None;
-                if let Some((id, metadata_index, response_index)) = &self.pending_observed_response
-                    && observation
-                        .committed_delivery_response_item_ids
-                        .contains(id)
-                {
-                    self.record_boundaries[*metadata_index] = None;
-                    self.record_boundaries[*response_index] = None;
-                }
             }
             RolloutItem::WorldState(_) | RolloutItem::RealtimeItem(_) => {}
             RolloutItem::RetainedContext(codex_rollout::RetainedContextEvent::VerifiedAnswer {
@@ -378,6 +392,7 @@ impl RollbackPlanner {
             boundaries,
             compactions,
             model_replay,
+            trusted_contexts,
             ..
         } = self;
         let replay_anchor = model_replay.finish().empty_replacement_history_compaction;
@@ -389,20 +404,37 @@ impl RollbackPlanner {
             .into_iter()
             .filter_map(|mut frame| {
                 if Some(frame.record_index) == replay_anchor {
-                    frame.item.replacement_history = Some(Vec::new());
+                    frame
+                        .item
+                        .replacement_history
+                        .get_or_insert_default()
+                        .retain(|item| {
+                            item.id().and_then(|id| trusted_contexts.get(id)) == Some(item)
+                        });
                     frame.item.mcp_resource_origins = None;
-                    return Some((frame.record_index, frame.item));
-                }
-                frame
+                } else if frame
                     .owner
-                    .is_none_or(|boundary| boundary_alive[boundary])
-                    .then_some((frame.record_index, frame.item))
+                    .is_some_and(|boundary| !boundary_alive[boundary])
+                {
+                    return None;
+                }
+                if let Some(history) = &mut frame.item.replacement_history {
+                    for item in frame.removed_context {
+                        if item.id().and_then(|id| trusted_contexts.get(id)) == Some(&item)
+                            && !history.contains(&item)
+                        {
+                            history.push(item);
+                        }
+                    }
+                }
+                Some((frame.record_index, frame.item))
             })
             .collect::<HashMap<_, _>>();
         RollbackPlan {
             record_boundaries,
             boundary_alive,
             compacted_items,
+            trusted_contexts,
         }
     }
 
@@ -552,9 +584,22 @@ impl RollbackPlanner {
                             "legacy rollback crosses a compaction without replacement history",
                         )
                     })?;
+                let before_rollback = replacement_history.clone();
                 rollback::drop_last_n_user_turns(
                     replacement_history,
                     u32::try_from(remaining).unwrap_or(u32::MAX),
+                );
+                frame.removed_context.extend(
+                    before_rollback[replacement_history.len()..]
+                        .iter()
+                        .filter(|item| {
+                            item.id().is_some_and(|id| {
+                                id.as_str().starts_with("amsg_")
+                                    || codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(id.as_str())
+                                    || codex_protocol::protocol::is_user_agent_task_context_response_item_id(id.as_str())
+                            })
+                        })
+                        .cloned(),
                 );
             }
         }

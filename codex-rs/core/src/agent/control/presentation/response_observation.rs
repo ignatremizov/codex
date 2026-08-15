@@ -8,9 +8,14 @@ use codex_protocol::protocol::AgentResponseObservation;
 mod delivery;
 mod runtime;
 mod snapshot;
+mod user_policy;
+pub(in crate::agent) use user_policy::ReplacedFinalResponseObservationBinding;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ResponseTurnObservation {
+    pub(super) task_preview: Option<String>,
+    pub(super) promoted_task_context:
+        Option<codex_protocol::protocol::AgentResponsePromotedTaskContext>,
     pub(super) commentary_admissions: Vec<AgentResponseCommentaryAdmission>,
     pub(super) commentary_delivery: Option<AgentResponseCommentaryDelivery>,
     pub(super) final_response: FinalResponseObservation,
@@ -21,6 +26,8 @@ pub(super) struct ResponseTurnObservation {
 impl Default for ResponseTurnObservation {
     fn default() -> Self {
         Self {
+            task_preview: None,
+            promoted_task_context: None,
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
             final_response: FinalResponseObservation::None,

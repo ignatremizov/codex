@@ -143,9 +143,17 @@ async fn lifecycle_actions_stop_parked_voice_before_removing_owner() -> Result<(
         (AgentsOverviewAction::Delete, true),
     ] {
         let (mut app, _, _) = make_test_app_with_channels().await;
-        let (mut server, requests, proxy) = start_recording_remote_app_server(&app.config).await?;
-        let started = server.start_thread(&app.config).await?;
-        let root = started.session.thread_id;
+        let root = ThreadId::from_string(
+            &app_test_support::create_fake_rollout(
+                app.config.codex_home.as_path(),
+                "2026-09-22T12-00-00",
+                "2026-09-22T12:00:00Z",
+                "Voice root",
+                Some(&app.config.model_provider_id),
+                /*git_info*/ None,
+            )
+            .map_err(color_eyre::eyre::Report::msg)?,
+        )?;
         let owner = if slash_command {
             ThreadId::from_string(
                 &app_test_support::create_fake_parented_rollout_with_source(
@@ -172,6 +180,39 @@ async fn lifecycle_actions_stop_parked_voice_before_removing_owner() -> Result<(
         } else {
             root
         };
+        // A rollout is history, not ownership. Recreate the persisted namespace and
+        // child alias that real spawning establishes before either runtime is resumed.
+        let state_db = crate::init_state_db_for_app_server_target(
+            &app.config,
+            &crate::AppServerTarget::Embedded,
+        )
+        .await?
+        .expect("isolated recording-server state database");
+        state_db
+            .ensure_agent_alias_namespace(root.into())
+            .await
+            .map_err(color_eyre::eyre::Report::msg)?;
+        if slash_command {
+            state_db
+                .activate_agent_alias(codex_state::AgentAliasAllocation {
+                    session_id: root.into(),
+                    parent_thread_id: root,
+                    child_thread_id: owner,
+                    nickname: Some("voice-child".to_string()),
+                    task_path: Some("/root/voice-child".to_string()),
+                })
+                .await
+                .map_err(color_eyre::eyre::Report::msg)?;
+        }
+        let (mut server, requests, proxy) = start_recording_remote_app_server(&app.config).await?;
+        server
+            .resume_thread(
+                &app.local_settings,
+                app.config.clone(),
+                root,
+                crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
+            )
+            .await?;
         crate::chatwidget::activate_voice_for_thread(&mut app.chat_widget, owner);
         let (replacement, _, _, _) =
             crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;

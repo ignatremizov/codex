@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/mcp_tool_exposure.rs
+assertion_line: 1491
 expression: "format_labeled_requests_snapshot(\"Deferred namespaces appear after Apps recovers between sampling requests.\",\n&[(\"Apps unavailable\", &requests[0]), (\"Apps recovered\", &requests[1]),],)"
 ---
 Scenario: Deferred namespaces appear after Apps recovers between sampling requests.
@@ -10,7 +11,7 @@ Scenario: Deferred namespaces appear after Apps recovers between sampling reques
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
