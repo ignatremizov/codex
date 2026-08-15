@@ -505,11 +505,18 @@ Persisting an identity mapping across cold resume does not reactivate any observ
 
 ## Relationship to multi-agent v2
 
-This is a v1 extension.
+This implementation changes only V1. V2 keeps its existing `send_message` and `followup_task` surface for now.
 
-V1 callers may observe V2 targets through the common response machinery, but this slice explicitly rejects granting `m` to a V2 target: the V2 input transport has not adopted the scoped reverse-route contract. Existing V2 `send_message`, `followup_task`, and wait APIs retain their own authorization and lifecycle behavior. A later unified-input design may reuse the shared queue, observation, and grant owners; that proposal does not authorize bypassing the current transport check or creating a second admission queue.
+V1 callers may observe V2 targets through the common response machinery, but this slice explicitly rejects granting `m` to a V2 target: the V2 input transport has not adopted the scoped reverse-route contract. Existing V2 sending and wait APIs retain their own authorization and lifecycle behavior.
 
-A v3 would be justified only by intentionally replacing both public tool sets with a new orchestration contract. Adding an optional, backward-compatible response policy to V1 does not justify another configured multi-agent version.
+A later V2 integration should replace the two model-facing sending operations with the shared `send_input` name:
+
+- Omitted `q` should preserve native V2 active-turn delivery and idle-turn start behavior.
+- `q` should use the same target-owned FIFO as V1 and `/agent queue`, producing one distinct future turn rather than a second mailbox queue.
+- Encrypted, encrypted-with-audit, and plaintext `InterAgentCommunication` must remain native V2 `AgentMessage` input rather than being converted to user input.
+- Native V2 agent-path attribution already gives a recipient a reply target, so the integration must decide explicitly how `m` and the V1 `c`/`f`/`x` observation modes relate to V2's existing graph communication and parent-completion contract instead of silently treating them as no-ops.
+
+That consolidation is follow-up work and is not required to ship the V1 `m`/`q` contract. It does not authorize bypassing the current transport check, reviving cold queues or grants from audit history, or retargeting already accepted delivery receipts. It does not require a new configured multi-agent version.
 
 ## Persistence and recovery requirements
 
